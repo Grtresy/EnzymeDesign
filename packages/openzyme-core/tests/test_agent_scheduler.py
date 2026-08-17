@@ -52,6 +52,7 @@ from openzyme_domain import ExternalEffectCertainty
 from openzyme_domain import FailureRecoverability
 from openzyme_domain import RetryEligibility
 from openzyme_domain import SandboxImageCompatibility
+from openzyme_domain import SandboxImageRecord
 from openzyme_domain import SandboxRunRecord
 from openzyme_domain import SandboxRunStatus
 from openzyme_domain import SandboxWorkspaceRecord
@@ -447,6 +448,21 @@ def _build_context(
     connection = connect_sqlite(":memory:", check_same_thread=False)
     apply_sqlite_migrations(connection)
     repositories = CoreRepositories.from_connection(connection)
+    repositories.sandbox_images.save(
+        SandboxImageRecord(
+            image_ref="image:test",
+            image_digest="sha256:image",
+            image_family="test",
+            image_version="test",
+            sandbox_protocol_version="1",
+            manifest_schema_version="1",
+            capabilities_declared=(),
+            compatibility=SandboxImageCompatibility.COMPATIBLE,
+            is_default=False,
+            created_at="2026-04-16T10:00:00+00:00",
+            updated_at="2026-04-16T10:00:00+00:00",
+        )
+    )
     session = Session.create("sess_scheduler", "proj_001", "Scheduler", "Scheduler")
     repositories.sessions.save(session)
     _ensure_active_master(repositories, session_id=session.session_id)
@@ -796,12 +812,10 @@ def test_durable_continuation_suspension_keeps_task_in_progress(monkeypatch) -> 
             )
         )
         runtime_context.repositories.controlled_operations.save(
-            ControlledOperation(
-                operation_id=operation_id,
-                session_id="sess_scheduler",
-                sandbox_workspace_id=workspace_id,
-                sandbox_run_id=run_id,
-                task_id=task_id,
+                ControlledOperation(
+                    operation_id=operation_id,
+                    session_id="sess_scheduler",
+                    task_id=task_id,
                 logical_operation_key="fixture.durable",
                 operation_digest="sha256:operation",
                 params_digest="sha256:params",
@@ -858,7 +872,7 @@ def test_durable_continuation_suspension_keeps_task_in_progress(monkeypatch) -> 
     ).run_once_sync("sess_scheduler", max_signals=1)
 
     assert len(outcomes) == 1
-    assert outcomes[0].ok is True
+    assert outcomes[0].ok is True, outcomes[0].summary
     assert outcomes[0].waiting_approval_id == "appr_task_0"
     task = repositories.tasks.get("task_0")
     agent = repositories.agents.get(
@@ -1693,8 +1707,6 @@ def test_budget_exhaustion_preserves_independent_controlled_effect(
         operation = ControlledOperation(
             operation_id=operation_id,
             session_id="sess_scheduler",
-            sandbox_workspace_id=workspace_id,
-            sandbox_run_id=run_id,
             task_id=task_id,
             logical_operation_key="fixture.budget_effect",
             operation_digest="sha256:operation-effect",
@@ -1780,7 +1792,7 @@ def test_budget_exhaustion_preserves_independent_controlled_effect(
     )
 
     assert outcome.ok is False
-    assert execution is not None
+    assert execution is not None, (outcome.summary, outcome.teammate_status)
     assert execution.lifecycle_state is ControlledOperationExecutionLifecycle.TERMINAL
     assert execution.terminal_outcome is (
         ControlledOperationExecutionTerminalOutcome.SUCCEEDED

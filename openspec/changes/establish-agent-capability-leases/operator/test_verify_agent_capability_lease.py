@@ -172,7 +172,7 @@ def _valid_acceptance() -> tuple[
             "sqlite_schema_after": 39,
             "migration_id": "039_v3_agent_capability_leases",
             "migration_sha256": verifier.digest_bytes(
-                (verifier.REPOSITORY_ROOT / verifier.MIGRATION_PATH).read_bytes()
+                verifier.historical_migration_bytes()
             ),
             "lease_schema": "agent_capability_lease@1",
             "generation_reservation_schema": (

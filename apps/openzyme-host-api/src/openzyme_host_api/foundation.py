@@ -1,17 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from dataclasses import field
 from dataclasses import replace
 import re
 
 from mcp_hpc_runner.server import MCPHpcServer
-from openzyme_domain import ArtifactKind
-from openzyme_domain import RunStatus
 from openzyme_domain import SourceRefKind
-from openzyme_execution import ExecutionArtifactRef
-from openzyme_execution import ExecutionOutcome
-from openzyme_execution import HpcRunnerExecutionAdapter
+from openzyme_execution import WorkspaceRevisionRunnerAdapter
 from openzyme_runtime import OpenAICompatibleChatModelFactory
 from openzyme_runtime import LimiterRegistry
 from openzyme_runtime import is_micu_provider_url
@@ -19,8 +14,6 @@ from openzyme_runtime import LiveMicuTokenLedger
 from openzyme_runtime import OpenZymeSettings
 from openzyme_runtime import ReliabilityShadowObserver
 from openzyme_runtime import RuntimeFoundation
-from openzyme_tools import DefaultHpcExecutionRegistry
-from openzyme_tools import RepoBackedHpcCatalogProvider
 from openzyme_runtime import DefaultResearchToolProvider
 from openzyme_runtime import get_settings
 from openzyme_research import ResearchFinding
@@ -32,60 +25,8 @@ from openzyme_research import BioResearchService
 from openzyme_research import BoundedCallableClient
 from openzyme_research import BoundedHttpClient
 from openzyme_research import DefaultBioResearchService
-from openzyme_research import DeterministicBioResearchService
 from openzyme_runtime import build_bio_research_tools
 
-from .eval_support import DeterministicLocalModelFactory
-
-
-@dataclass(slots=True)
-class DeterministicExecutionAdapter:
-    _session_call_counts: dict[str, int] = field(default_factory=dict)
-
-    def submit_execution(
-        self, session_id: str, payload: dict[str, object]
-    ) -> ExecutionOutcome:
-        call_count = self._session_call_counts.get(session_id, 0) + 1
-        self._session_call_counts[session_id] = call_count
-        run_id = f"run_{session_id}_{call_count}"
-        return ExecutionOutcome(
-            run_id=run_id,
-            status=RunStatus.SUCCEEDED,
-            execution_mode="fixture_non_cutover",
-            artifacts=(
-                ExecutionArtifactRef(
-                    storage_uri="/tmp/openzyme-local/stdout.log",
-                    relative_path="stdout.log",
-                    kind=ArtifactKind.LOG,
-                ),
-                ExecutionArtifactRef(
-                    storage_uri="/tmp/openzyme-local/result.json",
-                    relative_path="result.json",
-                    kind=ArtifactKind.RESULT,
-                ),
-            ),
-            raw_result={
-                "status": "fixture_non_cutover",
-                "mode": "fixture_non_cutover",
-                "fixture": True,
-                "synthetic_source": True,
-                "cutover_eligible": False,
-                "provider_status": "fixture_non_cutover",
-                "tool_status": "fixture_non_cutover",
-                "scientific_status": "fixture_non_cutover",
-            },
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class UnavailableExecutionAdapter:
-    reason: str = "No real execution backend is configured."
-
-    def submit_execution(
-        self, session_id: str, payload: dict[str, object]
-    ) -> ExecutionOutcome:
-        del session_id, payload
-        raise RuntimeError(self.reason)
 
 
 @dataclass(slots=True)
@@ -340,22 +281,17 @@ def build_model_factory_from_env() -> OpenAICompatibleChatModelFactory | None:
     )
 
 
-def _build_execution_adapter(
-    settings: OpenZymeSettings,
-    limiter_registry: LimiterRegistry,
-):
+def _build_workspace_runner(settings: OpenZymeSettings):
     if settings.execution.backend == "disabled":
-        return UnavailableExecutionAdapter()
+        return None
     if settings.execution.backend in {"demo", "fixture", "fixture_non_cutover"}:
         raise ValueError(
             "Configured Host cannot use a deterministic execution backend; "
-            "use build_local_eval_foundation() for explicit fixture_non_cutover evals."
+            "fixture execution backends were removed from the current product."
         )
     if settings.execution.backend == "hpc":
-        return HpcRunnerExecutionAdapter(
-            config_path=settings.execution.hpc_runner_config,
-            server=MCPHpcServer(settings.execution.hpc_runner_config),
-            limiter_registry=limiter_registry,
+        return WorkspaceRevisionRunnerAdapter(
+            MCPHpcServer(settings.execution.hpc_runner_config)
         )
     raise ValueError(f"Unsupported execution backend: {settings.execution.backend}")
 
@@ -394,38 +330,6 @@ def _build_bio_research_service(settings: OpenZymeSettings) -> BioResearchServic
     )
 
 
-def build_local_eval_foundation(
-    *,
-    settings: OpenZymeSettings | None = None,
-) -> RuntimeFoundation:
-    effective_settings = settings or get_settings()
-    limiter_registry = LimiterRegistry(dict(effective_settings.limits.provider_limits))
-    research_adapter = DeterministicResearchAdapter()
-    bio_research_service = DeterministicBioResearchService()
-    return RuntimeFoundation(
-        execution_adapter=DeterministicExecutionAdapter(),
-        hpc_catalog_provider=RepoBackedHpcCatalogProvider(),
-        hpc_execution_registry=DefaultHpcExecutionRegistry(
-            RepoBackedHpcCatalogProvider()
-        ),
-        research_adapter=research_adapter,
-        research_tool_provider=DefaultResearchToolProvider(
-            research_adapter,
-            mcp_tools=build_bio_research_tools(bio_research_service),
-            mcp_enabled=True,
-            mcp_tool_allowlist=effective_settings.research.mcp_tool_allowlist,
-            limiter_registry=limiter_registry,
-        ),
-        bio_research_service=bio_research_service,
-        model_factory=DeterministicLocalModelFactory(),
-        limiter_registry=limiter_registry,
-        settings=effective_settings,
-        reliability_shadow_observer=ReliabilityShadowObserver(
-            effective_settings.reliability
-        ),
-    )
-
-
 def build_configured_foundation(
     *,
     settings: OpenZymeSettings | None = None,
@@ -445,11 +349,7 @@ def build_configured_foundation(
         limiter_registry=limiter_registry,
     )
     return RuntimeFoundation(
-        execution_adapter=_build_execution_adapter(effective_settings, limiter_registry),
-        hpc_catalog_provider=RepoBackedHpcCatalogProvider(),
-        hpc_execution_registry=DefaultHpcExecutionRegistry(
-            RepoBackedHpcCatalogProvider()
-        ),
+        workspace_runner=_build_workspace_runner(effective_settings),
         research_adapter=research_adapter,
         research_tool_provider=research_tool_provider,
         bio_research_service=bio_research_service,

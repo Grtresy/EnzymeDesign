@@ -24,8 +24,7 @@ from openzyme_core.agent_capability_service import (
 from openzyme_core.agent_capability_service import DEFAULT_AGENT_CAPABILITY_POLICY
 from openzyme_core.agent_capability_service import AgentWorkspaceReadinessProof
 from openzyme_core.agent_identity import create_agent_member
-from openzyme_core.migration_assets import MIGRATION_IDS
-from openzyme_core.migration_assets import get_migration_sql
+from openzyme_core.migration_assets import SQLiteSchemaMismatchError
 from openzyme_domain import AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
 from openzyme_domain import AgentCapabilityLease
 from openzyme_domain import AgentCapabilityLeaseStatus
@@ -413,116 +412,42 @@ def test_enqueue_without_current_capability_is_explicit_and_has_no_signal() -> N
 
 def test_legacy_unbound_signal_is_not_upgraded_or_reused_as_exact_occurrence() -> None:
     connection = connect_sqlite(":memory:")
-    capability_migration_index = MIGRATION_IDS.index(
-        "039_v3_agent_capability_leases"
-    )
-    migration_sql = "\n".join(
-        get_migration_sql(migration_id)
-        for migration_id in MIGRATION_IDS[:capability_migration_index]
-    )
     connection.executescript(
-        "BEGIN IMMEDIATE;\n"
-        f"{migration_sql}\n"
-        f"PRAGMA user_version = {capability_migration_index};\n"
-        "COMMIT;"
-    )
-    session = Session.create(
-        "sess_runtime_capability",
-        "project_runtime_capability",
-        "Runtime capability",
-        "Preserve a legacy unbound runtime occurrence",
-    )
-    agent_id = "agent:researcher-legacy"
-    connection.execute(
         """
-        INSERT INTO sessions (
-            session_id, project_id, title, objective, status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            session.session_id,
-            session.project_id,
-            session.title,
-            session.objective,
-            session.status.value,
-            session.created_at,
-            session.updated_at,
-        ),
-    )
-    connection.execute(
+        CREATE TABLE agent_runtime_signals (
+            signal_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            source_ref TEXT,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        INSERT INTO agent_runtime_signals VALUES (
+            'sig_legacy_unbound',
+            'sess_runtime_capability',
+            'agent:researcher-legacy',
+            'manual_resume',
+            'manual:legacy-source',
+            'pending',
+            '2026-08-16T00:00:00+00:00'
+        );
+        PRAGMA user_version = 38;
         """
-        INSERT INTO agent_members (
-            member_id, agent_id, session_id, name, role, status,
-            created_at, updated_at, runtime_state
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            "member_runtime_capability_legacy",
-            agent_id,
-            session.session_id,
-            "Legacy researcher",
-            "researcher",
-            AgentMemberStatus.IDLE.value,
-            session.created_at,
-            session.updated_at,
-            "idle",
-        ),
-    )
-    connection.execute(
-        """
-        INSERT INTO agent_runtime_signals (
-            signal_id, session_id, agent_id, reason, source_ref, status, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            "sig_legacy_unbound",
-            session.session_id,
-            agent_id,
-            AgentRuntimeSignalReason.MANUAL_RESUME.value,
-            "manual:legacy-source",
-            AgentRuntimeSignalStatus.PENDING.value,
-            "2026-08-16T00:00:00+00:00",
-        ),
-    )
-    connection.commit()
-    apply_sqlite_migrations(connection)
-    repositories = CoreRepositories.from_connection(connection)
-    provider = _ReadinessProvider()
-    capability_service = AgentCapabilityLeaseService(
-        repositories,
-        readiness_providers={provider.provider_id: provider},
-    )
-    capability_service.reserve_and_issue(
-        session_id=session.session_id,
-        agent_id=agent_id,
-        idempotency_key="runtime-agent-generation-1",
-        actor_ref="test:runtime-issue",
-    )
-    context = SessionRuntimeContext(
-        repositories=repositories,
-        event_sink=MemoryEventBus(),
-        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
-        tool_registry=ToolRegistry(),
-        restore_focus=RestoreFocus(),
     )
 
-    exact = AgentRuntimeService(context).enqueue_signal(
-        session_id=session.session_id,
-        agent_id=agent_id,
-        reason=AgentRuntimeSignalReason.MANUAL_RESUME,
-        source_ref="manual:legacy-source",
-        notify=False,
-    )
+    with pytest.raises(SQLiteSchemaMismatchError, match="offline upgrade"):
+        apply_sqlite_migrations(connection)
 
-    legacy = repositories.runtime_signals.get("sig_legacy_unbound")
-    assert exact is not None
-    assert exact.signal_id != "sig_legacy_unbound"
-    assert exact.capability_lease_id is not None
-    assert exact.workspace_generation == 1
-    assert legacy is not None
-    assert legacy.capability_lease_id is None
-    assert legacy.workspace_generation is None
-    assert legacy.status is AgentRuntimeSignalStatus.PENDING
+    assert [
+        tuple(row)
+        for row in connection.execute(
+            "SELECT signal_id, source_ref, status FROM agent_runtime_signals"
+        ).fetchall()
+    ] == [
+        ("sig_legacy_unbound", "manual:legacy-source", "pending")
+    ]
+    assert int(connection.execute("PRAGMA user_version").fetchone()[0]) == 38
 
 
 def test_pending_capability_blocks_forged_claimed_input_without_side_effects() -> None:

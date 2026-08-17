@@ -23,7 +23,7 @@ MAX_QUIESCENCE_SNAPSHOT_BYTES: Final = 16 * 1024 * 1024
 class MutationResourceCategory(StrEnum):
     CANONICAL_SQLITE = "canonical_sqlite"
     EVENT_OUTBOX = "event_outbox"
-    ARTIFACT_PUBLICATION = "artifact_publication"
+    FILE_PUBLICATION = "file_publication"
     REPORT_PUBLICATION = "report_publication"
     LEDGER = "ledger"
 
@@ -286,10 +286,6 @@ _DIRECT_COVERAGE: tuple[tuple[str, MutationResourceCategory], ...] = (
     ),
     ("controlled_operation_records", MutationResourceCategory.CANONICAL_SQLITE),
     (
-        "controlled_operation_result_artifacts",
-        MutationResourceCategory.ARTIFACT_PUBLICATION,
-    ),
-    (
         "controlled_operation_result_handles",
         MutationResourceCategory.CANONICAL_SQLITE,
     ),
@@ -324,18 +320,9 @@ _DIRECT_COVERAGE: tuple[tuple[str, MutationResourceCategory], ...] = (
     ("repository_provision_credential_records", MutationResourceCategory.CANONICAL_SQLITE),
     ("revision_path_refs", MutationResourceCategory.CANONICAL_SQLITE),
     ("runtime_command_records", MutationResourceCategory.CANONICAL_SQLITE),
-    (
-        "sandbox_command_log_artifacts",
-        MutationResourceCategory.ARTIFACT_PUBLICATION,
-    ),
-    ("sandbox_file_audit_entries", MutationResourceCategory.CANONICAL_SQLITE),
     ("sandbox_run_records", MutationResourceCategory.CANONICAL_SQLITE),
     ("sandbox_workspace_records", MutationResourceCategory.CANONICAL_SQLITE),
     ("session_access_records", MutationResourceCategory.LEDGER),
-    (
-        "session_artifact_records",
-        MutationResourceCategory.ARTIFACT_PUBLICATION,
-    ),
     (
         "session_report_draft_records",
         MutationResourceCategory.REPORT_PUBLICATION,
@@ -374,9 +361,9 @@ _DIRECT_COVERAGE: tuple[tuple[str, MutationResourceCategory], ...] = (
     ("workspace_publication_intents", MutationResourceCategory.CANONICAL_SQLITE),
     ("workspace_publication_outbox_records", MutationResourceCategory.CANONICAL_SQLITE),
     ("published_revisions", MutationResourceCategory.CANONICAL_SQLITE),
-    ("git_lfs_quota_reservations", MutationResourceCategory.ARTIFACT_PUBLICATION),
-    ("git_lfs_upload_sessions", MutationResourceCategory.ARTIFACT_PUBLICATION),
-    ("git_lfs_workspace_object_links", MutationResourceCategory.ARTIFACT_PUBLICATION),
+    ("git_lfs_quota_reservations", MutationResourceCategory.FILE_PUBLICATION),
+    ("git_lfs_upload_sessions", MutationResourceCategory.FILE_PUBLICATION),
+    ("git_lfs_workspace_object_links", MutationResourceCategory.FILE_PUBLICATION),
 )
 
 HOST_MUTATION_COVERAGE_ENTRIES: Final[tuple[MutationCoverageEntry, ...]] = tuple(
@@ -470,23 +457,18 @@ HOST_MUTATION_COVERAGE_ENTRIES: Final[tuple[MutationCoverageEntry, ...]] = tuple
     ),
     MutationCoverageEntry(
         table_name="git_lfs_publication_intent_proofs",
-        resource_category=MutationResourceCategory.ARTIFACT_PUBLICATION,
+        resource_category=MutationResourceCategory.FILE_PUBLICATION,
         session_binding="intent_id_to_workspace_publication_intents",
     ),
     MutationCoverageEntry(
         table_name="git_lfs_publication_closures",
-        resource_category=MutationResourceCategory.ARTIFACT_PUBLICATION,
+        resource_category=MutationResourceCategory.FILE_PUBLICATION,
         session_binding="publication_id_to_published_revisions",
     ),
     MutationCoverageEntry(
         table_name="git_lfs_publication_pins",
-        resource_category=MutationResourceCategory.ARTIFACT_PUBLICATION,
+        resource_category=MutationResourceCategory.FILE_PUBLICATION,
         session_binding="publication_id_to_published_revisions",
-    ),
-    MutationCoverageEntry(
-        table_name="artifact_materialization_records",
-        resource_category=MutationResourceCategory.ARTIFACT_PUBLICATION,
-        session_binding="sandbox_workspace_id_to_workspace",
     ),
     MutationCoverageEntry(
         table_name="scientific_chain_selection_records",
@@ -514,11 +496,6 @@ HOST_MUTATION_COVERAGE_ENTRIES: Final[tuple[MutationCoverageEntry, ...]] = tuple
         session_binding="attempt_id_to_scientific_attempts",
     ),
     MutationCoverageEntry(
-        table_name="scientific_artifact_materialization_records",
-        resource_category=MutationResourceCategory.ARTIFACT_PUBLICATION,
-        session_binding="attempt_id_to_scientific_attempts",
-    ),
-    MutationCoverageEntry(
         table_name="scientific_attempt_closure_request_records",
         resource_category=MutationResourceCategory.CANONICAL_SQLITE,
         session_binding="attempt_id_to_scientific_attempts",
@@ -536,8 +513,16 @@ HOST_MUTATION_COVERAGE_ENTRIES: Final[tuple[MutationCoverageEntry, ...]] = tuple
 # receipt.  A candidate table must move into guarded coverage before activation.
 HOST_MUTATION_GLOBAL_EXCLUSIONS: Final[tuple[dict[str, str], ...]] = (
     {
-        "table_name": "artifact_blob_gc_queue",
-        "reason": "host_global_blob_gc_without_session_identity",
+        "table_name": "deployment_schema_state",
+        "reason": "host_operator_offline_schema_generation_authority",
+    },
+    {
+        "table_name": "legacy_removal_ledger",
+        "reason": "host_operator_offline_immutable_removal_ledger",
+    },
+    {
+        "table_name": "legacy_removal_items",
+        "reason": "host_operator_offline_removal_item_ledger",
     },
     {
         "table_name": "sandbox_image_records",
@@ -679,30 +664,6 @@ HOST_MUTATION_GLOBAL_EXCLUSIONS: Final[tuple[dict[str, str], ...]] = (
         "table_name": "file_workspace_session_contract_records",
         "reason": "inactive_source_only_session_contract_candidate",
     },
-    {
-        "table_name": "historical_artifact_inventory_records",
-        "reason": "offline_operator_historical_migration_candidate",
-    },
-    {
-        "table_name": "historical_artifact_migration_unit_records",
-        "reason": "offline_operator_historical_migration_candidate",
-    },
-    {
-        "table_name": "historical_artifact_ref_records",
-        "reason": "offline_operator_historical_migration_candidate",
-    },
-    {
-        "table_name": "historical_artifact_reference_rewrite_records",
-        "reason": "offline_operator_historical_migration_candidate",
-    },
-    {
-        "table_name": "historical_artifact_migration_unit_receipts",
-        "reason": "offline_operator_historical_migration_candidate",
-    },
-    {
-        "table_name": "historical_artifact_migration_global_receipts",
-        "reason": "offline_operator_historical_migration_candidate",
-    },
 )
 
 HOST_MUTATION_COVERAGE_MANIFEST: Final[dict[str, object]] = {
@@ -738,14 +699,14 @@ WRITER_RESOURCE_CATEGORIES: Final[
         {
             MutationResourceCategory.CANONICAL_SQLITE,
             MutationResourceCategory.EVENT_OUTBOX,
-            MutationResourceCategory.ARTIFACT_PUBLICATION,
+            MutationResourceCategory.FILE_PUBLICATION,
         }
     ),
     MutationWriterKind.CONTROLLED_OPERATION: frozenset(
         {
             MutationResourceCategory.CANONICAL_SQLITE,
             MutationResourceCategory.EVENT_OUTBOX,
-            MutationResourceCategory.ARTIFACT_PUBLICATION,
+            MutationResourceCategory.FILE_PUBLICATION,
         }
     ),
     MutationWriterKind.CONTINUATION_DELIVERY: frozenset(
@@ -758,13 +719,13 @@ WRITER_RESOURCE_CATEGORIES: Final[
         {
             MutationResourceCategory.CANONICAL_SQLITE,
             MutationResourceCategory.EVENT_OUTBOX,
-            MutationResourceCategory.ARTIFACT_PUBLICATION,
+            MutationResourceCategory.FILE_PUBLICATION,
         }
     ),
-    MutationWriterKind.ARTIFACT_PUBLISHER: frozenset(
+    MutationWriterKind.FILE_PUBLISHER: frozenset(
         {
             MutationResourceCategory.CANONICAL_SQLITE,
-            MutationResourceCategory.ARTIFACT_PUBLICATION,
+            MutationResourceCategory.FILE_PUBLICATION,
             MutationResourceCategory.EVENT_OUTBOX,
         }
     ),
@@ -772,7 +733,7 @@ WRITER_RESOURCE_CATEGORIES: Final[
         {
             MutationResourceCategory.CANONICAL_SQLITE,
             MutationResourceCategory.REPORT_PUBLICATION,
-            MutationResourceCategory.ARTIFACT_PUBLICATION,
+            MutationResourceCategory.FILE_PUBLICATION,
             MutationResourceCategory.EVENT_OUTBOX,
         }
     ),
@@ -783,7 +744,7 @@ WRITER_RESOURCE_CATEGORIES: Final[
         {
             MutationResourceCategory.CANONICAL_SQLITE,
             MutationResourceCategory.EVENT_OUTBOX,
-            MutationResourceCategory.ARTIFACT_PUBLICATION,
+            MutationResourceCategory.FILE_PUBLICATION,
         }
     ),
     MutationWriterKind.ATTEMPT_DRIVER: _ALL_RESOURCES,

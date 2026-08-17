@@ -2,6 +2,28 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { buildHostPaths, HostApiClient } from "../src/client.js";
+import { FILE_WORKSPACE_RELEASE } from "../src/file_workspace_release.js";
+
+function workspaceResponse() {
+  return {
+    session_id: "sess_001",
+    workspace: {
+      schema_version: FILE_WORKSPACE_RELEASE.schemaVersion,
+      tool_catalog_digest: FILE_WORKSPACE_RELEASE.toolCatalogDigest,
+      schema_bundle_digest: FILE_WORKSPACE_RELEASE.schemaBundleDigest,
+      session: { session_id: "sess_001" },
+      agent_workspaces: [],
+      workspace_status: [],
+      private_revisions: [],
+      published_revisions: [],
+      reports: [],
+      scientific_deliverables: [],
+      external_jobs: [],
+      external_job_results: [],
+      capability_leases: [],
+    },
+  };
+}
 
 test("buildHostPaths exposes the v3 session workspace surface", () => {
   assert.deepEqual(buildHostPaths("proj_001", "sess_001"), {
@@ -44,6 +66,7 @@ test("v3 stream consumes the generic envelope without an event-type allowlist", 
     assert.deepEqual(Array.from(source.listeners.keys()), ["openzyme.event"]);
     source.listeners.get("openzyme.event")({
       data: JSON.stringify({
+        schema_version: FILE_WORKSPACE_RELEASE.schemaVersion,
         event_id: "evt_future",
         event_type: "future.event.type",
         payload: { value: 1 },
@@ -63,7 +86,7 @@ test("v3 mutations carry a unique idempotency key", async () => {
     return {
       ok: true,
       async json() {
-        return { session_id: "sess_001" };
+        return workspaceResponse();
       },
     };
   };
@@ -88,7 +111,7 @@ test("v3 session reads forward an abort signal", async () => {
     return {
       ok: true,
       async json() {
-        return { session_id: "sess_001" };
+        return workspaceResponse();
       },
     };
   };

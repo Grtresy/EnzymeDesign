@@ -156,7 +156,6 @@ class WorkspaceRevisionExecutionAdmissionService:
             or operation.operation_id != request.operation_id
             or operation.operation_digest != request.operation_digest
             or operation.session_id != request.session_id
-            or operation.hpc_workspace_id != request.executor_hpc_workspace_id
         ):
             raise WorkspaceRevisionExecutionAdmissionError(
                 "controlled operation is not the exact durable job owner"

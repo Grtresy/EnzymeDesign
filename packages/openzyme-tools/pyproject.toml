@@ -1,13 +1,10 @@
 [project]
 name = "openzyme-tools"
 version = "0.1.0"
-description = "HPC catalog, compiler, and parser implementations for OpenZyme"
+description = "Shared non-authoritative tool resources for OpenZyme"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = [
-  "openzyme-runtime",
-  "pydantic>=2.0,<3.0",
-]
+dependencies = []
 
 [project.optional-dependencies]
 dev = [

@@ -31,7 +31,7 @@ from openzyme_core import AgentWorkspaceVolumeFact
 from openzyme_core import RepositoryPrivateNamespaceRetentionService
 from openzyme_core import RevisionPathReferenceService
 from openzyme_core import RepositoryProvisionCredentialBroker
-from openzyme_core import SessionProjectionBuilder
+from openzyme_core import FileWorkspaceProjectionBuilder
 from openzyme_core import SessionRuntimeContext
 from openzyme_core import SessionRuntimeSnapshot
 from openzyme_core import TaskBoardService
@@ -86,6 +86,7 @@ from openzyme_domain import TaskStatus
 from openzyme_domain import TaskEvidenceKind
 from openzyme_domain import TaskEvidenceRef
 from openzyme_domain import SandboxImageCompatibility
+from openzyme_domain import SandboxImageRecord
 from openzyme_domain import SandboxWorkspaceRecord
 from openzyme_domain import SandboxWorkspaceStatus
 
@@ -946,22 +947,29 @@ def test_process_credential_is_ephemeral_redacted_and_not_used_for_ordinary_netw
     )
     baseline = {
         "approvals": repositories.approvals.list_by_session("session_1"),
-        "artifacts": repositories.artifacts.list_by_session("session_1"),
         "controlled_operations": (
             repositories.controlled_operations.list_by_session("session_1")
         ),
         "engines": repositories.invocations.list_by_session("session_1"),
         "inbox": repositories.inbox.list_by_session("session_1"),
+        "published_revisions": (
+            repositories.published_revisions.list_by_session("session_1")
+        ),
         "tasks": repositories.tasks.list_by_session("session_1"),
     }
 
-    ordinary = service.execute(
-        session_id="session_1",
-        agent_id="agent:master",
-        argv=("curl", "https://reachable.example/private-input"),
-    )
-    assert ordinary["credential_issued"] is False
-    assert ordinary["returncode"] == 0
+    for argv in (
+        ("curl", "https://reachable.example/private-input"),
+        ("scp", "private-input", "peer:private-input"),
+        ("rsync", "private-input", "peer:private-input"),
+    ):
+        ordinary = service.execute(
+            session_id="session_1",
+            agent_id="agent:master",
+            argv=argv,
+        )
+        assert ordinary["credential_issued"] is False
+        assert ordinary["returncode"] == 0
     assert provider.issue_count == 0
 
     runner.result = AgentCapsuleProcessResult(
@@ -993,12 +1001,14 @@ def test_process_credential_is_ephemeral_redacted_and_not_used_for_ordinary_netw
     )
     assert baseline == {
         "approvals": repositories.approvals.list_by_session("session_1"),
-        "artifacts": repositories.artifacts.list_by_session("session_1"),
         "controlled_operations": (
             repositories.controlled_operations.list_by_session("session_1")
         ),
         "engines": repositories.invocations.list_by_session("session_1"),
         "inbox": repositories.inbox.list_by_session("session_1"),
+        "published_revisions": (
+            repositories.published_revisions.list_by_session("session_1")
+        ),
         "tasks": repositories.tasks.list_by_session("session_1"),
     }
 
@@ -1081,7 +1091,9 @@ def test_podman_native_process_reuses_one_volume_and_preserves_native_failure(
             argv[3],
             argv[4],
         )
-        assert f"{workspace.volume_id}:/workspace:rw" in argv
+        assert (
+            f"type=volume,src={workspace.volume_id},dst=/workspace,rw" in argv
+        )
         assert workspace.clone_logical_root in argv
         assert "allowlist" not in joined
         assert "/home/" not in joined
@@ -1293,6 +1305,8 @@ def test_dirty_projection_clean_boundary_and_immutable_handoff_are_separate(
         staged=False,
         unstaged=True,
         untracked=True,
+        changed_paths=("notes/dirty.txt",),
+        changed_paths_truncated=False,
         observed_at="2026-08-16T05:02:00+00:00",
     )
     service.record_state_observation(dirty)
@@ -1321,6 +1335,8 @@ def test_dirty_projection_clean_boundary_and_immutable_handoff_are_separate(
         staged=False,
         unstaged=False,
         untracked=False,
+        changed_paths=(),
+        changed_paths_truncated=False,
         observed_at="2026-08-16T05:03:00+00:00",
     )
     service.record_state_observation(clean)
@@ -1332,12 +1348,15 @@ def test_dirty_projection_clean_boundary_and_immutable_handoff_are_separate(
     )
 
     assert proof.verified_checkpoint_id == checkpoint.checkpoint_id
-    projected = SessionProjectionBuilder(repositories).build_session_workspace(
-        "session_1"
-    ).to_dict()["agent_git_workspaces"][0]
+    projected = FileWorkspaceProjectionBuilder(
+        repositories,
+        tool_catalog_digest="sha256:" + "0" * 64,
+    ).build(
+        session_id="session_1",
+        subject_agent_member_id=None,
+    ).to_dict()["workspace_status"][0]
     assert projected["dirty_state"] == "clean"
-    assert projected["checkpoint_lag"] is False
-    assert projected["published_state"] == "private_only"
+    assert projected["head_commit"] == BASE_COMMIT
     assert "private_ref" not in json.dumps(projected)
     assert workspace.internal_git_endpoint not in json.dumps(projected)
     assert workspace.volume_id not in json.dumps(projected)
@@ -1437,6 +1456,8 @@ def _publication_environment(tmp_path):
             staged=False,
             unstaged=False,
             untracked=False,
+            changed_paths=(),
+            changed_paths_truncated=False,
             observed_at="2026-08-16T05:11:00+00:00",
         )
     )
@@ -1478,15 +1499,17 @@ def test_workspace_publication_materializes_once_without_human_approval_or_retry
     assert repositories.durable_events.get(
         f"publication_outbox_{first.revision.publication_id}"
     ) is not None
-    projected = SessionProjectionBuilder(repositories).build_session_workspace(
-        workspace.session_id
+    projected = FileWorkspaceProjectionBuilder(
+        repositories,
+        tool_catalog_digest="sha256:" + "0" * 64,
+    ).build(
+        session_id=workspace.session_id,
+        subject_agent_member_id=workspace.agent_member_id,
     ).to_dict()
     assert projected["published_revisions"][0]["publication_id"] == (
         first.revision.publication_id
     )
-    assert projected["agent_git_workspaces"][0]["published_state"] == (
-        "canonical_publication_exists"
-    )
+    assert projected["agent_workspaces"][0]["workspace_id"] == workspace.workspace_id
     assert service.audit_session_namespace(workspace.session_id)["ok"] is True
     with pytest.raises(sqlite3.IntegrityError, match="immutable"):
         repositories.sessions.connection.execute(
@@ -1643,11 +1666,13 @@ def test_new_publication_can_supersede_without_mutating_old_revision(tmp_path) -
             workspace_generation=workspace.workspace_generation,
             head_commit=second_commit,
             head_tree=second_tree,
-            dirty_state=WorkspaceDirtyState.CLEAN,
-            staged=False,
-            unstaged=False,
-            untracked=False,
-            observed_at="2026-08-16T05:21:00+00:00",
+                dirty_state=WorkspaceDirtyState.CLEAN,
+                staged=False,
+                unstaged=False,
+                untracked=False,
+                changed_paths=(),
+                changed_paths_truncated=False,
+                observed_at="2026-08-16T05:21:00+00:00",
         )
     )
 
@@ -1791,7 +1816,9 @@ def test_report_publish_binds_exact_file_without_publishing_or_finishing_task(
     assert payload["task_evidence_ref"]["kind"] == "report"
     assert route.dispatch_count == 1
     assert repositories.tasks.get(task.task_id).status is TaskStatus.IN_PROGRESS
-    assert repositories.artifacts.list_by_session(workspace.session_id) == []
+    assert repositories.published_revisions.list_by_session(workspace.session_id) == [
+        publication.revision
+    ]
 
 
 def test_two_agent_publication_exposes_only_explicit_fetch_identity(tmp_path) -> None:
@@ -1934,6 +1961,8 @@ def test_published_path_handoff_ignores_later_dirty_producer_workspace(
         staged=True,
         unstaged=True,
         untracked=True,
+        changed_paths=("src/result.txt",),
+        changed_paths_truncated=False,
         observed_at="2026-08-16T05:41:00+00:00",
     )
     repositories.agent_workspace_state_observations.add(dirty)
@@ -2083,6 +2112,8 @@ def test_dirty_or_partial_publication_is_rejected_before_remote_io(tmp_path) -> 
             staged=True,
             unstaged=False,
             untracked=False,
+            changed_paths=("src/result.txt",),
+            changed_paths_truncated=False,
             observed_at="2026-08-16T05:12:00+00:00",
         )
     )
@@ -2274,6 +2305,21 @@ def test_legacy_migration_freezes_sandbox_without_copying_legacy_files(
     tmp_path,
 ) -> None:
     _, repositories, _, _, _ = _environment()
+    repositories.sandbox_images.save(
+        SandboxImageRecord(
+            image_ref="legacy-image:1",
+            image_digest=None,
+            image_family="legacy",
+            image_version="1",
+            sandbox_protocol_version="legacy",
+            manifest_schema_version="legacy-v1",
+            capabilities_declared=(),
+            compatibility=SandboxImageCompatibility.COMPATIBLE,
+            is_default=False,
+            created_at="2026-08-16T00:00:00+00:00",
+            updated_at="2026-08-16T00:00:00+00:00",
+        )
+    )
     repositories.sandbox_workspaces.save(
         SandboxWorkspaceRecord(
             sandbox_workspace_id="legacy_sandbox_member_1",

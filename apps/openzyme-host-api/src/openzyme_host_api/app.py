@@ -36,10 +36,8 @@ from pydantic import Field
 from pydantic import model_validator
 
 from openzyme_runtime import MissingLlmConfigurationError
-from openzyme_runtime import LimiterRegistry
 from openzyme_runtime import RuntimeFoundation
 from openzyme_runtime import RuntimeDrainContract
-from openzyme_runtime import S12_ROUTE_POLICIES
 from openzyme_runtime import get_llm_debug_recorder
 from openzyme_runtime import llm_debug_context
 from openzyme_runtime import safe_public_machine_identifier
@@ -53,12 +51,12 @@ from .background_runtime import V3DurableWorkSupervisor
 from .aox_scientific_contract import (
     AOX_SCIENTIFIC_WORKFLOW_CONTRACT_REGISTRY,
 )
-from .aox_bundle_finalizer import finalize_aox_deliverable_bundle
-from .durable_routes import build_host_hpc_route_adapters
-from .durable_routes import build_host_provider_route_adapters
 from .executor_hpc_workspaces import CommandExecutorHpcCredentialProvider
 from .executor_hpc_workspaces import McpExecutorHpcWorkspaceProvisioner
 from .executor_hpc_workspaces import SubprocessExecutorHpcCredentialCommandExecutor
+from .workspace_revision_execution import (
+    CommandRunnerSchedulerCredentialIssuer,
+)
 from .workspace_revision_execution import (
     RunnerSchedulerCredentialIssuer,
 )
@@ -68,21 +66,26 @@ from .workspace_revision_execution import (
 from .workspace_revision_execution import WorkspaceRevisionExecutionDurableWorker
 from .runtime_commands import HostRuntimeCommandExecutor
 from .repository_service_preflight import preflight_repository_service
-from .sandbox_host_gateway import ExecutionEngineSandboxHostGateway
-from .sandbox_host_gateway import HostSandboxCallContextFactory
 from .tracing import host_request_trace_context
 from .security import HostAuthenticationError
 from .security import HostPrincipal
 from .security import HostSecurityPolicy
 from .v3_service import V3EventStore
 from .v3_service import V3HostApiService
+from .file_workspace_release import FILE_WORKSPACE_HOST_BUILD_DIGEST
+from .file_workspace_control_gateway import FileWorkspaceRepositoryScopes
+from .file_workspace_control_gateway import HostAgentCapsuleControlHandlerFactory
 
 from openzyme_core import CoreRepositories
+from openzyme_core import FILE_WORKSPACE_PUBLIC_MEDIA_TYPE
+from openzyme_core import FileWorkspacePublicContractError
+from openzyme_core import FileWorkspacePublicContractService
 from openzyme_core import ContinuationDeliveryWorker
 from openzyme_core import ControlledOperationExecutionWorker
 from openzyme_core import ControlledOperationRouteAdapter
 from openzyme_core import CommandIdempotencyConflictError
 from openzyme_core import CommandReceiptRecord
+from openzyme_core import canonical_digest
 from openzyme_core import EngineRegistry
 from openzyme_core import AgentCapabilityCredentialProviderUnavailableError
 from openzyme_core import AgentCapabilityError
@@ -104,10 +107,6 @@ from openzyme_core import DurableRepositoryRootManager
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import SessionAccessRecord
 from openzyme_core import RuntimeCommandWorker
-from openzyme_core import SandboxHostBinding
-from openzyme_core import SandboxHostCallContext
-from openzyme_core import SandboxProcessHostAuthority
-from openzyme_core import SessionTurnHostAuthority
 from openzyme_core import ScientificAttemptError
 from openzyme_core import LiveProcessRegistry
 from openzyme_core import MutationWriterTurnFactory
@@ -123,15 +122,8 @@ from openzyme_core import current_mutation_write_authority
 from openzyme_core import project_runtime_command
 from openzyme_core import recover_unattached_continuations
 from openzyme_engines import DeepResearchEngine
-from openzyme_engines import ExecutionEngine
-from openzyme_engines import ExecutionOutcome as V3ExecutionOutcome
-from openzyme_engines import ExecutionStatusSnapshot as V3ExecutionStatusSnapshot
 from openzyme_engines import NativeDeepResearchRunner
-from openzyme_engines import PodmanPipelineSandboxRunner
-from openzyme_engines import ProviderHttpBioDatabaseAdapter
 from openzyme_engines import build_engine_registry
-from openzyme_engines.execution import ExecutionArtifactRef as V3ExecutionArtifactRef
-from openzyme_domain import RunStatus
 from openzyme_domain import ControlledOperation
 from openzyme_domain import ControlledOperationOwnerMode
 from openzyme_domain import ControlledOperationStatus
@@ -142,8 +134,6 @@ from openzyme_domain import WorkspaceRevisionCleanObservation
 from openzyme_domain import WorkspaceRevisionExecutionRequest
 from openzyme_domain.control_plane import utc_now_iso
 
-from .host_mutation_observation import host_command_request_digest
-from .host_mutation_observation import observe_host_mutation_operation
 
 
 class CreateV3SessionRequest(BaseModel):
@@ -255,13 +245,6 @@ class GrantScientificAttemptAuthorizationRequest(BaseModel):
     policy_digest: str | None = Field(default=None, max_length=200)
 
 
-class InjectAoxReferenceFaultRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    attempt_id: str = Field(min_length=1, max_length=300)
-    artifact_id: str = Field(min_length=1, max_length=300)
-
-
 class ApiErrorDetail(BaseModel):
     code: str
     message: str
@@ -279,7 +262,7 @@ class V3EventDto(BaseModel):
     event_id: str
     session_id: str
     event_type: str
-    schema_version: Literal["openzyme.v3.event.v1"]
+    schema_version: Literal["file_workspace_public@1"]
     visibility: Literal["public"]
     created_at: str
     payload: dict[str, Any]
@@ -441,219 +424,6 @@ def _configured_component_status(
 
 
 @dataclass(slots=True)
-class V3ExecutionRunnerAdapter:
-    execution_adapter: Any
-    limiter_registry: LimiterRegistry | None = None
-    _outcomes_by_run_id: dict[str, V3ExecutionOutcome] = field(default_factory=dict)
-
-    def submit_execution(
-        self, session_id: str, payload: dict[str, Any]
-    ) -> V3ExecutionOutcome:
-        outcome = self._convert_outcome(
-            self._run_limited(
-                lambda: self.execution_adapter.submit_execution(session_id, payload)
-            )
-        )
-        self._outcomes_by_run_id[outcome.run_id] = outcome
-        return outcome
-
-    def reserve_execution(self, identity: dict[str, Any]) -> dict[str, str]:
-        callback = getattr(self.execution_adapter, "reserve_execution", None)
-        if not callable(callback):
-            raise RuntimeError(
-                "execution adapter does not support durable run reservation"
-            )
-        result = self._run_limited(lambda: callback(dict(identity)))
-        if not isinstance(result, dict):
-            raise ValueError("execution reservation returned a non-object result")
-        return {str(key): str(value) for key, value in result.items()}
-
-    def submit_reserved_execution(
-        self,
-        session_id: str,
-        payload: dict[str, Any],
-        *,
-        run_id: str,
-    ) -> V3ExecutionOutcome:
-        callback = getattr(self.execution_adapter, "submit_reserved_execution", None)
-        if not callable(callback):
-            raise RuntimeError(
-                "execution adapter does not support durable reserved dispatch"
-            )
-        outcome = self._convert_outcome(
-            self._run_limited(
-                lambda: callback(
-                    session_id,
-                    payload,
-                    run_id=run_id,
-                )
-            )
-        )
-        if outcome.run_id != run_id:
-            raise ValueError("reserved execution outcome identity drift")
-        self._outcomes_by_run_id[outcome.run_id] = outcome
-        return outcome
-
-    def inspect_reserved_execution(self, *, run_id: str) -> Any:
-        callback = getattr(self.execution_adapter, "inspect_reserved_execution", None)
-        if not callable(callback):
-            raise RuntimeError(
-                "execution adapter does not support durable run inspection"
-            )
-        observation = self._run_limited(lambda: callback(run_id=run_id))
-        if str(getattr(observation, "run_id", "")) != run_id:
-            raise ValueError("reserved execution observation identity drift")
-        return observation
-
-    def recover_reserved_execution_outcome(
-        self,
-        *,
-        run_id: str,
-    ) -> V3ExecutionOutcome:
-        callback = getattr(
-            self.execution_adapter,
-            "recover_reserved_execution_outcome",
-            None,
-        )
-        if not callable(callback):
-            raise RuntimeError(
-                "execution adapter does not support durable outcome recovery"
-            )
-        outcome = self._convert_outcome(
-            self._run_limited(lambda: callback(run_id=run_id))
-        )
-        if outcome.run_id != run_id:
-            raise ValueError("recovered execution outcome identity drift")
-        self._outcomes_by_run_id[outcome.run_id] = outcome
-        return outcome
-
-    def get_execution_status(
-        self,
-        *,
-        run_id: str,
-    ) -> V3ExecutionStatusSnapshot:
-        if hasattr(self.execution_adapter, "get_execution_status"):
-            snapshot = self._run_limited(
-                lambda: self.execution_adapter.get_execution_status(
-                    run_id=run_id,
-                )
-            )
-            return V3ExecutionStatusSnapshot(
-                run_id=str(snapshot.run_id),
-                status=snapshot.status,
-                raw_result=dict(snapshot.raw_result),
-                exit_code=snapshot.exit_code,
-            )
-        outcome = self._outcomes_by_run_id.get(run_id)
-        if outcome is None:
-            return V3ExecutionStatusSnapshot(
-                run_id=run_id,
-                status=RunStatus.FAILED,
-                raw_result={
-                    "error": "execution adapter does not expose status polling"
-                },
-            )
-        return V3ExecutionStatusSnapshot(
-            run_id=outcome.run_id,
-            status=outcome.status,
-            raw_result=outcome.raw_result,
-            exit_code=outcome.exit_code,
-        )
-
-    def fetch_execution_artifacts(
-        self,
-        *,
-        run_id: str,
-    ) -> V3ExecutionOutcome:
-        if hasattr(self.execution_adapter, "fetch_execution_artifacts"):
-            outcome = self._convert_outcome(
-                self._run_limited(
-                    lambda: self.execution_adapter.fetch_execution_artifacts(
-                        run_id=run_id,
-                    )
-                )
-            )
-            self._outcomes_by_run_id[outcome.run_id] = outcome
-            return outcome
-        outcome = self._outcomes_by_run_id.get(run_id)
-        if outcome is None:
-            return V3ExecutionOutcome(
-                run_id=run_id,
-                status=RunStatus.FAILED,
-                execution_mode="unknown",
-                remote_run_dir=f"opaque://{run_id}",
-                raw_result={
-                    "error": "execution adapter does not expose artifact fetch"
-                },
-                artifacts=(),
-            )
-        return outcome
-
-    def cancel_execution(
-        self,
-        *,
-        run_id: str,
-    ) -> V3ExecutionOutcome:
-        if hasattr(self.execution_adapter, "cancel_execution"):
-            return self._convert_outcome(
-                self._run_limited(
-                    lambda: self.execution_adapter.cancel_execution(
-                        run_id=run_id,
-                    )
-                )
-            )
-        return V3ExecutionOutcome(
-            run_id=run_id,
-            status=RunStatus.FAILED,
-            execution_mode="unknown",
-            remote_run_dir=f"opaque://{run_id}",
-            raw_result={
-                "status": "unsupported",
-                "error_code": "cancel_execution_unsupported",
-                "error": "execution adapter does not expose cancel",
-            },
-            artifacts=(),
-        )
-
-    def _convert_outcome(self, outcome: Any) -> V3ExecutionOutcome:
-        artifacts = tuple(
-            V3ExecutionArtifactRef(
-                storage_uri=str(artifact.storage_uri),
-                relative_path=str(artifact.relative_path),
-                kind=artifact.kind,
-            )
-            for artifact in getattr(outcome, "artifacts", ())
-        )
-        raw_result = dict(outcome.raw_result)
-        # Runner artifact values are Host-local catalog/storage references.
-        # They travel through the typed artifact channel below and must not be
-        # duplicated into the agent-facing raw_result document.
-        for private_key in (
-            "artifacts",
-            "job_id",
-            "remote_run_dir",
-            "stdout",
-            "stderr",
-            "logs",
-        ):
-            raw_result.pop(private_key, None)
-        return V3ExecutionOutcome(
-            run_id=str(outcome.run_id),
-            status=outcome.status,
-            execution_mode=str(outcome.execution_mode),
-            remote_run_dir=f"opaque://{outcome.run_id}",
-            raw_result=raw_result,
-            artifacts=artifacts,
-            exit_code=getattr(outcome, "exit_code", None),
-        )
-
-    def _run_limited(self, operation: Callable[[], Any]) -> Any:
-        if self.limiter_registry is None:
-            return operation()
-        return self.limiter_registry.sync_limiter("execution_provider").run(operation)
-
-
-@dataclass(slots=True)
 class HostApiDependencies:
     foundation: RuntimeFoundation
     security_policy: HostSecurityPolicy | None = None
@@ -675,11 +445,8 @@ class HostApiDependencies:
     v3_durable_route_adapters: dict[str, ControlledOperationRouteAdapter] = field(
         default_factory=dict
     )
-    v3_pipeline_sandbox_runner: Any | None = None
     v3_bio_adapter: Any | None = None
     v3_allow_bio_fixture_adapter: bool = False
-    v3_sandbox_workspace_root: Path | None = None
-    v3_artifact_blob_root: Path | None = None
     v3_repository_root_boundary: RepositoryRootBoundary | None = None
     v3_allow_unpinned_repository_sessions_for_tests: bool = False
     v3_agent_workspace_readiness_providers: Mapping[
@@ -703,15 +470,29 @@ class HostApiDependencies:
 
     def __post_init__(self) -> None:
         if self.v3_workspace_revision_runner_adapter is None:
-            runner_server = getattr(self.foundation.execution_adapter, "server", None)
-            if runner_server is not None:
-                self.v3_workspace_revision_runner_adapter = (
-                    WorkspaceRevisionRunnerAdapter(runner_server)
-                )
+            self.v3_workspace_revision_runner_adapter = self.foundation.workspace_runner
         if self.v3_scheduler_credential_issuer is None:
-            self.v3_scheduler_credential_issuer = (
-                UnavailableRunnerSchedulerCredentialIssuer()
-            )
+            settings = getattr(self.foundation, "settings", None)
+            execution_settings = None if settings is None else settings.execution
+            if (
+                execution_settings is not None
+                and execution_settings.hpc_scheduler_credential_issue_command
+            ):
+                self.v3_scheduler_credential_issuer = (
+                    CommandRunnerSchedulerCredentialIssuer(
+                        issue_command=(
+                            execution_settings.hpc_scheduler_credential_issue_command
+                        ),
+                        executor=SubprocessExecutorHpcCredentialCommandExecutor(),
+                        timeout_seconds=(
+                            execution_settings.hpc_scheduler_credential_timeout_seconds
+                        ),
+                    )
+                )
+            else:
+                self.v3_scheduler_credential_issuer = (
+                    UnavailableRunnerSchedulerCredentialIssuer()
+                )
         if self.security_policy is None:
             settings = getattr(self.foundation, "settings", None)
             self.security_policy = HostSecurityPolicy.from_settings(
@@ -853,6 +634,24 @@ class HostApiDependencies:
                 agent_capsule_process_runner,
             )
         )
+        capsule_control_factory = HostAgentCapsuleControlHandlerFactory(
+            scopes=FileWorkspaceRepositoryScopes(
+                provider=(
+                    None
+                    if self.v3_legacy_repositories_for_tests is not None
+                    else self._ensure_v3_repository_provider()
+                ),
+                legacy_repositories=self.v3_legacy_repositories_for_tests,
+            ),
+            roots=(
+                None
+                if repository_binding_service is None
+                else repository_binding_service.roots
+            ),
+            runner=self.v3_workspace_revision_runner_adapter,
+            scheduler_credential_issuer=self.v3_scheduler_credential_issuer,
+            durable_work_notifier=self.v3_durable_work_notifier,
+        )
         return V3HostApiService(
             repositories=repositories,
             event_store=V3EventStore(repositories),
@@ -860,9 +659,6 @@ class HostApiDependencies:
             model_factory=self.foundation.model_factory,
             bio_research_service=self.foundation.bio_research_service,
             research_adapter=self.foundation.research_adapter,
-            sandbox_workspace_root=self.v3_sandbox_workspace_root,
-            artifact_blob_root=self.v3_artifact_blob_root,
-            artifact_bundle_finalizer=finalize_aox_deliverable_bundle,
             signal_notifier=self.v3_signal_notifier,
             durable_work_notifier=self.v3_durable_work_notifier,
             reliability_shadow_observer=(self.foundation.reliability_shadow_observer),
@@ -878,7 +674,6 @@ class HostApiDependencies:
             runtime_repository_scope_factory=self.v3_repository_scope,
             engine_registry_factory=self.build_v3_engine_registry,
             mutation_writer_scope_factory=self.v3_mutation_writer_scope,
-            sandbox_host_binding_factory=self.build_v3_sandbox_host_binding,
             scheduler_limits={}
             if self.foundation.settings is None
             else dict(self.foundation.settings.limits.provider_limits),
@@ -896,6 +691,7 @@ class HostApiDependencies:
                 self.v3_delegation_readiness_provider_id
             ),
             agent_capsule_process_runner=agent_capsule_process_runner,
+            agent_capsule_control_handler_factory=capsule_control_factory,
             agent_process_credential_router=agent_process_credential_router,
             executor_hpc_workspace_service=executor_hpc_workspace_service,
             workspace_checkpoint_git_reader=(
@@ -994,11 +790,8 @@ class HostApiDependencies:
     ) -> ExecutorHpcWorkspaceService | None:
         provisioner = self.v3_executor_hpc_workspace_provisioner
         if provisioner is None:
-            runner_server = getattr(
-                self.foundation.execution_adapter,
-                "server",
-                None,
-            )
+            runner = self.foundation.workspace_runner
+            runner_server = None if runner is None else runner.server
             if runner_server is not None:
                 provisioner = McpExecutorHpcWorkspaceProvisioner(
                     repositories=repositories,
@@ -1088,44 +881,7 @@ class HostApiDependencies:
     def build_v3_durable_route_adapters(
         self,
     ) -> dict[str, ControlledOperationRouteAdapter]:
-        settings = self.foundation.settings
-        reliability = None if settings is None else settings.reliability
-        owner_policy = (
-            "legacy_only_v1"
-            if reliability is None
-            else reliability.controlled_operation_owner_policy.value
-        )
-        admission_route_ids: tuple[str, ...] = ()
-        if reliability is not None:
-            if owner_policy == "durable_only_v1":
-                admission_route_ids = tuple(S12_ROUTE_POLICIES)
-            else:
-                admission_route_ids = tuple(
-                    reliability.durable_execution_route_allowlist
-                )
-        durable_route_ids = tuple(
-            sorted(set(admission_route_ids) | set(self.active_v3_durable_route_ids()))
-        )
-        adapters = dict(self.v3_durable_route_adapters)
-        provider_adapters = build_host_provider_route_adapters(
-            route_policy_ids=durable_route_ids,
-            repository_scope_factory=self.v3_repository_scope,
-            engine_registry_factory=lambda repositories: self.build_v3_engine_registry(
-                repositories
-            ),
-        )
-        for route_policy_id, adapter in provider_adapters.items():
-            adapters.setdefault(route_policy_id, adapter)
-        hpc_adapters = build_host_hpc_route_adapters(
-            route_policy_ids=durable_route_ids,
-            repository_scope_factory=self.v3_repository_scope,
-            engine_registry_factory=lambda repositories: self.build_v3_engine_registry(
-                repositories
-            ),
-        )
-        for route_policy_id, adapter in hpc_adapters.items():
-            adapters.setdefault(route_policy_id, adapter)
-        return adapters
+        return dict(self.v3_durable_route_adapters)
 
     def active_v3_durable_route_ids(self) -> tuple[str, ...]:
         """Return frozen routes needed to drain already-admitted durable rows."""
@@ -1151,35 +907,6 @@ class HostApiDependencies:
         repositories: CoreRepositories,
         runtime_lease: SessionRuntimeLease | None = None,
     ) -> EngineRegistry:
-        host_context_factory = HostSandboxCallContextFactory(
-            repository_scope_factory=lambda: self.v3_repository_scope(
-                mode="connection"
-            ),
-            mutation_writer_scope_factory=self.v3_mutation_writer_scope,
-            runtime_lease=runtime_lease,
-        )
-
-        @contextmanager
-        def pipeline_host_call_context(
-            *,
-            session_id: str,
-            invocation_id: str,
-        ) -> Iterator[SandboxHostCallContext]:
-            owner = (
-                SessionTurnHostAuthority.from_lease(runtime_lease)
-                if runtime_lease is not None
-                else SandboxProcessHostAuthority(
-                    session_id=session_id,
-                    sandbox_workspace_id=f"pipeline_workspace:{invocation_id}",
-                    sandbox_run_id=f"pipeline_run:{invocation_id}",
-                    process_epoch=1,
-                )
-            )
-            if owner.session_id != session_id:
-                raise RuntimeError("pipeline Host context crossed its session")
-            with host_context_factory(owner) as context:
-                yield context
-
         return build_engine_registry(
             DeepResearchEngine(
                 repositories,
@@ -1192,44 +919,7 @@ class HostApiDependencies:
                     settings=self.foundation.settings,
                 ),
             ),
-            ExecutionEngine(
-                repositories,
-                V3ExecutionRunnerAdapter(
-                    self.foundation.execution_adapter,
-                    self.foundation.limiter_registry,
-                ),
-                bio_adapter=self.v3_bio_adapter
-                or ProviderHttpBioDatabaseAdapter.from_env(),
-                allow_bio_fixture_adapter=self.v3_allow_bio_fixture_adapter,
-                sandbox_runner=self.v3_pipeline_sandbox_runner
-                or PodmanPipelineSandboxRunner(),
-                sandbox_workspace_root=self.v3_sandbox_workspace_root,
-                artifact_blob_root=self.v3_artifact_blob_root,
-                sandbox_host_call_context_factory=pipeline_host_call_context,
-                sandbox_process_registry=self.v3_live_process_registry,
-                sandbox_process_signal_notifier=self.v3_signal_notifier,
-            ),
         )
-
-    def build_v3_sandbox_host_binding(
-        self,
-        engine_registry: EngineRegistry,
-        runtime_lease: SessionRuntimeLease | None,
-    ) -> SandboxHostBinding:
-        execution_engine = engine_registry.require("execution")
-        if not isinstance(execution_engine, ExecutionEngine):
-            raise TypeError("execution engine does not support sandbox Host calls")
-        return SandboxHostBinding(
-            gateway=ExecutionEngineSandboxHostGateway(execution_engine),
-            context_factory=HostSandboxCallContextFactory(
-                repository_scope_factory=lambda: self.v3_repository_scope(
-                    mode="connection"
-                ),
-                mutation_writer_scope_factory=self.v3_mutation_writer_scope,
-                runtime_lease=runtime_lease,
-            ),
-        )
-
 
 def _api_error_payload(
     *,
@@ -1337,6 +1027,8 @@ def _as_http_error(exc: Exception) -> HTTPException:
         return _http_exception(503, code=exc.error_code, message=str(exc))
     if isinstance(exc, AgentCapabilityError):
         return _http_exception(409, code=exc.error_code, message=str(exc))
+    if isinstance(exc, FileWorkspacePublicContractError):
+        return _http_exception(409, code=exc.code, message=str(exc))
     if isinstance(exc, ValueError):
         return _http_exception(400, code="invalid_request", message=str(exc))
     if isinstance(exc, MissingLlmConfigurationError):
@@ -1473,6 +1165,18 @@ def _host_command_write_scope(
         yield
 
 
+def _host_command_request_digest(
+    *, command_type: str, scope_ref: str, request_payload: object
+) -> str:
+    return canonical_digest(
+        {
+            "command_type": command_type,
+            "scope_ref": scope_ref,
+            "request": request_payload,
+        }
+    )
+
+
 def _execute_idempotent_command_scoped(
     service: V3HostApiService,
     *,
@@ -1488,7 +1192,7 @@ def _execute_idempotent_command_scoped(
     normalized_key = idempotency_key.strip()
     if not normalized_key or len(normalized_key) > 256:
         raise ValueError("Idempotency-Key must contain 1 to 256 characters")
-    request_digest = host_command_request_digest(
+    request_digest = _host_command_request_digest(
         command_type=command_type,
         scope_ref=scope_ref,
         request_payload=request_payload,
@@ -1544,9 +1248,6 @@ def _controlled_operation_from_dict(value: dict[str, Any]) -> ControlledOperatio
     data = dict(value)
     data["status"] = ControlledOperationStatus(data["status"])
     data["owner_mode"] = ControlledOperationOwnerMode(data["owner_mode"])
-    data["input_artifact_digests"] = tuple(data["input_artifact_digests"])
-    data["input_artifact_ids"] = tuple(data["input_artifact_ids"])
-    data["stage_refs"] = tuple(dict(item) for item in data["stage_refs"])
     return ControlledOperation(**data)
 
 
@@ -1576,6 +1277,20 @@ def _require_session_access(
             404, code="session_not_found", message="session does not exist"
         )
     if principal.has_role("admin"):
+        return
+    if principal.agent_member_id is not None:
+        member = next(
+            (
+                item
+                for item in service.repositories.agents.list_by_session(session_id)
+                if item.member_id == principal.agent_member_id
+            ),
+            None,
+        )
+        if member is None:
+            raise _http_exception(
+                404, code="session_not_found", message="session does not exist"
+            )
         return
     access = service.repositories.session_access.get(
         session_id,
@@ -1752,6 +1467,7 @@ def create_app(
             path = request.url.path
             is_v3 = path == "/v3" or path.startswith("/v3/")
             is_debug = path == "/debug" or path.startswith("/debug/")
+            active_release = None
             if is_debug and not security.debug_enabled:
                 return JSONResponse(
                     status_code=404,
@@ -1774,6 +1490,27 @@ def create_app(
                         ),
                         headers={"WWW-Authenticate": "Bearer"},
                     )
+                if principal.agent_member_id is not None:
+                    path_parts = path.strip("/").split("/")
+                    owner_workspace_read = (
+                        request.method == "GET"
+                        and len(path_parts) == 4
+                        and path_parts[0] == "v3"
+                        and path_parts[1] == "sessions"
+                        and bool(path_parts[2])
+                        and path_parts[3] == "workspace"
+                    )
+                    if not owner_workspace_read:
+                        return JSONResponse(
+                            status_code=403,
+                            content=_api_error_payload(
+                                code="agent_principal_scope_forbidden",
+                                message=(
+                                    "agent principals may read only their exact "
+                                    "owner-scoped workspace projection"
+                                ),
+                            ),
+                        )
                 if (
                     is_debug
                     and security.shared
@@ -1800,11 +1537,110 @@ def create_app(
                             hint="Retry with a stable Idempotency-Key header for this command.",
                         ),
                     )
+                if is_v3:
+                    is_event_stream = path.endswith("/events")
+                    supplied_contract = (
+                        request.query_params.get("workspace_contract")
+                        or request.headers.get("openzyme-workspace-contract")
+                        if is_event_stream
+                        else request.headers.get("openzyme-workspace-contract")
+                    )
+                    supplied_catalog = (
+                        request.query_params.get("tool_catalog_digest")
+                        or request.headers.get("openzyme-tool-catalog-digest")
+                        if is_event_stream
+                        else request.headers.get("openzyme-tool-catalog-digest")
+                    )
+                    supplied_schema_bundle = (
+                        request.query_params.get("schema_bundle_digest")
+                        or request.headers.get("openzyme-schema-bundle-digest")
+                        if is_event_stream
+                        else request.headers.get("openzyme-schema-bundle-digest")
+                    )
+                    supplied_client_build = (
+                        request.query_params.get("client_build_digest")
+                        or request.headers.get("openzyme-client-build-digest")
+                        if is_event_stream
+                        else request.headers.get("openzyme-client-build-digest")
+                    )
+                    accept = request.headers.get("accept", "")
+                    if (
+                        not is_event_stream
+                        and FILE_WORKSPACE_PUBLIC_MEDIA_TYPE not in accept
+                    ):
+                        return JSONResponse(
+                            status_code=409,
+                            content=_api_error_payload(
+                                code="stale_file_workspace_contract",
+                                message="request media type is not the active file-workspace contract",
+                                hint=(
+                                    "Upgrade the client; the Host will not translate "
+                                    "or replay stale requests."
+                                ),
+                                details={"retryable": False},
+                            ),
+                        )
+                    try:
+                        with dependencies.v3_repository_scope(mode="read") as repositories:
+                            public_contract = FileWorkspacePublicContractService(
+                                repositories
+                            )
+                            active_release = public_contract.require_request_release(
+                                contract_id=supplied_contract,
+                                tool_catalog_digest=supplied_catalog,
+                                schema_bundle_digest=supplied_schema_bundle,
+                                client_build_digest=supplied_client_build,
+                                executor=principal.agent_member_id is not None,
+                            )
+                            if (
+                                active_release.host_build_digest
+                                != FILE_WORKSPACE_HOST_BUILD_DIGEST
+                            ):
+                                raise FileWorkspacePublicContractError(
+                                    "file_workspace_host_build_mismatch",
+                                    "active epoch does not match this Host build",
+                                )
+                            path_parts = path.split("/")
+                            if (
+                                len(path_parts) >= 4
+                                and path_parts[1:3] == ["v3", "sessions"]
+                                and path_parts[3]
+                                and repositories.sessions.get(path_parts[3])
+                                is not None
+                            ):
+                                public_contract.require_current_session(path_parts[3])
+                    except FileWorkspacePublicContractError as exc:
+                        inactive = exc.code == "file_workspace_public_epoch_inactive"
+                        return JSONResponse(
+                            status_code=503 if inactive else 409,
+                            content=_api_error_payload(
+                                code=exc.code,
+                                message=str(exc),
+                                hint=(
+                                    "Activate one exact file-workspace release epoch."
+                                    if inactive
+                                    else "Use the exact active release and a current session."
+                                ),
+                                details={"retryable": False},
+                            ),
+                        )
                 request.state.openzyme_principal = principal
             response = await call_next(request)
             response.headers["X-OpenZyme-Deployment-Profile"] = (
                 security.deployment_profile
             )
+            if is_v3 and active_release is not None:
+                response.headers["OpenZyme-Workspace-Contract"] = (
+                    active_release.contract_id
+                )
+                response.headers["OpenZyme-Tool-Catalog-Digest"] = (
+                    active_release.executor_tool_catalog_digest
+                    if principal.agent_member_id is not None
+                    else active_release.tool_catalog_digest
+                )
+                response.headers["OpenZyme-Schema-Bundle-Digest"] = (
+                    active_release.schema_bundle_digest
+                )
             return response
 
     @app.get(
@@ -1820,9 +1656,8 @@ def create_app(
             ready_type_names=frozenset({"OpenAICompatibleChatModelFactory"}),
         )
         execution_status = _configured_component_status(
-            foundation.execution_adapter,
-            ready_type_names=frozenset({"HpcRunnerExecutionAdapter"}),
-            unavailable_type_names=frozenset({"UnavailableExecutionAdapter"}),
+            foundation.workspace_runner,
+            ready_type_names=frozenset({"WorkspaceRevisionRunnerAdapter"}),
         )
         research_status = _configured_component_status(
             foundation.research_adapter,
@@ -1841,21 +1676,8 @@ def create_app(
         else:
             worker_status = "disabled"
 
-        sandbox_runner = (
-            dependencies.v3_pipeline_sandbox_runner or PodmanPipelineSandboxRunner()
-        )
-        try:
-            sandbox_preflight = sandbox_runner.preflight()
-        except Exception:
-            sandbox_preflight = None
-        sandbox_identity = dict(
-            getattr(sandbox_preflight, "runtime_identity", None) or {}
-        )
-        sandbox_status = (
-            "ready"
-            if sandbox_preflight is not None and bool(sandbox_preflight.ok)
-            else "unavailable"
-        )
+        capsule_runner = dependencies.build_agent_capsule_process_runner()
+        capsule_status = "ready" if capsule_runner is not None else "unavailable"
         repository_bindings = tuple(
             getattr(request.app.state, "repository_bindings", ())
         )
@@ -1892,12 +1714,13 @@ def create_app(
             "bio_research": RuntimeComponentHealth(
                 status=bio_research_status,
             ),
-            "sandbox": RuntimeComponentHealth(
-                status=sandbox_status,
-                details={key: sandbox_identity[key] for key in (
-                    "configured_image_ref", "immutable_image_ref", "image_digest",
-                    "pipeline_sdk_digest", "runtime_identity_digest", "sandbox_protocol_version",
-                ) if key in sandbox_identity},
+            "agent_capsule": RuntimeComponentHealth(
+                status=capsule_status,
+                details={
+                    "configured": capsule_runner is not None,
+                    "control_contract": "file_workspace_sandbox@1",
+                    "workspace_mount": "/workspace",
+                },
             ),
         }
         overall_status = (
@@ -2147,58 +1970,6 @@ def create_app(
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
-    @app.get(
-        "/v3/mutation-operations/observe",
-        response_model=V3HostMutationObservationResponse,
-        responses={404: {"model": ApiErrorResponse}},
-    )
-    def observe_v3_host_mutation_operation(
-        request: Request,
-        session_id: str,
-        command_type: str,
-        scope_ref: str,
-        idempotency_key: str,
-        request_digest: str,
-        attempt_id: str | None = None,
-        artifact_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Observe an existing durable mutation owner without replaying it."""
-
-        try:
-            principal = _request_principal(request)
-            if security.shared and not principal.has_role("operator", "admin"):
-                raise HTTPException(
-                    status_code=403,
-                    detail="operator role is required",
-                )
-            with dependencies.v3_service_scope(mode="read") as service:
-                if service.repositories.sessions.get(session_id) is not None:
-                    _require_session_access(
-                        service,
-                        principal=principal,
-                        security=security,
-                        session_id=session_id,
-                    )
-                elif security.shared:
-                    raise _http_exception(
-                        404,
-                        code="session_not_found",
-                        message="session does not exist",
-                    )
-                return observe_host_mutation_operation(
-                    service,
-                    principal_id=principal.principal_id,
-                    session_id=session_id,
-                    command_type=command_type,
-                    scope_ref=scope_ref,
-                    idempotency_key=idempotency_key,
-                    expected_request_digest=request_digest,
-                    attempt_id=attempt_id,
-                    artifact_id=artifact_id,
-                )
-        except Exception as exc:  # pragma: no cover - normalized below
-            raise _as_http_error(exc) from exc
-
     @app.get("/v3/sessions/{session_id}/workspace")
     def get_v3_workspace(session_id: str, request: Request) -> dict[str, Any]:
         try:
@@ -2210,7 +1981,34 @@ def create_app(
                     security=security,
                     session_id=session_id,
                 )
-                return service.workspace(session_id)
+                return service.file_workspace_candidate(
+                    session_id,
+                    subject_agent_member_id=principal.agent_member_id,
+                )
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
+    @app.get("/v3/sessions/{session_id}/workspace/changed-paths")
+    def get_v3_workspace_changed_paths(
+        session_id: str,
+        workspace_id: str,
+        continuation: str,
+        request: Request,
+    ) -> dict[str, object]:
+        try:
+            principal = _request_principal(request)
+            with dependencies.v3_service_scope(mode="read") as service:
+                _require_session_access(
+                    service,
+                    principal=principal,
+                    security=security,
+                    session_id=session_id,
+                )
+                return service.workspace_changed_paths_page(
+                    session_id=session_id,
+                    workspace_id=workspace_id,
+                    continuation=continuation,
+                )
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
@@ -2360,42 +2158,6 @@ def create_app(
                 "execution": execution.to_dict(),
                 "pending_human_approval_created": False,
             }
-        except Exception as exc:  # pragma: no cover - normalized below
-            raise _as_http_error(exc) from exc
-
-    @app.post("/v3/sessions/{session_id}/aox-fault-injections/reference-byte-flip")
-    def inject_v3_aox_reference_fault(
-        session_id: str,
-        payload: InjectAoxReferenceFaultRequest,
-        request: Request,
-        idempotency_key: str = Header(alias="Idempotency-Key"),
-    ) -> dict[str, Any]:
-        """Consume the exact authority-bound AOX_ref21 byte-flip capability."""
-
-        try:
-            principal = _request_principal(request)
-            if security.shared and not principal.has_role("operator", "admin"):
-                raise HTTPException(
-                    status_code=403,
-                    detail="operator role is required",
-                )
-            # The file mutation crosses a durable claim/receipt boundary.  A
-            # connection scope lets each repository save commit independently,
-            # so a post-claim file or receipt failure cannot roll the claim back.
-            with dependencies.v3_service_scope(mode="connection") as service:
-                _require_session_access(
-                    service,
-                    principal=principal,
-                    security=security,
-                    session_id=session_id,
-                )
-                return service.inject_aox_reference_fault(
-                    session_id=session_id,
-                    attempt_id=payload.attempt_id,
-                    artifact_id=payload.artifact_id,
-                    actor_ref=principal.principal_id,
-                    idempotency_key=idempotency_key,
-                )
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 

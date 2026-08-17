@@ -6,8 +6,14 @@ from datetime import datetime
 from datetime import timedelta
 import hashlib
 import json
+import os
+from pathlib import Path
 import re
-from typing import Protocol
+import shutil
+import socket
+import tempfile
+import threading
+from typing import Protocol, runtime_checkable
 from uuid import uuid4
 
 from openzyme_domain import GENERAL_AGENT_CAPABILITIES
@@ -28,6 +34,7 @@ from .agent_capability_service import ActiveAgentCapabilityLeaseValidator
 from .agent_capability_service import AgentCapabilityAdmissionRequest
 from .agent_capability_service import AgentCapabilityError
 from .agent_capsule_image import CapsuleCommandExecutor
+from .sandbox_host import AgentCapsuleHostAuthority
 from .harness import SessionRuntimeContext
 from .harness import ToolInvocation
 from .harness import ToolRegistry
@@ -49,20 +56,38 @@ NATIVE_PROCESS_DEFAULT_TIMEOUT_SECONDS = 120
 NATIVE_PROCESS_MAX_TIMEOUT_SECONDS = 3_600
 NATIVE_PROCESS_OUTPUT_LIMIT_BYTES = 256 * 1024
 _SAFE_NETWORK_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
+_CONTROL_FRAME_MAX_BYTES = 4 * 1024 * 1024
+
+
+def _unique_control_json_object(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key {key!r}")
+        result[key] = value
+    return result
+
+
+def _reject_control_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant {value!r} is forbidden")
 _WORKSPACE_STATUS_SCRIPT = r"""
 set -eu
 head_commit=$(git rev-parse --verify HEAD)
 head_tree=$(git rev-parse --verify 'HEAD^{tree}')
 printf 'OPENZYME_HEAD=%s\nOPENZYME_TREE=%s\n' "$head_commit" "$head_tree"
 git status --porcelain=v1 --untracked-files=normal | awk '
-BEGIN { staged=0; unstaged=0; untracked=0 }
-substr($0,1,2)=="??" { untracked=1; next }
+BEGIN { staged=0; unstaged=0; untracked=0; count=0 }
+substr($0,1,2)=="??" { untracked=1 }
 substr($0,1,1)!=" " { staged=1 }
 substr($0,2,1)!=" " { unstaged=1 }
+{ if (count < 2000) printf "OPENZYME_CHANGE=%s\n", substr($0,4); count++ }
 END {
   printf "OPENZYME_STAGED=%d\n", staged
   printf "OPENZYME_UNSTAGED=%d\n", unstaged
   printf "OPENZYME_UNTRACKED=%d\n", untracked
+  printf "OPENZYME_CHANGE_TRUNCATED=%d\n", count > 2000
 }
 '
 """.strip()
@@ -359,6 +384,31 @@ class AgentCapsuleProcessRunner(Protocol):
     ) -> AgentCapsuleProcessResult: ...
 
 
+class AgentCapsuleControlHandler(Protocol):
+    def dispatch(self, method: str, params: dict[str, object]) -> dict[str, object]: ...
+
+
+class AgentCapsuleControlHandlerFactory(Protocol):
+    def create(
+        self,
+        *,
+        authority: AgentCapsuleHostAuthority,
+    ) -> AgentCapsuleControlHandler: ...
+
+
+@runtime_checkable
+class AgentCapsuleControlledProcessRunner(Protocol):
+    def run_with_control(
+        self,
+        *,
+        workspace: AgentGitWorkspace,
+        argv: tuple[str, ...],
+        credential_environment: tuple[tuple[str, str], ...],
+        timeout_seconds: int,
+        control_handler: AgentCapsuleControlHandler,
+    ) -> AgentCapsuleProcessResult: ...
+
+
 @dataclass(slots=True)
 class PodmanAgentCapsuleProcessRunner:
     executor: CapsuleCommandExecutor
@@ -377,6 +427,40 @@ class PodmanAgentCapsuleProcessRunner:
         credential_environment: tuple[tuple[str, str], ...],
         timeout_seconds: int,
     ) -> AgentCapsuleProcessResult:
+        return self._run(
+            workspace=workspace,
+            argv=argv,
+            credential_environment=credential_environment,
+            timeout_seconds=timeout_seconds,
+            control_handler=None,
+        )
+
+    def run_with_control(
+        self,
+        *,
+        workspace: AgentGitWorkspace,
+        argv: tuple[str, ...],
+        credential_environment: tuple[tuple[str, str], ...],
+        timeout_seconds: int,
+        control_handler: AgentCapsuleControlHandler,
+    ) -> AgentCapsuleProcessResult:
+        return self._run(
+            workspace=workspace,
+            argv=argv,
+            credential_environment=credential_environment,
+            timeout_seconds=timeout_seconds,
+            control_handler=control_handler,
+        )
+
+    def _run(
+        self,
+        *,
+        workspace: AgentGitWorkspace,
+        argv: tuple[str, ...],
+        credential_environment: tuple[tuple[str, str], ...],
+        timeout_seconds: int,
+        control_handler: AgentCapsuleControlHandler | None,
+    ) -> AgentCapsuleProcessResult:
         environment = {"PATH": "/usr/bin:/bin", **dict(credential_environment)}
         command: list[str] = [
             self.podman_binary,
@@ -391,11 +475,30 @@ class PodmanAgentCapsuleProcessRunner:
             "--security-opt=no-new-privileges",
             "--tmpfs",
             "/tmp:rw,nosuid,nodev,noexec,uid=10001,gid=10001,mode=0700",
-            "--volume",
-            f"{workspace.volume_id}:/workspace:rw",
+            "--mount",
+            f"type=volume,src={workspace.volume_id},dst=/workspace,rw",
             "--workdir",
             workspace.clone_logical_root,
         ]
+        control_root: Path | None = None
+        server: _AgentCapsuleControlSocketServer | None = None
+        if control_handler is not None:
+            control_root = Path(tempfile.mkdtemp(prefix="openzyme-capsule-control-"))
+            socket_path = control_root / "control.sock"
+            server = _AgentCapsuleControlSocketServer(
+                socket_path=socket_path,
+                handler=control_handler,
+            )
+            command.extend(
+                (
+                    "--mount",
+                    f"type=bind,src={socket_path},dst=/openzyme/control.sock,rw,Z",
+                    "--env",
+                    "OPENZYME_CONTROL_SOCKET=/openzyme/control.sock",
+                    "--env",
+                    "OPENZYME_SANDBOX_MODE=file_workspace",
+                )
+            )
         for key, _ in credential_environment:
             command.extend(("--env", key))
         command.extend(
@@ -408,12 +511,149 @@ class PodmanAgentCapsuleProcessRunner:
                 *argv,
             )
         )
-        result = self.executor.run(tuple(command), environment=environment)
-        return AgentCapsuleProcessResult(
-            returncode=result.returncode,
-            stdout=result.stdout,
-            stderr=result.stderr,
-        )
+        if server is not None:
+            server.start()
+        try:
+            result = self.executor.run(tuple(command), environment=environment)
+            return AgentCapsuleProcessResult(
+                returncode=result.returncode,
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+        finally:
+            if server is not None:
+                server.stop()
+            if control_root is not None:
+                shutil.rmtree(control_root)
+
+
+@dataclass(slots=True)
+class _AgentCapsuleControlSocketServer:
+    socket_path: Path
+    handler: AgentCapsuleControlHandler
+    _thread: threading.Thread | None = None
+    _stop: threading.Event | None = None
+    _ready: threading.Event | None = None
+
+    def start(self) -> None:
+        self._stop = threading.Event()
+        self._ready = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=False)
+        self._thread.start()
+        if not self._ready.wait(timeout=2):
+            self.stop()
+            raise AgentCapsuleRuntimeError("capsule control socket did not start")
+
+    def stop(self) -> None:
+        if self._stop is None:
+            return
+        self._stop.set()
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.connect(str(self.socket_path))
+                client.sendall(b"\n")
+        except OSError:
+            pass
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+            if self._thread.is_alive():
+                raise AgentCapsuleRuntimeError(
+                    "capsule control socket worker did not terminate"
+                )
+
+    def _serve(self) -> None:
+        assert self._stop is not None
+        assert self._ready is not None
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+            server.bind(str(self.socket_path))
+            # The parent directory is Host-private 0700; the socket itself must
+            # remain connectable by the rootless container uid after bind mount.
+            os.chmod(self.socket_path, 0o666)
+            server.listen(8)
+            server.settimeout(0.1)
+            self._ready.set()
+            while not self._stop.is_set():
+                try:
+                    connection, _ = server.accept()
+                except socket.timeout:
+                    continue
+                with connection:
+                    self._serve_connection(connection)
+
+    def _serve_connection(self, connection: socket.socket) -> None:
+        request_id: object = None
+        try:
+            frame = bytearray()
+            connection.settimeout(5)
+            while b"\n" not in frame:
+                chunk = connection.recv(64 * 1024)
+                if not chunk:
+                    raise ValueError("control request ended before newline")
+                frame.extend(chunk)
+                if len(frame) > _CONTROL_FRAME_MAX_BYTES:
+                    raise ValueError("control request exceeds bounded frame")
+            payload, remainder = bytes(frame).split(b"\n", 1)
+            if remainder.strip():
+                raise ValueError("control socket accepts one request frame")
+            request = json.loads(
+                payload,
+                object_pairs_hook=_unique_control_json_object,
+                parse_constant=_reject_control_json_constant,
+            )
+            if not isinstance(request, dict):
+                raise ValueError("control request must be an object")
+            request_id = request.get("id")
+            if not (
+                request_id is None
+                or (
+                    isinstance(request_id, str)
+                    and len(request_id.encode("utf-8")) <= 256
+                )
+                or (
+                    isinstance(request_id, int)
+                    and not isinstance(request_id, bool)
+                )
+            ):
+                raise ValueError("control request id is outside its bounded contract")
+            method = request.get("method")
+            params = request.get("params", {})
+            if request.get("jsonrpc") != "2.0" or not isinstance(method, str):
+                raise ValueError("control request must use JSON-RPC 2.0")
+            if not isinstance(params, dict):
+                raise ValueError("control request params must be an object")
+            response: dict[str, object] = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": self.handler.dispatch(method, dict(params)),
+            }
+        except (KeyError, TypeError, ValueError, RuntimeError) as exc:
+            response = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {
+                    "message": str(exc),
+                    "type": type(exc).__name__,
+                    "error_code": getattr(exc, "error_code", None)
+                    or "sandbox_transport_request_invalid",
+                    "retryable": bool(getattr(exc, "retryable", False)),
+                    "details": dict(getattr(exc, "details", {}) or {}),
+                },
+            }
+        encoded = json.dumps(response, allow_nan=False, sort_keys=True).encode()
+        if len(encoded) > _CONTROL_FRAME_MAX_BYTES:
+            encoded = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {
+                        "message": "control response exceeds bounded frame",
+                        "error_code": "sandbox_transport_response_too_large",
+                        "retryable": False,
+                    },
+                },
+                sort_keys=True,
+            ).encode()
+        connection.sendall(encoded + b"\n")
 
 
 @dataclass(slots=True)
@@ -421,6 +661,7 @@ class AgentCapsuleRuntimeService:
     repositories: CoreRepositories
     process_runner: AgentCapsuleProcessRunner
     credential_router: AgentProcessCredentialRouter | None = None
+    control_handler_factory: AgentCapsuleControlHandlerFactory | None = None
 
     def execute(
         self,
@@ -475,15 +716,45 @@ class AgentCapsuleRuntimeService:
             )
         credential_environment = () if credential is None else credential.environment
         secret_material = () if credential is None else credential.exact_secret_material
+        control_handler = None
+        if self.control_handler_factory is not None:
+            authority = AgentCapsuleHostAuthority(
+                session_id=workspace.session_id,
+                agent_member_id=workspace.agent_member_id,
+                agent_id=workspace.agent_id,
+                workspace_id=workspace.workspace_id,
+                workspace_generation=workspace.workspace_generation,
+                workspace_state_version=workspace.state_version,
+                capability_lease_id=claims.lease.lease_id,
+                capability_lease_version=claims.lease.state_version,
+                process_epoch=int(uuid4().hex[:15], 16),
+            )
+            control_handler = self.control_handler_factory.create(authority=authority)
         try:
             try:
-                result = self.process_runner.run(
-                    workspace=workspace,
-                    argv=argv,
-                    credential_environment=credential_environment,
-                    timeout_seconds=timeout_seconds,
-                )
-            except Exception as exc:
+                if control_handler is None:
+                    result = self.process_runner.run(
+                        workspace=workspace,
+                        argv=argv,
+                        credential_environment=credential_environment,
+                        timeout_seconds=timeout_seconds,
+                    )
+                elif isinstance(
+                    self.process_runner,
+                    AgentCapsuleControlledProcessRunner,
+                ):
+                    result = self.process_runner.run_with_control(
+                        workspace=workspace,
+                        argv=argv,
+                        credential_environment=credential_environment,
+                        timeout_seconds=timeout_seconds,
+                        control_handler=control_handler,
+                    )
+                else:
+                    raise AgentCapsuleRuntimeError(
+                        "configured capsule runner lacks the closed control-socket contract"
+                    )
+            except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
                 diagnostic = _redact_exact_secrets(str(exc), secret_material)
                 raise AgentCapsuleRuntimeError(
                     f"native capsule process launch failed: {diagnostic}"
@@ -614,6 +885,11 @@ def register_agent_capsule_tools(
                 "agent_process_credential_router",
                 None,
             ),
+            control_handler_factory=getattr(
+                context,
+                "agent_capsule_control_handler_factory",
+                None,
+            ),
         )
         try:
             payload = service.execute(
@@ -710,6 +986,13 @@ def register_agent_capsule_tools(
             staged = facts["OPENZYME_STAGED"] == "1"
             unstaged = facts["OPENZYME_UNSTAGED"] == "1"
             untracked = facts["OPENZYME_UNTRACKED"] == "1"
+            changed_paths = facts["OPENZYME_CHANGE"]
+            if not isinstance(changed_paths, list) or not all(
+                isinstance(path, str) for path in changed_paths
+            ):
+                raise WorkspaceCheckpointError(
+                    "native Git changed path list is invalid"
+                )
             observation = AgentWorkspaceStateObservation(
                 observation_id=f"workspace_observation_{uuid4().hex}",
                 workspace_id=workspace.workspace_id,
@@ -717,8 +1000,8 @@ def register_agent_capsule_tools(
                 agent_member_id=workspace.agent_member_id,
                 agent_id=workspace.agent_id,
                 workspace_generation=workspace.workspace_generation,
-                head_commit=facts["OPENZYME_HEAD"],
-                head_tree=facts["OPENZYME_TREE"],
+                head_commit=str(facts["OPENZYME_HEAD"]),
+                head_tree=str(facts["OPENZYME_TREE"]),
                 dirty_state=(
                     WorkspaceDirtyState.DIRTY
                     if staged or unstaged or untracked
@@ -727,6 +1010,10 @@ def register_agent_capsule_tools(
                 staged=staged,
                 unstaged=unstaged,
                 untracked=untracked,
+                changed_paths=tuple(changed_paths),
+                changed_paths_truncated=(
+                    facts["OPENZYME_CHANGE_TRUNCATED"] == "1"
+                ),
                 observed_at=datetime.now(tz=UTC).isoformat(),
             )
             stored = WorkspaceCheckpointService(
@@ -754,6 +1041,8 @@ def register_agent_capsule_tools(
             "staged": stored.staged,
             "unstaged": stored.unstaged,
             "untracked": stored.untracked,
+            "changed_paths": list(stored.changed_paths),
+            "changed_paths_truncated": stored.changed_paths_truncated,
             "observed_at": stored.observed_at,
         }
         return ToolResult(
@@ -910,18 +1199,28 @@ def _repository_process_credential(
     )
 
 
-def _parse_workspace_status_output(value: str) -> dict[str, str]:
-    facts: dict[str, str] = {}
+def _parse_workspace_status_output(value: str) -> dict[str, object]:
+    facts: dict[str, object] = {"OPENZYME_CHANGE": []}
     for line in value.splitlines():
         key, separator, item = line.partition("=")
         if separator and key.startswith("OPENZYME_"):
-            facts[key] = item
+            if key == "OPENZYME_CHANGE":
+                changes = facts[key]
+                if not isinstance(changes, list):
+                    raise WorkspaceCheckpointError(
+                        "native Git changed path list is invalid"
+                    )
+                changes.append(item)
+            else:
+                facts[key] = item
     required = {
         "OPENZYME_HEAD",
         "OPENZYME_TREE",
         "OPENZYME_STAGED",
         "OPENZYME_UNSTAGED",
         "OPENZYME_UNTRACKED",
+        "OPENZYME_CHANGE",
+        "OPENZYME_CHANGE_TRUNCATED",
     }
     if set(facts) != required:
         raise WorkspaceCheckpointError("native Git status output is incomplete")
@@ -930,7 +1229,9 @@ def _parse_workspace_status_output(value: str) -> dict[str, str]:
         "OPENZYME_UNSTAGED",
         "OPENZYME_UNTRACKED",
     }
-    if any(facts[key] not in {"0", "1"} for key in dirty_flag_keys):
+    if any(facts[key] not in {"0", "1"} for key in dirty_flag_keys) or facts[
+        "OPENZYME_CHANGE_TRUNCATED"
+    ] not in {"0", "1"}:
         raise WorkspaceCheckpointError("native Git dirty flags are invalid")
     return facts
 
@@ -999,6 +1300,9 @@ __all__ = [
     "AgentCapsuleCredentialError",
     "AgentCapsuleProcessResult",
     "AgentCapsuleProcessRunner",
+    "AgentCapsuleControlHandler",
+    "AgentCapsuleControlHandlerFactory",
+    "AgentCapsuleControlledProcessRunner",
     "AgentCapsuleRuntimeError",
     "AgentCapsuleRuntimeService",
     "AgentProcessCredentialProvider",

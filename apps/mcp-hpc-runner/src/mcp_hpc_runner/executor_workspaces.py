@@ -37,6 +37,7 @@ class ExecutorWorkspaceProvisionRequest:
     intent_id: str
     intent_digest: str
     workspace_id: str
+    remote_workspace_generation: int
     target_profile_digest: str
     repository_endpoint: str
     repository_remote_digest: str
@@ -53,6 +54,7 @@ class ExecutorWorkspaceProvisionRequest:
             "intent_id",
             "intent_digest",
             "workspace_id",
+            "remote_workspace_generation",
             "target_profile_digest",
             "repository_endpoint",
             "repository_remote_digest",
@@ -75,6 +77,12 @@ class ExecutorWorkspaceProvisionRequest:
         return request
 
     def __post_init__(self) -> None:
+        if (
+            not isinstance(self.remote_workspace_generation, int)
+            or isinstance(self.remote_workspace_generation, bool)
+            or self.remote_workspace_generation < 1
+        ):
+            raise ValueError("remote_workspace_generation must be a positive integer")
         for name in (
             "intent_id",
             "intent_digest",
@@ -111,12 +119,13 @@ class ExecutorWorkspaceProvisionRequest:
         ):
             raise ValueError("executor workspace absolute deadline is invalid")
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "schema_version": self.schema_version,
             "intent_id": self.intent_id,
             "intent_digest": self.intent_digest,
             "workspace_id": self.workspace_id,
+            "remote_workspace_generation": self.remote_workspace_generation,
             "target_profile_digest": self.target_profile_digest,
             "repository_endpoint": self.repository_endpoint,
             "repository_remote_digest": self.repository_remote_digest,
@@ -488,6 +497,7 @@ class ExecutorWorkspaceProvisioningService:
     ) -> dict[str, Any]:
         existing = self._load_binding(request)
         if existing is not None:
+            self._write_workspace_index_once(request, existing)
             return existing
         self._prepare_state_root()
         handle = f"hpcws_{uuid4().hex}"
@@ -501,6 +511,9 @@ class ExecutorWorkspaceProvisioningService:
             "schema_version": "executor_workspace_runner_binding@1",
             "intent_digest": request.intent_digest,
             "request_digest": self._digest(request.to_dict()),
+            "workspace_id": request.workspace_id,
+            "remote_workspace_generation": request.remote_workspace_generation,
+            "target_profile_digest": request.target_profile_digest,
             "runner_handle": handle,
             "remote_workspace_path": workspace_path,
             "remote_sidecar_path": sidecar_path,
@@ -514,13 +527,102 @@ class ExecutorWorkspaceProvisioningService:
                 raise ExecutorWorkspaceProvisionError(
                     "executor workspace runner binding disappeared"
                 )
-            return existing
+            binding = existing
+        self._write_workspace_index_once(request, binding)
         return binding
+
+    def resolve_private_workspace(
+        self,
+        *,
+        workspace_id: str,
+        remote_workspace_generation: int,
+        target_profile_digest: str,
+    ) -> dict[str, Any]:
+        path = self._workspace_index_path(
+            workspace_id,
+            remote_workspace_generation,
+        )
+        try:
+            index = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ExecutorWorkspaceProvisionError(
+                "executor workspace private index is unavailable"
+            ) from exc
+        expected = {
+            "schema_version",
+            "workspace_id",
+            "remote_workspace_generation",
+            "target_profile_digest",
+            "intent_digest",
+            "binding_digest",
+        }
+        if (
+            not isinstance(index, dict)
+            or set(index) != expected
+            or index["schema_version"] != "executor_workspace_runner_index@1"
+            or index["workspace_id"] != workspace_id
+            or index["remote_workspace_generation"]
+            != remote_workspace_generation
+            or index["target_profile_digest"] != target_profile_digest
+        ):
+            raise ExecutorWorkspaceProvisionError(
+                "executor workspace private index identity drifted"
+            )
+        binding_path = self._binding_path(str(index["intent_digest"]))
+        try:
+            binding = json.loads(binding_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ExecutorWorkspaceProvisionError(
+                "executor workspace private binding is unavailable"
+            ) from exc
+        if (
+            not isinstance(binding, dict)
+            or self._digest(binding) != index["binding_digest"]
+            or binding.get("workspace_id") != workspace_id
+            or binding.get("remote_workspace_generation")
+            != remote_workspace_generation
+            or binding.get("target_profile_digest") != target_profile_digest
+        ):
+            raise ExecutorWorkspaceProvisionError(
+                "executor workspace private binding crossed its index"
+            )
+        return binding
+
+    def _write_workspace_index_once(
+        self,
+        request: ExecutorWorkspaceProvisionRequest,
+        binding: dict[str, Any],
+    ) -> None:
+        index = {
+            "schema_version": "executor_workspace_runner_index@1",
+            "workspace_id": request.workspace_id,
+            "remote_workspace_generation": request.remote_workspace_generation,
+            "target_profile_digest": request.target_profile_digest,
+            "intent_digest": request.intent_digest,
+            "binding_digest": self._digest(binding),
+        }
+        path = self._workspace_index_path(
+            request.workspace_id,
+            request.remote_workspace_generation,
+        )
+        try:
+            self._write_json_once(path, index)
+        except FileExistsError:
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ExecutorWorkspaceProvisionError(
+                    "executor workspace private index is unreadable"
+                ) from exc
+            if existing != index:
+                raise ExecutorWorkspaceProvisionError(
+                    "executor workspace private index conflicts"
+                )
 
     def _load_binding(
         self,
         request: ExecutorWorkspaceProvisionRequest,
-    ) -> dict[str, str] | None:
+    ) -> dict[str, Any] | None:
         path = self._binding_path(request.intent_digest)
         if not path.exists():
             return None
@@ -529,12 +631,16 @@ class ExecutorWorkspaceProvisioningService:
             raw.get("schema_version") != "executor_workspace_runner_binding@1"
             or raw.get("intent_digest") != request.intent_digest
             or raw.get("request_digest") != self._digest(request.to_dict())
+            or raw.get("workspace_id") != request.workspace_id
+            or raw.get("remote_workspace_generation")
+            != request.remote_workspace_generation
+            or raw.get("target_profile_digest") != request.target_profile_digest
             or _IDENTIFIER.fullmatch(str(raw.get("runner_handle") or "")) is None
         ):
             raise ExecutorWorkspaceProvisionError(
                 "executor workspace runner binding identity drifted"
             )
-        return {str(key): str(value) for key, value in raw.items()}
+        return dict(raw)
 
     def _provision_remote(
         self,
@@ -1157,6 +1263,18 @@ printf 'OPENZYME_VERIFY_OBSERVED_AT=%s\n' "${observed_at}"
         return self._state_root / (
             intent_digest.removeprefix("sha256:") + ".binding.json"
         )
+
+    def _workspace_index_path(self, workspace_id: str, generation: int) -> Path:
+        if (
+            _IDENTIFIER.fullmatch(workspace_id) is None
+            or not isinstance(generation, int)
+            or isinstance(generation, bool)
+            or generation < 1
+        ):
+            raise ExecutorWorkspaceProvisionError(
+                "executor workspace index identity is invalid"
+            )
+        return self._state_root / f"{workspace_id}.g{generation}.index.json"
 
     def _receipt_path(self, intent_digest: str) -> Path:
         return self._state_root / (

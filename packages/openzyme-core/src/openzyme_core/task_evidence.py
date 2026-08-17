@@ -8,6 +8,8 @@ TASK_FINISH_EVIDENCE_REF_KINDS = (
     "revision_path",
     "report",
     "controlled_operation_result",
+    "scientific_deliverable",
+    "scientific_closure",
 )
 
 
@@ -26,6 +28,8 @@ def task_finish_evidence_ref_schema() -> dict[str, Any]:
             "revision_path_ref",
             "report_ref",
             "controlled_operation_result_ref",
+            "scientific_deliverable_ref",
+            "scientific_closure_ref",
         ],
         "properties": {
             "schema_version": {"const": "task_evidence_ref@1"},
@@ -43,6 +47,8 @@ def task_finish_evidence_ref_schema() -> dict[str, Any]:
             "controlled_operation_result_ref": {
                 "type": ["object", "null"]
             },
+            "scientific_deliverable_ref": {"type": ["object", "null"]},
+            "scientific_closure_ref": {"type": ["object", "null"]},
         },
         "allOf": [
             {
@@ -52,6 +58,8 @@ def task_finish_evidence_ref_schema() -> dict[str, Any]:
                         "revision_path_ref": {"type": "object"},
                         "report_ref": {"type": "null"},
                         "controlled_operation_result_ref": {"type": "null"},
+                        "scientific_deliverable_ref": {"type": "null"},
+                        "scientific_closure_ref": {"type": "null"},
                     }
                 },
             },
@@ -62,6 +70,8 @@ def task_finish_evidence_ref_schema() -> dict[str, Any]:
                         "revision_path_ref": {"type": "null"},
                         "report_ref": {"type": "object"},
                         "controlled_operation_result_ref": {"type": "null"},
+                        "scientific_deliverable_ref": {"type": "null"},
+                        "scientific_closure_ref": {"type": "null"},
                     }
                 },
             },
@@ -76,12 +86,40 @@ def task_finish_evidence_ref_schema() -> dict[str, Any]:
                         "revision_path_ref": {"type": "null"},
                         "report_ref": {"type": "null"},
                         "controlled_operation_result_ref": {"type": "object"},
+                        "scientific_deliverable_ref": {"type": "null"},
+                        "scientific_closure_ref": {"type": "null"},
+                    }
+                },
+            },
+            {
+                "if": {
+                    "properties": {"kind": {"const": "scientific_deliverable"}}
+                },
+                "then": {
+                    "properties": {
+                        "revision_path_ref": {"type": "null"},
+                        "report_ref": {"type": "null"},
+                        "controlled_operation_result_ref": {"type": "null"},
+                        "scientific_deliverable_ref": {"type": "object"},
+                        "scientific_closure_ref": {"type": "null"},
+                    }
+                },
+            },
+            {
+                "if": {"properties": {"kind": {"const": "scientific_closure"}}},
+                "then": {
+                    "properties": {
+                        "revision_path_ref": {"type": "null"},
+                        "report_ref": {"type": "null"},
+                        "controlled_operation_result_ref": {"type": "null"},
+                        "scientific_deliverable_ref": {"type": "null"},
+                        "scientific_closure_ref": {"type": "object"},
                     }
                 },
             },
         ],
         "description": (
-            "Closed TaskEvidenceRef@1 union. Legacy strings, artifact:<id>, "
+            "Closed TaskEvidenceRef@1 union. Legacy strings and aliases, "
             "mutable paths, branches, private refs, URLs, Host/HPC paths, and "
             "free-form digests are invalid."
         ),
@@ -101,9 +139,9 @@ def task_finish_evidence_contract_details() -> dict[str, Any]:
         "expected_format": TASK_FINISH_EVIDENCE_REF_FORMAT,
         "schema_version": "task_evidence_ref@1",
         "supported_kinds": list(TASK_FINISH_EVIDENCE_REF_KINDS),
-        "scientific_deliverable_kind_installed": False,
+        "scientific_deliverable_kind_installed": True,
+        "scientific_closure_kind_installed": True,
         "legacy_string_refs_allowed": False,
-        "artifact_alias_allowed": False,
     }
 
 

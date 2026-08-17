@@ -19,7 +19,6 @@ from openzyme_domain import ExternalEffectCertainty
 from openzyme_domain import MutationScopeKind
 from openzyme_domain import MutationScopeState
 from openzyme_domain import MutationWriterKind
-from openzyme_domain import ScientificArtifactMaterialization
 from openzyme_domain import ScientificAttempt
 from openzyme_domain import ScientificAttemptAdmissionRequest
 from openzyme_domain import ScientificAttemptAuthorization
@@ -39,9 +38,7 @@ from .mutation_authority import current_mutation_write_authority
 from .mutation_quiescence import build_quiescence_evidence_envelope
 from .mutation_quiescence import MutationScopeService
 from .mutation_quiescence import verify_quiescence_evidence
-from .artifact_boundary import ArtifactBoundaryError
 from .repositories import CoreRepositories
-from .reliability_repositories import ImmutableIdentityConflictError
 from .scientific_attempt_repositories import (
     ScientificAttemptIdentityConflictError,
 )
@@ -240,7 +237,6 @@ class ScientificAttemptService:
     now: Callable[[], str] = _utc_now_iso
     id_factory: Callable[[], str] = lambda: uuid4().hex
     workflow_contract_registry: ScientificWorkflowContractRegistry | None = None
-    artifact_boundary: Any | None = None
 
     @property
     def mutation_scopes(self) -> MutationScopeService:
@@ -820,6 +816,7 @@ class ScientificAttemptService:
         *,
         attempt_id: str,
         operation_id: str,
+        sandbox_run_id: str,
         actor_ref: str,
     ) -> None:
         attempt = self._require_mutation_admissible_attempt(attempt_id)
@@ -837,7 +834,9 @@ class ScientificAttemptService:
             self.repositories.scientific_attempt_bindings.bind_operation(
                 attempt_id=attempt_id,
                 operation_id=operation_id,
-                sandbox_run_id=operation.sandbox_run_id,
+                sandbox_run_id=self._require_text(
+                    "sandbox_run_id", sandbox_run_id
+                ),
                 session_id=attempt.session_id,
                 bound_by=self._require_actor(actor_ref),
                 created_at=self.now(),
@@ -873,7 +872,7 @@ class ScientificAttemptService:
             occurrence = {
                 "attempt_id": attempt_id,
                 "operation_id": operation.operation_id,
-                "sandbox_run_id": operation.sandbox_run_id,
+                "sandbox_run_id": binding["sandbox_run_id"],
                 "logical_operation_key": operation.logical_operation_key,
                 "operation_digest": operation.operation_digest,
                 "backend_category": operation.backend_category,
@@ -900,7 +899,6 @@ class ScientificAttemptService:
                         "dispatch_generation": execution.dispatch_generation,
                         "result_handle_ref": execution.result_handle_ref,
                         "result_digest": execution.result_digest,
-                        "artifact_set_digest": execution.artifact_set_digest,
                         "approval_digest": execution.approval_digest,
                     }
                 ),
@@ -911,7 +909,6 @@ class ScientificAttemptService:
                         "result_handle_id": result.result_handle_id,
                         "terminal_outcome": result.terminal_outcome.value,
                         "result_digest": result.result_digest,
-                        "artifact_set_digest": result.artifact_set_digest,
                         "origin": result.origin,
                     }
                 ),
@@ -1606,8 +1603,6 @@ class ScientificAttemptService:
                         execution_id=execution.execution_id,
                         result_handle_id=result.result_handle_id,
                         result_digest=result.result_digest,
-                        artifact_set_digest=result.artifact_set_digest,
-                        source_sandbox_run_id=operation.sandbox_run_id,
                         effect_certainty=execution.effect_certainty.value,
                         approval_digest=execution.approval_digest,
                         actor_ref=actor,
@@ -1726,8 +1721,6 @@ class ScientificAttemptService:
             execution_id=execution.execution_id,
             result_handle_id=result.result_handle_id,
             result_digest=result.result_digest,
-            artifact_set_digest=result.artifact_set_digest,
-            source_sandbox_run_id=operation.sandbox_run_id,
             effect_certainty=execution.effect_certainty.value,
             approval_digest=execution.approval_digest,
             actor_ref=actor,
@@ -1741,128 +1734,6 @@ class ScientificAttemptService:
             owner_ref=f"selection.adopt:{record.adoption_id}",
         ):
             return self.repositories.scientific_effect_adoptions.add(record)
-
-    def materialize_adopted_artifact(
-        self,
-        *,
-        selection_id: str,
-        adoption_id: str,
-        source_artifact_id: str,
-        target_sandbox_run_id: str,
-        target: str,
-        actor_ref: str,
-        idempotency_key: str,
-    ) -> ScientificArtifactMaterialization:
-        selection, attempt = self._require_draft_head(selection_id)
-        actor = self._require_actor(actor_ref)
-        request = {
-            "command": "scientific.artifact.materialize",
-            "selection_id": selection_id,
-            "adoption_id": adoption_id,
-            "source_artifact_id": source_artifact_id,
-            "target_sandbox_run_id": target_sandbox_run_id,
-            "target": target,
-            "actor_ref": actor,
-            "idempotency_key": idempotency_key,
-        }
-        request_digest = canonical_digest(request)
-        existing = (
-            self.repositories.scientific_artifact_materializations.get_by_idempotency(
-                selection_id=selection_id,
-                actor_ref=actor,
-                idempotency_key=idempotency_key,
-            )
-        )
-        if existing is not None:
-            self._require_replay_digest(existing.request_digest, request_digest)
-            return existing
-        adoption = self.repositories.scientific_effect_adoptions.get(adoption_id)
-        if (
-            adoption is None
-            or adoption.selection_id != selection_id
-            or adoption.attempt_id != attempt.attempt_id
-        ):
-            raise ScientificAttemptError(
-                "materialization_adoption_scope_invalid",
-                "artifact adoption does not belong to the exact selection",
-            )
-        result_refs = self.repositories.controlled_operation_result_artifacts.list_by_result_handle(
-            adoption.result_handle_id
-        )
-        source_ref = next(
-            (ref for ref in result_refs if ref.artifact_id == source_artifact_id),
-            None,
-        )
-        if source_ref is None:
-            raise ScientificAttemptError(
-                "materialization_artifact_not_adopted",
-                "artifact is not in the immutable adopted result set",
-            )
-        if (
-            self.repositories.scientific_attempt_bindings.attempt_for_run(
-                target_sandbox_run_id
-            )
-            != attempt.attempt_id
-        ):
-            raise ScientificAttemptError(
-                "materialization_target_cross_attempt",
-                "target sandbox run is not bound to the same scientific attempt",
-            )
-        target_run = self.repositories.sandbox_runs.get(target_sandbox_run_id)
-        if target_run is None or target_run.session_id != attempt.session_id:
-            raise ScientificAttemptError(
-                "materialization_target_missing",
-                "target sandbox run does not exist in the attempt session",
-            )
-        if self.artifact_boundary is None:
-            raise ScientificAttemptError(
-                "materialization_boundary_unavailable",
-                "Host artifact materialization boundary is not configured",
-            )
-        with self.mutation_scopes.writer_turn(
-            session_id=attempt.session_id,
-            owner_kind=MutationWriterKind.ARTIFACT_PUBLISHER,
-            owner_ref=f"selection.materialize:{selection_id}:{source_artifact_id}",
-        ):
-            try:
-                materialized = self.artifact_boundary.materialize(
-                    session_id=attempt.session_id,
-                    sandbox_workspace_id=target_run.sandbox_workspace_id,
-                    artifact_id=source_artifact_id,
-                    target=target,
-                    mode="readonly",
-                )
-            except ArtifactBoundaryError as exc:
-                raise ScientificAttemptError(
-                    exc.error_code,
-                    str(exc),
-                    hint=exc.hint,
-                    details=exc.details,
-                    retryable=exc.retryable,
-                ) from exc
-            if materialized.artifact_digest != source_ref.artifact_digest:
-                raise ScientificAttemptError(
-                    "materialization_digest_mismatch",
-                    "Host materialization digest does not match adopted result bytes",
-                )
-            receipt = ScientificArtifactMaterialization(
-                receipt_id=_stable_id("scientific_materialization", request_digest),
-                selection_id=selection_id,
-                attempt_id=attempt.attempt_id,
-                adoption_id=adoption_id,
-                source_artifact_id=source_artifact_id,
-                source_artifact_digest=source_ref.artifact_digest,
-                source_sandbox_run_id=adoption.source_sandbox_run_id,
-                target_sandbox_workspace_id=target_run.sandbox_workspace_id,
-                target_sandbox_run_id=target_sandbox_run_id,
-                target_path=materialized.path,
-                boundary_materialization_id=materialized.materialization_id,
-                actor_ref=actor,
-                idempotency_key=self._require_text("idempotency_key", idempotency_key),
-                request_digest=request_digest,
-                created_at=self.now(),
-            )
-            return self.repositories.scientific_artifact_materializations.add(receipt)
 
     def seal_selection(
         self,
@@ -2289,14 +2160,6 @@ class ScientificAttemptService:
                 "closure does not consume the exact sealed attempt scope receipt",
             )
         verify_quiescence_evidence(receipt=receipt, snapshot=snapshot)
-        materializations = (
-            self.repositories.scientific_artifact_materializations.list_by_selection(
-                selection_id
-            )
-        )
-        materialization_digest = canonical_digest(
-            [item.to_dict() for item in materializations]
-        )
         authority = self.repositories.scientific_attempt_authorizations.get(
             attempt.envelope_id
         )
@@ -2324,7 +2187,6 @@ class ScientificAttemptService:
             "operation_universe_digest": universe.universe_digest,
             "disposition_digest": selection.disposition_digest,
             "adoption_digest": selection.adoption_digest,
-            "materialization_digest": materialization_digest,
             "authority_consumption_digest": authority_consumption_digest,
             "quiescence_receipt_id": receipt.receipt_id,
             "quiescence_receipt_digest": receipt.receipt_digest,
@@ -2337,7 +2199,6 @@ class ScientificAttemptService:
             operation_universe_digest=universe.universe_digest,
             disposition_digest=selection.disposition_digest,
             adoption_digest=selection.adoption_digest,
-            materialization_digest=materialization_digest,
             authority_consumption_digest=authority_consumption_digest,
             quiescence_receipt_id=receipt.receipt_id,
             quiescence_receipt_digest=receipt.receipt_digest,
@@ -2531,11 +2392,6 @@ class ScientificAttemptService:
         adoptions = self.repositories.scientific_effect_adoptions.list_by_selection(
             selection.selection_id
         )
-        materializations = (
-            self.repositories.scientific_artifact_materializations.list_by_selection(
-                selection.selection_id
-            )
-        )
         authorization_payload = authority.to_dict()
         authorization_payload["allowed_provider_digests"] = [
             self._private_identity_digest(item) for item in authority.allowed_providers
@@ -2581,7 +2437,6 @@ class ScientificAttemptService:
             "selection": selection.to_dict(),
             "dispositions": [item.to_dict() for item in dispositions],
             "adoptions": [item.to_dict() for item in adoptions],
-            "materializations": [item.to_dict() for item in materializations],
             "closure_request": closure_request.to_dict(),
             "quiescence": build_quiescence_evidence_envelope(
                 receipt=receipt,
@@ -3204,19 +3059,11 @@ class ScientificAttemptService:
             or result.terminal_outcome
             is not ControlledOperationExecutionTerminalOutcome.SUCCEEDED
             or result.result_digest != execution.result_digest
-            or result.artifact_set_digest != execution.artifact_set_digest
         ):
             raise ScientificAttemptError(
                 "effect_adoption_result_invalid",
                 "immutable controlled-operation result is missing or inconsistent",
             )
-        try:
-            self.repositories.controlled_operation_result_artifacts.assert_exact(result)
-        except ImmutableIdentityConflictError as exc:
-            raise ScientificAttemptError(
-                "effect_adoption_result_invalid",
-                "immutable controlled-operation artifact set is inconsistent",
-            ) from exc
         if operation.approval_id is not None and (
             operation.approval_state != "approved" or execution.approval_digest is None
         ):

@@ -137,7 +137,7 @@ def contract_payload(
         "upstream": {
             "provider": "ebi_hmmer",
             "database": "refprot",
-            "artifact_path": "provider_parsed/parsed_hits.csv",
+            "file_path": "provider_parsed/parsed_hits.csv",
             "columns": list(INPUT_COLUMNS),
             "row_digest": {
                 "field": "parsed_row_digest",
@@ -415,7 +415,7 @@ def parse_and_filter_csv(
         if input_digest != expected_input_digest:
             raise ScientificPrerequisiteError(
                 "hmmer_filter_input_digest_mismatch",
-                "the HMMER parsed-hit artifact does not match its expected byte digest",
+                "the HMMER parsed-hit file does not match its expected byte digest",
                 details={"expected": expected_input_digest, "actual": input_digest},
             )
     try:
@@ -478,7 +478,7 @@ def parse_and_filter_csv(
     except csv.Error as exc:
         raise ScientificPrerequisiteError(
             "hmmer_filter_csv_invalid",
-            "the HMMER parsed-hit artifact is not valid CSV",
+            "the HMMER parsed-hit file is not valid CSV",
             details={"message": str(exc)},
         ) from exc
 

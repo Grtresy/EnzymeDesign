@@ -8,8 +8,11 @@ from importlib.resources import as_file
 from importlib.resources import files
 import json
 import os
+from pathlib import Path
 import re
+import shutil
 import subprocess
+import tempfile
 from typing import Protocol
 
 
@@ -228,8 +231,27 @@ def build_agent_capsule_image(
         )
     manifest = load_agent_capsule_image_manifest()
     asset_root = files("openzyme_core.agent_capsule_assets")
-    containerfile = asset_root.joinpath("Containerfile")
-    with as_file(asset_root) as context_path, as_file(containerfile) as file_path:
+    pipeline_source = (
+        Path(__file__).resolve().parents[3]
+        / "openzyme-pipeline"
+        / "src"
+        / "openzyme_pipeline"
+    )
+    if not pipeline_source.is_dir():
+        raise AgentCapsuleImageError(
+            "agent capsule build requires the exact monorepo openzyme_pipeline source"
+        )
+    with as_file(asset_root) as asset_path, tempfile.TemporaryDirectory(
+        prefix="openzyme-agent-capsule-build-"
+    ) as temporary:
+        context_path = Path(temporary)
+        shutil.copytree(asset_path, context_path, dirs_exist_ok=True)
+        shutil.copytree(
+            pipeline_source,
+            context_path / "pipeline_sdk" / "openzyme_pipeline",
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
+        file_path = context_path / "Containerfile"
         result = executor.run(
             (
                 podman_binary,

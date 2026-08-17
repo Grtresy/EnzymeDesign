@@ -442,7 +442,7 @@ def contract_payload(
         },
         "uniprot_provider_contract": {
             "identity_contract_id": _UNIPROT_IDENTITY_CONTRACT_ID,
-            "required_artifacts": [
+            "required_files": [
                 "provider_parsed/sequences.fasta",
                 "provider_parsed/metadata.json",
             ],
@@ -732,7 +732,7 @@ def _parse_score_filtered_csv(raw: bytes) -> tuple[ScoreFilteredHit, ...]:
     except csv.Error as exc:
         raise ScientificPrerequisiteError(
             "sequence_join_hmmer_csv_invalid",
-            "the score-filter artifact is not valid CSV",
+            "the score-filter file is not valid CSV",
             details={"message": str(exc)},
         ) from exc
     if aox_hmmer.canonical_rows_to_csv(rows) != text:

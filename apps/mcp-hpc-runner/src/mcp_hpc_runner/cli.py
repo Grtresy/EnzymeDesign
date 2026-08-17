@@ -112,9 +112,6 @@ def main(argv: list[str] | None = None) -> int:
                 "iterations": args.iterations,
                 "generation_count": len(observed_generations),
                 "clean_shutdown": bool(shutdown.get("clean")),
-                "ambiguous_direct_run_count": int(
-                    shutdown.get("ambiguous_direct_run_count", 0)
-                ),
             }
             print(json.dumps(report, indent=2, sort_keys=True))
             return 0

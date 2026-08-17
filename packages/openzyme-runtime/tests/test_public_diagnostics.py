@@ -103,7 +103,9 @@ def test_public_diagnostic_long_mixed_content_remains_safe_and_idempotent() -> N
         }
     )
 
-    assert once == f"{benign_prefix} [redacted-private-locator]"
+    assert once.endswith("[truncated]")
+    assert len(once.encode("utf-8")) == 64 * 1024
+    assert "[redacted-private-locator]" not in once
     assert twice == once
     assert nested == {
         "benign": benign_prefix,
@@ -223,7 +225,7 @@ def test_public_diagnostic_text_preserves_query_free_public_ipv4_url() -> None:
 def test_public_diagnostic_text_redacts_private_locators(
     private_value: str,
 ) -> None:
-    sanitized = sanitize_public_diagnostic_text(f"artifact={private_value}")
+    sanitized = sanitize_public_diagnostic_text(f"file={private_value}")
 
     assert private_value not in sanitized
     assert "[redacted-private-locator]" in sanitized

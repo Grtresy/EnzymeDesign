@@ -1393,7 +1393,7 @@ def _verify_authoritative_output(
     plan_filename: str,
     receipt_filename: str,
 ) -> MainlineCandidateVerificationResult:
-    """Reload every required artifact in one authority domain."""
+    """Reload every required evidence file in one authority domain."""
 
     root = repo_root.resolve(strict=True)
     evidence_root = _candidate_output_root(

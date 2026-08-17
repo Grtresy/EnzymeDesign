@@ -342,7 +342,7 @@ class RuntimeCommandWorker:
                         event_id=f"runtime_command_event_{uuid4().hex}",
                         session_id=stored.session_id,
                         event_type="runtime.command.finished",
-                        schema_version="openzyme.v3.event.v1",
+                        schema_version="file_workspace_public@1",
                         visibility="public",
                         payload={
                             "command_id": stored.command_id,

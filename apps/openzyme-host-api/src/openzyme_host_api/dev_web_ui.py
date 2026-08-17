@@ -10,7 +10,6 @@ from openzyme_runtime import REPO_ROOT
 from .app import HostApiDependencies
 from .app import create_app
 from .foundation import build_configured_foundation
-from .foundation import build_local_eval_foundation
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import SQLiteSchemaMismatchError
 
@@ -57,11 +56,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=_default_v3_sqlite_db(),
         help="SQLite path for V3 control-plane local manual testing.",
     )
-    parser.add_argument(
-        "--fixture-non-cutover",
-        action="store_true",
-        help="Use deterministic local fixture adapters; outputs are synthetic and never cutover evidence.",
-    )
     return parser
 
 
@@ -73,12 +67,7 @@ def main(argv: list[str] | None = None) -> int:
             f"UI dist directory does not exist: {ui_dist}. "
             "Run `cd apps/openzyme-web-ui && npm run build` first."
         )
-    foundation_builder = (
-        build_local_eval_foundation
-        if args.fixture_non_cutover
-        else build_configured_foundation
-    )
-    foundation = foundation_builder()
+    foundation = build_configured_foundation()
     v3_repository_provider = _build_v3_repository_provider(args.v3_sqlite_db)
     app = create_app(
         HostApiDependencies(

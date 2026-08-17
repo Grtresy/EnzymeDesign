@@ -21,12 +21,13 @@ FINALIZATION_CALCULATION_ID = "aox_final_deliverable_normalization@1"
 FINALIZATION_CALCULATION_RESULT_SCHEMA_ID = (
     "aox_final_deliverable_normalization_result@1"
 )
-UPSTREAM_EMPTY_CALCULATION_ID = "aox_upstream_empty_materialization@1"
+UPSTREAM_EMPTY_CALCULATION_ID = "aox_upstream_empty_encoding@1"
 REFERENCE_ONLY_ALIGNMENT_CALCULATION_ID = (
     "aox_reference_only_scoring_alignment@1"
 )
 EMPTY_MEMBERSHIP_CALCULATION_ID = "aox_empty_membership@1"
 CONDITIONAL_EMPTY_RESULT_SCHEMA_ID = "aox_conditional_empty_result@1"
+CONDITIONAL_EMPTY_FILE_SCHEMA_ID = "aox_conditional_empty_file@1"
 ZERO_SOURCE_RECEIPT_SCHEMA_ID = "aox_zero_calculation_source_receipt@1"
 
 FIXED_DELIVERABLE_PATHS = (
@@ -47,6 +48,25 @@ FIXED_DELIVERABLE_PATHS = (
     "aox_hmm/scored_ref_plus_hits.csv",
     "aox_hmm/similarity_graph_manifest.json",
     "aox_hmm/target.fasta",
+)
+FIXED_DELIVERABLE_ROLES = (
+    "candidates_fasta",
+    "cdhit_clusters",
+    "cdhit_candidates_fasta",
+    "coordinate_reference_fasta",
+    "reference_hmm",
+    "reference_panel_fasta",
+    "scoring_input_fasta",
+    "scoring_alignment_fasta",
+    "similarity_edges",
+    "execution_summary",
+    "length_filtered_hits",
+    "raw_hits",
+    "score_filtered_accessions",
+    "similarity_nodes",
+    "scored_reference_hits",
+    "similarity_graph_manifest",
+    "target_fasta",
 )
 
 _DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -75,21 +95,6 @@ _CONDITIONAL_RECEIPT_KEYS = frozenset(
         "empty_result_reason",
     }
 )
-_ARTIFACT_KINDS = frozenset(
-    {
-        "code",
-        "log",
-        "sequence",
-        "structure",
-        "report",
-        "research_dossier",
-        "result",
-        "cache",
-        "other",
-    }
-)
-
-
 def _sha256(content: bytes) -> str:
     return f"sha256:{hashlib.sha256(content).hexdigest()}"
 
@@ -319,23 +324,31 @@ class ConditionalEmptyResult:
         }
 
 
-def materialize_upstream_empty(
+def encode_upstream_empty(
     source_receipt: Mapping[str, object],
 ) -> ConditionalEmptyResult:
     source = _validate_source_receipt(
         source_receipt,
         allowed_calculation_ids=frozenset({aox_hmmer.CONTRACT_ID}),
     )
+    reason = str(source["empty_result_reason"])
+    empty_file = {
+        "schema_id": CONDITIONAL_EMPTY_FILE_SCHEMA_ID,
+        "calculation_id": UPSTREAM_EMPTY_CALCULATION_ID,
+        "empty_result_reason": reason,
+        "source_output_digest": source["output_digest"],
+        "source_receipt_digest": _sha256(_canonical_json_bytes(source)),
+    }
     return ConditionalEmptyResult(
         calculation_id=UPSTREAM_EMPTY_CALCULATION_ID,
         source_receipt=source_receipt,
-        output_bytes=b"",
-        output_format="fasta",
-        empty_result_reason=str(source["empty_result_reason"]),
+        output_bytes=_canonical_json_bytes(empty_file) + b"\n",
+        output_format="typed_empty_json",
+        empty_result_reason=reason,
     )
 
 
-def materialize_reference_only_alignment(
+def encode_reference_only_alignment(
     reference_fasta: str | bytes,
     source_receipt: Mapping[str, object],
 ) -> ConditionalEmptyResult:
@@ -367,7 +380,7 @@ def materialize_reference_only_alignment(
     )
 
 
-def materialize_empty_membership(
+def encode_empty_membership(
     source_receipt: Mapping[str, object],
 ) -> ConditionalEmptyResult:
     source = _validate_source_receipt(
@@ -386,128 +399,67 @@ def materialize_empty_membership(
     )
 
 
-def _resolved_output_path(path: object) -> tuple[str, str]:
-    if not isinstance(path, str) or not path:
-        raise PipelineSdkError(
-            "AOX finalization item path must be non-empty",
-            error_code="aox_finalization_item_invalid",
-            stage="aox_finalization.request_validation",
-            retryable=False,
-        )
-    raw = Path(path)
-    resolved = (
-        raw if raw.is_absolute() else Path("/workspace/output") / raw
-    ).resolve()
-    root = Path("/workspace/output").resolve()
-    if root not in (resolved, *resolved.parents):
-        raise PipelineSdkError(
-            "AOX finalization accepts only /workspace/output drafts",
-            error_code="aox_finalization_path_invalid",
-            stage="aox_finalization.request_validation",
-            retryable=False,
-        )
-    relative = resolved.relative_to(root).as_posix()
-    if relative not in FIXED_DELIVERABLE_PATHS:
-        raise PipelineSdkError(
-            "AOX finalization item is outside the exact deliverable set",
-            error_code="aox_finalization_path_invalid",
-            stage="aox_finalization.request_validation",
-            retryable=False,
-            details={"relative_path": relative},
-        )
-    return str(resolved), relative
-
-
-def _closed_item(item: Mapping[str, Any]) -> dict[str, Any]:
-    allowed = {
-        "path",
-        "kind",
-        "format",
-        "validation_profile",
-        "metadata",
-    }
-    if set(item) != allowed:
-        raise PipelineSdkError(
-            "AOX finalization item does not match its closed schema",
-            error_code="aox_finalization_item_invalid",
-            stage="aox_finalization.request_validation",
-            retryable=False,
-        )
-    resolved, relative = _resolved_output_path(item.get("path"))
-    kind = item.get("kind")
-    format_value = item.get("format")
-    validation_profile = item.get("validation_profile")
-    metadata = item.get("metadata")
-    if (
-        kind not in _ARTIFACT_KINDS
-        or not isinstance(format_value, str)
-        or not format_value
-        or (
-            validation_profile is not None
-            and (
-                not isinstance(validation_profile, str)
-                or not validation_profile
-            )
-        )
-        or not isinstance(metadata, dict)
-    ):
-        raise PipelineSdkError(
-            "AOX finalization item fields are invalid",
-            error_code="aox_finalization_item_invalid",
-            stage="aox_finalization.request_validation",
-            retryable=False,
-        )
-    return {
-        "path": resolved,
-        "relative_path": relative,
-        "kind": kind,
-        "format": format_value,
-        "validation_profile": validation_profile,
-        "metadata": dict(metadata),
-    }
-
-
 def finalize_deliverable_bundle(
     *,
+    publication_id: str,
     attempt_id: str,
     selection_id: str,
-    execution_task_id: str,
-    items: Sequence[Mapping[str, Any]],
+    execution_fencing_token: int,
+    producer_adoption_ids_by_role: Mapping[str, str],
     calculation_receipts: Sequence[Mapping[str, object]],
 ) -> dict[str, Any]:
     if not all(
         isinstance(value, str) and value.strip()
-        for value in (attempt_id, selection_id, execution_task_id)
+        for value in (publication_id, attempt_id, selection_id)
     ):
         raise PipelineSdkError(
-            "AOX finalization requires attempt, selection and execution task ids",
+            "AOX file finalization requires publication, attempt and selection ids",
             error_code="aox_finalization_identity_invalid",
             stage="aox_finalization.request_validation",
             retryable=False,
         )
-    closed_items = [_closed_item(item) for item in items]
-    paths = [str(item["relative_path"]) for item in closed_items]
-    if len(paths) != len(FIXED_DELIVERABLE_PATHS) or set(paths) != set(
-        FIXED_DELIVERABLE_PATHS
-    ) or len(paths) != len(set(paths)):
+    if (
+        isinstance(execution_fencing_token, bool)
+        or not isinstance(execution_fencing_token, int)
+        or execution_fencing_token < 1
+    ):
         raise PipelineSdkError(
-            "AOX finalization requires each exact deliverable path once",
-            error_code="aox_finalization_deliverable_set_invalid",
+            "AOX file finalization requires a positive execution fencing token",
+            error_code="aox_finalization_fence_invalid",
+            stage="aox_finalization.request_validation",
+            retryable=False,
+        )
+    adoptions = dict(producer_adoption_ids_by_role)
+    if set(adoptions) != set(FIXED_DELIVERABLE_ROLES) or not all(
+        isinstance(value, str) and value.strip() for value in adoptions.values()
+    ):
+        raise PipelineSdkError(
+            "AOX file finalization requires one producer adoption for each exact role",
+            error_code="aox_finalization_adoption_set_invalid",
             stage="aox_finalization.request_validation",
             retryable=False,
             details={
-                "expected_count": len(FIXED_DELIVERABLE_PATHS),
-                "observed_count": len(paths),
+                "expected_roles": list(FIXED_DELIVERABLE_ROLES),
+                "observed_roles": sorted(adoptions),
             },
         )
     receipts = [dict(receipt) for receipt in calculation_receipts]
+    receipt_by_calculation = {
+        str(receipt.get("calculation_id") or ""): receipt
+        for receipt in receipts
+    }
+    if len(receipt_by_calculation) != len(receipts):
+        raise PipelineSdkError(
+            "AOX finalization calculation receipts must have unique identities",
+            error_code="aox_finalization_calculation_receipt_conflict",
+            stage="aox_finalization.request_validation",
+            retryable=False,
+        )
     required_calculations = {
         aox_candidate.CALCULATION_ID,
         FINALIZATION_CALCULATION_ID,
     }
-    observed_calculations = {
-        str(receipt.get("calculation_id") or "") for receipt in receipts
-    }
+    observed_calculations = set(receipt_by_calculation)
     if not required_calculations <= observed_calculations:
         raise PipelineSdkError(
             "AOX finalization lacks required exact calculation receipts",
@@ -520,16 +472,78 @@ def finalize_deliverable_bundle(
                 )
             },
         )
+    for receipt in receipts:
+        validate_installed_calculation_receipt(receipt)
     return dict(
         call(
-            "artifacts.finalize_bundle",
+            "scientific.deliverables.finalize",
             {
-                "profile_id": FINAL_BUNDLE_PROFILE_ID,
+                "schema_version": "aox_scientific_file_finalize_request@1",
+                "publication_id": publication_id,
                 "attempt_id": attempt_id,
                 "selection_id": selection_id,
-                "execution_task_id": execution_task_id,
-                "items": closed_items,
+                "execution_fencing_token": execution_fencing_token,
+                "producer_adoption_ids_by_role": adoptions,
                 "calculation_receipts": receipts,
+            },
+        )
+    )
+
+
+def adopt_producer_result(
+    *,
+    selection_id: str,
+    operation_id: str,
+    execution_id: str,
+    result_id: str,
+    workflow_role: str,
+    execution_fencing_token: int,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    identities = {
+        "selection_id": selection_id,
+        "operation_id": operation_id,
+        "execution_id": execution_id,
+        "result_id": result_id,
+        "idempotency_key": idempotency_key,
+    }
+    if any(
+        not isinstance(value, str) or not value.strip()
+        for value in identities.values()
+    ):
+        raise PipelineSdkError(
+            "AOX producer adoption requires exact non-empty identities",
+            error_code="aox_producer_adoption_identity_invalid",
+            stage="aox_finalization.adoption_request_validation",
+            retryable=False,
+        )
+    if workflow_role not in FIXED_DELIVERABLE_ROLES:
+        raise PipelineSdkError(
+            "AOX producer adoption requires one installed scientific role",
+            error_code="aox_producer_adoption_role_invalid",
+            stage="aox_finalization.adoption_request_validation",
+            retryable=False,
+            details={"workflow_role": workflow_role},
+        )
+    if (
+        isinstance(execution_fencing_token, bool)
+        or not isinstance(execution_fencing_token, int)
+        or execution_fencing_token < 1
+    ):
+        raise PipelineSdkError(
+            "AOX producer adoption requires a positive execution fencing token",
+            error_code="aox_producer_adoption_fence_invalid",
+            stage="aox_finalization.adoption_request_validation",
+            retryable=False,
+        )
+    return dict(
+        call(
+            "scientific.deliverables.adopt",
+            {
+                "schema_version": "scientific_file_effect_adoption_request@1",
+                **identities,
+                "workflow_role": workflow_role,
+                "execution_fencing_token": execution_fencing_token,
             },
         )
     )
@@ -553,8 +567,8 @@ def _calculation_contract_payload(
             "deliverable_path_digest": _sha256(
                 _canonical_json_bytes(list(FIXED_DELIVERABLE_PATHS))
             ),
-            "prevalidation": "complete_before_catalog_mutation",
-            "commit": "atomic_catalog_and_validation_receipt",
+            "prevalidation": "exact_published_git_lfs_bytes",
+            "commit": "atomic_scientific_refs_and_validation_receipt",
             "result_schema_id": FINALIZATION_CALCULATION_RESULT_SCHEMA_ID,
             "serializer_id": f"{calculation_id}_serializer",
         }
@@ -621,7 +635,7 @@ def validate_conditional_receipt(
     normalized = dict(receipt)
     calculation_id = normalized.get("calculation_id")
     expected_formats = {
-        UPSTREAM_EMPTY_CALCULATION_ID: "fasta",
+        UPSTREAM_EMPTY_CALCULATION_ID: "typed_empty_json",
         REFERENCE_ONLY_ALIGNMENT_CALCULATION_ID: "aligned_fasta",
         EMPTY_MEMBERSHIP_CALCULATION_ID: "csv",
     }
@@ -682,6 +696,42 @@ def finalization_calculation_receipt() -> dict[str, object]:
     }
 
 
+def validate_installed_calculation_receipt(
+    receipt: Mapping[str, object],
+) -> dict[str, object]:
+    """Validate one exact receipt from the closed AOX calculation surface."""
+    normalized = dict(receipt)
+    calculation_id = normalized.get("calculation_id")
+    if calculation_id == aox_candidate.CALCULATION_ID:
+        return aox_candidate.validate_calculation_receipt(normalized)
+    if calculation_id == FINALIZATION_CALCULATION_ID:
+        if normalized != finalization_calculation_receipt():
+            raise ScientificPrerequisiteError(
+                "aox_finalization_calculation_receipt_invalid",
+                "AOX finalization receipt does not match the installed calculation",
+            )
+        return normalized
+    if calculation_id in {
+        aox_hmmer.CONTRACT_ID,
+        aox_sequence_join.CONTRACT_ID,
+    }:
+        return _validate_source_receipt(
+            normalized,
+            allowed_calculation_ids=frozenset({calculation_id}),
+        )
+    if calculation_id in {
+        UPSTREAM_EMPTY_CALCULATION_ID,
+        REFERENCE_ONLY_ALIGNMENT_CALCULATION_ID,
+        EMPTY_MEMBERSHIP_CALCULATION_ID,
+    }:
+        return validate_conditional_receipt(normalized)
+    raise ScientificPrerequisiteError(
+        "aox_finalization_calculation_receipt_unknown",
+        "AOX finalization receipt names an uninstalled calculation",
+        details={"calculation_id": calculation_id},
+    )
+
+
 def installed_calculation_manifest() -> dict[str, object]:
     calculations: dict[str, dict[str, object]] = {
         aox_candidate.CALCULATION_ID: {
@@ -716,12 +766,13 @@ def installed_calculation_manifest() -> dict[str, object]:
     }
     callable_names = (
         "aox_candidate.filter_motif_candidates",
+        "aox_finalization.adopt_producer_result",
         "aox_finalization.finalization_calculation_receipt",
         "aox_finalization.finalize_deliverable_bundle",
         "aox_finalization.hmmer_zero_source_receipt",
-        "aox_finalization.materialize_empty_membership",
-        "aox_finalization.materialize_reference_only_alignment",
-        "aox_finalization.materialize_upstream_empty",
+        "aox_finalization.encode_empty_membership",
+        "aox_finalization.encode_reference_only_alignment",
+        "aox_finalization.encode_upstream_empty",
         "aox_finalization.sequence_join_zero_source_receipt",
         "aox_finalization.validate_conditional_receipt",
     )
@@ -740,6 +791,7 @@ def installed_calculation_manifest() -> dict[str, object]:
 
 __all__ = [
     "CALCULATION_CONTRACT_DIGESTS",
+    "CONDITIONAL_EMPTY_FILE_SCHEMA_ID",
     "CONDITIONAL_EMPTY_RESULT_SCHEMA_ID",
     "ConditionalEmptyResult",
     "EMPTY_MEMBERSHIP_CALCULATION_ID",
@@ -748,17 +800,20 @@ __all__ = [
     "FINALIZATION_RECEIPT_SCHEMA_ID",
     "FINAL_BUNDLE_PROFILE_ID",
     "FIXED_DELIVERABLE_PATHS",
+    "FIXED_DELIVERABLE_ROLES",
     "IMPLEMENTATION_DIGEST",
     "REFERENCE_ONLY_ALIGNMENT_CALCULATION_ID",
     "UPSTREAM_EMPTY_CALCULATION_ID",
     "ZERO_SOURCE_RECEIPT_SCHEMA_ID",
+    "adopt_producer_result",
     "finalization_calculation_receipt",
     "finalize_deliverable_bundle",
     "hmmer_zero_source_receipt",
     "installed_calculation_manifest",
-    "materialize_empty_membership",
-    "materialize_reference_only_alignment",
-    "materialize_upstream_empty",
+    "encode_empty_membership",
+    "encode_reference_only_alignment",
+    "encode_upstream_empty",
     "sequence_join_zero_source_receipt",
     "validate_conditional_receipt",
+    "validate_installed_calculation_receipt",
 ]

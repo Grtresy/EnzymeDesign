@@ -148,10 +148,6 @@ class SshCommandCompiler:
         elif self.control_path is not None:
             raise ValueError("disabled transport must not receive a control path")
 
-    @classmethod
-    def legacy(cls, target: str) -> "SshCommandCompiler":
-        return cls(target=target, policy=SshTransportPolicy())
-
     def option_argv(self) -> list[str]:
         options = list(_BASE_SSH_OPTIONS)
         if self.policy.mode is SshTransportMode.CONTROLMASTER_V1:
@@ -726,7 +722,10 @@ class SshTransportManager:
             yield SshTransportChannel(
                 identity_digest=self.identity.identity_digest,
                 generation=0,
-                compiler=SshCommandCompiler.legacy(self.config.cluster.ssh_target),
+                compiler=SshCommandCompiler(
+                    target=self.config.cluster.ssh_target,
+                    policy=SshTransportPolicy(),
+                ),
             )
             return
         with self._lock:
@@ -1048,7 +1047,3 @@ class SshTransportManager:
         if generation.control_path.exists() and not generation.control_path.is_symlink():
             if stat.S_ISSOCK(generation.control_path.lstat().st_mode):
                 generation.control_path.unlink()
-
-
-def compile_legacy_ssh(target: str, remote_argv: list[str]) -> list[str]:
-    return SshCommandCompiler.legacy(target).ssh(remote_argv)

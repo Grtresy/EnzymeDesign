@@ -8,9 +8,10 @@ from typing import Protocol
 from typing import TypeAlias
 from typing import runtime_checkable
 
-from openzyme_domain import ControlledOperation
 from openzyme_domain import ControlledOperationExecution
 from openzyme_domain import ContinuationState
+from openzyme_domain import AgentCapabilityLeaseStatus
+from openzyme_domain import AgentGitWorkspaceStatus
 from openzyme_domain import MutationWriterKind
 from openzyme_domain import SessionRuntimeLease
 
@@ -73,6 +74,41 @@ class SandboxProcessHostAuthority:
         if self.process_epoch < 1:
             raise SandboxHostAuthorityError(
                 "sandbox-process Host authority requires a positive process epoch"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class AgentCapsuleHostAuthority:
+    session_id: str
+    agent_member_id: str
+    agent_id: str
+    workspace_id: str
+    workspace_generation: int
+    workspace_state_version: int
+    capability_lease_id: str
+    capability_lease_version: int
+    process_epoch: int
+
+    def __post_init__(self) -> None:
+        for value, field_name in (
+            (self.session_id, "session_id"),
+            (self.agent_member_id, "agent_member_id"),
+            (self.agent_id, "agent_id"),
+            (self.workspace_id, "workspace_id"),
+            (self.capability_lease_id, "capability_lease_id"),
+        ):
+            _require_identity(value, field_name)
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 1
+            for value in (
+                self.workspace_generation,
+                self.workspace_state_version,
+                self.capability_lease_version,
+                self.process_epoch,
+            )
+        ):
+            raise SandboxHostAuthorityError(
+                "agent-capsule Host authority requires positive versions and epoch"
             )
 
 
@@ -186,6 +222,7 @@ class ContinuationDeliveryHostAuthority:
 SandboxHostOwnerAuthority: TypeAlias = (
     SessionTurnHostAuthority
     | SandboxProcessHostAuthority
+    | AgentCapsuleHostAuthority
     | DurableExecutionHostAuthority
     | ContinuationDeliveryHostAuthority
 )
@@ -214,6 +251,7 @@ class SandboxHostCallContext:
         if type(self.owner) not in {
             SessionTurnHostAuthority,
             SandboxProcessHostAuthority,
+            AgentCapsuleHostAuthority,
             DurableExecutionHostAuthority,
             ContinuationDeliveryHostAuthority,
         }:
@@ -253,6 +291,58 @@ class SandboxHostCallContext:
         if owner != expected:
             raise SandboxHostAuthorityError(
                 "sandbox callback process identity does not match its Host context"
+            )
+        return owner
+
+    def require_current_agent_capsule(self) -> AgentCapsuleHostAuthority:
+        owner = self.owner
+        if not isinstance(owner, AgentCapsuleHostAuthority):
+            raise SandboxHostAuthorityError(
+                "capsule callback requires agent-capsule Host authority"
+            )
+        workspace = self.repositories.agent_git_workspaces.get_current(
+            session_id=owner.session_id,
+            agent_member_id=owner.agent_member_id,
+        )
+        lease = self.repositories.agent_capability_leases.get(
+            owner.capability_lease_id
+        )
+        if (
+            workspace is None
+            or workspace.status is not AgentGitWorkspaceStatus.READY
+            or lease is None
+            or lease.status is not AgentCapabilityLeaseStatus.ACTIVE
+            or (
+                workspace.session_id,
+                workspace.agent_member_id,
+                workspace.agent_id,
+                workspace.workspace_id,
+                workspace.workspace_generation,
+                workspace.state_version,
+                workspace.capability_lease_id,
+                lease.state_version,
+                lease.session_id,
+                lease.agent_member_id,
+                lease.agent_id,
+                lease.workspace_generation,
+            )
+            != (
+                owner.session_id,
+                owner.agent_member_id,
+                owner.agent_id,
+                owner.workspace_id,
+                owner.workspace_generation,
+                owner.workspace_state_version,
+                owner.capability_lease_id,
+                owner.capability_lease_version,
+                owner.session_id,
+                owner.agent_member_id,
+                owner.agent_id,
+                owner.workspace_generation,
+            )
+        ):
+            raise SandboxHostAuthorityError(
+                "capsule callback workspace generation or capability lease is stale"
             )
         return owner
 
@@ -315,38 +405,13 @@ class SandboxHostCallContextFactory(Protocol):
     ) -> AbstractContextManager[SandboxHostCallContext]: ...
 
 
-@runtime_checkable
-class SandboxHostGateway(Protocol):
-    def execute_adapter_operation(
-        self,
-        *,
-        operation: ControlledOperation,
-        envelope: dict[str, object],
-        context: SandboxHostCallContext,
-    ) -> dict[str, object]: ...
-
-    def fetch_hpc_outputs(
-        self,
-        *,
-        params: dict[str, object],
-        context: SandboxHostCallContext,
-    ) -> dict[str, object]: ...
-
-
-@dataclass(frozen=True, slots=True)
-class SandboxHostBinding:
-    gateway: SandboxHostGateway
-    context_factory: SandboxHostCallContextFactory
-
-
 __all__ = [
     "ContinuationDeliveryHostAuthority",
+    "AgentCapsuleHostAuthority",
     "DurableExecutionHostAuthority",
     "SandboxHostAuthorityError",
-    "SandboxHostBinding",
     "SandboxHostCallContext",
     "SandboxHostCallContextFactory",
-    "SandboxHostGateway",
     "SandboxHostOwnerAuthority",
     "SandboxMutationWriterScopeFactory",
     "SandboxProcessHostAuthority",

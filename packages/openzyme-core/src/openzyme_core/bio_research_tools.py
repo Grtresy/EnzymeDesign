@@ -24,7 +24,7 @@ from openzyme_research import safe_literature_evidence_payload
 from openzyme_research import safe_public_locator
 from openzyme_research import structure_hits_to_findings
 
-from .artifact_projection import sanitize_private_artifact_fields
+from openzyme_runtime import sanitize_public_diagnostic_payload
 from .harness import SessionRuntimeContext
 from .harness import ToolInvocation
 from .harness import ToolRegistry
@@ -259,7 +259,9 @@ def _finish_research_tool_invocation(
     observation: ResearchObservation,
 ) -> dict[str, Any]:
     now = utc_now_iso()
-    observation_payload = sanitize_private_artifact_fields(observation.to_dict())
+    observation_payload = sanitize_public_diagnostic_payload(observation.to_dict())
+    if not isinstance(observation_payload, dict):
+        raise TypeError("research observation projection must be an object")
     write_result = write_json_to_current_agent_workspace(
         context,
         repository_path=_research_file_path(

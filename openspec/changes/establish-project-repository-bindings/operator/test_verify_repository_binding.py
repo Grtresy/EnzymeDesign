@@ -267,6 +267,9 @@ def _valid_acceptance() -> tuple[
     dict[str, str],
 ]:
     documents, digests = _acceptance_context()
+    published_acceptance = VERIFIER.load_document("acceptance")
+    publication_revision = VERIFIER.publication_revision(published_acceptance)
+    assert publication_revision is not None
     plan, mainline_receipt, verification = _mainline_evidence()
     source_identity = plan["source_identity"]
     preflight = documents["preflight"]
@@ -293,7 +296,7 @@ def _valid_acceptance() -> tuple[
             "sqlite_schema_after": 38,
             "migration_id": "038_v3_project_repository_bindings",
             "migration_sha256": VERIFIER.digest_bytes(
-                (VERIFIER.REPOSITORY_ROOT / VERIFIER.MIGRATION_PATH).read_bytes()
+                VERIFIER._git_file(publication_revision, VERIFIER.MIGRATION_PATH)
             ),
             "binding_schema": "project_repository_binding@1",
             "session_pin_schema": "session_repository_binding_pin@1",

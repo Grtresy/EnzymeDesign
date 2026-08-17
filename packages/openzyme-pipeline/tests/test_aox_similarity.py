@@ -434,7 +434,7 @@ def test_schema_valid_empty_graph_has_headers_reason_and_no_fabricated_rows() ->
     assert result.manifest()["node_count"] == 0
     assert result.manifest()["edge_count"] == 0
 
-    verified = aox_similarity.validate_graph_artifacts(
+    verified = aox_similarity.validate_graph_files(
         b"",
         EMPTY_MEMBERSHIP,
         result.nodes_csv(),
@@ -628,10 +628,10 @@ def test_input_byte_digest_drift_is_rejected(field: str, code: str) -> None:
     assert _error_code(error) == code
 
 
-def test_graph_artifacts_round_trip_through_real_recomputation() -> None:
+def test_graph_files_round_trip_through_real_recomputation() -> None:
     result = _sample_result()
 
-    verified = aox_similarity.validate_graph_artifacts(
+    verified = aox_similarity.validate_graph_files(
         SAMPLE_FASTA,
         SAMPLE_MEMBERSHIP,
         result.nodes_csv(),
@@ -658,7 +658,7 @@ def test_node_sequence_and_cluster_tampering_is_rejected() -> None:
         ),
     )
     with pytest.raises(aox_similarity.ScientificPrerequisiteError) as digest_error:
-        aox_similarity.validate_graph_artifacts(
+        aox_similarity.validate_graph_files(
             SAMPLE_FASTA,
             SAMPLE_MEMBERSHIP,
             tampered_digest,
@@ -674,7 +674,7 @@ def test_node_sequence_and_cluster_tampering_is_rejected() -> None:
         lambda row: row.update({"cluster_id": "cluster_0"}),
     )
     with pytest.raises(aox_similarity.ScientificPrerequisiteError) as cluster_error:
-        aox_similarity.validate_graph_artifacts(
+        aox_similarity.validate_graph_files(
             SAMPLE_FASTA,
             SAMPLE_MEMBERSHIP,
             constant_cluster,
@@ -694,7 +694,7 @@ def test_constant_or_copied_edge_similarity_is_rejected_by_recomputation() -> No
     )
 
     with pytest.raises(aox_similarity.ScientificPrerequisiteError) as error:
-        aox_similarity.validate_graph_artifacts(
+        aox_similarity.validate_graph_files(
             SAMPLE_FASTA,
             SAMPLE_MEMBERSHIP,
             result.nodes_csv(),
@@ -739,7 +739,7 @@ def test_legacy_and_unversioned_graph_schemas_are_rejected(
 ) -> None:
     result = _sample_result()
     with pytest.raises(aox_similarity.ScientificPrerequisiteError) as error:
-        aox_similarity.validate_graph_artifacts(
+        aox_similarity.validate_graph_files(
             SAMPLE_FASTA,
             SAMPLE_MEMBERSHIP,
             nodes or result.nodes_csv(),
@@ -756,7 +756,7 @@ def test_manifest_field_digest_and_canonical_bytes_are_verified() -> None:
     payload["edge_count"] = 99
     tampered = json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
     with pytest.raises(aox_similarity.ScientificPrerequisiteError) as field_error:
-        aox_similarity.validate_graph_artifacts(
+        aox_similarity.validate_graph_files(
             SAMPLE_FASTA,
             SAMPLE_MEMBERSHIP,
             result.nodes_csv(),
@@ -769,7 +769,7 @@ def test_manifest_field_digest_and_canonical_bytes_are_verified() -> None:
 
     noncanonical = json.dumps(result.manifest(), indent=2, sort_keys=True) + "\n"
     with pytest.raises(aox_similarity.ScientificPrerequisiteError) as bytes_error:
-        aox_similarity.validate_graph_artifacts(
+        aox_similarity.validate_graph_files(
             SAMPLE_FASTA,
             SAMPLE_MEMBERSHIP,
             result.nodes_csv(),

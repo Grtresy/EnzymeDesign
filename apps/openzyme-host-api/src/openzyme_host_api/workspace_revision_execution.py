@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
+import hashlib
+import json
+from pathlib import Path
 from typing import Any
 from typing import Callable
 from typing import Protocol
@@ -44,6 +47,119 @@ class UnavailableRunnerSchedulerCredentialIssuer:
         raise RuntimeError(
             "scheduler occurrence credential provider is not configured or qualified"
         )
+
+
+@dataclass(slots=True)
+class CommandRunnerSchedulerCredentialIssuer:
+    issue_command: tuple[str, ...]
+    executor: Any
+    timeout_seconds: int = 30
+
+    def __post_init__(self) -> None:
+        if (
+            not self.issue_command
+            or not Path(self.issue_command[0]).is_absolute()
+            or any(not value or "\x00" in value for value in self.issue_command)
+        ):
+            raise ValueError(
+                "scheduler credential issue command must use an absolute closed argv"
+            )
+        if not 1 <= self.timeout_seconds <= 300:
+            raise ValueError(
+                "scheduler credential issue timeout must be between 1 and 300 seconds"
+            )
+
+    def issue_occurrence(self, claims: dict[str, object]) -> dict[str, str]:
+        expected_claims = {
+            "schema_version",
+            "occurrence_id",
+            "dispatch_id",
+            "execution_id",
+            "execution_fencing_token",
+            "target_profile_digest",
+            "reservation_nonce_digest",
+            "scheduler_marker",
+            "payload_digest",
+            "protected_wrapper_audience",
+            "expires_at",
+        }
+        if (
+            not isinstance(claims, dict)
+            or set(claims) != expected_claims
+            or claims["schema_version"]
+            != "scheduler_occurrence_credential_claims@1"
+        ):
+            raise ValueError("scheduler occurrence credential claims are not closed")
+        encoded_claims = json.dumps(
+            claims,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        claims_digest = "sha256:" + hashlib.sha256(
+            encoded_claims.encode("utf-8")
+        ).hexdigest()
+        request = {
+            "schema_version": "scheduler_occurrence_credential_issue_request@1",
+            "claims": claims,
+            "claims_digest": claims_digest,
+            "login_or_file_authority": False,
+            "interactive_authority": False,
+        }
+        result = self.executor.run(
+            self.issue_command,
+            stdin=json.dumps(
+                request,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            timeout_seconds=self.timeout_seconds,
+        )
+        if result.returncode != 0:
+            diagnostic_digest = hashlib.sha256(
+                result.stderr.encode("utf-8", errors="replace")
+            ).hexdigest()
+            raise RuntimeError(
+                "scheduler credential issuer failed: "
+                f"exit={result.returncode} stderr_sha256={diagnostic_digest}"
+            )
+        try:
+            response = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                "scheduler credential issuer returned invalid JSON"
+            ) from exc
+        expected_response = {
+            "schema_version",
+            "claims_digest",
+            "occurrence_id",
+            "credential_fingerprint",
+            "authentication_receipt_digest",
+            "issued_at",
+            "opaque_token",
+        }
+        if (
+            not isinstance(response, dict)
+            or set(response) != expected_response
+            or response["schema_version"]
+            != "scheduler_occurrence_credential_issue_result@1"
+            or response["claims_digest"] != claims_digest
+            or response["occurrence_id"] != claims["occurrence_id"]
+        ):
+            raise ValueError(
+                "scheduler credential issuer response identity is invalid"
+            )
+        return {
+            key: str(response[key])
+            for key in (
+                "occurrence_id",
+                "credential_fingerprint",
+                "authentication_receipt_digest",
+                "issued_at",
+                "opaque_token",
+            )
+        }
 
 
 RepositoryScopeFactory = Callable[[], AbstractContextManager[CoreRepositories]]
@@ -105,6 +221,7 @@ class WorkspaceRevisionExecutionDurableWorker:
                     self.scheduler_credential_issuer
                 ),
             )
+            completed = False
             try:
                 intent = (
                     repositories.workspace_revision_executions.get_dispatch_intent_by_execution(
@@ -137,23 +254,26 @@ class WorkspaceRevisionExecutionDurableWorker:
                 else:
                     updated = claimed
                     action = "not_claimable"
-            except Exception:
-                current = repositories.controlled_operation_executions.get(
-                    claimed.execution_id
-                )
-                if (
-                    current is not None
-                    and current.lease_token == claimed.lease_token
-                    and current.fencing_token == claimed.fencing_token
-                    and current.lease_token is not None
-                ):
-                    ControlledOperationExecutionLeaseService(repositories).release(
-                        current.execution_id,
-                        lease_token=current.lease_token,
-                        fencing_token=current.fencing_token,
-                        expected_state_version=current.state_version,
+                completed = True
+            finally:
+                if not completed:
+                    current = repositories.controlled_operation_executions.get(
+                        claimed.execution_id
                     )
-                raise
+                    if (
+                        current is not None
+                        and current.lease_token == claimed.lease_token
+                        and current.fencing_token == claimed.fencing_token
+                        and current.lease_token is not None
+                    ):
+                        ControlledOperationExecutionLeaseService(
+                            repositories
+                        ).release(
+                            current.execution_id,
+                            lease_token=current.lease_token,
+                            fencing_token=current.fencing_token,
+                            expected_state_version=current.state_version,
+                        )
         return ControlledOperationExecutionWorkerOutcome(
             execution_id=updated.execution_id,
             action=action,
@@ -330,7 +450,7 @@ class HostWorkspaceJobBackend(WorkspaceJobBackend):
                 if scheduler_credential is not None:
                     raise ValueError("direct dispatch rejects a scheduler credential")
                 response = self.runner.dispatch_direct(runspec)
-        except Exception as exc:
+        except (OSError, RuntimeError, ValueError) as exc:
             error_code = str(getattr(exc, "error_code", "workspace_dispatch_rejected"))
             disposition = (
                 WorkspaceDispatchDisposition.IN_DOUBT
@@ -489,6 +609,7 @@ class HostWorkspaceJobBackend(WorkspaceJobBackend):
 
 __all__ = [
     "HostRunnerSchedulerCredentialProvider",
+    "CommandRunnerSchedulerCredentialIssuer",
     "HostWorkspaceJobBackend",
     "HostWorkspaceRevisionSourcePreparer",
     "RunnerSchedulerCredentialIssuer",

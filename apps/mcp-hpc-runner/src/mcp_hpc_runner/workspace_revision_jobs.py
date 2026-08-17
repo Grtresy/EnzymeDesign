@@ -11,9 +11,11 @@ import re
 import stat
 import threading
 from typing import Any
+from typing import Protocol
 
 from .config import RunnerConfig
 from .models import ExecutorWorkspaceRunSpec
+from .transport import SshTransportError
 from .transport import SshTransportManager
 
 
@@ -22,6 +24,16 @@ _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}")
 _PREPARE_SCHEMA = "workspace_revision_source_prepare_request@1"
 _QUALIFICATION_SCHEMA = "workspace_job_runner_target_qualification@1"
 _CREDENTIAL_SCHEMA = "scheduler_occurrence_credential@1"
+
+
+class PrivateExecutorWorkspaceResolver(Protocol):
+    def resolve_private_workspace(
+        self,
+        *,
+        workspace_id: str,
+        remote_workspace_generation: int,
+        target_profile_digest: str,
+    ) -> dict[str, Any]: ...
 
 
 def _canonical_json(value: object) -> str:
@@ -319,9 +331,15 @@ class WorkspaceRevisionJobNoEffect(WorkspaceRevisionJobError):
 class WorkspaceRevisionJobService:
     """Invoke only an operator-qualified remote wrapper and preserve one ledger."""
 
-    def __init__(self, config: RunnerConfig, transport: SshTransportManager) -> None:
+    def __init__(
+        self,
+        config: RunnerConfig,
+        transport: SshTransportManager,
+        workspace_resolver: PrivateExecutorWorkspaceResolver,
+    ) -> None:
         self.config = config
         self.transport = transport
+        self.workspace_resolver = workspace_resolver
         self._lock = threading.RLock()
         self._root = config.control_root / "workspace-revision-jobs"
 
@@ -335,19 +353,214 @@ class WorkspaceRevisionJobService:
             runner_policy_digest=request.runner_policy_digest,
             toolchain_digest=request.toolchain_digest,
         )
-        response = self._invoke_wrapper(
-            qualification,
-            "prepare-source",
-            request.to_dict(),
-            stage="workspace_source_prepare",
+        workspace = self._private_workspace(
+            workspace_id=request.workspace_id,
+            generation=request.remote_workspace_generation,
+            target_profile_digest=request.target_profile_digest,
         )
-        manifest = self._validate_manifest_response(request, response)
+        cache_identity = self._source_cache_identity(request)
+        cache_key = _digest(cache_identity)
+        cache_path = self._record_path(
+            "source-cache-bindings",
+            cache_key.removeprefix("sha256:"),
+        )
         with self._lock:
+            cached = self._read_optional(cache_path)
+        action = "prepare-source"
+        envelope: dict[str, object] = {
+            "schema_version": "workspace_revision_source_private_envelope@2",
+            "request": request.to_dict(),
+            "workspace": workspace,
+            "cache": {
+                "schema_version": "verified_compute_tree_cache_request@1",
+                "cache_key": cache_key,
+                "identity": cache_identity,
+                "prior_entries_digest": None,
+                "prior_manifest_digest": None,
+            },
+        }
+        if cached is not None:
+            cache_binding = self._validate_source_cache_binding(
+                cached,
+                expected_key=cache_key,
+                expected_identity=cache_identity,
+            )
+            action = "validate-source-cache"
+            envelope["cache"] = {
+                "schema_version": "verified_compute_tree_cache_request@1",
+                "cache_key": cache_key,
+                "identity": cache_identity,
+                "prior_entries_digest": cache_binding["entries_digest"],
+                "prior_manifest_digest": cache_binding["manifest_digest"],
+            }
+        try:
+            response = self._invoke_wrapper(
+                qualification,
+                action,
+                envelope,
+                stage=(
+                    "workspace_source_cache_validate"
+                    if cached is not None
+                    else "workspace_source_prepare"
+                ),
+            )
+        except (SshTransportError, WorkspaceRevisionJobError) as exc:
+            if cached is not None:
+                raise WorkspaceRevisionJobNoEffect(
+                    "verified compute-tree cache fresh validation failed; fallback is forbidden"
+                ) from exc
+            raise
+        if cached is not None:
+            response = self._validate_source_cache_response(
+                response,
+                cache_key=cache_key,
+                prior_entries_digest=str(cache_binding["entries_digest"]),
+            )
+        manifest = self._validate_manifest_response(request, response)
+        entries_digest = _digest(manifest["entries"])
+        if cached is not None and entries_digest != cache_binding["entries_digest"]:
+            raise WorkspaceRevisionJobNoEffect(
+                "verified compute-tree cache content drifted; fallback is forbidden"
+            )
+        if cached is None:
+            cache_binding = self._source_cache_binding(
+                cache_key=cache_key,
+                identity=cache_identity,
+                manifest=manifest,
+            )
+        with self._lock:
+            self._write_once(cache_path, cache_binding)
             self._write_once(
                 self._record_path("sources", request.request_id),
                 manifest,
             )
         return manifest
+
+    @staticmethod
+    def _source_cache_identity(
+        request: WorkspaceRevisionSourcePrepareRequest,
+    ) -> dict[str, object]:
+        return {
+            "schema_version": "verified_compute_tree_cache_identity@1",
+            "workspace_id": request.workspace_id,
+            "remote_workspace_generation": request.remote_workspace_generation,
+            "repository_binding_id": request.repository_binding_id,
+            "repository_binding_version": request.repository_binding_version,
+            "repository_binding_digest": request.repository_binding_digest,
+            "repository_policy_digest": request.repository_policy_digest,
+            "target_profile_digest": request.target_profile_digest,
+            "runner_policy_digest": request.runner_policy_digest,
+            "source_commit": request.source_commit,
+            "source_tree": request.source_tree,
+            "source_ref": request.source_ref,
+            "lfs_closure_manifest_digest": request.lfs_closure_manifest_digest,
+            "toolchain_digest": request.toolchain_digest,
+            "owner_identity_digest": request.owner_identity_digest,
+        }
+
+    @staticmethod
+    def _source_cache_binding(
+        *,
+        cache_key: str,
+        identity: dict[str, object],
+        manifest: dict[str, Any],
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "schema_version": "verified_compute_tree_cache_binding@1",
+            "cache_key": cache_key,
+            "identity": identity,
+            "entries_digest": _digest(manifest["entries"]),
+            "manifest_digest": manifest["manifest_digest"],
+            "validated_at": manifest["created_at"],
+        }
+        return {**payload, "binding_digest": _digest(payload)}
+
+    @staticmethod
+    def _validate_source_cache_binding(
+        value: object,
+        *,
+        expected_key: str,
+        expected_identity: dict[str, object],
+    ) -> dict[str, Any]:
+        fields = frozenset(
+            {
+                "schema_version",
+                "cache_key",
+                "identity",
+                "entries_digest",
+                "manifest_digest",
+                "validated_at",
+                "binding_digest",
+            }
+        )
+        try:
+            binding = _require_exact_object(
+                value,
+                fields=fields,
+                label="verified compute-tree cache binding",
+            )
+        except ValueError as exc:
+            raise WorkspaceRevisionJobNoEffect(
+                "verified compute-tree cache binding is not closed"
+            ) from exc
+        payload = {
+            key: item for key, item in binding.items() if key != "binding_digest"
+        }
+        if (
+            binding["schema_version"] != "verified_compute_tree_cache_binding@1"
+            or binding["cache_key"] != expected_key
+            or binding["identity"] != expected_identity
+            or _DIGEST.fullmatch(str(binding["entries_digest"])) is None
+            or _DIGEST.fullmatch(str(binding["manifest_digest"])) is None
+            or binding["binding_digest"] != _digest(payload)
+        ):
+            raise WorkspaceRevisionJobNoEffect(
+                "verified compute-tree cache binding drifted; fallback is forbidden"
+            )
+        return binding
+
+    @staticmethod
+    def _validate_source_cache_response(
+        value: object,
+        *,
+        cache_key: str,
+        prior_entries_digest: str,
+    ) -> dict[str, Any]:
+        fields = frozenset(
+            {
+                "schema_version",
+                "cache_key",
+                "prior_entries_digest",
+                "manifest",
+                "validated_at",
+                "validation_digest",
+            }
+        )
+        try:
+            validation = _require_exact_object(
+                value,
+                fields=fields,
+                label="verified compute-tree cache validation",
+            )
+        except ValueError as exc:
+            raise WorkspaceRevisionJobNoEffect(
+                "verified compute-tree cache validation is not closed"
+            ) from exc
+        payload = {
+            key: item for key, item in validation.items() if key != "validation_digest"
+        }
+        if (
+            validation["schema_version"]
+            != "verified_compute_tree_cache_validation@1"
+            or validation["cache_key"] != cache_key
+            or validation["prior_entries_digest"] != prior_entries_digest
+            or not isinstance(validation["manifest"], dict)
+            or validation["validation_digest"] != _digest(payload)
+        ):
+            raise WorkspaceRevisionJobNoEffect(
+                "verified compute-tree cache validation drifted; fallback is forbidden"
+            )
+        return validation["manifest"]
 
     def dispatch(
         self,
@@ -387,7 +600,15 @@ class WorkspaceRevisionJobService:
             existing = self._read_optional(handle_path)
             if existing is not None:
                 return existing
-        body: dict[str, object] = {"runspec": spec.to_dict()}
+        body: dict[str, object] = {
+            "schema_version": "workspace_job_dispatch_private_envelope@1",
+            "runspec": spec.to_dict(),
+            "workspace": self._private_workspace(
+                workspace_id=spec.executor_hpc_workspace_id,
+                generation=spec.executor_hpc_workspace_generation,
+                target_profile_digest=spec.target_profile_digest,
+            ),
+        }
         if scheduler_credential is not None:
             body["scheduler_credential"] = scheduler_credential.to_private_dict()
         try:
@@ -398,7 +619,7 @@ class WorkspaceRevisionJobService:
                 stage="workspace_job_dispatch",
                 input_text=_canonical_json(body),
             )
-        except Exception as exc:
+        except SshTransportError as exc:
             raise WorkspaceRevisionJobInDoubt(
                 "protected wrapper transport failed after dispatch invocation"
             ) from exc
@@ -486,6 +707,51 @@ class WorkspaceRevisionJobService:
 
     def observe_run(self, runner_run_id: str, *, index: int) -> dict[str, Any]:
         return self.observe(self._load_runspec(runner_run_id), index=index)
+
+    def logs_run(
+        self,
+        runner_run_id: str,
+        *,
+        tail_lines: int,
+    ) -> dict[str, Any]:
+        if (
+            not isinstance(tail_lines, int)
+            or isinstance(tail_lines, bool)
+            or tail_lines < 1
+            or tail_lines > self.config.limits.max_tail_lines
+        ):
+            raise ValueError("tail_lines is outside the bounded runner policy")
+        spec = self._load_runspec(runner_run_id)
+        handle = self._require_handle(spec)
+        observation_root = self._root / "observations"
+        prefix = f"{spec.dispatch_id}-"
+        candidates: list[tuple[int, Path]] = []
+        if observation_root.exists():
+            for path in observation_root.iterdir():
+                if not path.name.startswith(prefix) or path.suffix != ".json":
+                    continue
+                raw_index = path.stem.removeprefix(prefix)
+                if raw_index.isdecimal():
+                    candidates.append((int(raw_index), path))
+        if not candidates:
+            raise WorkspaceRevisionJobError(
+                "workspace job has no durable observation for bounded logs"
+            )
+        index, path = max(candidates)
+        observation = self._validate_observation(
+            spec,
+            handle,
+            index,
+            self._read_json(path),
+        )
+        return {
+            "schema_version": "workspace_job_logs@1",
+            "runner_run_id": runner_run_id,
+            "observation_id": observation["observation_id"],
+            "observation_digest": observation["observation_digest"],
+            "stdout": self._tail(observation["bounded_stdout"], tail_lines),
+            "stderr": self._tail(observation["bounded_stderr"], tail_lines),
+        }
 
     def cancel(
         self,
@@ -624,6 +890,35 @@ class WorkspaceRevisionJobService:
         ):
             raise WorkspaceRevisionJobError("target qualification identity drifted")
         return qualification
+
+    def _private_workspace(
+        self,
+        *,
+        workspace_id: str,
+        generation: int,
+        target_profile_digest: str,
+    ) -> dict[str, object]:
+        binding = self.workspace_resolver.resolve_private_workspace(
+            workspace_id=workspace_id,
+            remote_workspace_generation=generation,
+            target_profile_digest=target_profile_digest,
+        )
+        required = {
+            "workspace_id",
+            "remote_workspace_generation",
+            "target_profile_digest",
+            "runner_handle",
+            "remote_workspace_path",
+            "remote_sidecar_path",
+        }
+        if not required <= set(binding):
+            raise WorkspaceRevisionJobError(
+                "executor workspace private binding is incomplete"
+            )
+        return {
+            "schema_version": "executor_workspace_runner_private_locator@1",
+            **{key: binding[key] for key in sorted(required)},
+        }
 
     def _invoke_wrapper(
         self,
@@ -858,6 +1153,14 @@ class WorkspaceRevisionJobService:
             raise WorkspaceRevisionJobError(f"{label} must be an object")
         return value
 
+    @staticmethod
+    def _tail(value: object, tail_lines: int) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise WorkspaceRevisionJobError("bounded job diagnostic is invalid")
+        return "\n".join(value.splitlines()[-tail_lines:])
+
     def _record_path(self, kind: str, identity: str) -> Path:
         if _IDENTIFIER.fullmatch(identity) is None:
             raise ValueError("workspace job ledger identity is invalid")
@@ -941,6 +1244,7 @@ class WorkspaceRevisionJobService:
 
 
 __all__ = [
+    "PrivateExecutorWorkspaceResolver",
     "SchedulerOccurrenceCredential",
     "WorkspaceJobRunnerQualification",
     "WorkspaceRevisionJobError",

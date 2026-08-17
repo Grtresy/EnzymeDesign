@@ -9,8 +9,6 @@ import os
 from pathlib import Path
 import stat
 from typing import Any
-from urllib.parse import parse_qs
-from urllib.parse import urlsplit
 
 from openzyme_runtime import sanitize_public_diagnostic_payload
 
@@ -178,33 +176,6 @@ def _request_semantics(
     method: str, route: str, body: Mapping[str, Any] | None
 ) -> dict[str, Any]:
     if method == "GET":
-        if route.startswith("/v3/mutation-operations/observe?"):
-            values = parse_qs(urlsplit(route).query, strict_parsing=True)
-            allowed = {
-                "session_id",
-                "command_type",
-                "scope_ref",
-                "idempotency_key",
-                "request_digest",
-                "attempt_id",
-                "artifact_id",
-            }
-            if (
-                not {
-                    "session_id",
-                    "command_type",
-                    "scope_ref",
-                    "idempotency_key",
-                    "request_digest",
-                }
-                <= set(values)
-                or not set(values) <= allowed
-                or any(len(items) != 1 or not items[0] for items in values.values())
-            ):
-                raise PublicReceiptError(
-                    "mutation observation receipt input is malformed"
-                )
-            return {name: values[name][0] for name in sorted(values)}
         if "?replay=1&after_cursor=" not in route:
             return {}
         try:

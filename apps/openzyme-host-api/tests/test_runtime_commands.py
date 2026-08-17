@@ -11,10 +11,12 @@ import pytest
 
 from openzyme_core import AgentRuntimeOutcome
 from openzyme_core import AgentRuntimeService
+from openzyme_core import FileWorkspacePublicContractService
 from openzyme_core import MutationScopeService
 from openzyme_core import RuntimeDrainCoreReceipt
 from openzyme_core import RuntimeDrainProjectionOutcome
 from openzyme_core import RuntimeCommandWorker
+from openzyme_core import RuntimeConsistencyService
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core.agent_identity import create_agent_member
 from openzyme_domain import AgentRuntimeSignal
@@ -27,7 +29,7 @@ from openzyme_domain import SessionRuntimeLeaseMode
 from openzyme_domain import Task
 from openzyme_domain import TaskStatus
 from openzyme_host_api import HostApiDependencies
-from openzyme_host_api import build_local_eval_foundation
+from openzyme_host_api import build_configured_foundation
 from openzyme_host_api import create_app
 from openzyme_host_api.runtime_commands import HostRuntimeCommandExecutor
 from openzyme_host_api.v3_service import V3HostApiService
@@ -36,7 +38,10 @@ from openzyme_host_api.v3_service import V3RuntimeDrainResult
 from openzyme_runtime import ReliabilityRefactorSettings
 from openzyme_runtime import RuntimeDrainContract
 from tests.agent_capability_test_support import provision_ready_agent_capability
+from tests.agent_capability_test_support import activate_file_workspace_public_contract_for_test
+from tests.agent_capability_test_support import activate_file_workspace_public_contract_in_repositories_for_test
 from tests.agent_capability_test_support import ready_host_dependencies_kwargs
+from tests.agent_capability_test_support import public_test_client
 from tests.agent_capability_test_support import ready_v3_service_kwargs
 
 
@@ -45,7 +50,7 @@ def _dependencies(
     repository_provider: SQLiteRepositoryProvider | None = None,
     model_factory: object | None = None,
 ) -> HostApiDependencies:
-    foundation = build_local_eval_foundation()
+    foundation = build_configured_foundation()
     if model_factory is not None:
         foundation = replace(foundation, model_factory=model_factory)
     return HostApiDependencies(
@@ -193,6 +198,9 @@ def _seed_teammate_budget_signal(
     *,
     session_id: str,
 ) -> tuple[str, str]:
+    activate_file_workspace_public_contract_in_repositories_for_test(
+        service.repositories
+    )
     service.create_session(
         project_id="proj_runtime_commands",
         session_id=session_id,
@@ -579,6 +587,9 @@ def test_runtime_drain_keeps_master_budget_exhaustion_failed(
             event_store=V3EventStore(scope.repositories),
             model_factory=_LoopingModelFactory(),
         )
+        activate_file_workspace_public_contract_in_repositories_for_test(
+            service.repositories
+        )
         service.create_session(
             project_id="proj_runtime_commands",
             session_id="sess_master_budget_exhaustion",
@@ -619,6 +630,9 @@ def test_runtime_drain_preserves_core_receipt_across_projection_failures(
             repositories=scope.repositories,
             event_store=V3EventStore(scope.repositories),
             model_factory=object(),
+        )
+        activate_file_workspace_public_contract_in_repositories_for_test(
+            service.repositories
         )
         service.create_session(
             project_id="proj_runtime_commands",
@@ -741,6 +755,9 @@ def test_runtime_consistency_warnings_remain_read_only_across_drains(
             event_store=V3EventStore(scope.repositories),
             model_factory=object(),
         )
+        activate_file_workspace_public_contract_in_repositories_for_test(
+            service.repositories
+        )
         service.create_session(
             project_id="proj_runtime_commands",
             session_id=session_id,
@@ -792,19 +809,27 @@ def test_runtime_consistency_warnings_remain_read_only_across_drains(
             max_steps_per_agent=1,
             auto_enqueue_ready_tasks=False,
         )
+        first_audit = RuntimeConsistencyService(
+            service.repositories
+        ).audit_session(session_id)
         second = service.drain_runtime(
             session_id=session_id,
             max_signals=1,
             max_steps_per_agent=1,
             auto_enqueue_ready_tasks=False,
         )
+        second_audit = RuntimeConsistencyService(
+            service.repositories
+        ).audit_session(session_id)
         durable_event_types = [
             event.event_type
             for event in service.repositories.durable_events.list_by_session(session_id)
         ]
 
-    for result in (first, second):
-        runtime_state = result.workspace["runtime_state"]
+    for result, runtime_state in (
+        (first, first_audit.to_dict()),
+        (second, second_audit.to_dict()),
+    ):
         assert "runtime_signal_failed" in {
             warning["code"] for warning in runtime_state["warnings"]
         }
@@ -820,7 +845,7 @@ def test_session_command_routes_use_registered_mutation_writers_and_seal(
 ) -> None:
     provider = SQLiteRepositoryProvider(str(tmp_path / "mutation-scope.sqlite3"))
     dependencies = _dependencies(repository_provider=provider)
-    with TestClient(create_app(dependencies)) as client:
+    with public_test_client(dependencies) as client:
         _create_session(client, "sess_command_mutation_scope")
         with dependencies.v3_repository_scope(mode="connection") as repositories:
             scope = MutationScopeService(repositories).open_scope(
@@ -899,7 +924,7 @@ def test_runtime_drain_returns_202_before_blocked_scheduler_finishes(
 
     monkeypatch.setattr(V3HostApiService, "drain_runtime", blocked_drain)
     dependencies = _dependencies()
-    with TestClient(create_app(dependencies)) as client:
+    with public_test_client(dependencies) as client:
         _create_session(client, "sess_async_admission")
         started_at = time.monotonic()
         response = client.post(
@@ -936,7 +961,7 @@ def test_runtime_drain_returns_202_before_blocked_scheduler_finishes(
 
 def test_runtime_command_idempotency_conflict_and_strict_request_surface() -> None:
     dependencies = _dependencies()
-    with TestClient(create_app(dependencies)) as client:
+    with public_test_client(dependencies) as client:
         _create_session(client, "sess_command_identity")
         request = {"max_signals": 2, "max_steps_per_agent": 3}
         headers = {"Idempotency-Key": "drain:identity"}
@@ -991,7 +1016,7 @@ def test_runtime_command_prefer_wait_is_strict_and_post_remains_202(
 
     monkeypatch.setattr(V3HostApiService, "drain_runtime", immediate_drain)
     dependencies = _dependencies()
-    with TestClient(create_app(dependencies)) as client:
+    with public_test_client(dependencies) as client:
         _create_session(client, "sess_prefer_wait")
         completed = client.post(
             "/v3/sessions/sess_prefer_wait/runtime/drain",
@@ -1019,7 +1044,7 @@ def test_runtime_command_prefer_wait_is_strict_and_post_remains_202(
 
 def test_runtime_command_lock_is_terminal_and_cross_session_lookup_is_hidden() -> None:
     dependencies = _dependencies()
-    with TestClient(create_app(dependencies)) as client:
+    with public_test_client(dependencies) as client:
         _create_session(client, "sess_locked_command")
         _create_session(client, "sess_other_command")
         with dependencies.v3_repository_scope(mode="write") as repositories:
@@ -1112,6 +1137,7 @@ def test_host_restart_claims_an_existing_accepted_runtime_command(
 ) -> None:
     provider = SQLiteRepositoryProvider(str(tmp_path / "host-restart.sqlite3"))
     admission_dependencies = _dependencies(repository_provider=provider)
+    activate_file_workspace_public_contract_for_test(admission_dependencies)
     with admission_dependencies.v3_repository_scope(mode="write") as repositories:
         repositories.sessions.save(
             Session.create(
@@ -1120,6 +1146,9 @@ def test_host_restart_claims_an_existing_accepted_runtime_command(
                 title="Restart command",
                 objective="Recover an accepted runtime command",
             )
+        )
+        FileWorkspacePublicContractService(repositories).classify_new_session(
+            "sess_command_restart"
         )
     with admission_dependencies.v3_service_scope(mode="write") as service:
         command, created = service.admit_runtime_command(
@@ -1132,7 +1161,7 @@ def test_host_restart_claims_an_existing_accepted_runtime_command(
     assert created is True
 
     recovered_dependencies = _dependencies(repository_provider=provider)
-    with TestClient(create_app(recovered_dependencies)) as client:
+    with public_test_client(recovered_dependencies) as client:
         terminal = _wait_for_terminal(
             client,
             session_id="sess_command_restart",
@@ -1147,9 +1176,13 @@ def test_host_restart_claims_an_existing_accepted_runtime_command(
         )
     assert stored is not None
     assert stored.fencing_token == 1
-    assert [event.event_type for event in events] == [
+    event_types = [event.event_type for event in events]
+    assert event_types == [
         "runtime.command.accepted",
         "runtime.command.finished",
+    ], [
+        (event.event_id, event.event_type, event.command_id, event.payload)
+        for event in events
     ]
 
 
@@ -1176,7 +1209,7 @@ def test_runtime_api_downgrade_is_rejected_while_a_command_is_active(
             auto_enqueue_ready_tasks=False,
         )
 
-    foundation = build_local_eval_foundation()
+    foundation = build_configured_foundation()
     sync_dependencies = HostApiDependencies(
         v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=replace(
@@ -1199,7 +1232,7 @@ def test_runtime_api_downgrade_is_rejected_while_a_command_is_active(
 
 
 def test_retired_sync_runtime_api_has_no_fallback_without_active_rows() -> None:
-    foundation = build_local_eval_foundation()
+    foundation = build_configured_foundation()
     sync_dependencies = HostApiDependencies(
         v3_allow_unpinned_repository_sessions_for_tests=True,
         foundation=replace(

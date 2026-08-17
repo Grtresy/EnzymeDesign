@@ -1,6 +1,14 @@
+import { requireFileWorkspaceProjection } from "./file_workspace_state.js";
+import { FILE_WORKSPACE_RELEASE } from "./file_workspace_release.js";
+
 const jsonHeaders = {
-  Accept: "application/json",
+  Accept: FILE_WORKSPACE_RELEASE.mediaType,
   "Content-Type": "application/json",
+  "OpenZyme-Workspace-Contract": FILE_WORKSPACE_RELEASE.schemaVersion,
+  "OpenZyme-Tool-Catalog-Digest": FILE_WORKSPACE_RELEASE.toolCatalogDigest,
+  "OpenZyme-Schema-Bundle-Digest": FILE_WORKSPACE_RELEASE.schemaBundleDigest,
+  "OpenZyme-Client-Kind": "web-ui",
+  "OpenZyme-Client-Build-Digest": FILE_WORKSPACE_RELEASE.uiBuildDigest,
 };
 
 function commandHeaders() {
@@ -13,7 +21,10 @@ function buildUrl(baseUrl, path) {
 }
 
 async function requestJson(baseUrl, path, options = {}) {
-  const response = await fetch(buildUrl(baseUrl, path), options);
+  const response = await fetch(buildUrl(baseUrl, path), {
+    ...options,
+    headers: { ...jsonHeaders, ...(options.headers ?? {}) },
+  });
   if (!response.ok) {
     const raw = await response.text();
     let detail = raw;
@@ -61,11 +72,12 @@ export class HostApiClient {
       method: "POST",
       headers: commandHeaders(),
       body: JSON.stringify(payload),
-    });
+    }).then((response) => this._requireWorkspaceResponse(response));
   }
 
   getV3Session(sessionId, options = {}) {
-    return requestJson(this.baseUrl, `/v3/sessions/${sessionId}`, options);
+    return requestJson(this.baseUrl, `/v3/sessions/${sessionId}`, options)
+      .then((response) => this._requireWorkspaceResponse(response));
   }
 
   postV3Message(sessionId, payload) {
@@ -73,7 +85,7 @@ export class HostApiClient {
       method: "POST",
       headers: commandHeaders(),
       body: JSON.stringify(payload),
-    });
+    }).then((response) => this._requireWorkspaceResponse(response));
   }
 
   resolveV3Approval(approvalId, payload) {
@@ -81,7 +93,7 @@ export class HostApiClient {
       method: "POST",
       headers: commandHeaders(),
       body: JSON.stringify(payload),
-    });
+    }).then((response) => this._requireWorkspaceResponse(response));
   }
 
   listLlmDebugCalls(params = {}) {
@@ -107,13 +119,45 @@ export class HostApiClient {
   }
 
   streamV3Session(sessionId, onEvent) {
+    const query = new URLSearchParams({
+      replay: "1",
+      follow: "1",
+      envelope: "1",
+      workspace_contract: FILE_WORKSPACE_RELEASE.schemaVersion,
+      tool_catalog_digest: FILE_WORKSPACE_RELEASE.toolCatalogDigest,
+      schema_bundle_digest: FILE_WORKSPACE_RELEASE.schemaBundleDigest,
+      client_kind: "web-ui",
+      client_build_digest: FILE_WORKSPACE_RELEASE.uiBuildDigest,
+    });
     const source = new EventSource(
-      buildUrl(this.baseUrl, `/v3/sessions/${sessionId}/events?replay=1&follow=1&envelope=1`),
+      buildUrl(this.baseUrl, `/v3/sessions/${sessionId}/events?${query.toString()}`),
     );
     source.addEventListener("openzyme.event", (message) => {
-      onEvent(JSON.parse(message.data));
+      const event = JSON.parse(message.data);
+      if (event.schema_version !== FILE_WORKSPACE_RELEASE.schemaVersion) {
+        onEvent({
+          schema_version: event.schema_version,
+          event_id: event.event_id,
+        });
+        source.close();
+        return;
+      }
+      onEvent(event);
     });
     return source;
+  }
+
+  _requireWorkspaceResponse(response) {
+    if (!response?.workspace) {
+      throw new Error("file-workspace response is missing workspace state");
+    }
+    return {
+      ...response,
+      workspace: requireFileWorkspaceProjection(response.workspace, {
+        toolCatalogDigest: FILE_WORKSPACE_RELEASE.toolCatalogDigest,
+        schemaBundleDigest: FILE_WORKSPACE_RELEASE.schemaBundleDigest,
+      }),
+    };
   }
 }
 

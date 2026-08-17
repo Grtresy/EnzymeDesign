@@ -49,10 +49,7 @@ class _FakeServer:
         self.instances.append(self)
 
     def close(self) -> dict[str, object]:
-        return {
-            "clean": True,
-            "ambiguous_direct_run_count": 0,
-        }
+        return {"clean": True}
 
 
 def test_transport_soak_requires_double_opt_in_before_server_creation(
@@ -94,7 +91,6 @@ def test_transport_soak_runs_only_bounded_true_channels_and_redacts_report(
     assert server.transport_manager.commands == [["true"]] * 5
     report = json.loads(capsys.readouterr().out)
     assert report == {
-        "ambiguous_direct_run_count": 0,
         "clean_shutdown": True,
         "generation_count": 3,
         "iterations": 5,

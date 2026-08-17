@@ -28,7 +28,6 @@ from openzyme_domain import SessionRuntimeLease
 from openzyme_domain import SessionRuntimeLeaseMode
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
-from openzyme_domain import CommandLogArtifactRecord
 from openzyme_domain import ControlledOperation
 from openzyme_domain import ControlledOperationExecution
 from openzyme_domain import ControlledOperationOwnerMode
@@ -39,7 +38,6 @@ from openzyme_domain import ContinuationState
 from openzyme_domain import ContinuationStateStatus
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
-from openzyme_domain import FileAuditEntry
 from openzyme_domain import InboxMessage
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import InboxStatus
@@ -65,7 +63,6 @@ from openzyme_domain import SandboxRunStatus
 from openzyme_domain import SandboxWorkspaceRecord
 from openzyme_domain import SandboxWorkspaceStatus
 from openzyme_domain import Session
-from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionReportDraftRecord
 from openzyme_domain import SessionReportDraftStatus
 from openzyme_domain import SessionReportRecord
@@ -94,7 +91,6 @@ if TYPE_CHECKING:
         WorkspaceRevisionExecutionRepository,
     )
     from .scientific_deliverable_repositories import ScientificDeliverableRepository
-    from .historical_artifact_repositories import HistoricalArtifactRepository
     from .git_lfs_repositories import GitLfsRepository
     from .agent_git_workspace_repositories import AgentGitWorkspaceRepository
     from .workspace_checkpoint_repositories import (
@@ -148,12 +144,6 @@ if TYPE_CHECKING:
         ControlledOperationProviderObservationReceiptRepository,
     )
     from .reliability_repositories import ControlledOperationResultHandleRepository
-    from .reliability_repositories import (
-        ControlledOperationResultArtifactRepository,
-    )
-    from .scientific_attempt_repositories import (
-        ScientificArtifactMaterializationRepository,
-    )
     from .scientific_attempt_repositories import (
         ScientificAttemptAuthorizationRepository,
     )
@@ -2377,7 +2367,7 @@ class DurableEventRecord:
     created_at: str
     payload: dict[str, Any]
     cursor: int | None = None
-    schema_version: str = "openzyme.v3.event.v1"
+    schema_version: str = "file_workspace_public@1"
     visibility: str = "public"
     command_id: str | None = None
     correlation_id: str | None = None
@@ -3528,12 +3518,11 @@ class SandboxWorkspaceRecordRepository:
                 focus_task_id, focus_lane_id, status, image_ref, image_digest,
                 image_version, sandbox_protocol_version, image_compatibility,
                 manifest_version, volume_digest, quota_summary_json,
-                directory_summary_json, materialized_input_artifact_ids_json,
-                registered_artifact_ids_json, source_code_artifact_ids_json,
-                last_command_summary_json, last_error_json, created_at,
+                directory_summary_json, last_command_summary_json,
+                last_error_json, created_at,
                 last_attached_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(sandbox_workspace_id) DO UPDATE SET
                 focus_task_id = excluded.focus_task_id,
                 focus_lane_id = excluded.focus_lane_id,
@@ -3547,9 +3536,6 @@ class SandboxWorkspaceRecordRepository:
                 volume_digest = excluded.volume_digest,
                 quota_summary_json = excluded.quota_summary_json,
                 directory_summary_json = excluded.directory_summary_json,
-                materialized_input_artifact_ids_json = excluded.materialized_input_artifact_ids_json,
-                registered_artifact_ids_json = excluded.registered_artifact_ids_json,
-                source_code_artifact_ids_json = excluded.source_code_artifact_ids_json,
                 last_command_summary_json = excluded.last_command_summary_json,
                 last_error_json = excluded.last_error_json,
                 last_attached_at = excluded.last_attached_at
@@ -3571,9 +3557,6 @@ class SandboxWorkspaceRecordRepository:
                 record.volume_digest,
                 _json_dumps(record.quota_summary or {}),
                 _json_dumps(record.directory_summary or {}),
-                _json_dumps(list(record.materialized_input_artifact_ids)),
-                _json_dumps(list(record.registered_artifact_ids)),
-                _json_dumps(list(record.source_code_artifact_ids)),
                 None
                 if record.last_command_summary is None
                 else _json_dumps(record.last_command_summary),
@@ -3636,15 +3619,6 @@ class SandboxWorkspaceRecordRepository:
             volume_digest=row["volume_digest"],
             quota_summary=_json_loads_object(row["quota_summary_json"]) or {},
             directory_summary=_json_loads_object(row["directory_summary_json"]) or {},
-            materialized_input_artifact_ids=_json_loads_list(
-                row["materialized_input_artifact_ids_json"]
-            ),
-            registered_artifact_ids=_json_loads_list(
-                row["registered_artifact_ids_json"]
-            ),
-            source_code_artifact_ids=_json_loads_list(
-                row["source_code_artifact_ids_json"]
-            ),
             last_command_summary=_json_loads_object(row["last_command_summary_json"]),
             last_error=_json_loads_object(row["last_error_json"]),
             created_at=row["created_at"],
@@ -3696,13 +3670,13 @@ class SandboxRunRecordRepository:
             INSERT INTO sandbox_run_records (
                 sandbox_run_id, session_id, sandbox_workspace_id, agent_id,
                 task_id, lane_id, argv_json, argv_digest, cwd, env_digest,
-                resource_policy_json, source_snapshot_artifact_id, source_tree_digest,
+                resource_policy_json, source_tree_digest,
                 status, stdout_summary, stderr_summary, stdout_metadata_json,
                 stderr_metadata_json, exit_code, duration_ms, changed_files_summary_json,
-                log_artifact_ref, error_code,
+                error_code,
                 compatibility_json, created_at, started_at, ended_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(sandbox_run_id) DO UPDATE SET
                 status = excluded.status,
                 stdout_summary = excluded.stdout_summary,
@@ -3712,7 +3686,6 @@ class SandboxRunRecordRepository:
                 exit_code = excluded.exit_code,
                 duration_ms = excluded.duration_ms,
                 changed_files_summary_json = excluded.changed_files_summary_json,
-                log_artifact_ref = excluded.log_artifact_ref,
                 error_code = excluded.error_code,
                 compatibility_json = excluded.compatibility_json,
                 started_at = excluded.started_at,
@@ -3731,7 +3704,6 @@ class SandboxRunRecordRepository:
                 record.cwd,
                 record.env_digest,
                 _json_dumps(record.resource_policy or {}),
-                record.source_snapshot_artifact_id,
                 record.source_tree_digest,
                 record.status.value,
                 record.stdout_summary,
@@ -3745,7 +3717,6 @@ class SandboxRunRecordRepository:
                 record.exit_code,
                 record.duration_ms,
                 _json_dumps(record.changed_files_summary or {}),
-                record.log_artifact_ref,
                 record.error_code,
                 _json_dumps(record.compatibility or {}),
                 record.created_at,
@@ -3824,7 +3795,6 @@ class SandboxRunRecordRepository:
             cwd=row["cwd"],
             env_digest=row["env_digest"],
             resource_policy=_json_loads_object(row["resource_policy_json"]) or {},
-            source_snapshot_artifact_id=row["source_snapshot_artifact_id"],
             source_tree_digest=row["source_tree_digest"],
             status=SandboxRunStatus(row["status"]),
             stdout_summary=row["stdout_summary"],
@@ -3835,7 +3805,6 @@ class SandboxRunRecordRepository:
             duration_ms=row["duration_ms"],
             changed_files_summary=_json_loads_object(row["changed_files_summary_json"])
             or {},
-            log_artifact_ref=row["log_artifact_ref"],
             error_code=row["error_code"],
             compatibility=_json_loads_object(row["compatibility_json"]) or {},
             created_at=row["created_at"],
@@ -3876,20 +3845,6 @@ class ControlledOperationRepository:
             "ControlledOperation.owner_mode",
         )
         _require_session_exists(self.connection, record.session_id)
-        _require_linked_session_id(
-            self.connection,
-            table_name="sandbox_workspace_records",
-            id_column="sandbox_workspace_id",
-            record_id=record.sandbox_workspace_id,
-            expected_session_id=record.session_id,
-        )
-        _require_linked_session_id(
-            self.connection,
-            table_name="sandbox_run_records",
-            id_column="sandbox_run_id",
-            record_id=record.sandbox_run_id,
-            expected_session_id=record.session_id,
-        )
         if record.task_id is not None:
             _require_linked_session_id(
                 self.connection,
@@ -3917,25 +3872,23 @@ class ControlledOperationRepository:
         self.connection.execute(
             """
             INSERT INTO controlled_operation_records (
-                operation_id, session_id, sandbox_workspace_id, sandbox_run_id,
-                task_id, lane_id, approval_id, approval_state, logical_operation_key,
+                operation_id, session_id, task_id, lane_id, approval_id,
+                approval_state, logical_operation_key,
                 operation_digest, params_digest, backend_category, route_reason,
-                input_artifact_digests_json, source_snapshot_artifact_id,
-                source_snapshot_digest, adapter_envelope_schema_version,
+                adapter_envelope_schema_version,
                 sdk_module, function_name, route_policy_id, placement,
-                hpc_workspace_id, selected_backend, resource_class,
+                selected_backend, resource_class,
                 runtime_packaging_id, toolchain_id, provider_config_digest,
-                input_artifact_ids_json, stage_refs_json,
-                planned_fetch_intent_json, approval_requirement_json,
+                approval_requirement_json,
                 adapter_approval_envelope_json, adapter_result_envelope_json,
                 adapter_result_origin,
-                expected_outputs_summary_json, resource_estimate_json,
+                resource_estimate_json,
                 result_summary_json, error_code, error_summary,
                 idempotency_key, status, owner_mode, created_at, updated_at
             )
             VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             ON CONFLICT(operation_id) DO UPDATE SET
                 approval_id = excluded.approval_id,
@@ -3944,7 +3897,6 @@ class ControlledOperationRepository:
                 adapter_approval_envelope_json = excluded.adapter_approval_envelope_json,
                 adapter_result_envelope_json = excluded.adapter_result_envelope_json,
                 adapter_result_origin = excluded.adapter_result_origin,
-                expected_outputs_summary_json = excluded.expected_outputs_summary_json,
                 resource_estimate_json = excluded.resource_estimate_json,
                 result_summary_json = excluded.result_summary_json,
                 error_code = excluded.error_code,
@@ -3954,8 +3906,6 @@ class ControlledOperationRepository:
             (
                 record.operation_id,
                 record.session_id,
-                record.sandbox_workspace_id,
-                record.sandbox_run_id,
                 record.task_id,
                 record.lane_id,
                 record.approval_id,
@@ -3965,28 +3915,20 @@ class ControlledOperationRepository:
                 record.params_digest,
                 record.backend_category,
                 record.route_reason,
-                _json_dumps(list(record.input_artifact_digests)),
-                record.source_snapshot_artifact_id,
-                record.source_snapshot_digest,
                 record.adapter_envelope_schema_version,
                 record.sdk_module,
                 record.function_name,
                 record.route_policy_id,
                 record.placement,
-                record.hpc_workspace_id,
                 record.selected_backend,
                 record.resource_class,
                 record.runtime_packaging_id,
                 record.toolchain_id,
                 record.provider_config_digest,
-                _json_dumps(list(record.input_artifact_ids)),
-                _json_dumps([dict(item) for item in record.stage_refs]),
-                _json_dumps(record.planned_fetch_intent or {}),
                 _json_dumps(record.approval_requirement or {}),
                 _json_dumps(record.adapter_approval_envelope or {}),
                 _json_dumps(record.adapter_result_envelope or {}),
                 record.adapter_result_origin,
-                _json_dumps(record.expected_outputs_summary or {}),
                 _json_dumps(record.resource_estimate or {}),
                 _json_dumps(record.result_summary or {}),
                 record.error_code,
@@ -4050,20 +3992,6 @@ class ControlledOperationRepository:
         ).fetchone()
         return None if row is None else self._row_to_record(row)
 
-    def find_by_idempotency_key(
-        self, *, session_id: str, sandbox_run_id: str, idempotency_key: str
-    ) -> ControlledOperation | None:
-        row = self.connection.execute(
-            """
-            SELECT *
-            FROM controlled_operation_records
-            WHERE session_id = ? AND sandbox_run_id = ? AND idempotency_key = ?
-            LIMIT 1
-            """,
-            (session_id, sandbox_run_id, idempotency_key),
-        ).fetchone()
-        return None if row is None else self._row_to_record(row)
-
     def find_reusable_approved(
         self, *, session_id: str, operation_digest: str
     ) -> ControlledOperation | None:
@@ -4094,24 +4022,10 @@ class ControlledOperationRepository:
         ).fetchall()
         return [self._row_to_record(row) for row in rows]
 
-    def list_by_run(self, sandbox_run_id: str) -> list[ControlledOperation]:
-        rows = self.connection.execute(
-            """
-            SELECT *
-            FROM controlled_operation_records
-            WHERE sandbox_run_id = ?
-            ORDER BY created_at, operation_id
-            """,
-            (sandbox_run_id,),
-        ).fetchall()
-        return [self._row_to_record(row) for row in rows]
-
     def _row_to_record(self, row: sqlite3.Row) -> ControlledOperation:
         return ControlledOperation(
             operation_id=row["operation_id"],
             session_id=row["session_id"],
-            sandbox_workspace_id=row["sandbox_workspace_id"],
-            sandbox_run_id=row["sandbox_run_id"],
             task_id=row["task_id"],
             lane_id=row["lane_id"],
             approval_id=row["approval_id"],
@@ -4121,24 +4035,16 @@ class ControlledOperationRepository:
             params_digest=row["params_digest"],
             backend_category=row["backend_category"],
             route_reason=row["route_reason"],
-            input_artifact_digests=_json_loads_list(row["input_artifact_digests_json"]),
-            source_snapshot_artifact_id=row["source_snapshot_artifact_id"],
-            source_snapshot_digest=row["source_snapshot_digest"],
             adapter_envelope_schema_version=row["adapter_envelope_schema_version"],
             sdk_module=row["sdk_module"],
             function_name=row["function_name"],
             route_policy_id=row["route_policy_id"],
             placement=row["placement"],
-            hpc_workspace_id=row["hpc_workspace_id"],
             selected_backend=row["selected_backend"],
             resource_class=row["resource_class"],
             runtime_packaging_id=row["runtime_packaging_id"],
             toolchain_id=row["toolchain_id"],
             provider_config_digest=row["provider_config_digest"],
-            input_artifact_ids=_json_loads_list(row["input_artifact_ids_json"]),
-            stage_refs=_json_loads_object_tuple(row["stage_refs_json"]),
-            planned_fetch_intent=_json_loads_object(row["planned_fetch_intent_json"])
-            or {},
             approval_requirement=_json_loads_object(row["approval_requirement_json"])
             or {},
             adapter_approval_envelope=_json_loads_object(
@@ -4150,10 +4056,6 @@ class ControlledOperationRepository:
             )
             or {},
             adapter_result_origin=row["adapter_result_origin"],
-            expected_outputs_summary=_json_loads_object(
-                row["expected_outputs_summary_json"]
-            )
-            or {},
             resource_estimate=_json_loads_object(row["resource_estimate_json"]) or {},
             result_summary=_json_loads_object(row["result_summary_json"]) or {},
             error_code=row["error_code"],
@@ -4471,169 +4373,6 @@ class ContinuationStateRepository:
             delivery_lease_token=row["delivery_lease_token"],
             delivery_lease_expires_at=row["delivery_lease_expires_at"],
             delivery_fencing_token=int(row["delivery_fencing_token"]),
-        )
-
-
-@dataclass(slots=True)
-class FileAuditEntryRepository:
-    connection: sqlite3.Connection
-
-    def save(self, entry: FileAuditEntry) -> None:
-        _require_session_exists(self.connection, entry.session_id)
-        workspace = self.connection.execute(
-            "SELECT session_id FROM sandbox_workspace_records WHERE sandbox_workspace_id = ?",
-            (entry.sandbox_workspace_id,),
-        ).fetchone()
-        if workspace is None:
-            raise OwnershipError(
-                f"sandbox_workspace_records.sandbox_workspace_id={entry.sandbox_workspace_id!r} does not exist"
-            )
-        if workspace["session_id"] != entry.session_id:
-            raise OwnershipError(
-                f"sandbox workspace {entry.sandbox_workspace_id!r} belongs to session {workspace['session_id']!r}, not {entry.session_id!r}"
-            )
-        if entry.task_id is not None:
-            _require_linked_session_id(
-                self.connection,
-                table_name="tasks",
-                id_column="task_id",
-                record_id=entry.task_id,
-                expected_session_id=entry.session_id,
-            )
-        if entry.lane_id is not None:
-            _require_linked_session_id(
-                self.connection,
-                table_name="lanes",
-                id_column="lane_id",
-                record_id=entry.lane_id,
-                expected_session_id=entry.session_id,
-            )
-        self.connection.execute(
-            """
-            INSERT INTO sandbox_file_audit_entries (
-                audit_id, session_id, sandbox_workspace_id, actor_ref, task_id,
-                lane_id, operation, path, old_digest, new_digest, sandbox_run_id,
-                details_json, created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                entry.audit_id,
-                entry.session_id,
-                entry.sandbox_workspace_id,
-                entry.actor_ref,
-                entry.task_id,
-                entry.lane_id,
-                entry.operation,
-                entry.path,
-                entry.old_digest,
-                entry.new_digest,
-                entry.sandbox_run_id,
-                _json_dumps(entry.details or {}),
-                entry.created_at,
-            ),
-        )
-        _commit(self.connection)
-
-    def list_by_workspace(self, sandbox_workspace_id: str) -> list[FileAuditEntry]:
-        rows = self.connection.execute(
-            """
-            SELECT * FROM sandbox_file_audit_entries
-            WHERE sandbox_workspace_id = ?
-            ORDER BY created_at, rowid
-            """,
-            (sandbox_workspace_id,),
-        ).fetchall()
-        return [self._row_to_entry(row) for row in rows]
-
-    def _row_to_entry(self, row: sqlite3.Row) -> FileAuditEntry:
-        return FileAuditEntry(
-            audit_id=row["audit_id"],
-            session_id=row["session_id"],
-            sandbox_workspace_id=row["sandbox_workspace_id"],
-            actor_ref=row["actor_ref"],
-            task_id=row["task_id"],
-            lane_id=row["lane_id"],
-            operation=row["operation"],
-            path=row["path"],
-            old_digest=row["old_digest"],
-            new_digest=row["new_digest"],
-            sandbox_run_id=row["sandbox_run_id"],
-            details=_json_loads_object(row["details_json"]) or {},
-            created_at=row["created_at"],
-        )
-
-
-@dataclass(slots=True)
-class CommandLogArtifactRepository:
-    connection: sqlite3.Connection
-
-    def save(self, record: CommandLogArtifactRecord) -> None:
-        _require_session_exists(self.connection, record.session_id)
-        run = self.connection.execute(
-            """
-            SELECT session_id, sandbox_workspace_id FROM sandbox_run_records
-            WHERE sandbox_run_id = ?
-            """,
-            (record.sandbox_run_id,),
-        ).fetchone()
-        if run is None:
-            raise OwnershipError(
-                f"sandbox_run_records.sandbox_run_id={record.sandbox_run_id!r} does not exist"
-            )
-        if (
-            run["session_id"] != record.session_id
-            or run["sandbox_workspace_id"] != record.sandbox_workspace_id
-        ):
-            raise OwnershipError(
-                "command log artifact does not belong to the sandbox run session/workspace"
-            )
-        self.connection.execute(
-            """
-            INSERT INTO sandbox_command_log_artifacts (
-                command_log_id, session_id, sandbox_run_id, sandbox_workspace_id,
-                stream, artifact_ref, size_bytes, content_digest, truncated, created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                record.command_log_id,
-                record.session_id,
-                record.sandbox_run_id,
-                record.sandbox_workspace_id,
-                record.stream,
-                record.artifact_ref,
-                record.size_bytes,
-                record.content_digest,
-                int(record.truncated),
-                record.created_at,
-            ),
-        )
-        _commit(self.connection)
-
-    def list_by_run(self, sandbox_run_id: str) -> list[CommandLogArtifactRecord]:
-        rows = self.connection.execute(
-            """
-            SELECT * FROM sandbox_command_log_artifacts
-            WHERE sandbox_run_id = ?
-            ORDER BY created_at, stream
-            """,
-            (sandbox_run_id,),
-        ).fetchall()
-        return [self._row_to_record(row) for row in rows]
-
-    def _row_to_record(self, row: sqlite3.Row) -> CommandLogArtifactRecord:
-        return CommandLogArtifactRecord(
-            command_log_id=row["command_log_id"],
-            session_id=row["session_id"],
-            sandbox_run_id=row["sandbox_run_id"],
-            sandbox_workspace_id=row["sandbox_workspace_id"],
-            stream=row["stream"],
-            artifact_ref=row["artifact_ref"],
-            size_bytes=int(row["size_bytes"]),
-            content_digest=row["content_digest"],
-            truncated=bool(row["truncated"]),
-            created_at=row["created_at"],
         )
 
 
@@ -6323,368 +6062,6 @@ class RunRecordRepository:
 
 
 @dataclass(slots=True)
-class SessionArtifactRepository:
-    connection: sqlite3.Connection
-
-    def save(self, artifact: SessionArtifactRecord) -> None:
-        _require_session_exists(self.connection, artifact.session_id)
-        if artifact.invocation_id is not None:
-            _require_linked_session_id(
-                self.connection,
-                table_name="engine_invocations",
-                id_column="invocation_id",
-                record_id=artifact.invocation_id,
-                expected_session_id=artifact.session_id,
-            )
-        if artifact.task_id is not None:
-            _require_linked_session_id(
-                self.connection,
-                table_name="tasks",
-                id_column="task_id",
-                record_id=artifact.task_id,
-                expected_session_id=artifact.session_id,
-            )
-        if artifact.lane_id is not None:
-            _require_linked_session_id(
-                self.connection,
-                table_name="lanes",
-                id_column="lane_id",
-                record_id=artifact.lane_id,
-                expected_session_id=artifact.session_id,
-            )
-        if artifact.run_id is not None:
-            _require_linked_session_id(
-                self.connection,
-                table_name="session_run_records",
-                id_column="run_id",
-                record_id=artifact.run_id,
-                expected_session_id=artifact.session_id,
-            )
-        self.connection.execute(
-            """
-            INSERT INTO session_artifact_records (
-                artifact_id, session_id, task_id, lane_id, invocation_id, run_id, kind, storage_uri,
-                relative_path, title, description, metadata_json, created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(artifact_id) DO UPDATE SET
-                session_id = excluded.session_id,
-                task_id = excluded.task_id,
-                lane_id = excluded.lane_id,
-                invocation_id = excluded.invocation_id,
-                run_id = excluded.run_id,
-                kind = excluded.kind,
-                storage_uri = excluded.storage_uri,
-                relative_path = excluded.relative_path,
-                title = excluded.title,
-                description = excluded.description,
-                metadata_json = excluded.metadata_json
-            """,
-            (
-                artifact.artifact_id,
-                artifact.session_id,
-                artifact.task_id,
-                artifact.lane_id,
-                artifact.invocation_id,
-                artifact.run_id,
-                artifact.kind.value,
-                artifact.storage_uri,
-                artifact.relative_path,
-                artifact.title,
-                artifact.description,
-                json.dumps(
-                    {} if artifact.metadata is None else artifact.metadata,
-                    sort_keys=True,
-                ),
-                artifact.created_at,
-            ),
-        )
-        _commit(self.connection)
-
-    def commit_immutable(self, artifact: SessionArtifactRecord) -> None:
-        _require_session_exists(self.connection, artifact.session_id)
-        if artifact.invocation_id is not None:
-            _require_linked_session_id(
-                self.connection,
-                table_name="engine_invocations",
-                id_column="invocation_id",
-                record_id=artifact.invocation_id,
-                expected_session_id=artifact.session_id,
-            )
-        if artifact.task_id is not None:
-            _require_linked_session_id(
-                self.connection,
-                table_name="tasks",
-                id_column="task_id",
-                record_id=artifact.task_id,
-                expected_session_id=artifact.session_id,
-            )
-        if artifact.lane_id is not None:
-            _require_linked_session_id(
-                self.connection,
-                table_name="lanes",
-                id_column="lane_id",
-                record_id=artifact.lane_id,
-                expected_session_id=artifact.session_id,
-            )
-        if artifact.run_id is not None:
-            _require_linked_session_id(
-                self.connection,
-                table_name="session_run_records",
-                id_column="run_id",
-                record_id=artifact.run_id,
-                expected_session_id=artifact.session_id,
-            )
-        self.connection.execute(
-            """
-            INSERT INTO session_artifact_records (
-                artifact_id, session_id, task_id, lane_id, invocation_id, run_id, kind, storage_uri,
-                relative_path, title, description, metadata_json, created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                artifact.artifact_id,
-                artifact.session_id,
-                artifact.task_id,
-                artifact.lane_id,
-                artifact.invocation_id,
-                artifact.run_id,
-                artifact.kind.value,
-                artifact.storage_uri,
-                artifact.relative_path,
-                artifact.title,
-                artifact.description,
-                json.dumps(
-                    {} if artifact.metadata is None else artifact.metadata,
-                    sort_keys=True,
-                ),
-                artifact.created_at,
-            ),
-        )
-        _commit(self.connection)
-
-    def get(self, artifact_id: str) -> SessionArtifactRecord | None:
-        row = self.connection.execute(
-            "SELECT * FROM session_artifact_records WHERE artifact_id = ?",
-            (artifact_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        return self._row_to_artifact(row)
-
-    def list_by_session(self, session_id: str) -> list[SessionArtifactRecord]:
-        rows = self.connection.execute(
-            """
-            SELECT *
-            FROM session_artifact_records
-            WHERE session_id = ?
-            ORDER BY created_at, artifact_id
-            """,
-            (session_id,),
-        ).fetchall()
-        return [self._row_to_artifact(row) for row in rows]
-
-    def list_by_task(
-        self, session_id: str, task_id: str
-    ) -> list[SessionArtifactRecord]:
-        rows = self.connection.execute(
-            """
-            SELECT *
-            FROM session_artifact_records
-            WHERE session_id = ? AND task_id = ?
-            ORDER BY created_at, artifact_id
-            """,
-            (session_id, task_id),
-        ).fetchall()
-        return [self._row_to_artifact(row) for row in rows]
-
-    def list_by_run(self, run_id: str) -> list[SessionArtifactRecord]:
-        rows = self.connection.execute(
-            """
-            SELECT *
-            FROM session_artifact_records
-            WHERE run_id = ?
-            ORDER BY created_at, artifact_id
-            """,
-            (run_id,),
-        ).fetchall()
-        return [self._row_to_artifact(row) for row in rows]
-
-    def list_by_invocation(
-        self, session_id: str, invocation_id: str
-    ) -> list[SessionArtifactRecord]:
-        rows = self.connection.execute(
-            """
-            SELECT *
-            FROM session_artifact_records
-            WHERE session_id = ? AND invocation_id = ?
-            ORDER BY created_at, artifact_id
-            """,
-            (session_id, invocation_id),
-        ).fetchall()
-        return [self._row_to_artifact(row) for row in rows]
-
-    def find_by_metadata(
-        self,
-        *,
-        session_id: str,
-        key: str,
-        value: Any,
-        kind: str | None = None,
-        metadata_filter: dict[str, Any] | None = None,
-    ) -> SessionArtifactRecord | None:
-        if kind is None:
-            rows = self.connection.execute(
-                """
-                SELECT *
-                FROM session_artifact_records
-                WHERE session_id = ?
-                ORDER BY created_at, artifact_id
-                """,
-                (session_id,),
-            ).fetchall()
-        else:
-            rows = self.connection.execute(
-                """
-                SELECT *
-                FROM session_artifact_records
-                WHERE session_id = ? AND kind = ?
-                ORDER BY created_at, artifact_id
-                """,
-                (session_id, kind),
-            ).fetchall()
-        expected = {} if metadata_filter is None else dict(metadata_filter)
-        for row in rows:
-            metadata = _json_loads_object(row["metadata_json"]) or {}
-            if metadata.get(key) != value:
-                continue
-            if any(
-                metadata.get(filter_key) != filter_value
-                for filter_key, filter_value in expected.items()
-            ):
-                continue
-            return self._row_to_artifact(row)
-        return None
-
-    def _row_to_artifact(self, row: sqlite3.Row) -> SessionArtifactRecord:
-        from openzyme_domain import ArtifactKind
-
-        return SessionArtifactRecord(
-            artifact_id=row["artifact_id"],
-            session_id=row["session_id"],
-            task_id=row["task_id"],
-            lane_id=row["lane_id"],
-            invocation_id=row["invocation_id"],
-            run_id=row["run_id"],
-            kind=ArtifactKind(row["kind"]),
-            storage_uri=row["storage_uri"],
-            relative_path=row["relative_path"],
-            title=row["title"],
-            description=row["description"],
-            metadata=_json_loads_object(row["metadata_json"]) or {},
-            created_at=row["created_at"],
-        )
-
-
-@dataclass(slots=True)
-class ArtifactMaterializationRepository:
-    connection: sqlite3.Connection
-
-    def save(
-        self,
-        *,
-        materialization_id: str,
-        sandbox_workspace_id: str,
-        artifact_id: str,
-        artifact_digest: str,
-        target_path: str,
-        mode: str,
-        sandbox_path: str,
-        created_at: str,
-    ) -> None:
-        workspace_row = self.connection.execute(
-            "SELECT session_id FROM sandbox_workspace_records WHERE sandbox_workspace_id = ?",
-            (sandbox_workspace_id,),
-        ).fetchone()
-        if workspace_row is None:
-            raise OwnershipError(
-                f"sandbox_workspace_records.sandbox_workspace_id={sandbox_workspace_id!r} does not exist"
-            )
-        session_id = str(workspace_row["session_id"])
-        _validate_runtime_write_fence(
-            self.connection,
-            expected_session_id=session_id,
-        )
-        _require_linked_session_id(
-            self.connection,
-            table_name="session_artifact_records",
-            id_column="artifact_id",
-            record_id=artifact_id,
-            expected_session_id=session_id,
-        )
-        self.connection.execute(
-            """
-            INSERT INTO artifact_materialization_records (
-                materialization_id, sandbox_workspace_id, artifact_id, artifact_digest,
-                target_path, mode, sandbox_path, created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(materialization_id) DO UPDATE SET
-                sandbox_path = excluded.sandbox_path,
-                updated_at = excluded.updated_at
-            """,
-            (
-                materialization_id,
-                sandbox_workspace_id,
-                artifact_id,
-                artifact_digest,
-                target_path,
-                mode,
-                sandbox_path,
-                created_at,
-                created_at,
-            ),
-        )
-        _commit(self.connection)
-
-    def get(self, materialization_id: str) -> dict[str, Any] | None:
-        row = self.connection.execute(
-            "SELECT * FROM artifact_materialization_records WHERE materialization_id = ?",
-            (materialization_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        return dict(row)
-
-
-@dataclass(slots=True)
-class ArtifactBlobGcRepository:
-    connection: sqlite3.Connection
-
-    def enqueue(self, *, blob_ref: str, reason: str, created_at: str) -> None:
-        self.connection.execute(
-            """
-            INSERT INTO artifact_blob_gc_queue (gc_id, blob_ref, reason, status, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (f"gc_{uuid4().hex[:12]}", blob_ref, reason, "pending", created_at),
-        )
-        _commit(self.connection)
-
-    def list_pending(self) -> list[dict[str, Any]]:
-        rows = self.connection.execute(
-            """
-            SELECT *
-            FROM artifact_blob_gc_queue
-            WHERE status = 'pending'
-            ORDER BY created_at, gc_id
-            """
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-
-@dataclass(slots=True)
 class SessionReportRepository:
     connection: sqlite3.Connection
 
@@ -6722,10 +6099,6 @@ class SessionReportRepository:
                 record_id=report.run_id,
                 expected_session_id=report.session_id,
             )
-        if report.artifact_id is not None and report.content_ref_id is not None:
-            raise OwnershipError(
-                "report publication cannot carry both legacy and file-native identities"
-            )
         if report.content_ref_id is not None:
             _require_linked_session_id(
                 self.connection,
@@ -6746,17 +6119,16 @@ class SessionReportRepository:
             """
             INSERT INTO session_report_records (
                 report_id, session_id, task_id, lane_id, invocation_id, run_id,
-                artifact_id, status, title, summary, stage_summary, created_at,
+                status, title, summary, stage_summary, created_at,
                 updated_at, content_ref_id, report_version, supersedes_report_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(report_id) DO UPDATE SET
                 session_id = excluded.session_id,
                 task_id = excluded.task_id,
                 lane_id = excluded.lane_id,
                 invocation_id = excluded.invocation_id,
                 run_id = excluded.run_id,
-                artifact_id = excluded.artifact_id,
                 status = excluded.status,
                 title = excluded.title,
                 summary = excluded.summary,
@@ -6773,7 +6145,6 @@ class SessionReportRepository:
                 report.lane_id,
                 report.invocation_id,
                 report.run_id,
-                report.artifact_id,
                 report.status.value,
                 report.title,
                 report.summary,
@@ -6832,7 +6203,6 @@ class SessionReportRepository:
             lane_id=row["lane_id"],
             invocation_id=row["invocation_id"],
             run_id=row["run_id"],
-            artifact_id=row["artifact_id"],
             status=SessionReportStatus(row["status"]),
             title=row["title"],
             summary=row["summary"],
@@ -7234,23 +6604,15 @@ class ResearchSourceRefRepository:
                 record_id=source_ref.lane_id,
                 expected_session_id=source_ref.session_id,
             )
-        if source_ref.evidence_artifact_id is not None:
-            _require_linked_session_id(
-                self.connection,
-                table_name="session_artifact_records",
-                id_column="artifact_id",
-                record_id=source_ref.evidence_artifact_id,
-                expected_session_id=source_ref.session_id,
-            )
         self.connection.execute(
             """
             INSERT INTO session_research_source_refs (
                 source_ref_id, session_id, task_id, lane_id, invocation_id, evidence_id, title,
                 locator, kind, snippet, created_at, provider, external_id, pmid, doi,
                 authors_json, venue, publication_date, retrieved_at, request_digest,
-                response_digest, provider_provenance_json, evidence_artifact_id
+                response_digest, provider_provenance_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(source_ref_id) DO UPDATE SET
                 session_id = excluded.session_id,
                 task_id = excluded.task_id,
@@ -7271,8 +6633,7 @@ class ResearchSourceRefRepository:
                 retrieved_at = excluded.retrieved_at,
                 request_digest = excluded.request_digest,
                 response_digest = excluded.response_digest,
-                provider_provenance_json = excluded.provider_provenance_json,
-                evidence_artifact_id = excluded.evidence_artifact_id
+                provider_provenance_json = excluded.provider_provenance_json
             """,
             (
                 source_ref.source_ref_id,
@@ -7305,7 +6666,6 @@ class ResearchSourceRefRepository:
                     else source_ref.provider_provenance,
                     sort_keys=True,
                 ),
-                source_ref.evidence_artifact_id,
             ),
         )
         _commit(self.connection)
@@ -7385,7 +6745,6 @@ class ResearchSourceRefRepository:
             request_digest=row["request_digest"],
             response_digest=row["response_digest"],
             provider_provenance=json.loads(row["provider_provenance_json"] or "{}"),
-            evidence_artifact_id=row["evidence_artifact_id"],
         )
 
 
@@ -7557,7 +6916,6 @@ class CoreRepositories:
     )
     controlled_operation_execution_events: "ControlledOperationExecutionEventRepository"
     controlled_operation_results: "ControlledOperationResultHandleRepository"
-    controlled_operation_result_artifacts: "ControlledOperationResultArtifactRepository"
     continuation_states: ContinuationStateRepository
     continuation_deliveries: "ContinuationDeliveryRepository"
     runtime_commands: "RuntimeCommandRepository"
@@ -7574,20 +6932,13 @@ class CoreRepositories:
     scientific_dispositions: "ScientificDispositionRepository"
     scientific_effect_adoptions: "ScientificEffectAdoptionRepository"
     scientific_deliverables: "ScientificDeliverableRepository"
-    historical_artifacts: "HistoricalArtifactRepository"
-    scientific_artifact_materializations: "ScientificArtifactMaterializationRepository"
     scientific_attempt_closure_requests: "ScientificAttemptClosureRequestRepository"
     scientific_attempt_closures: "ScientificAttemptClosureRepository"
-    file_audit_entries: FileAuditEntryRepository
-    command_log_artifacts: CommandLogArtifactRepository
     session_runtime_leases: SessionRuntimeLeaseRepository
     runtime_signals: AgentRuntimeSignalRepository
     invocations: EngineInvocationRepository
     engine_documents: EngineDocumentRepository
     runs: RunRecordRepository
-    artifacts: SessionArtifactRepository
-    artifact_materializations: ArtifactMaterializationRepository
-    artifact_blob_gc: ArtifactBlobGcRepository
     report_drafts: SessionReportDraftRepository
     reports: SessionReportRepository
     research_summaries: ResearchSummaryRepository
@@ -7637,12 +6988,6 @@ class CoreRepositories:
             self.tasks.connection,
             expected_session_id=session_id,
             resource_category=resource_category,
-        )
-
-    def assert_artifact_publication_authority(self, *, session_id: str) -> None:
-        self.assert_mutation_write_authority(
-            session_id=session_id,
-            resource_category=MutationResourceCategory.ARTIFACT_PUBLICATION,
         )
 
     def assert_report_publication_authority(self, *, session_id: str) -> None:
@@ -7890,13 +7235,7 @@ class CoreRepositories:
             ControlledOperationProviderObservationReceiptRepository,
         )
         from .reliability_repositories import ControlledOperationResultHandleRepository
-        from .reliability_repositories import (
-            ControlledOperationResultArtifactRepository,
-        )
         from .failure_repositories import FailureObservationRepository
-        from .scientific_attempt_repositories import (
-            ScientificArtifactMaterializationRepository,
-        )
         from .scientific_attempt_repositories import (
             ScientificAttemptAuthorizationRepository,
         )
@@ -7919,7 +7258,6 @@ class CoreRepositories:
         )
         from .scientific_attempt_repositories import ScientificSelectionRepository
         from .scientific_deliverable_repositories import ScientificDeliverableRepository
-        from .historical_artifact_repositories import HistoricalArtifactRepository
 
         return cls(
             sessions=SessionRepository(connection),
@@ -7997,9 +7335,6 @@ class CoreRepositories:
             controlled_operation_results=ControlledOperationResultHandleRepository(
                 connection
             ),
-            controlled_operation_result_artifacts=(
-                ControlledOperationResultArtifactRepository(connection)
-            ),
             continuation_states=ContinuationStateRepository(connection),
             continuation_deliveries=ContinuationDeliveryRepository(connection),
             runtime_commands=RuntimeCommandRepository(connection),
@@ -8020,24 +7355,15 @@ class CoreRepositories:
             scientific_dispositions=ScientificDispositionRepository(connection),
             scientific_effect_adoptions=ScientificEffectAdoptionRepository(connection),
             scientific_deliverables=ScientificDeliverableRepository(connection),
-            historical_artifacts=HistoricalArtifactRepository(connection),
-            scientific_artifact_materializations=(
-                ScientificArtifactMaterializationRepository(connection)
-            ),
             scientific_attempt_closure_requests=(
                 ScientificAttemptClosureRequestRepository(connection)
             ),
             scientific_attempt_closures=ScientificAttemptClosureRepository(connection),
-            file_audit_entries=FileAuditEntryRepository(connection),
-            command_log_artifacts=CommandLogArtifactRepository(connection),
             session_runtime_leases=SessionRuntimeLeaseRepository(connection),
             runtime_signals=AgentRuntimeSignalRepository(connection),
             invocations=EngineInvocationRepository(connection),
             engine_documents=EngineDocumentRepository(connection),
             runs=RunRecordRepository(connection),
-            artifacts=SessionArtifactRepository(connection),
-            artifact_materializations=ArtifactMaterializationRepository(connection),
-            artifact_blob_gc=ArtifactBlobGcRepository(connection),
             report_drafts=SessionReportDraftRepository(connection),
             reports=SessionReportRepository(connection),
             research_summaries=ResearchSummaryRepository(connection),

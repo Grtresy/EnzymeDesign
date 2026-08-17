@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Iterable
 from typing import Sequence
-from uuid import uuid4
 
 from pydantic import BaseModel
 from pydantic import Field
@@ -16,7 +14,6 @@ from openzyme_research import ProviderCallResult
 from openzyme_research import ProviderOutcome
 from openzyme_research import ProviderRequestError
 from openzyme_research import ResearchObservation
-from openzyme_research import asset_manifest
 from openzyme_research import evaluate_literature_quorum
 from openzyme_research import literature_hits_to_findings
 from openzyme_research import structure_hits_to_findings
@@ -56,33 +53,9 @@ class UniProtLookupArgs(BaseModel):
     accession: str = Field(min_length=1)
 
 
-class UniProtDownloadArgs(BaseModel):
-    accession: str = Field(min_length=1)
-
-
-class RcsbDownloadArgs(BaseModel):
-    pdb_id: str = Field(min_length=1)
-    format: str = Field(default="pdb")
-
-
 class InterProQueryArgs(BaseModel):
     accession: str = Field(min_length=1)
     limit: int = Field(default=10, ge=1, le=50)
-
-
-def _stage_asset(asset: object) -> dict[str, object]:
-    from openzyme_research import DownloadedResearchAsset
-
-    staged = asset if isinstance(asset, DownloadedResearchAsset) else None
-    if staged is None:
-        raise TypeError("expected DownloadedResearchAsset")
-    root = Path("/tmp/openzyme-deep-research-artifacts")
-    root.mkdir(parents=True, exist_ok=True)
-    target = root / f"{uuid4().hex[:12]}_{staged.filename}"
-    target.write_bytes(staged.content)
-    manifest = asset_manifest(staged)
-    manifest["storage_uri"] = str(target)
-    return manifest
 
 
 def _tool_result(
@@ -425,28 +398,6 @@ class UniProtLookupTool:
 
 
 @dataclass(frozen=True, slots=True)
-class UniProtDownloadFastaTool:
-    service: BioResearchService
-    name: str = "uniprot.download_fasta"
-    description: str = "Download FASTA sequence from UniProt."
-    args_schema: type[BaseModel] = UniProtDownloadArgs
-
-    def invoke(
-        self, *, args: dict[str, object], context: ResearchToolContext
-    ) -> ResearchToolResult:
-        payload = UniProtDownloadArgs.model_validate(args)
-        asset = self.service.download_uniprot_fasta(accession=payload.accession)
-        return _tool_result(
-            self.name,
-            ResearchObservation.completed(
-                summary=f"Downloaded FASTA for {payload.accession}.",
-                artifacts=(_stage_asset(asset),),
-                provider="uniprot",
-            ),
-        )
-
-
-@dataclass(frozen=True, slots=True)
 class RcsbSearchTool:
     service: BioResearchService
     name: str = "rcsb_pdb.search"
@@ -463,30 +414,6 @@ class RcsbSearchTool:
             ResearchObservation.completed(
                 summary=f"Collected {len(hits)} structure hits for {payload.query}.",
                 findings=tuple(structure_hits_to_findings(hits, query=payload.query)),
-                provider="rcsb_pdb",
-            ),
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class RcsbDownloadStructureTool:
-    service: BioResearchService
-    name: str = "rcsb_pdb.download_structure"
-    description: str = "Download a PDB or mmCIF structure file."
-    args_schema: type[BaseModel] = RcsbDownloadArgs
-
-    def invoke(
-        self, *, args: dict[str, object], context: ResearchToolContext
-    ) -> ResearchToolResult:
-        payload = RcsbDownloadArgs.model_validate(args)
-        asset = self.service.download_rcsb_structure(
-            pdb_id=payload.pdb_id, file_format=payload.format
-        )
-        return _tool_result(
-            self.name,
-            ResearchObservation.completed(
-                summary=f"Downloaded structure file for {payload.pdb_id}.",
-                artifacts=(_stage_asset(asset),),
                 provider="rcsb_pdb",
             ),
         )
@@ -633,9 +560,7 @@ def build_bio_research_tools(service: BioResearchService) -> Sequence[ResearchTo
         PubMedSearchTool(service),
         SemanticScholarSearchTool(service),
         UniProtLookupTool(service),
-        UniProtDownloadFastaTool(service),
         RcsbSearchTool(service),
-        RcsbDownloadStructureTool(service),
         InterProQueryTool(service),
     )
 

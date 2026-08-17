@@ -8,7 +8,6 @@ from contextvars import copy_context
 from dataclasses import dataclass
 from dataclasses import replace
 from enum import StrEnum
-import hashlib
 import json
 import re
 import threading
@@ -40,8 +39,6 @@ from .controlled_operation_execution import build_controlled_operation_result_ha
 from .reliability_repositories import OptimisticStateConflictError
 from .reliability_repositories import is_transient_sqlite_contention
 from .repositories import CoreRepositories
-from .result_artifacts import ControlledOperationResultArtifactRef
-from .result_artifacts import controlled_operation_artifact_set_digest
 
 
 DURABLE_ROUTE_OBSERVATION_SCHEMA_VERSION = "durable_route_observation@1"
@@ -84,9 +81,7 @@ class DurableRouteObservationKind(StrEnum):
 @dataclass(frozen=True, slots=True)
 class DurableRouteMaterializedResult:
     bounded_result_envelope: dict[str, Any]
-    artifact_set_digest: str
     origin: str
-    artifact_refs: tuple[ControlledOperationResultArtifactRef, ...] = ()
     terminal_outcome: ControlledOperationExecutionTerminalOutcome = (
         ControlledOperationExecutionTerminalOutcome.SUCCEEDED
     )
@@ -608,10 +603,6 @@ class ControlledOperationExecutionWorker:
                 None if result_handle is None else result_handle.result_digest
             )
             or captured.result_digest,
-            artifact_set_digest=(
-                None if result_handle is None else result_handle.artifact_set_digest
-            )
-            or captured.artifact_set_digest,
             error_code=observation.error_code,
             safe_error_summary=observation.safe_summary,
             updated_at=now,
@@ -643,11 +634,6 @@ class ControlledOperationExecutionWorker:
                 expected_lease_token=captured.lease_token,
                 expected_fencing_token=captured.fencing_token,
                 result_handle=result_handle,
-                result_artifacts=(
-                    ()
-                    if observation.materialized_result is None
-                    else observation.materialized_result.artifact_refs
-                ),
             )
 
     def _commit_result_terminal(
@@ -1017,21 +1003,8 @@ class ControlledOperationExecutionWorker:
         cls,
         result: DurableRouteMaterializedResult,
     ) -> None:
-        if _SHA256_DIGEST.fullmatch(result.artifact_set_digest) is None:
-            raise ValueError("durable result artifact-set digest is invalid")
         if _SAFE_IDENTIFIER.fullmatch(result.origin) is None:
             raise ValueError("durable result origin is invalid")
-        if controlled_operation_artifact_set_digest(result.artifact_refs) != (
-            result.artifact_set_digest
-        ):
-            raise ValueError("durable result artifact set digest is not canonical")
-        for ref in result.artifact_refs:
-            if (
-                not ref.artifact_id
-                or not ref.relative_path
-                or _SHA256_DIGEST.fullmatch(ref.artifact_digest) is None
-            ):
-                raise ValueError("durable result artifact ref is invalid")
         encoded = json.dumps(
             result.bounded_result_envelope,
             sort_keys=True,
@@ -1148,7 +1121,6 @@ class ControlledOperationExecutionWorker:
                 execution,
                 terminal_outcome=result.terminal_outcome,
                 bounded_result_envelope=dict(result.bounded_result_envelope),
-                artifact_set_digest=result.artifact_set_digest,
                 origin=result.origin,
                 created_at=created_at,
             )
@@ -1161,14 +1133,11 @@ class ControlledOperationExecutionWorker:
             "status": terminal_outcome.value,
             "error_code": observation.error_code,
             "safe_error_summary": observation.safe_summary,
-            "output_artifact_ids": [],
         }
-        empty_artifact_set_digest = "sha256:" + hashlib.sha256(b"[]").hexdigest()
         return build_controlled_operation_result_handle(
             execution,
             terminal_outcome=terminal_outcome,
             bounded_result_envelope=envelope,
-            artifact_set_digest=empty_artifact_set_digest,
             origin="host_durable_execution_failure",
             created_at=created_at,
         )
@@ -1251,7 +1220,6 @@ class ControlledOperationExecutionWorker:
             execution.backend_handle_ref,
             execution.result_handle_ref,
             execution.result_digest,
-            execution.artifact_set_digest,
         )
 
     @classmethod

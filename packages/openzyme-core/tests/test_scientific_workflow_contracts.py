@@ -132,8 +132,6 @@ def _operation(
     return ControlledOperation(
         operation_id="operation_001",
         session_id="session_001",
-        sandbox_workspace_id="workspace_001",
-        sandbox_run_id="run_001",
         logical_operation_key="workflow.fetch",
         operation_digest="sha256:operation",
         params_digest="sha256:params",

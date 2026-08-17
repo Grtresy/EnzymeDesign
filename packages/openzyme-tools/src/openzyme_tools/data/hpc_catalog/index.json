@@ -3,19 +3,19 @@
     {
       "tool_id": "fpocket",
       "display_name": "fpocket",
-      "summary": "Fast pocket detection for protein structures.",
+      "summary": "Fast pocket detection authored and executed from an immutable workspace revision.",
       "stage_tags": ["execution", "evaluator"],
       "capability_tags": ["pocket_detection", "structure_analysis"],
-      "execution_support": "runnable",
+      "execution_support": "revision_job",
       "skill_ref": "skills/fpocket.md"
     },
     {
       "tool_id": "vina",
       "display_name": "AutoDock Vina",
-      "summary": "Small-molecule docking and affinity estimation.",
+      "summary": "Small-molecule docking authored and executed from an immutable workspace revision.",
       "stage_tags": ["execution", "evaluator"],
       "capability_tags": ["docking", "binding_affinity"],
-      "execution_support": "runnable",
+      "execution_support": "revision_job",
       "skill_ref": "skills/vina.md"
     },
     {

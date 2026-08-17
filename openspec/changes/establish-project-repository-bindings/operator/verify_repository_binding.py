@@ -967,12 +967,15 @@ def verify_acceptance(
     if receipt["source_revision"] != BASELINE_REVISION:
         raise ValueError("C1 acceptance source revision is not the C0 baseline")
 
+    acceptance_revision = publication_revision(receipt)
+    if acceptance_revision is None:
+        raise ValueError("C1 acceptance receipt has no publication revision")
     expected_schema = {
         "sqlite_schema_before": 37,
         "sqlite_schema_after": 38,
         "migration_id": "038_v3_project_repository_bindings",
         "migration_sha256": digest_bytes(
-            (REPOSITORY_ROOT / MIGRATION_PATH).read_bytes()
+            _git_file(acceptance_revision, MIGRATION_PATH)
         ),
         "binding_schema": "project_repository_binding@1",
         "session_pin_schema": "session_repository_binding_pin@1",

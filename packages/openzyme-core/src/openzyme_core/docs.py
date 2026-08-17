@@ -226,7 +226,6 @@ def _infer_tags(relative_path: str, content: str) -> tuple[str, ...]:
     candidates = (
         "pipeline",
         "sandbox",
-        "artifact",
         "preprocess",
         "hpc",
         "fpocket",

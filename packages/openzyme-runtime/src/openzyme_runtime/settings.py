@@ -575,6 +575,19 @@ _OPENZYME_SETTINGS_ENVIRONMENT_FIELDS = (
         value_kind="integer",
         safe_generic_default=30,
     ),
+    EnvironmentFieldDescriptor(
+        setting_path="execution.hpc_scheduler_credential_issue_command",
+        environment_names=("OPENZYME_HPC_SCHEDULER_CREDENTIAL_ISSUE_COMMAND",),
+        value_kind="string_list",
+        safe_generic_default=[],
+        identity_mode="private_digest",
+    ),
+    EnvironmentFieldDescriptor(
+        setting_path="execution.hpc_scheduler_credential_timeout_seconds",
+        environment_names=("OPENZYME_HPC_SCHEDULER_CREDENTIAL_TIMEOUT_SECONDS",),
+        value_kind="integer",
+        safe_generic_default=30,
+    ),
     *(
         EnvironmentFieldDescriptor(
             setting_path=f"limits.provider_limits.{name}",
@@ -1286,7 +1299,7 @@ def _parse_host_api_principals(
     if not isinstance(parsed, list):
         raise ValueError("OPENZYME_HOST_AUTH_PRINCIPALS_JSON must be a JSON array")
     principals: list[HostApiPrincipalSettings] = []
-    valid_roles = {"user", "operator", "admin"}
+    valid_roles = {"user", "operator", "admin", "agent"}
     for index, item in enumerate(parsed):
         if not isinstance(item, dict):
             raise ValueError(f"Host API principal at index {index} must be an object")
@@ -1294,9 +1307,15 @@ def _parse_host_api_principals(
         token = str(item.get("token") or "")
         roles_raw = item.get("roles")
         projects_raw = item.get("project_ids")
-        if len(principal_id) <= len("user:") or not principal_id.startswith("user:"):
+        user_principal = principal_id.startswith("user:") and len(principal_id) > len(
+            "user:"
+        )
+        agent_principal = principal_id.startswith(
+            "agent-member:"
+        ) and len(principal_id) > len("agent-member:")
+        if not (user_principal or agent_principal):
             raise ValueError(
-                "Host API principal_id must be non-empty and start with 'user:'"
+                "Host API principal_id must start with 'user:' or 'agent-member:'"
             )
         if len(token) < 32:
             raise ValueError(
@@ -1313,6 +1332,11 @@ def _parse_host_api_principals(
         if not roles <= valid_roles:
             raise ValueError(
                 f"unsupported Host API principal role: {sorted(roles - valid_roles)[0]}"
+            )
+        if agent_principal != (roles == frozenset({"agent"})):
+            raise ValueError(
+                "agent-member principals must have exactly the agent role, and user "
+                "principals cannot have it"
             )
         if "" in project_ids:
             raise ValueError(
@@ -1401,6 +1425,8 @@ class ExecutionSettings:
     hpc_credential_issue_command: tuple[str, ...] = ()
     hpc_credential_revoke_command: tuple[str, ...] = ()
     hpc_credential_timeout_seconds: int = 30
+    hpc_scheduler_credential_issue_command: tuple[str, ...] = ()
+    hpc_scheduler_credential_timeout_seconds: int = 30
 
     def __post_init__(self) -> None:
         credential_values = (
@@ -1425,6 +1451,17 @@ class ExecutionSettings:
         if not 1 <= self.hpc_credential_timeout_seconds <= 300:
             raise ValueError(
                 "HPC credential command timeout must be between 1 and 300 seconds"
+            )
+        if (
+            self.hpc_scheduler_credential_issue_command
+            and not Path(self.hpc_scheduler_credential_issue_command[0]).is_absolute()
+        ):
+            raise ValueError(
+                "HPC scheduler credential command requires an absolute executable"
+            )
+        if not 1 <= self.hpc_scheduler_credential_timeout_seconds <= 300:
+            raise ValueError(
+                "HPC scheduler credential command timeout must be between 1 and 300 seconds"
             )
 
     @classmethod
@@ -1461,6 +1498,19 @@ class ExecutionSettings:
             hpc_credential_timeout_seconds=int(
                 _environment_field(
                     "execution.hpc_credential_timeout_seconds",
+                    source,
+                )
+            ),
+            hpc_scheduler_credential_issue_command=tuple(
+                str(value)
+                for value in _environment_field(
+                    "execution.hpc_scheduler_credential_issue_command",
+                    source,
+                )
+            ),
+            hpc_scheduler_credential_timeout_seconds=int(
+                _environment_field(
+                    "execution.hpc_scheduler_credential_timeout_seconds",
                     source,
                 )
             ),

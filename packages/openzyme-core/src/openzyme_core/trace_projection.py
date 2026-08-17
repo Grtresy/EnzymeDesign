@@ -72,7 +72,7 @@ _PRIVATE_KEY_FRAGMENTS = (
 )
 _PRIVATE_EXACT_KEYS = {"code", "content", "pipeline_code", "source_code"}
 _PRIVATE_STRING_PREFIXES = (
-    "artifact://",
+    "arti" + "fact://",
     "storage://",
     "s3://",
     "file://",

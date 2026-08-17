@@ -46,9 +46,9 @@
 
 ## 6. 最终统一验证、文档与 C2 acceptance receipt
 
-- [ ] 6.1 在全部连续 change 组合实现完成后运行domain/core/Host focused tests，覆盖generation reservation、pending/active/revoked lifecycle、immediate non-runnable runtime/delegation gate、explicit retirement、exact/bulk/subtree revoke、C1 credential原子升级、安全projection与authority/budget/publication negative matrices。
+- [x] 6.1 在全部连续 change 组合实现完成后运行domain/core/Host focused tests，覆盖generation reservation、pending/active/revoked lifecycle、immediate non-runnable runtime/delegation gate、explicit retirement、exact/bulk/subtree revoke、C1 credential原子升级、安全projection与authority/budget/publication negative matrices。
 - [x] 6.2 更新 `docs/OpenZyme架构设计.md`、`docs/v3/01-target-architecture.md`、`docs/v3/02-control-plane.md`、`docs/v3/03-capability-engines.md`、`docs/v3/05-agent-runtime.md` 与repository operations文档，记录C2 staged cutover、C3 readiness owner、non-runnable窗口、revocation topology、retirement及deferred capabilities。
-- [ ] 6.3 在最终统一验收阶段运行 `DO_NOT_TRACK=1 openspec validate establish-agent-capability-leases --type change --strict --no-interactive` 并保存通过结果。
-- [ ] 6.4 在最终统一验收阶段运行 `./scripts/check-mainline.sh`，确认无live/provider/HPC opt-in；不得以test readiness、legacy sandbox、manual approval、temporary provider或fallback route掩盖production provisioning缺口。
-- [ ] 6.5 在最终组合源码上审计Git diff、migration、runtime/delegation admission、credential/redaction、projection和forbidden symbols/call sites，确认后继实现没有弱化existing execution/scientific fences，且任何超出 C2 owner 的能力只由其指定后继 change 拥有。
-- [ ] 6.6 最终统一验收全部通过后生成immutable `agent_capability_lease_acceptance@1` receipt，绑定C0与C1 receipts、最终 source revision、authority/scope matrices、code/schema/policy digests、focused tests、docs、strict OpenSpec和mainline；显式记录C2自身未单独证明的production能力，并与实现期 snapshot 保持不可升级、不可替代关系。
+- [x] 6.3 在最终统一验收阶段运行 `DO_NOT_TRACK=1 openspec validate establish-agent-capability-leases --type change --strict --no-interactive` 并保存通过结果。
+- [x] 6.4 在最终统一验收阶段运行 `./scripts/check-mainline.sh`，确认无live/provider/HPC opt-in；不得以test readiness、legacy sandbox、manual approval、temporary provider或fallback route掩盖production provisioning缺口。
+- [x] 6.5 在最终组合源码上审计Git diff、migration、runtime/delegation admission、credential/redaction、projection和forbidden symbols/call sites，确认后继实现没有弱化existing execution/scientific fences，且任何超出 C2 owner 的能力只由其指定后继 change 拥有。
+- [x] 6.6 最终统一验收全部通过后生成immutable `agent_capability_lease_acceptance@1` receipt，绑定C0与C1 receipts、最终 source revision、authority/scope matrices、code/schema/policy digests、focused tests、docs、strict OpenSpec和mainline；显式记录C2自身未单独证明的production能力，并与实现期 snapshot 保持不可升级、不可替代关系。

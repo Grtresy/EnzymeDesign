@@ -26,7 +26,6 @@ from .controlled_operation_execution import (
 from .controlled_operation_execution import build_controlled_operation_result_handle
 from .controlled_operation_projection import project_controlled_operation_execution
 from .controlled_operation_projection import project_controlled_operation_summary
-from .controlled_operation_projection import is_controlled_operation_artifact_public
 from .workspace_revision_executions import (
     WORKSPACE_REVISION_EXECUTION_ADAPTER_POLICY_ID,
 )
@@ -117,11 +116,6 @@ from .mutation_quiescence import build_quiescence_evidence_envelope
 from .mutation_quiescence import quiescence_receipt_digest
 from .mutation_quiescence import verify_quiescence_evidence
 from .mutation_quiescence import verify_quiescence_evidence_envelope
-from .projections import ActivityFeedItem
-from .projections import DelegationProjection
-from .projections import DelegationProjectionItem
-from .projections import SessionProjectionBuilder
-from .projections import SessionWorkspaceProjection
 from .prompt_budget import ModelContextProfile
 from .prompt_budget import PromptBudgetAction
 from .prompt_budget import PromptBudgetConfig
@@ -204,29 +198,16 @@ from .git_lfs_client_qualification import GitLfsNativeClientProbe
 from .git_lfs_client_qualification import GitlessComputeQualification
 from .git_lfs_client_qualification import qualify_gitless_compute
 from .git_lfs_client_qualification import qualify_native_git_lfs_client
-from .sandbox_workspace import SandboxWorkspaceService
-from .sandbox_workspace import derive_sandbox_workspace_id
-from .sandbox_workspace import normalize_immutable_image_id
-from .sandbox_workspace import register_sandbox_workspace_tools
-from .sandbox_workspace import sandbox_image_record
-from .sandbox_runtime import SandboxRuntimeError
-from .sandbox_runtime import SandboxRuntimeService
-from .sandbox_runtime import register_sandbox_runtime_tools
 from .sandbox_host import ContinuationDeliveryHostAuthority
 from .sandbox_host import DurableExecutionHostAuthority
 from .sandbox_host import SandboxHostAuthorityError
-from .sandbox_host import SandboxHostBinding
 from .sandbox_host import SandboxHostCallContext
+from .sandbox_host import AgentCapsuleHostAuthority
 from .sandbox_host import SandboxHostCallContextFactory
-from .sandbox_host import SandboxHostGateway
 from .sandbox_host import SandboxHostOwnerAuthority
 from .sandbox_host import SandboxMutationWriterScopeFactory
 from .sandbox_host import SandboxProcessHostAuthority
 from .sandbox_host import SessionTurnHostAuthority
-from .artifact_boundary import ArtifactBoundaryError
-from .artifact_boundary import ArtifactBoundaryService
-from .artifact_boundary import register_artifact_boundary_tools
-from .artifact_tools import register_artifact_tools
 from .bio_research_tools import register_bio_research_tools
 from .protocol_tools import register_protocol_tools
 from .agent_capability_repositories import (
@@ -273,6 +254,9 @@ from .agent_capsule_runtime import AGENT_CAPSULE_PROCESS_RESULT_SCHEMA_VERSION
 from .agent_capsule_runtime import AGENT_PROCESS_CREDENTIAL_REQUEST_SCHEMA_VERSION
 from .agent_capsule_runtime import AgentCapsuleAdmissionError
 from .agent_capsule_runtime import AgentCapsuleCredentialError
+from .agent_capsule_runtime import AgentCapsuleControlHandler
+from .agent_capsule_runtime import AgentCapsuleControlHandlerFactory
+from .agent_capsule_runtime import AgentCapsuleControlledProcessRunner
 from .agent_capsule_runtime import AgentCapsuleProcessResult
 from .agent_capsule_runtime import AgentCapsuleProcessRunner
 from .agent_capsule_runtime import AgentCapsuleRuntimeError
@@ -329,6 +313,8 @@ from .revision_path_handoffs import RevisionPathIdentityError
 from .revision_path_handoffs import RevisionPathReferenceService
 from .revision_path_handoffs import TaskEvidenceReferenceService
 from .revision_path_handoffs import report_evidence_ref
+from .revision_path_handoffs import scientific_closure_evidence_ref
+from .revision_path_handoffs import scientific_deliverable_evidence_ref
 from .executor_hpc_workspace_repositories import ExecutorHpcWorkspaceRepository
 from .executor_hpc_workspace_repositories import (
     ExecutorHpcWorkspaceRepositoryError,
@@ -377,6 +363,12 @@ from .agent_workspace_volumes import AgentWorkspaceVolumeError
 from .agent_workspace_volumes import AgentWorkspaceVolumeFact
 from .agent_workspace_volumes import AgentWorkspaceVolumeIdentityError
 from .agent_workspace_volumes import PodmanAgentWorkspaceVolumeBackend
+from .aox_scientific_file_contract import AOX_SCIENTIFIC_FILE_BUNDLE_CONTRACT_DIGEST
+from .aox_scientific_file_contract import AOX_SCIENTIFIC_FILE_BUNDLE_CONTRACT_ID
+from .aox_scientific_file_contract import AOX_SCIENTIFIC_FILE_ROLES
+from .aox_scientific_file_contract import aox_format_contract_digest
+from .aox_scientific_file_contract import require_exact_aox_scientific_file_manifest
+from .aox_scientific_file_contract import validate_aox_scientific_file_bytes
 from .agent_workspace_volumes import derive_agent_workspace_volume_id
 from .agent_git_workspace_provisioner import (
     AGENT_GIT_WORKSPACE_READINESS_CANDIDATE_SCHEMA_VERSION,
@@ -436,9 +428,6 @@ from .runtime_signal_occurrences import AgentRuntimeSignalOccurrenceResult
 from .runtime_signal_occurrences import AgentRuntimeSignalOccurrenceService
 from .repositories import AgentMemberRepository
 from .repositories import AgentRuntimeSignalRepository
-from .repositories import ArtifactBlobGcRepository
-from .repositories import ArtifactMaterializationRepository
-from .repositories import CommandLogArtifactRepository
 from .repositories import CommandIdempotencyConflictError
 from .repositories import CommandReceiptRecord
 from .repositories import CommandReceiptRepository
@@ -455,7 +444,6 @@ from .repositories import DurableEventRecord
 from .repositories import DurableEventRepository
 from .repositories import DurableControlledOperationWriteError
 from .repositories import ControlledOperationWriteFencingError
-from .repositories import FileAuditEntryRepository
 from .repositories import InboxMessageRepository
 from .repositories import LaneLifecycleEventRecord
 from .repositories import LaneLifecycleEventRepository
@@ -494,7 +482,6 @@ from .repositories import SandboxRunRecordRepository
 from .repositories import SandboxWorkspaceRecordRepository
 from .repositories import SessionReportDraftRepository
 from .repositories import SessionReportRepository
-from .repositories import SessionArtifactRepository
 from .repositories import SessionRuntimeLeaseAcquireResult
 from .repositories import SessionRuntimeLeaseRepository
 from .repositories import SessionRepository
@@ -523,7 +510,6 @@ from .reliability_repositories import (
     ControlledOperationProviderObservationReceiptRepository,
 )
 from .reliability_repositories import ControlledOperationResultHandleRepository
-from .reliability_repositories import ControlledOperationResultArtifactRepository
 from .reliability_repositories import ImmutableIdentityConflictError
 from .reliability_repositories import OptimisticStateConflictError
 from .reliability_repositories import ReliabilityRepositoryError
@@ -537,12 +523,18 @@ from .file_workspace_contract import CurrentFileWorkspaceContractError
 from .file_workspace_contract import FileWorkspaceHostOperation
 from .file_workspace_contract import FileWorkspaceHostRequest
 from .file_workspace_contract import FileWorkspaceSandboxHostGateway
+from .file_workspace_contract import FileWorkspaceControlDispatcher
 from .file_workspace_contract import reject_stale_file_workspace_value
 from .file_workspace_projection import FileWorkspaceProjectionBuilder
 from .file_workspace_projection import file_workspace_public_schema_bundle_digest
-from .scientific_attempt_repositories import (
-    ScientificArtifactMaterializationRepository,
-)
+from .file_workspace_public_contract import FILE_WORKSPACE_PUBLIC_CONTRACT_ID
+from .file_workspace_public_contract import FILE_WORKSPACE_PUBLIC_MEDIA_TYPE
+from .file_workspace_public_contract import FileWorkspaceActivationAdmission
+from .file_workspace_public_contract import FileWorkspacePublicContractError
+from .file_workspace_public_contract import FileWorkspacePublicContractService
+from .file_workspace_public_contract import FileWorkspaceReleaseBundle
+from .file_workspace_public_contract import PredecessorCompletionReceipt
+from .file_workspace_public_contract import SessionContractDisposition
 from .scientific_attempt_repositories import (
     ScientificAttemptAuthorizationRepository,
 )
@@ -592,9 +584,22 @@ from .scientific_file_deliverables import ResolvedScientificFile
 from .scientific_file_deliverables import ScientificDeliverableFinalizationResult
 from .scientific_file_deliverables import ScientificDeliverableFinalizationService
 from .scientific_file_deliverables import ScientificFileDeliverableError
+from .scientific_file_deliverables import ScientificFileEffectAdoptionService
 from .scientific_file_deliverables import ScientificPublishedByteReader
 from .scientific_file_deliverables import ScientificPublishedFileResolver
 from .scientific_file_deliverables import ScientificRoleRequirement
+from .scientific_contract_activation import LegacyAoxFreezeProof
+from .scientific_contract_activation import ScientificContractActivationError
+from .scientific_contract_activation import ScientificContractActivationPreflight
+from .scientific_contract_activation import ScientificContractActivationService
+from .scientific_contract_activation import ScientificDependencyAvailability
+from .scientific_contract_activation import ScientificPrerequisiteReceipt
+from .scientific_contract_activation import ScientificContractEpoch
+from .scientific_contract_activation import ScientificContractEpochRepository
+from .scientific_offline_verification import FreshScientificPublicationReader
+from .scientific_offline_verification import ScientificOfflineVerificationError
+from .scientific_offline_verification import ScientificOfflineVerificationResult
+from .scientific_offline_verification import ScientificOfflineVerifier
 from .report_publication import is_published_report_link
 from .report_publication import is_published_report_status
 from .scientific_selection_evaluation import ScientificSelectionEvaluation
@@ -620,8 +625,6 @@ from .scientific_workflow_contracts import ScientificWorkflowContractRegistry
 from .scientific_workflow_contracts import ScientificWorkflowRolePolicy
 from .scientific_workflow_contracts import ScientificWorkflowScopePolicy
 from .scientific_attempt_tools import register_scientific_attempt_tools
-from .result_artifacts import ControlledOperationResultArtifactRef
-from .result_artifacts import controlled_operation_artifact_set_digest
 from .runtime_commands import RUNTIME_COMMAND_OUTCOME_MAX_BYTES
 from .runtime_commands import RUNTIME_COMMAND_OUTCOME_LEGACY_SCHEMA_VERSION
 from .runtime_commands import RUNTIME_COMMAND_OUTCOME_SCHEMA_VERSION
@@ -710,6 +713,12 @@ __all__ = [
     "PodmanAgentGitWorkspaceObservationProvider",
     "PodmanAgentWorkspaceCloneRunner",
     "PodmanAgentWorkspaceVolumeBackend",
+    "AOX_SCIENTIFIC_FILE_BUNDLE_CONTRACT_DIGEST",
+    "AOX_SCIENTIFIC_FILE_BUNDLE_CONTRACT_ID",
+    "AOX_SCIENTIFIC_FILE_ROLES",
+    "aox_format_contract_digest",
+    "require_exact_aox_scientific_file_manifest",
+    "validate_aox_scientific_file_bytes",
     "PublicationManifestPolicyValidator",
     "PublishedRevisionRepository",
     "REPOSITORY_PROVISION_CREDENTIAL_SCHEMA_VERSION",
@@ -739,6 +748,9 @@ __all__ = [
     "AGENT_PROCESS_CREDENTIAL_REQUEST_SCHEMA_VERSION",
     "AgentCapsuleAdmissionError",
     "AgentCapsuleCredentialError",
+    "AgentCapsuleControlHandler",
+    "AgentCapsuleControlHandlerFactory",
+    "AgentCapsuleControlledProcessRunner",
     "AgentCapsuleProcessResult",
     "AgentCapsuleProcessRunner",
     "AgentCapsuleRuntimeError",
@@ -786,6 +798,8 @@ __all__ = [
     "RevisionPathReferenceService",
     "TaskEvidenceReferenceService",
     "report_evidence_ref",
+    "scientific_closure_evidence_ref",
+    "scientific_deliverable_evidence_ref",
     "WORKSPACE_FILE_WRITE_MAX_BYTES",
     "WorkspaceFileHandoffError",
     "WorkspaceFileWriteResult",
@@ -798,7 +812,6 @@ __all__ = [
     "WorkspaceCheckpointGitReader",
     "WorkspaceCheckpointService",
     "AgentStepContext",
-    "ActivityFeedItem",
     "AgentRuntimeOutcome",
     "AgentRuntimeOutcomeSettlement",
     "AgentRuntimeSettlementDisposition",
@@ -847,14 +860,9 @@ __all__ = [
     "AgentWorkspaceReadinessProvider",
     "AgentWorkspaceReadinessProviderUnavailableError",
     "AgentWorkspaceGenerationReservationRepository",
-    "ArtifactBlobGcRepository",
-    "ArtifactBoundaryError",
-    "ArtifactBoundaryService",
-    "ArtifactMaterializationRepository",
     "ApprovalRequestRepository",
     "BackgroundCompletion",
     "build_teammate_registry",
-    "CommandLogArtifactRepository",
     "ControlledOperationRepository",
     "ControlledOperationDispatchRequestRepository",
     "ControlledOperationExecutionEventRepository",
@@ -862,8 +870,6 @@ __all__ = [
     "ControlledOperationProviderDispatchReceiptRepository",
     "ControlledOperationProviderObservationReceiptRepository",
     "ControlledOperationResultHandleRepository",
-    "ControlledOperationResultArtifactRepository",
-    "ControlledOperationResultArtifactRef",
     "ControlledOperationExecutionTransitionService",
     "WORKSPACE_REVISION_EXECUTION_ADAPTER_POLICY_ID",
     "WORKSPACE_REVISION_EXECUTION_ROUTE_POLICY_ID",
@@ -896,7 +902,6 @@ __all__ = [
     "DurableRouteObservation",
     "DurableRouteObservationKind",
     "controlled_operation_approval_digest",
-    "controlled_operation_artifact_set_digest",
     "build_controlled_operation_result_handle",
     "CanonicalRecordConflictError",
     "ContinuationStateRepository",
@@ -917,8 +922,6 @@ __all__ = [
     "DocumentRecord",
     "DocumentRegistry",
     "DelegationEnvelope",
-    "DelegationProjection",
-    "DelegationProjectionItem",
     "EngineDescriptor",
     "EngineDocumentRecord",
     "EngineDocumentRepository",
@@ -960,7 +963,6 @@ __all__ = [
     "IssuedRepositoryCredential",
     "DurableControlledOperationWriteError",
     "ControlledOperationWriteFencingError",
-    "FileAuditEntryRepository",
     "HarnessDriver",
     "HarnessEvent",
     "HarnessInput",
@@ -1033,10 +1035,7 @@ __all__ = [
     "PromptTokenEstimate",
     "PromptTokenEstimator",
     "register_report_draft_tools",
-    "register_artifact_tools",
-    "register_artifact_boundary_tools",
     "register_protocol_tools",
-    "register_sandbox_workspace_tools",
     "ResearchEvidenceRepository",
     "ResearchGapRepository",
     "ResearchSourceRefRepository",
@@ -1095,19 +1094,15 @@ __all__ = [
     "ContinuationDeliveryHostAuthority",
     "DurableExecutionHostAuthority",
     "SandboxHostAuthorityError",
-    "SandboxHostBinding",
     "SandboxHostCallContext",
+    "AgentCapsuleHostAuthority",
     "SandboxHostCallContextFactory",
-    "SandboxHostGateway",
     "SandboxHostOwnerAuthority",
     "SandboxMutationWriterScopeFactory",
     "SandboxProcessHostAuthority",
-    "SandboxRuntimeError",
-    "SandboxRuntimeService",
     "register_sandbox_runtime_tools",
     "SandboxRunRecordRepository",
     "SandboxWorkspaceRecordRepository",
-    "SandboxWorkspaceService",
     "SessionReportDraftRepository",
     "SessionReportRepository",
     "SessionRuntimeLeaseAcquireResult",
@@ -1120,19 +1115,15 @@ __all__ = [
     "ResumeDecision",
     "ResumeEnvelope",
     "ScopedMemorySummary",
-    "SessionArtifactRepository",
-    "SessionProjectionBuilder",
     "SessionRepository",
     "SessionRepositoryBindingPinRepository",
     "SessionRestoreContext",
     "SessionRuntimeContext",
     "SessionRuntimeSnapshot",
-    "SessionWorkspaceProjection",
     "SCIENTIFIC_ATTEMPT_AUTHORIZATION_POLICY_ID",
     "SCIENTIFIC_EFFECT_ADOPTION_POLICY_ATOMIC",
     "SCIENTIFIC_SAME_ATTEMPT_REUSE_POLICY",
     "HistoricalScientificWorkflowContract",
-    "ScientificArtifactMaterializationRepository",
     "ScientificAttemptAdmissionRequestRepository",
     "ScientificAttemptAuthorizationRepository",
     "ScientificAttemptBindingRepository",
@@ -1157,9 +1148,22 @@ __all__ = [
     "ScientificDeliverableFinalizationResult",
     "ScientificDeliverableFinalizationService",
     "ScientificFileDeliverableError",
+    "ScientificFileEffectAdoptionService",
     "ScientificPublishedByteReader",
     "ScientificPublishedFileResolver",
     "ScientificRoleRequirement",
+    "LegacyAoxFreezeProof",
+    "ScientificContractActivationError",
+    "ScientificContractActivationPreflight",
+    "ScientificContractActivationService",
+    "ScientificDependencyAvailability",
+    "ScientificPrerequisiteReceipt",
+    "ScientificContractEpoch",
+    "ScientificContractEpochRepository",
+    "FreshScientificPublicationReader",
+    "ScientificOfflineVerificationError",
+    "ScientificOfflineVerificationResult",
+    "ScientificOfflineVerifier",
     "ResolvedScientificFile",
     "ScientificOccurrenceSnapshot",
     "ResolvedScientificAttemptLifecycle",
@@ -1221,7 +1225,6 @@ __all__ = [
     "builtin_tool_descriptors",
     "connect_sqlite",
     "decide_prompt_budget",
-    "derive_sandbox_workspace_id",
     "engine_tool_descriptors",
     "failure_tool_descriptors",
     "file_workspace_candidate_catalog_digest",
@@ -1230,7 +1233,6 @@ __all__ = [
     "get_migration_sql",
     "load_recent_conversation",
     "model_context_profile_from_env_or_factory",
-    "normalize_immutable_image_id",
     "persist_conversation_message",
     "PublicationManifestValidation",
     "RevisionGitAttributes",
@@ -1251,10 +1253,18 @@ __all__ = [
     "FileWorkspaceHostOperation",
     "FileWorkspaceHostRequest",
     "FileWorkspaceSandboxHostGateway",
+    "FileWorkspaceControlDispatcher",
     "FileWorkspaceProjectionBuilder",
     "file_workspace_public_schema_bundle_digest",
+    "FILE_WORKSPACE_PUBLIC_CONTRACT_ID",
+    "FILE_WORKSPACE_PUBLIC_MEDIA_TYPE",
+    "FileWorkspaceActivationAdmission",
+    "FileWorkspacePublicContractError",
+    "FileWorkspacePublicContractService",
+    "FileWorkspaceReleaseBundle",
+    "PredecessorCompletionReceipt",
+    "SessionContractDisposition",
     "reject_stale_file_workspace_value",
-    "is_controlled_operation_artifact_public",
     "register_memory_tools",
     "register_docs_tools",
     "register_failure_tools",
@@ -1265,7 +1275,6 @@ __all__ = [
     "register_world_inspection_tools",
     "run_teammate_loop",
     "run_agent_harness_loop",
-    "sandbox_image_record",
     "TeammateConversationDriver",
     "teammate_role_for_task_kind",
     "teammate_tool_descriptors",

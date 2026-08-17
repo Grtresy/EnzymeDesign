@@ -9,10 +9,20 @@ from typing import Protocol
 
 from openzyme_domain import PublicationManifestEntry
 from openzyme_domain import PublicationManifestObjectKind
+from openzyme_domain import ControlledOperationExecutionLifecycle
+from openzyme_domain import ControlledOperationExecutionTerminalOutcome
+from openzyme_domain import ControlledOperationStatus
+from openzyme_domain import MutationWriterKind
+from openzyme_domain import PublishedRevision
 from openzyme_domain import ScientificDeliverableBundle
 from openzyme_domain import ScientificDeliverableRef
 from openzyme_domain import ScientificDeliverableValidationReceipt
 from openzyme_domain import ScientificFileStorage
+from openzyme_domain import ScientificAttemptStatus
+from openzyme_domain import ScientificFileEffectAdoption
+from openzyme_domain import ScientificOperationDispositionKind
+from openzyme_domain import WorkspaceJobObservationState
+from openzyme_domain import WorkspaceFormalBoundary
 from openzyme_domain import ScientificSelectionState
 from openzyme_domain import canonical_scientific_deliverable_digest
 from openzyme_domain import normalize_scientific_path
@@ -77,6 +87,265 @@ class ScientificDeliverableFinalizationResult:
     refs: tuple[ScientificDeliverableRef, ...]
     bundle: ScientificDeliverableBundle
     receipt: ScientificDeliverableValidationReceipt
+
+
+@dataclass(slots=True)
+class ScientificFileEffectAdoptionService:
+    repositories: CoreRepositories
+    now: Callable[[], datetime] = lambda: datetime.now(UTC)
+
+    def adopt(
+        self,
+        *,
+        selection_id: str,
+        operation_id: str,
+        execution_id: str,
+        result_id: str,
+        workflow_role: str,
+        actor_ref: str,
+        execution_fencing_token: int,
+        idempotency_key: str,
+    ) -> ScientificFileEffectAdoption:
+        authority = current_mutation_write_authority()
+        selection = self.repositories.scientific_selections.get(selection_id)
+        head = (
+            None
+            if selection is None
+            else self.repositories.scientific_selections.resolve_head(
+                selection.attempt_id
+            )
+        )
+        attempt = (
+            None
+            if selection is None
+            else self.repositories.scientific_attempts.get(selection.attempt_id)
+        )
+        disposition = next(
+            (
+                item
+                for item in self.repositories.scientific_dispositions.list_by_selection(
+                    selection_id
+                )
+                if item.operation_id == operation_id
+            ),
+            None,
+        )
+        operation = self.repositories.controlled_operations.get(operation_id)
+        execution = self.repositories.controlled_operation_executions.get(execution_id)
+        workspace_result = self.repositories.workspace_revision_executions.get_result(
+            result_id
+        )
+        controlled_result = self.repositories.controlled_operation_results.get(result_id)
+        result = workspace_result
+        result_digest = None if result is None else result.result_digest
+        if (
+            selection is None
+            or attempt is None
+            or head is None
+            or head.head.selection_id != selection_id
+            or selection.state is not ScientificSelectionState.DRAFT
+            or selection.actor_ref != actor_ref
+            or attempt.status is not ScientificAttemptStatus.ACTIVE
+            or authority is None
+            or authority.scope_id != attempt.mutation_scope_id
+            or authority.owner_kind is not MutationWriterKind.CONTROLLED_OPERATION
+            or disposition is None
+            or disposition.attempt_id != attempt.attempt_id
+            or disposition.actor_ref != actor_ref
+            or disposition.kind is not ScientificOperationDispositionKind.ADOPTED
+            or disposition.workflow_role != workflow_role
+            or operation is None
+            or operation.session_id != attempt.session_id
+            or operation.status is not ControlledOperationStatus.COMPLETED
+            or execution is None
+            or execution.session_id != attempt.session_id
+            or execution.operation_id != operation_id
+            or execution.execution_id != execution_id
+            or execution.fencing_token != execution_fencing_token
+            or execution.lifecycle_state
+            is not ControlledOperationExecutionLifecycle.TERMINAL
+            or execution.terminal_outcome
+            is not ControlledOperationExecutionTerminalOutcome.SUCCEEDED
+            or execution.effect_certainty.value not in {
+                "effect_known",
+                "terminal_known",
+            }
+            or result is None
+            or result.operation_id != operation_id
+            or result.execution_id != execution_id
+            or result_digest != execution.result_digest
+            or execution.result_handle_ref != result_id
+            or (
+                workspace_result is not None
+                and workspace_result.terminal_state
+                is not WorkspaceJobObservationState.SUCCEEDED
+            )
+        ):
+            raise ScientificFileDeliverableError(
+                "scientific file adoption does not bind one current successful producer"
+            )
+        execution_request = (
+            self.repositories.workspace_revision_executions.get_request_by_execution(
+                execution_id
+            )
+        )
+        result_link = self.repositories.workspace_revision_executions.get_result_revision_link(
+            result_id
+        )
+        checkpoint = (
+            None
+            if result_link is None
+            else self.repositories.verified_workspace_checkpoints.get(
+                result_link.checkpoint_id
+            )
+        )
+        closure = (
+            None
+            if result_link is None
+            else self.repositories.git_lfs.get_closure_manifest(
+                result_link.lfs_closure_manifest_digest
+            )
+        )
+        if (
+            controlled_result is not None
+            or execution_request is None
+            or execution_request.scientific_basis is None
+            or execution_request.scientific_basis.attempt_id != attempt.attempt_id
+            or execution_request.scientific_basis.attempt_state_version
+            != attempt.state_version
+            or execution_request.session_id != attempt.session_id
+            or result_link is None
+            or checkpoint is None
+            or closure is None
+            or checkpoint.boundary is not WorkspaceFormalBoundary.EXTERNAL_JOB
+            or result_link.result_id != result_id
+            or result_link.workspace_id != checkpoint.workspace_id
+            or result_link.result_commit != checkpoint.commit
+            or result_link.result_tree != checkpoint.tree
+            or result_link.linked_by_agent_member_id != checkpoint.agent_member_id
+            or closure.manifest_digest != result_link.lfs_closure_manifest_digest
+            or closure.binding_id != checkpoint.repository_binding_id
+            or closure.binding_version != checkpoint.repository_binding_version
+            or closure.repository_id != checkpoint.repository_id
+            or closure.commit != checkpoint.commit
+            or closure.tree != checkpoint.tree
+        ):
+            raise ScientificFileDeliverableError(
+                "scientific file adoption lacks exact attempt-bound result revision"
+            )
+        request = {
+            "schema_version": "scientific_file_effect_adoption_request@1",
+            "selection_id": selection_id,
+            "selection_revision": selection.revision,
+            "attempt_id": attempt.attempt_id,
+            "workflow_role": workflow_role,
+            "operation_id": operation_id,
+            "execution_id": execution_id,
+            "result_id": result_id,
+            "result_digest": result_digest,
+            "effect_certainty": execution.effect_certainty.value,
+            "actor_ref": actor_ref,
+            "execution_fencing_token": execution_fencing_token,
+            "idempotency_key": idempotency_key,
+        }
+        request_digest = canonical_scientific_deliverable_digest(request)
+        adoption_id = _stable_id("scientific_file_adoption", request_digest)
+        existing = self.repositories.scientific_deliverables.get_adoption(adoption_id)
+        if existing is not None:
+            if existing.request_digest != request_digest:
+                raise ScientificFileDeliverableError(
+                    "scientific file adoption idempotency identity conflicts"
+                )
+            return existing
+        record = ScientificFileEffectAdoption.create(
+            adoption_id=adoption_id,
+            selection_id=selection_id,
+            selection_revision=selection.revision,
+            attempt_id=attempt.attempt_id,
+            workflow_role=workflow_role,
+            operation_id=operation_id,
+            execution_id=execution_id,
+            result_id=result_id,
+            result_digest=result_digest,
+            effect_certainty=execution.effect_certainty.value,
+            actor_ref=actor_ref,
+            execution_fencing_token=execution_fencing_token,
+            idempotency_key=idempotency_key,
+            request_digest=request_digest,
+            created_at=self.now().isoformat(),
+        )
+        with self.repositories.atomic(prefix="scientific_file_effect_adoption"):
+            current_authority = current_mutation_write_authority()
+            current_selection = self.repositories.scientific_selections.get(selection_id)
+            current_head = self.repositories.scientific_selections.resolve_head(
+                attempt.attempt_id
+            )
+            current_attempt = self.repositories.scientific_attempts.get(
+                attempt.attempt_id
+            )
+            current_operation = self.repositories.controlled_operations.get(operation_id)
+            current_execution = self.repositories.controlled_operation_executions.get(
+                execution_id
+            )
+            current_workspace_result = (
+                self.repositories.workspace_revision_executions.get_result(result_id)
+            )
+            current_controlled_result = (
+                self.repositories.controlled_operation_results.get(result_id)
+            )
+            current_request = (
+                self.repositories.workspace_revision_executions.get_request_by_execution(
+                    execution_id
+                )
+            )
+            current_result_link = (
+                self.repositories.workspace_revision_executions.get_result_revision_link(
+                    result_id
+                )
+            )
+            current_checkpoint = (
+                None
+                if current_result_link is None
+                else self.repositories.verified_workspace_checkpoints.get(
+                    current_result_link.checkpoint_id
+                )
+            )
+            current_closure = (
+                None
+                if current_result_link is None
+                else self.repositories.git_lfs.get_closure_manifest(
+                    current_result_link.lfs_closure_manifest_digest
+                )
+            )
+            current_disposition = next(
+                (
+                    item
+                    for item in self.repositories.scientific_dispositions.list_by_selection(
+                        selection_id
+                    )
+                    if item.operation_id == operation_id
+                ),
+                None,
+            )
+            if (
+                current_authority != authority
+                or current_selection != selection
+                or current_head != head
+                or current_attempt != attempt
+                or current_operation != operation
+                or current_execution != execution
+                or current_workspace_result != workspace_result
+                or current_controlled_result != controlled_result
+                or current_request != execution_request
+                or current_result_link != result_link
+                or current_checkpoint != checkpoint
+                or current_closure != closure
+                or current_disposition != disposition
+            ):
+                raise ScientificFileDeliverableError(
+                    "scientific file adoption facts drifted before commit"
+                )
+            return self.repositories.scientific_deliverables.add_adoption(record)
 
 
 def _git_blob_oid(content: bytes, *, hex_length: int) -> str:
@@ -163,6 +432,140 @@ class ScientificDeliverableFinalizationService:
     resolver: ScientificPublishedFileResolver
     now: Callable[[], datetime] = lambda: datetime.now(UTC)
 
+    def _require_producer_lineage(
+        self,
+        *,
+        adoption: ScientificFileEffectAdoption,
+        requirement: ScientificRoleRequirement,
+        attempt_id: str,
+        selection_id: str,
+        actor_ref: str,
+        revision: PublishedRevision,
+    ) -> tuple[object, ...]:
+        operation = self.repositories.controlled_operations.get(adoption.operation_id)
+        execution = self.repositories.controlled_operation_executions.get(
+            adoption.execution_id
+        )
+        result = self.repositories.workspace_revision_executions.get_result(
+            adoption.result_id
+        )
+        request = (
+            self.repositories.workspace_revision_executions.get_request_by_execution(
+                adoption.execution_id
+            )
+        )
+        link = self.repositories.workspace_revision_executions.get_result_revision_link(
+            adoption.result_id
+        )
+        checkpoint = (
+            None
+            if link is None
+            else self.repositories.verified_workspace_checkpoints.get(link.checkpoint_id)
+        )
+        closure = (
+            None
+            if link is None
+            else self.repositories.git_lfs.get_closure_manifest(
+                link.lfs_closure_manifest_digest
+            )
+        )
+        disposition = next(
+            (
+                item
+                for item in self.repositories.scientific_dispositions.list_by_selection(
+                    selection_id
+                )
+                if item.operation_id == adoption.operation_id
+            ),
+            None,
+        )
+        publication_proof = self.repositories.git_lfs.get_publication_intent_proof(
+            revision.intent_id
+        )
+        if (
+            adoption.attempt_id != attempt_id
+            or adoption.selection_id != selection_id
+            or adoption.selection_revision < 1
+            or adoption.workflow_role != requirement.scientific_role
+            or adoption.actor_ref != actor_ref
+            or operation is None
+            or operation.session_id != revision.session_id
+            or operation.status is not ControlledOperationStatus.COMPLETED
+            or execution is None
+            or execution.operation_id != adoption.operation_id
+            or execution.execution_id != adoption.execution_id
+            or execution.session_id != revision.session_id
+            or execution.fencing_token != adoption.execution_fencing_token
+            or execution.lifecycle_state
+            is not ControlledOperationExecutionLifecycle.TERMINAL
+            or execution.terminal_outcome
+            is not ControlledOperationExecutionTerminalOutcome.SUCCEEDED
+            or execution.effect_certainty.value != adoption.effect_certainty
+            or execution.result_handle_ref != adoption.result_id
+            or execution.result_digest != adoption.result_digest
+            or result is None
+            or result.operation_id != adoption.operation_id
+            or result.execution_id != adoption.execution_id
+            or result.result_digest != adoption.result_digest
+            or result.terminal_state is not WorkspaceJobObservationState.SUCCEEDED
+            or request is None
+            or request.scientific_basis is None
+            or request.scientific_basis.attempt_id != attempt_id
+            or request.session_id != revision.session_id
+            or link is None
+            or checkpoint is None
+            or closure is None
+            or disposition is None
+            or disposition.attempt_id != attempt_id
+            or disposition.selection_id != selection_id
+            or disposition.kind is not ScientificOperationDispositionKind.ADOPTED
+            or disposition.workflow_role != requirement.scientific_role
+            or disposition.actor_ref != actor_ref
+            or checkpoint.boundary is not WorkspaceFormalBoundary.EXTERNAL_JOB
+            or checkpoint.session_id != revision.session_id
+            or checkpoint.workspace_id
+            != revision.publisher_workspace_id
+            or checkpoint.workspace_generation
+            != revision.publisher_workspace_generation
+            or checkpoint.agent_member_id
+            != revision.publisher_agent_member_id
+            or checkpoint.repository_binding_id
+            != revision.repository_binding_id
+            or checkpoint.repository_binding_version
+            != revision.repository_binding_version
+            or checkpoint.repository_id != revision.repository_id
+            or checkpoint.commit != revision.commit
+            or checkpoint.tree != revision.tree
+            or link.workspace_id != checkpoint.workspace_id
+            or link.result_commit != checkpoint.commit
+            or link.result_tree != checkpoint.tree
+            or link.linked_by_agent_member_id != checkpoint.agent_member_id
+            or closure.manifest_digest != link.lfs_closure_manifest_digest
+            or closure.binding_id != checkpoint.repository_binding_id
+            or closure.binding_version != checkpoint.repository_binding_version
+            or closure.repository_id != checkpoint.repository_id
+            or closure.commit != checkpoint.commit
+            or closure.tree != checkpoint.tree
+            or closure.policy_digest
+            != revision.repository_policy_digest
+            or publication_proof is None
+            or publication_proof.get("manifest_digest") != closure.manifest_digest
+        ):
+            raise ScientificFileDeliverableError(
+                "producer adoption does not close over the exact published result revision"
+            )
+        return (
+            operation,
+            execution,
+            result,
+            request,
+            link,
+            checkpoint,
+            closure,
+            disposition,
+            dict(publication_proof),
+        )
+
     def finalize(
         self,
         *,
@@ -182,21 +585,60 @@ class ScientificDeliverableFinalizationService:
         if len(set(roles)) != len(roles) or len(set(paths)) != len(paths):
             raise ScientificFileDeliverableError("scientific roles and paths must be unique")
         authority = current_mutation_write_authority()
-        if authority is None or authority.writer_fencing_token != execution_fencing_token:
-            raise ScientificFileDeliverableError("scientific finalization authority is fenced")
 
         revision = self.repositories.published_revisions.get(publication_id)
         attempt = self.repositories.scientific_attempts.get(attempt_id)
         selection = self.repositories.scientific_selections.get(selection_id)
         resolved_head = self.repositories.scientific_selections.resolve_head(attempt_id)
+        publication_execution = (
+            None
+            if revision is None
+            else self.repositories.controlled_operation_executions.get(
+                revision.controlled_execution_id
+            )
+        )
+        publication_receipt = (
+            None
+            if revision is None
+            else self.repositories.workspace_publication_remote_receipts.get(
+                revision.remote_receipt_id
+            )
+        )
         if (
             revision is None
             or attempt is None
             or selection is None
             or selection.attempt_id != attempt_id
             or selection.state is not ScientificSelectionState.SEALED
+            or selection.actor_ref != actor_ref
+            or attempt.status not in {
+                ScientificAttemptStatus.ACTIVE,
+                ScientificAttemptStatus.CLOSING,
+            }
+            or revision.session_id != attempt.session_id
             or resolved_head is None
             or resolved_head.head.selection_id != selection_id
+            or authority is None
+            or authority.scope_id != attempt.mutation_scope_id
+            or authority.owner_kind is not MutationWriterKind.CONTROLLED_OPERATION
+            or publication_execution is None
+            or publication_execution.session_id != attempt.session_id
+            or publication_execution.fencing_token != execution_fencing_token
+            or publication_execution.lifecycle_state
+            is not ControlledOperationExecutionLifecycle.TERMINAL
+            or publication_execution.terminal_outcome
+            is not ControlledOperationExecutionTerminalOutcome.SUCCEEDED
+            or publication_execution.result_handle_ref
+            != f"publication:{publication_id}"
+            or publication_receipt is None
+            or publication_receipt.publication_id != publication_id
+            or publication_receipt.intent_id != revision.intent_id
+            or publication_receipt.execution_id != revision.controlled_execution_id
+            or publication_receipt.execution_fencing_token
+            != execution_fencing_token
+            or publication_receipt.new_commit != revision.commit
+            or publication_receipt.new_tree != revision.tree
+            or publication_receipt.server_observed_commit != revision.commit
         ):
             raise ScientificFileDeliverableError(
                 "publication, attempt, or sealed selection identity is not current"
@@ -218,10 +660,23 @@ class ScientificDeliverableFinalizationService:
             adoption is None
             or adoption.attempt_id != attempt_id
             or adoption.selection_id != selection_id
+            or adoption.selection_revision != selection.revision
             or adoption.workflow_role != requirement.scientific_role
             for adoption, requirement in zip(adoptions, requirements, strict=True)
         ):
             raise ScientificFileDeliverableError("producer adoption chain is not exact")
+        producer_lineages = tuple(
+            self._require_producer_lineage(
+                adoption=adoption,
+                requirement=requirement,
+                attempt_id=attempt_id,
+                selection_id=selection_id,
+                actor_ref=actor_ref,
+                revision=revision,
+            )
+            for adoption, requirement in zip(adoptions, requirements, strict=True)
+            if adoption is not None
+        )
 
         preimage = {
             "schema_version": "scientific_deliverable_validation_preimage@1",
@@ -245,17 +700,54 @@ class ScientificDeliverableFinalizationService:
                     "object_id": file.manifest_entry.object_id,
                     "lfs_oid": file.manifest_entry.lfs_oid,
                     "producer_adoption_digest": adoption.adoption_digest,
+                    "producer_execution_digest": lineage[1].result_digest,
+                    "producer_result_revision_link_digest": lineage[4].link_digest,
+                    "producer_lfs_closure_manifest_digest": (
+                        lineage[6].manifest_digest
+                    ),
                 }
-                for requirement, file, adoption in zip(
+                for requirement, file, adoption, lineage in zip(
                     requirements,
                     resolved,
                     adoptions,
+                    producer_lineages,
                     strict=True,
                 )
                 if adoption is not None
             ],
         }
         validation_preimage_digest = canonical_scientific_deliverable_digest(preimage)
+        existing_bundle = self.repositories.scientific_deliverables.get_bundle_for_attempt(
+            attempt_id=attempt_id,
+            selection_id=selection_id,
+            contract_id=contract_id,
+        )
+        if existing_bundle is not None:
+            existing_receipt = (
+                self.repositories.scientific_deliverables.get_receipt_for_bundle(
+                    existing_bundle.bundle_id
+                )
+            )
+            existing_refs = self.repositories.scientific_deliverables.list_refs_by_bundle(
+                existing_bundle.bundle_id
+            )
+            if (
+                existing_receipt is None
+                or existing_bundle.validation_preimage_digest
+                != validation_preimage_digest
+                or existing_bundle.publication_id != publication_id
+                or existing_bundle.contract_digest != contract_digest
+                or tuple(sorted(ref.ref_id for ref in existing_refs))
+                != existing_bundle.ref_ids
+            ):
+                raise ScientificFileDeliverableError(
+                    "scientific finalization idempotency identity conflicts"
+                )
+            return ScientificDeliverableFinalizationResult(
+                refs=existing_refs,
+                bundle=existing_bundle,
+                receipt=existing_receipt,
+            )
         created_at = self.now().isoformat()
         refs = tuple(
             ScientificDeliverableRef.create(
@@ -357,12 +849,41 @@ class ScientificDeliverableFinalizationService:
             current_head = self.repositories.scientific_selections.resolve_head(attempt_id)
             current_revision = self.repositories.published_revisions.get(publication_id)
             current_authority = current_mutation_write_authority()
+            current_publication_execution = (
+                self.repositories.controlled_operation_executions.get(
+                    revision.controlled_execution_id
+                )
+            )
+            current_publication_receipt = (
+                self.repositories.workspace_publication_remote_receipts.get(
+                    revision.remote_receipt_id
+                )
+            )
+            current_lineages = tuple(
+                self._require_producer_lineage(
+                    adoption=adoption,
+                    requirement=requirement,
+                    attempt_id=attempt_id,
+                    selection_id=selection_id,
+                    actor_ref=actor_ref,
+                    revision=revision,
+                )
+                for adoption, requirement in zip(
+                    adoptions,
+                    requirements,
+                    strict=True,
+                )
+                if adoption is not None
+            )
             if (
                 current_attempt != attempt
                 or current_selection != selection
                 or current_revision != revision
                 or current_head != resolved_head
                 or current_authority != authority
+                or current_publication_execution != publication_execution
+                or current_publication_receipt != publication_receipt
+                or current_lineages != producer_lineages
             ):
                 raise ScientificFileDeliverableError(
                     "scientific finalization facts drifted before commit"
@@ -387,6 +908,7 @@ __all__ = [
     "ScientificDeliverableFinalizationResult",
     "ScientificDeliverableFinalizationService",
     "ScientificFileDeliverableError",
+    "ScientificFileEffectAdoptionService",
     "ScientificPublishedByteReader",
     "ScientificPublishedFileResolver",
     "ScientificRoleRequirement",

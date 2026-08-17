@@ -2,14 +2,14 @@
 
 前 13 个 changes 已按依赖顺序建立 repository binding、独立 agent Git workspace、Git LFS、immutable workspace publication、agent capability lease、file-native sandbox、executor HPC workspace、revision-bound external job、revision/path research/report/task handoff、旧 AOX cutover supersession、scientific deliverable file identity、file-only public surface和全量 historical Git/LFS migration。本 change执行用户选择 6B 的最后一步：物理删除 artifact domain、database structures、legacy storage objects和 current runtime code。
 
-> **当前实施边界：** 上述“已建立”目前仅表示候选源码按依赖顺序存在，不能
-> 等同于正式激活或验收。`artifact_subsystem_removal_source_only_gate@1` 记录了
-> 0/13 正式前置 receipt、缺失的历史全局 receipt、未激活的 public epoch，以及
-> 仍含 legacy surface 的 current source/schema 盘点。随 change 保存的
-> `operator/offline_removal_contract.py` 只构造确定性 manifest 和 dry-run；它位于
-> runtime/package/migration discovery 之外，不做 I/O，不签发 authority，也不执行
-> DDL 或 storage mutation。真实 6B 删除必须在未来一次独立、明确授权的 offline
-> maintenance window 中重新取证并通过全部 gate。
+> **当前实施边界：** `artifact_subsystem_removal_release_gate@4` 已记录本轮用户对
+> exact local deployment 的 DDL 与 receipt-bound legacy storage deletion 授权，并绑定
+> public activation、静默/备份、真实 historical inventory/global receipt 与 standalone
+> verification。它不直接绕过 admission：13 个正式 prerequisite receipts、final schema、
+> dry-run 与全部 identity 必须在 mutation 前重新验证。当前 repository-service Git/LFS
+> 属于新产品存储并明确排除；legacy storage target set 实测为空。该 exact removal
+> 已完成并形成 `offline_removal_complete` ledger；最终 schema manifest、零 legacy
+> structure scan、完整性/FK 与正常启动均已验证，authority 不可重用。
 
 删除不是兼容性清理。`SessionArtifactRecord` 目前仍被多张历史表、FK、trigger、repository、sandbox/controlled-operation/scientific/HPC路径和 storage URI依赖；SQLite又不能安全地仅用若干 `DROP COLUMN`完成深 FK重构。必须在 offline maintenance window中先消费 exact historical migration receipt、重验 bytes/lineage覆盖，再执行 forward schema rebuild和storage deletion。最终 current product、runtime、fresh-install schema、API、SDK、UI和 tests均不得保留 artifact fallback。
 
@@ -96,6 +96,11 @@ DDL成功后，offline remover按 historical receipt中的 exact legacy object i
 删除过程幂等记录到 deployment migration ledger中的 `LegacySubsystemRemovalReceipt`；它只证明一次离线删除，不提供 legacy资源读取能力，也不属于 current product control-plane schema。Receipt包含 expected/deleted/already-absent object identity、bytes、root和 error set。`already_absent`只有在 historical migration时已证明 source object identity且当前 absence与同一 receipt匹配时才允许；未知缺失阻止完成。全部对象删除后重新扫描 legacy roots和数据库，要求 exact zero artifact runtime structures/objects。
 
 若部分 filesystem删除失败，database不回滚或重建 artifact表；deployment保持 removal-incomplete、runtime拒绝启动，operator只可继续删除同一 receipt中的剩余对象。
+重试从 final-schema ledger 恢复同一 manifest，不再要求当前数据库与 pre-removal backup 字节相同；
+它仍须重验原 backup 文件、quiescence/historical/prerequisite receipts、final schema manifest、每个
+ledger target 与空缓存 historical readback。本次 `deleted` 与 prior-receipted `already_absent` 必须
+互斥且并集精确等于 expected set。operator 的 final-copy 与 verifier clone 只可位于显式绝对、
+非 symlink 的 working root。
 
 ### 6. Fresh install采用final baseline，旧 migrations不进入 runtime loader
 

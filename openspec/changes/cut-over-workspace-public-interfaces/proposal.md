@@ -21,7 +21,8 @@
 ## Impact
 
 影响 Host API、CLI、Web UI、core projections/world inspection/restore、tool catalog/prompts、pipeline SDK、events/evals、文档与所有相应测试。
-> 连续源码迁移期间使用
-> `operator/source-only-public-cutover-gate.json`。它允许构造
-> `file_workspace_public@1` candidate source，但不推进 public epoch，也不把缺失的
-> C10/C11 completion receipts 视为通过。
+> `operator/source-only-public-cutover-gate.json` 保留原文件名作为 gate 审计槽，
+> 当前内容已升级为 `file_workspace_public_release_gate@2`：C10/C11 精确完成
+> receipt、统一 release bundle、静默期与本地 deployment activation evidence 均已
+> 绑定，`file_workspace_public@1` 已激活；该 gate 只允许后续离线历史迁移准入，
+> 不授予 live/provider/HPC effect，也不把 activation 视为迁移或删除完成。

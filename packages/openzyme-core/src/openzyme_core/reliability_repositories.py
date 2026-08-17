@@ -23,9 +23,6 @@ from .repositories import _json_loads_object
 from .repositories import _require_enum_member
 from .repositories import _require_linked_session_id
 from .repositories import _require_session_exists
-from .result_artifacts import ControlledOperationResultArtifactRef
-from .result_artifacts import controlled_operation_artifact_set_digest
-from .result_artifacts import normalize_controlled_operation_result_artifacts
 
 
 class ReliabilityRepositoryError(RuntimeError):
@@ -179,7 +176,6 @@ class ControlledOperationExecutionRepository:
                     backend_handle_ref,
                     result_handle_ref,
                     result_digest,
-                    artifact_set_digest,
                     error_code,
                     safe_error_summary,
                     created_at,
@@ -187,7 +183,7 @@ class ControlledOperationExecutionRepository:
                     terminal_at
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
                 self._record_values(record),
@@ -350,7 +346,6 @@ class ControlledOperationExecutionRepository:
                 backend_handle_ref = ?,
                 result_handle_ref = ?,
                 result_digest = ?,
-                artifact_set_digest = ?,
                 error_code = ?,
                 safe_error_summary = ?,
                 updated_at = ?,
@@ -373,7 +368,6 @@ class ControlledOperationExecutionRepository:
                 record.backend_handle_ref,
                 record.result_handle_ref,
                 record.result_digest,
-                record.artifact_set_digest,
                 record.error_code,
                 record.safe_error_summary,
                 record.updated_at,
@@ -533,7 +527,6 @@ class ControlledOperationExecutionRepository:
             record.backend_handle_ref,
             record.result_handle_ref,
             record.result_digest,
-            record.artifact_set_digest,
             record.error_code,
             record.safe_error_summary,
             record.created_at,
@@ -578,7 +571,6 @@ class ControlledOperationExecutionRepository:
             backend_handle_ref=row["backend_handle_ref"],
             result_handle_ref=row["result_handle_ref"],
             result_digest=row["result_digest"],
-            artifact_set_digest=row["artifact_set_digest"],
             error_code=row["error_code"],
             safe_error_summary=row["safe_error_summary"],
             created_at=row["created_at"],
@@ -1250,10 +1242,9 @@ class ControlledOperationResultHandleRepository:
                     terminal_outcome,
                     bounded_result_envelope_json,
                     result_digest,
-                    artifact_set_digest,
                     origin,
                     created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     handle.result_handle_id,
@@ -1265,7 +1256,6 @@ class ControlledOperationResultHandleRepository:
                     handle.terminal_outcome.value,
                     _json_dumps(handle.bounded_result_envelope),
                     handle.result_digest,
-                    handle.artifact_set_digest,
                     handle.origin,
                     handle.created_at,
                 ),
@@ -1323,135 +1313,6 @@ class ControlledOperationResultHandleRepository:
             )
             or {},
             result_digest=row["result_digest"],
-            artifact_set_digest=row["artifact_set_digest"],
             origin=row["origin"],
             created_at=row["created_at"],
         )
-
-
-@dataclass(slots=True)
-class ControlledOperationResultArtifactRepository:
-    connection: sqlite3.Connection
-
-    def promote(
-        self,
-        handle: ControlledOperationResultHandle,
-        refs: tuple[ControlledOperationResultArtifactRef, ...],
-    ) -> tuple[ControlledOperationResultArtifactRef, ...]:
-        ordered = normalize_controlled_operation_result_artifacts(refs)
-        if controlled_operation_artifact_set_digest(ordered) != (
-            handle.artifact_set_digest
-        ):
-            raise ImmutableIdentityConflictError(
-                "result artifact set digest does not match immutable result"
-            )
-        existing = self.list_by_result_handle(handle.result_handle_id)
-        if existing:
-            if existing != ordered:
-                raise CanonicalRecordConflictError(
-                    "controlled operation result already owns another artifact set"
-                )
-            return existing
-        for ordinal, ref in enumerate(ordered):
-            row = self.connection.execute(
-                """
-                SELECT session_id, kind, relative_path, metadata_json
-                FROM session_artifact_records
-                WHERE artifact_id = ?
-                """,
-                (ref.artifact_id,),
-            ).fetchone()
-            if row is None or row["session_id"] != handle.session_id:
-                raise ImmutableIdentityConflictError(
-                    "result artifact is missing from its canonical session"
-                )
-            metadata = _json_loads_object(row["metadata_json"]) or {}
-            catalog_digest = str(
-                metadata.get("sealed_digest")
-                or metadata.get("content_digest")
-                or metadata.get("tree_digest")
-                or metadata.get("source_tree_digest")
-                or ""
-            )
-            if (
-                row["kind"] != ref.kind.value
-                or row["relative_path"] != ref.relative_path
-                or catalog_digest != ref.artifact_digest
-            ):
-                raise ImmutableIdentityConflictError(
-                    "result artifact identity or catalog digest drifted"
-                )
-            self.connection.execute(
-                """
-                INSERT INTO controlled_operation_result_artifacts (
-                    result_handle_id,
-                    ordinal,
-                    artifact_id,
-                    schema_version,
-                    execution_id,
-                    operation_id,
-                    session_id,
-                    artifact_kind,
-                    relative_path,
-                    artifact_digest
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    handle.result_handle_id,
-                    ordinal,
-                    ref.artifact_id,
-                    "controlled_operation_result_artifact@1",
-                    handle.execution_id,
-                    handle.operation_id,
-                    handle.session_id,
-                    ref.kind.value,
-                    ref.relative_path,
-                    ref.artifact_digest,
-                ),
-            )
-        _commit(self.connection)
-        return ordered
-
-    def assert_exact(self, handle: ControlledOperationResultHandle) -> None:
-        refs = self.list_by_result_handle(handle.result_handle_id)
-        if controlled_operation_artifact_set_digest(refs) != handle.artifact_set_digest:
-            raise ImmutableIdentityConflictError(
-                "immutable result artifact promotion is incomplete"
-            )
-
-    def list_by_result_handle(
-        self,
-        result_handle_id: str,
-    ) -> tuple[ControlledOperationResultArtifactRef, ...]:
-        rows = self.connection.execute(
-            """
-            SELECT artifact_id, artifact_kind, relative_path, artifact_digest
-            FROM controlled_operation_result_artifacts
-            WHERE result_handle_id = ?
-            ORDER BY ordinal
-            """,
-            (result_handle_id,),
-        ).fetchall()
-        from openzyme_domain import ArtifactKind
-
-        return tuple(
-            ControlledOperationResultArtifactRef(
-                artifact_id=row["artifact_id"],
-                kind=ArtifactKind(row["artifact_kind"]),
-                relative_path=row["relative_path"],
-                artifact_digest=row["artifact_digest"],
-            )
-            for row in rows
-        )
-
-    def is_promoted(self, artifact_id: str) -> bool:
-        row = self.connection.execute(
-            """
-            SELECT 1
-            FROM controlled_operation_result_artifacts
-            WHERE artifact_id = ?
-            LIMIT 1
-            """,
-            (artifact_id,),
-        ).fetchone()
-        return row is not None

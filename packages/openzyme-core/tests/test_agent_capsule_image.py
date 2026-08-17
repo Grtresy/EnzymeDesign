@@ -34,12 +34,12 @@ def test_versioned_image_manifest_pins_required_native_toolchain() -> None:
     manifest = load_agent_capsule_image_manifest()
     versions = dict(manifest.package_versions)
 
-    assert manifest.image_version == "1.0.0"
+    assert manifest.image_version == "1.1.0"
     assert manifest.base_image_requirement == "oci_digest_pinned"
-    assert {"git", "git-lfs", "openssh-client", "rsync", "curl"}.issubset(
+    assert {"git", "git-lfs", "openssh-client", "python3", "rsync", "curl"}.issubset(
         versions
     )
-    assert {"git", "git-lfs", "ssh", "rsync", "scp", "curl"}.issubset(
+    assert {"git", "git-lfs", "python3", "ssh", "rsync", "scp", "curl"}.issubset(
         manifest.required_binaries
     )
     assert manifest.credential_persistence == "forbidden"

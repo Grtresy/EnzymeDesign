@@ -669,6 +669,19 @@ def _git_file(revision: str, path: str) -> bytes:
     return _git_bytes("show", f"{revision}:{path}")
 
 
+def historical_migration_bytes() -> bytes:
+    revisions = _git_output(
+        "log",
+        "--format=%H",
+        "--diff-filter=A",
+        "--",
+        MIGRATION_PATH,
+    ).splitlines()
+    if len(revisions) != 1:
+        raise ValueError("C2 historical migration has no unique introduction revision")
+    return _git_file(revisions[0], MIGRATION_PATH)
+
+
 def working_tree_changed_paths() -> list[str]:
     tracked = subprocess.run(
         (
@@ -1413,7 +1426,9 @@ def verify_tasks() -> int:
     text = C2_TASKS_PATH.read_text(encoding="utf-8")
     complete = re.findall(r"^- \[x\] (\d+\.\d+) ", text, flags=re.MULTILINE)
     pending = re.findall(r"^- \[ \] (\d+\.\d+) ", text, flags=re.MULTILINE)
-    expected = [f"{group}.{item}" for group in range(1, 7) for item in range(1, 7)]
+    expected = [f"1.{item}" for item in range(1, 8)] + [
+        f"{group}.{item}" for group in range(2, 7) for item in range(1, 7)
+    ]
     if pending:
         raise ValueError(f"C2 task checklist remains incomplete: {pending}")
     if complete != expected:
@@ -1702,9 +1717,7 @@ def _verify_evidence_sections(
         "sqlite_schema_before": 38,
         "sqlite_schema_after": 39,
         "migration_id": "039_v3_agent_capability_leases",
-        "migration_sha256": digest_bytes(
-            (REPOSITORY_ROOT / MIGRATION_PATH).read_bytes()
-        ),
+        "migration_sha256": digest_bytes(historical_migration_bytes()),
         "lease_schema": "agent_capability_lease@1",
         "generation_reservation_schema": (
             "agent_workspace_generation_reservation@1"

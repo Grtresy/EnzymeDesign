@@ -129,6 +129,7 @@ Global receipt只有在 exact set equality成立时产生。Count相等但 ident
 ## Open Questions
 
 无。6B 已固定“先完整迁移并验证，再由下一 change物理删除”；缺失 bytes、冲突或未映射 lineage均是 migration blocker，不是允许降级的产品选择。
-> **源码 gate：** 在 public cutover completion receipt 与 active epoch 尚未验证时，
-> historical migration 只能形成 domain/schema/inventory/unit/verifier 源码。任何真实
-> snapshot、writer freeze、remote write/read-back、reference rewrite 与 deletion 都封闭。
+> **Release gate：** `historical_artifact_migration_release_gate@3` 已绑定 public
+> cutover completion receipt、active epoch、静默/备份、固定 revision 的临时 migration
+> schema、真实 inventory、全局迁移 receipt 与 standalone verification。解析出的本地
+> deployment 已完成迁移且保留 source；物理删除仍只由后续 removal gate 授权。

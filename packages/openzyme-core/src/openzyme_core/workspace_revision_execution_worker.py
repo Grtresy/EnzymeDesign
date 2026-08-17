@@ -719,6 +719,16 @@ class WorkspaceRevisionExecutionWorker:
             raise WorkspaceRevisionExecutionWorkerError(
                 "auto mode has no reliable-handle backend"
             )
+        if (
+            request.requested_mode is WorkspaceJobExecutionMode.SBATCH
+            and not qualification.slurm_enabled
+        ) or (
+            request.requested_mode is WorkspaceJobExecutionMode.SSH
+            and not qualification.direct_enabled
+        ):
+            raise WorkspaceRevisionExecutionWorkerError(
+                "requested mode lost its reliable-handle qualification"
+            )
         return request.requested_mode
 
     @staticmethod

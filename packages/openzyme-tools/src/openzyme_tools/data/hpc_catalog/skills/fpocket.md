@@ -1,5 +1,9 @@
 # fpocket
 
+Author inputs and command files in the executor-owned workspace, commit a clean revision,
+and submit it through the revision-job Host boundary. This document does not provide a
+runner command compiler or direct scheduler authority.
+
 ## Required Inputs
 - structure_path
 
@@ -18,6 +22,6 @@
 ## Example Invocation Shape
 ```json
 {
-  "structure_path": "artifact_001.pdb"
+  "structure_path": "structure_001.pdb"
 }
 ```

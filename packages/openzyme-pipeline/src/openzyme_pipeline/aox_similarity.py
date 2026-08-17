@@ -1812,7 +1812,7 @@ def _rows_to_csv(columns: Sequence[str], rows: Sequence[Mapping[str, object]]) -
     return output.getvalue()
 
 
-def _artifact_bytes(data: str | bytes) -> bytes:
+def _file_bytes(data: str | bytes) -> bytes:
     return data.encode("utf-8") if isinstance(data, str) else bytes(data)
 
 
@@ -1820,15 +1820,15 @@ def _parse_graph_csv(
     data: str | bytes,
     *,
     expected_columns: Sequence[str],
-    artifact: str,
+    file: str,
 ) -> tuple[bytes, list[dict[str, str]]]:
-    raw = _artifact_bytes(data)
+    raw = _file_bytes(data)
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ScientificPrerequisiteError(
-            f"graph_{artifact}_not_utf8",
-            f"the canonical graph {artifact} artifact is not valid UTF-8",
+            f"graph_{file}_not_utf8",
+            f"the canonical graph {file} file is not valid UTF-8",
             details={"start": exc.start},
         ) from exc
     reader = csv.DictReader(io.StringIO(text, newline=""))
@@ -1836,17 +1836,17 @@ def _parse_graph_csv(
     expected = tuple(expected_columns)
     legacy = (
         bool(_LEGACY_NODE_FIELDS.intersection(actual_columns))
-        if artifact == "nodes"
+        if file == "nodes"
         else bool(_LEGACY_EDGE_FIELDS.intersection(actual_columns))
         or actual_columns == ("source", "target", "similarity")
     )
     if actual_columns != expected:
         raise ScientificPrerequisiteError(
-            "legacy_graph_schema" if legacy else f"graph_{artifact}_schema_mismatch",
+            "legacy_graph_schema" if legacy else f"graph_{file}_schema_mismatch",
             (
-                "legacy graph artifacts are not cutover-valid similarity evidence"
+                "legacy graph files are not cutover-valid similarity evidence"
                 if legacy
-                else f"canonical graph {artifact} columns do not match the versioned schema"
+                else f"canonical graph {file} columns do not match the versioned schema"
             ),
             details={"expected": list(expected), "actual": list(actual_columns)},
         )
@@ -1854,8 +1854,8 @@ def _parse_graph_csv(
     for row_number, raw_row in enumerate(reader, start=2):
         if None in raw_row or any(raw_row[column] is None for column in expected):
             raise ScientificPrerequisiteError(
-                f"graph_{artifact}_schema_mismatch",
-                f"a canonical graph {artifact} row contains malformed CSV fields",
+                f"graph_{file}_schema_mismatch",
+                f"a canonical graph {file} row contains malformed CSV fields",
                 details={"row": row_number},
             )
         rows.append({column: str(raw_row[column]) for column in expected})
@@ -1864,14 +1864,14 @@ def _parse_graph_csv(
 
 def _compare_graph_rows(
     *,
-    artifact: str,
+    file: str,
     actual: Sequence[Mapping[str, str]],
     expected: Sequence[Mapping[str, str]],
 ) -> None:
     if len(actual) != len(expected):
         raise ScientificPrerequisiteError(
-            f"graph_{artifact}_row_count_mismatch",
-            f"canonical graph {artifact} row count does not match recomputation",
+            f"graph_{file}_row_count_mismatch",
+            f"canonical graph {file} row count does not match recomputation",
             details={"expected": len(expected), "actual": len(actual)},
         )
     for index, (actual_row, expected_row) in enumerate(
@@ -1887,10 +1887,10 @@ def _compare_graph_rows(
                 raise ScientificPrerequisiteError(
                     (
                         "graph_node_binding_mismatch"
-                        if artifact == "nodes"
+                        if file == "nodes"
                         else "graph_edge_recalculation_mismatch"
                     ),
-                    f"canonical graph {artifact} does not match real sequence and membership recomputation",
+                    f"canonical graph {file} does not match real sequence and membership recomputation",
                     details={
                         "row": index,
                         "field": field,
@@ -1934,7 +1934,7 @@ def _strict_json_object(data: bytes) -> dict[str, object]:
     return payload
 
 
-def validate_graph_artifacts(
+def validate_graph_files(
     candidate_fasta: str | bytes,
     membership_csv: str | bytes,
     nodes_csv: str | bytes,
@@ -1964,25 +1964,25 @@ def validate_graph_artifacts(
     actual_nodes_bytes, actual_nodes = _parse_graph_csv(
         nodes_csv,
         expected_columns=NODE_COLUMNS,
-        artifact="nodes",
+        file="nodes",
     )
     actual_edges_bytes, actual_edges = _parse_graph_csv(
         edges_csv,
         expected_columns=EDGE_COLUMNS,
-        artifact="edges",
+        file="edges",
     )
     expected_nodes_bytes, expected_nodes = _parse_graph_csv(
         expected_result.nodes_csv(),
         expected_columns=NODE_COLUMNS,
-        artifact="nodes",
+        file="nodes",
     )
     expected_edges_bytes, expected_edges = _parse_graph_csv(
         expected_result.edges_csv(),
         expected_columns=EDGE_COLUMNS,
-        artifact="edges",
+        file="edges",
     )
-    _compare_graph_rows(artifact="nodes", actual=actual_nodes, expected=expected_nodes)
-    _compare_graph_rows(artifact="edges", actual=actual_edges, expected=expected_edges)
+    _compare_graph_rows(file="nodes", actual=actual_nodes, expected=expected_nodes)
+    _compare_graph_rows(file="edges", actual=actual_edges, expected=expected_edges)
     if actual_nodes_bytes != expected_nodes_bytes:
         raise ScientificPrerequisiteError(
             "graph_nodes_not_canonical",
@@ -1994,7 +1994,7 @@ def validate_graph_artifacts(
             "graph edge bytes are semantically valid but not canonical",
         )
 
-    actual_manifest_bytes = _artifact_bytes(manifest_json)
+    actual_manifest_bytes = _file_bytes(manifest_json)
     actual_manifest = _strict_json_object(actual_manifest_bytes)
     expected_manifest = expected_result.manifest()
     if set(actual_manifest) != set(expected_manifest):
@@ -2068,6 +2068,6 @@ __all__ = [
     "matrix_digest",
     "parse_candidate_fasta",
     "parse_cdhit_membership_csv",
-    "validate_graph_artifacts",
+    "validate_graph_files",
     "verify_calculation",
 ]

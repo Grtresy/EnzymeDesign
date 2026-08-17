@@ -136,7 +136,6 @@ class ControlledOperationExecution:
     backend_handle_ref: str | None = None
     result_handle_ref: str | None = None
     result_digest: str | None = None
-    artifact_set_digest: str | None = None
     error_code: str | None = None
     safe_error_summary: str | None = None
     terminal_at: str | None = None
@@ -182,7 +181,6 @@ class ControlledOperationResultHandle:
     terminal_outcome: ControlledOperationExecutionTerminalOutcome
     bounded_result_envelope: dict[str, Any]
     result_digest: str
-    artifact_set_digest: str
     origin: str
     created_at: str
 
@@ -375,7 +373,7 @@ class MutationWriterKind(StrEnum):
     CONTROLLED_OPERATION = "controlled_operation"
     CONTINUATION_DELIVERY = "continuation_delivery"
     ENGINE_CALLBACK = "engine_callback"
-    ARTIFACT_PUBLISHER = "artifact_publisher"
+    FILE_PUBLISHER = "file_publisher"
     REPORT_PUBLISHER = "report_publisher"
     EVENT_OUTBOX_PUBLISHER = "event_outbox_publisher"
     RUNNER_CALLBACK = "runner_callback"
@@ -458,7 +456,7 @@ class QuiescenceReceipt:
     terminal_proof_digest: str
     sqlite_high_watermark: str
     event_high_watermark: str
-    artifact_high_watermark: str
+    file_high_watermark: str
     snapshot_digest: str
     receipt_digest: str
     issued_at: str

@@ -11,7 +11,7 @@ class FakeEngine:
         requires_approval=False,
         supports_background=True,
         idempotency_key_shape="{task_id}:fake_engine:{nonce}",
-        produces_artifact_types=("research_dossier",),
+        produces_file_types=("research_dossier",),
         capability_key="fake",
     )
 

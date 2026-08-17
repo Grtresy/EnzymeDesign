@@ -139,7 +139,7 @@ class ScientificFileEffectAdoption:
             or self.selection_revision < 1
             or not isinstance(self.execution_fencing_token, int)
             or isinstance(self.execution_fencing_token, bool)
-            or self.execution_fencing_token < 0
+            or self.execution_fencing_token < 1
         ):
             raise ValueError("scientific file adoption revision or fence is invalid")
         _require_timestamp("created_at", self.created_at)
@@ -309,6 +309,17 @@ class ScientificDeliverableRef:
             ref_digest=canonical_scientific_deliverable_digest(payload),
         )
 
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "ScientificDeliverableRef":
+        expected = {item.name for item in fields(cls)}
+        if set(value) != expected:
+            raise ValueError(
+                "scientific deliverable ref has unknown or missing fields"
+            )
+        normalized = dict(value)
+        normalized["storage"] = ScientificFileStorage(value["storage"])
+        return cls(**normalized)
+
 
 @dataclass(frozen=True, slots=True)
 class ScientificDeliverableBundle:
@@ -374,6 +385,20 @@ class ScientificDeliverableBundle:
             bundle_digest=canonical_scientific_deliverable_digest(payload),
         )
 
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "ScientificDeliverableBundle":
+        expected = {item.name for item in fields(cls)}
+        if set(value) != expected:
+            raise ValueError(
+                "scientific deliverable bundle has unknown or missing fields"
+            )
+        normalized = dict(value)
+        raw_ref_ids = value["ref_ids"]
+        if not isinstance(raw_ref_ids, list):
+            raise ValueError("scientific deliverable bundle ref_ids must be an array")
+        normalized["ref_ids"] = tuple(raw_ref_ids)
+        return cls(**normalized)
+
 
 @dataclass(frozen=True, slots=True)
 class ScientificDeliverableValidationReceipt:
@@ -418,9 +443,9 @@ class ScientificDeliverableValidationReceipt:
         if (
             not isinstance(self.execution_fencing_token, int)
             or isinstance(self.execution_fencing_token, bool)
-            or self.execution_fencing_token < 0
+            or self.execution_fencing_token < 1
         ):
-            raise ValueError("execution_fencing_token must be non-negative")
+            raise ValueError("execution_fencing_token must be positive")
         if self.verified_ref_digests != tuple(sorted(set(self.verified_ref_digests))):
             raise ValueError("verified ref digests must be unique and sorted")
         for digest in self.verified_ref_digests:
@@ -455,6 +480,23 @@ class ScientificDeliverableValidationReceipt:
             **normalized,
             receipt_digest=canonical_scientific_deliverable_digest(payload),
         )
+
+    @classmethod
+    def from_dict(
+        cls,
+        value: dict[str, Any],
+    ) -> "ScientificDeliverableValidationReceipt":
+        expected = {item.name for item in fields(cls)}
+        if set(value) != expected:
+            raise ValueError(
+                "scientific validation receipt has unknown or missing fields"
+            )
+        normalized = dict(value)
+        raw_digests = value["verified_ref_digests"]
+        if not isinstance(raw_digests, list):
+            raise ValueError("verified_ref_digests must be an array")
+        normalized["verified_ref_digests"] = tuple(raw_digests)
+        return cls(**normalized)
 
 
 __all__ = [

@@ -8,7 +8,6 @@ from enum import StrEnum
 from typing import Any
 from typing import ClassVar
 
-from .models import ArtifactKind
 from .models import RunStatus
 from .models import SourceRefKind
 from .reliability import ContinuationDeliveryState
@@ -40,7 +39,6 @@ CONTROL_PLANE_ENTITY_NAMES = (
     "SessionRuntimeLease",
     "EngineInvocation",
     "RunRecord",
-    "SessionArtifactRecord",
     "SessionReportDraftRecord",
     "SessionReportRecord",
     "ResearchSummary",
@@ -52,8 +50,6 @@ CONTROL_PLANE_ENTITY_NAMES = (
     "SandboxRunRecord",
     "ControlledOperation",
     "ContinuationState",
-    "FileAuditEntry",
-    "CommandLogArtifactRecord",
 )
 
 
@@ -622,9 +618,6 @@ class SandboxWorkspaceRecord:
     volume_digest: str | None = None
     quota_summary: dict[str, Any] | None = None
     directory_summary: dict[str, Any] | None = None
-    materialized_input_artifact_ids: tuple[str, ...] = ()
-    registered_artifact_ids: tuple[str, ...] = ()
-    source_code_artifact_ids: tuple[str, ...] = ()
     last_command_summary: dict[str, Any] | None = None
     last_error: dict[str, Any] | None = None
 
@@ -632,9 +625,6 @@ class SandboxWorkspaceRecord:
         data = asdict(self)
         data["status"] = self.status.value
         data["image_compatibility"] = self.image_compatibility.value
-        data["materialized_input_artifact_ids"] = list(self.materialized_input_artifact_ids)
-        data["registered_artifact_ids"] = list(self.registered_artifact_ids)
-        data["source_code_artifact_ids"] = list(self.source_code_artifact_ids)
         return data
 
 
@@ -654,7 +644,6 @@ class SandboxRunRecord:
     task_id: str | None = None
     lane_id: str | None = None
     resource_policy: dict[str, Any] | None = None
-    source_snapshot_artifact_id: str | None = None
     source_tree_digest: str | None = None
     stdout_summary: str | None = None
     stderr_summary: str | None = None
@@ -663,7 +652,6 @@ class SandboxRunRecord:
     exit_code: int | None = None
     duration_ms: int | None = None
     changed_files_summary: dict[str, Any] | None = None
-    log_artifact_ref: str | None = None
     error_code: str | None = None
     compatibility: dict[str, Any] | None = None
     started_at: str | None = None
@@ -680,8 +668,6 @@ class SandboxRunRecord:
 class ControlledOperation:
     operation_id: str
     session_id: str
-    sandbox_workspace_id: str
-    sandbox_run_id: str
     logical_operation_key: str
     operation_digest: str
     params_digest: str
@@ -694,42 +680,31 @@ class ControlledOperation:
     approval_id: str | None = None
     approval_state: str | None = None
     route_reason: str | None = None
-    input_artifact_digests: tuple[str, ...] = ()
-    source_snapshot_artifact_id: str | None = None
-    source_snapshot_digest: str | None = None
     adapter_envelope_schema_version: str | None = None
     sdk_module: str | None = None
     function_name: str | None = None
     route_policy_id: str | None = None
     placement: str | None = None
-    hpc_workspace_id: str | None = None
     selected_backend: str | None = None
     resource_class: str | None = None
     runtime_packaging_id: str | None = None
     toolchain_id: str | None = None
     provider_config_digest: str | None = None
-    input_artifact_ids: tuple[str, ...] = ()
-    stage_refs: tuple[dict[str, Any], ...] = ()
-    planned_fetch_intent: dict[str, Any] | None = None
     approval_requirement: dict[str, Any] | None = None
     adapter_approval_envelope: dict[str, Any] | None = None
     adapter_result_envelope: dict[str, Any] | None = None
     adapter_result_origin: str | None = None
-    expected_outputs_summary: dict[str, Any] | None = None
     resource_estimate: dict[str, Any] | None = None
     result_summary: dict[str, Any] | None = None
     error_code: str | None = None
     error_summary: str | None = None
     idempotency_key: str | None = None
-    owner_mode: ControlledOperationOwnerMode = ControlledOperationOwnerMode.LEGACY_SYNC
+    owner_mode: ControlledOperationOwnerMode = ControlledOperationOwnerMode.DURABLE_ASYNC_V1
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["status"] = self.status.value
         data["owner_mode"] = self.owner_mode.value
-        data["input_artifact_ids"] = list(self.input_artifact_ids)
-        data["input_artifact_digests"] = list(self.input_artifact_digests)
-        data["stage_refs"] = [dict(item) for item in self.stage_refs]
         return data
 
 
@@ -784,43 +759,6 @@ class ContinuationState:
 
 
 @dataclass(frozen=True, slots=True)
-class FileAuditEntry:
-    audit_id: str
-    session_id: str
-    sandbox_workspace_id: str
-    actor_ref: str
-    operation: str
-    path: str
-    created_at: str
-    task_id: str | None = None
-    lane_id: str | None = None
-    old_digest: str | None = None
-    new_digest: str | None = None
-    sandbox_run_id: str | None = None
-    details: dict[str, Any] | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True, slots=True)
-class CommandLogArtifactRecord:
-    command_log_id: str
-    session_id: str
-    sandbox_run_id: str
-    sandbox_workspace_id: str
-    stream: str
-    artifact_ref: str
-    size_bytes: int
-    content_digest: str
-    truncated: bool
-    created_at: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True, slots=True)
 class EngineInvocation:
     invocation_id: str
     session_id: str
@@ -866,28 +804,6 @@ class RunRecord:
 
 
 @dataclass(frozen=True, slots=True)
-class SessionArtifactRecord:
-    artifact_id: str
-    session_id: str
-    task_id: str | None
-    lane_id: str | None
-    invocation_id: str | None
-    run_id: str | None
-    kind: ArtifactKind
-    storage_uri: str
-    relative_path: str
-    created_at: str
-    title: str | None = None
-    description: str | None = None
-    metadata: dict[str, Any] | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        data["kind"] = self.kind.value
-        return data
-
-
-@dataclass(frozen=True, slots=True)
 class SessionReportRecord:
     report_id: str
     session_id: str
@@ -895,7 +811,6 @@ class SessionReportRecord:
     lane_id: str | None
     invocation_id: str | None
     run_id: str | None
-    artifact_id: str | None
     status: SessionReportStatus
     title: str
     summary: str
@@ -994,7 +909,6 @@ class ResearchSourceRef:
     request_digest: str | None = None
     response_digest: str | None = None
     provider_provenance: dict[str, Any] | None = None
-    evidence_artifact_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)

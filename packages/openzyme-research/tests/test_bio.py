@@ -4,7 +4,6 @@ from urllib.error import HTTPError
 
 import pytest
 
-from openzyme_domain import ArtifactKind
 from openzyme_domain import SourceRefKind
 
 from openzyme_research import DefaultBioResearchService
@@ -13,7 +12,7 @@ from openzyme_research import BoundedHttpClient
 from openzyme_research import ProviderOutcome
 from openzyme_research import ProviderRequestError
 from openzyme_research import provider_identity_digest
-from openzyme_research import ResearchArtifactManifest
+from openzyme_research import ResearchFileManifest
 from openzyme_research import ResearchFinding
 from openzyme_research import ResearchObservation
 from openzyme_research import ResearchSource
@@ -64,10 +63,10 @@ def test_deterministic_bio_research_service_returns_provider_specific_records() 
     assert pubmed_hits[0].provider == "pubmed"
     assert semantic_hits[0].provider == "semantic_scholar"
     assert protein.provider == "uniprot"
-    assert fasta.kind is ArtifactKind.SEQUENCE
+    assert fasta.kind == "sequence"
     assert b">P12345" in fasta.content
     assert structure_hits[0].provider == "rcsb_pdb"
-    assert structure.kind is ArtifactKind.STRUCTURE
+    assert structure.kind == "structure"
     assert annotations.provider == "interpro"
     assert pubmed_hits[0].metadata is not None
     assert pubmed_hits[0].metadata["scientific_status"] == "fixture_non_cutover"
@@ -313,12 +312,11 @@ def test_research_observation_serializes_stable_normalized_fields() -> None:
             },
         ),
         unresolved_gaps=("Need validation",),
-        artifacts=(
-            ResearchArtifactManifest(
-                artifact_id="art_001",
+        files=(
+            ResearchFileManifest(
                 external_id="P12345",
                 provider="uniprot",
-                kind=ArtifactKind.SEQUENCE,
+                kind="sequence",
                 format="fasta",
                 filename="P12345.fasta",
                 title="P12345 FASTA",
@@ -334,10 +332,10 @@ def test_research_observation_serializes_stable_normalized_fields() -> None:
         "summary",
         "findings",
         "unresolved_gaps",
-        "artifacts",
+        "files",
         "provider",
         "raw_ref",
     ]
     assert payload["findings"][0]["sources"][0]["kind"] == "paper"
     assert payload["findings"][1]["sources"][0]["kind"] == "dataset"
-    assert payload["artifacts"][0]["kind"] == "sequence"
+    assert payload["files"][0]["kind"] == "sequence"

@@ -14,13 +14,11 @@ from openzyme_domain import MemoryEntry
 from openzyme_domain import MemoryKind
 from openzyme_domain import MemoryScopeKind
 from openzyme_domain import Session
-from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionReportDraftRecord
 from openzyme_domain import SessionReportRecord
 from openzyme_domain import Task
 from openzyme_domain.control_plane import utc_now_iso
 
-from .artifact_projection import project_artifact_for_agent
 from .repositories import CoreRepositories
 from .skills import SkillDocument
 from .skills import SkillRegistry
@@ -83,6 +81,10 @@ class ScopedMemorySummary:
 
 @dataclass(frozen=True, slots=True)
 class SessionRestoreContext:
+    schema_version: str
+    workspace_contract_id: str
+    tool_catalog_digest: str
+    schema_bundle_digest: str
     session: Session
     tasks: tuple[Task, ...]
     ready_tasks: tuple[Task, ...]
@@ -92,7 +94,6 @@ class SessionRestoreContext:
     agents: tuple[AgentMember, ...]
     active_invocations: tuple[EngineInvocation, ...]
     failure_observations: tuple[Any, ...]
-    artifacts: tuple[SessionArtifactRecord, ...]
     research_files: tuple[dict[str, Any], ...]
     report_drafts: tuple[SessionReportDraftRecord, ...]
     reports: tuple[SessionReportRecord, ...]
@@ -107,6 +108,10 @@ class SessionRestoreContext:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "schema_version": self.schema_version,
+            "workspace_contract_id": self.workspace_contract_id,
+            "tool_catalog_digest": self.tool_catalog_digest,
+            "schema_bundle_digest": self.schema_bundle_digest,
             "session": self.session.to_dict(),
             "tasks": [task.to_dict() for task in self.tasks],
             "ready_tasks": [task.to_dict() for task in self.ready_tasks],
@@ -118,7 +123,6 @@ class SessionRestoreContext:
             "failure_observations": [
                 observation.to_dict() for observation in self.failure_observations
             ],
-            "artifacts": [project_artifact_for_agent(artifact) for artifact in self.artifacts],
             "research_files": list(self.research_files),
             "report_drafts": [draft.to_dict() for draft in self.report_drafts],
             "reports": [report.to_dict() for report in self.reports],
@@ -376,7 +380,15 @@ class MemoryService:
                 if message.correlation_id is not None
             )
         )
+        from openzyme_domain import FILE_WORKSPACE_PUBLIC_CONTRACT_ID
+        from .file_workspace_projection import file_workspace_public_schema_bundle_digest
+        from .tool_catalog import file_workspace_candidate_catalog_digest
+
         return SessionRestoreContext(
+            schema_version="file_workspace_restore_context@1",
+            workspace_contract_id=FILE_WORKSPACE_PUBLIC_CONTRACT_ID,
+            tool_catalog_digest=file_workspace_candidate_catalog_digest(),
+            schema_bundle_digest=file_workspace_public_schema_bundle_digest(),
             session=session,
             tasks=tuple(self.repositories.tasks.list_by_session(session_id)),
             ready_tasks=tuple(self.repositories.tasks.list_ready_by_session(session_id, lane_id=lane_id)),
@@ -391,7 +403,6 @@ class MemoryService:
                     limit=100,
                 )
             ),
-            artifacts=tuple(self.repositories.artifacts.list_by_session(session_id)),
             research_files=tuple(research_files),
             report_drafts=tuple(self.repositories.report_drafts.list_by_session(session_id)),
             reports=tuple(self.repositories.reports.list_by_session(session_id)),

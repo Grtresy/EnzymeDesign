@@ -15,6 +15,7 @@ from openzyme_domain import PublicationManifestEntry
 from openzyme_domain import PublicationManifestObjectKind
 from openzyme_domain import RevisionPathEntryKind
 from openzyme_domain import RevisionPathRef
+from openzyme_domain import ScientificClosureRef
 from openzyme_domain import TaskEvidenceKind
 from openzyme_domain import TaskEvidenceRef
 from openzyme_domain import canonical_handoff_digest
@@ -352,9 +353,52 @@ class TaskEvidenceReferenceService:
                     "task evidence controlled-operation result is not canonical"
                 )
         elif ref.kind is TaskEvidenceKind.SCIENTIFIC_DELIVERABLE:
-            raise RevisionPathHandoffError(
-                "scientific deliverable canonical owner is not installed by this change"
+            deliverable_ref = ref.scientific_deliverable_ref
+            if deliverable_ref is None:
+                raise RevisionPathHandoffError(
+                    "task evidence scientific deliverable ref is missing"
+                )
+            stored = self.repositories.scientific_deliverables.get_ref(ref.owner_id)
+            attempt = (
+                None
+                if stored is None
+                else self.repositories.scientific_attempts.get(stored.attempt_id)
             )
+            if (
+                stored != deliverable_ref
+                or stored.project_id != session.project_id
+                or stored.session_id != task.session_id
+                or attempt is None
+                or attempt.task_id != task_id
+            ):
+                raise RevisionPathHandoffError(
+                    "task evidence scientific deliverable does not resolve to its canonical owner"
+                )
+        elif ref.kind is TaskEvidenceKind.SCIENTIFIC_CLOSURE:
+            closure_ref = ref.scientific_closure_ref
+            if closure_ref is None:
+                raise RevisionPathHandoffError(
+                    "task evidence scientific closure ref is missing"
+                )
+            closure = self.repositories.scientific_attempt_closures.get(ref.owner_id)
+            attempt = (
+                None
+                if closure is None
+                else self.repositories.scientific_attempts.get(closure.attempt_id)
+            )
+            if (
+                closure is None
+                or attempt is None
+                or closure.closure_digest != ref.owner_digest
+                or closure.closure_id != closure_ref.closure_id
+                or closure.attempt_id != closure_ref.attempt_id
+                or closure.selection_id != closure_ref.selection_id
+                or attempt.session_id != task.session_id
+                or attempt.task_id != task_id
+            ):
+                raise RevisionPathHandoffError(
+                    "task evidence scientific closure does not resolve to its canonical owner"
+                )
         return ref
 
 
@@ -369,6 +413,49 @@ def report_evidence_ref(report: Any, *, project_id: str) -> ReportRef:
         content_ref_id=report.content_ref_id,
         report_version=report.report_version,
         supersedes_report_id=report.supersedes_report_id,
+    )
+
+
+def scientific_deliverable_evidence_ref(
+    deliverable: Any,
+    *,
+    task_id: str,
+) -> TaskEvidenceRef:
+    return TaskEvidenceRef(
+        kind=TaskEvidenceKind.SCIENTIFIC_DELIVERABLE,
+        project_id=deliverable.project_id,
+        session_id=deliverable.session_id,
+        task_id=task_id,
+        owner_id=deliverable.ref_id,
+        owner_digest=deliverable.ref_digest,
+        scientific_deliverable_ref=deliverable,
+    )
+
+
+def scientific_closure_evidence_ref(
+    closure: Any,
+    *,
+    project_id: str,
+    session_id: str,
+    task_id: str,
+) -> TaskEvidenceRef:
+    closure_ref = ScientificClosureRef(
+        closure_id=closure.closure_id,
+        project_id=project_id,
+        session_id=session_id,
+        task_id=task_id,
+        attempt_id=closure.attempt_id,
+        selection_id=closure.selection_id,
+        closure_digest=closure.closure_digest,
+    )
+    return TaskEvidenceRef(
+        kind=TaskEvidenceKind.SCIENTIFIC_CLOSURE,
+        project_id=project_id,
+        session_id=session_id,
+        task_id=task_id,
+        owner_id=closure.closure_id,
+        owner_digest=closure.closure_digest,
+        scientific_closure_ref=closure_ref,
     )
 
 
@@ -724,4 +811,6 @@ __all__ = [
     "RevisionPathReferenceService",
     "TaskEvidenceReferenceService",
     "report_evidence_ref",
+    "scientific_closure_evidence_ref",
+    "scientific_deliverable_evidence_ref",
 ]

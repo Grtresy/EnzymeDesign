@@ -13,9 +13,7 @@ def test_web_ui_parser_exposes_only_v3_sqlite_database() -> None:
     assert "sqlite_db" not in destinations
     assert "v3_sqlite_db" in destinations
     assert "configured" not in destinations
-    assert "fixture_non_cutover" in destinations
     defaults = build_parser().parse_args([])
-    assert defaults.fixture_non_cutover is False
     assert defaults.v3_sqlite_db == (
         Path.home() / ".local" / "state" / "openzyme" / "control-plane.sqlite3"
     )

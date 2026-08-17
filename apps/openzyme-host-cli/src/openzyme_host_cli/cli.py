@@ -215,42 +215,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     scientific_authorize.add_argument("--payload-json", required=True)
     scientific_authorize.add_argument("--idempotency-key", required=True)
-    scientific_fault = scientific_sub.add_parser(
-        "inject-aox-reference-fault",
-        help="Consume the exact authority-bound AOX_ref21 byte-flip capability",
-    )
-    scientific_fault.add_argument(
-        "--session-id",
-        dest="command_session_id",
-        help="Session ID override",
-    )
-    scientific_fault.add_argument("--attempt-id", required=True)
-    scientific_fault.add_argument("--artifact-id", required=True)
-    scientific_fault.add_argument("--idempotency-key", required=True)
-
-    operations = subparsers.add_parser(
-        "operations",
-        help="Read existing durable Host operation facts without replay",
-    )
-    operation_sub = operations.add_subparsers(
-        dest="operations_command",
-        required=True,
-    )
-    operation_observe = operation_sub.add_parser(
-        "observe",
-        help="Observe one exact durable mutation owner",
-    )
-    operation_observe.add_argument(
-        "--session-id",
-        dest="command_session_id",
-        help="Session identity for the original mutation",
-    )
-    operation_observe.add_argument("--command-type", required=True)
-    operation_observe.add_argument("--scope-ref", required=True)
-    operation_observe.add_argument("--idempotency-key", required=True)
-    operation_observe.add_argument("--request-digest", required=True)
-    operation_observe.add_argument("--attempt-id")
-    operation_observe.add_argument("--artifact-id")
     return parser
 
 
@@ -550,38 +514,10 @@ def run_cli(
                     request_payload,
                     idempotency_key=args.idempotency_key,
                 )
-            elif args.scientific_command == "inject-aox-reference-fault":
-                payload = client.inject_v3_aox_reference_fault(
-                    session_id,
-                    attempt_id=args.attempt_id,
-                    artifact_id=args.artifact_id,
-                    idempotency_key=args.idempotency_key,
-                )
             else:
                 raise ValueError(
                     f"unsupported scientific command: {args.scientific_command}"
                 )
-            return _emit_response(
-                args=args,
-                client=client,
-                payload=payload,
-                rendered=render_json(payload),
-                stdout=stdout,
-            )
-        if args.resource == "operations":
-            session_id = _require_value(
-                getattr(args, "command_session_id", None) or args.session_id,
-                "--session-id",
-            )
-            payload = client.observe_v3_mutation_operation(
-                session_id=session_id,
-                command_type=args.command_type,
-                scope_ref=args.scope_ref,
-                idempotency_key=args.idempotency_key,
-                request_digest=args.request_digest,
-                attempt_id=args.attempt_id,
-                artifact_id=args.artifact_id,
-            )
             return _emit_response(
                 args=args,
                 client=client,

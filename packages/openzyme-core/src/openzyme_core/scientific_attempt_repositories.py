@@ -5,9 +5,6 @@ from dataclasses import replace
 import sqlite3
 
 from openzyme_domain import (
-    SCIENTIFIC_ARTIFACT_MATERIALIZATION_SCHEMA_VERSION,
-)
-from openzyme_domain import (
     SCIENTIFIC_ATTEMPT_ADMISSION_REQUEST_SCHEMA_VERSION,
 )
 from openzyme_domain import SCIENTIFIC_ATTEMPT_AUTHORIZATION_SCHEMA_VERSION
@@ -19,7 +16,6 @@ from openzyme_domain import SCIENTIFIC_ATTEMPT_SCHEMA_VERSION
 from openzyme_domain import SCIENTIFIC_CHAIN_SELECTION_SCHEMA_VERSION
 from openzyme_domain import SCIENTIFIC_EFFECT_ADOPTION_SCHEMA_VERSION
 from openzyme_domain import SCIENTIFIC_OPERATION_DISPOSITION_SCHEMA_VERSION
-from openzyme_domain import ScientificArtifactMaterialization
 from openzyme_domain import ScientificAttempt
 from openzyme_domain import ScientificAttemptAdmissionRequest
 from openzyme_domain import ScientificAttemptAuthorization
@@ -1305,15 +1301,13 @@ class ScientificEffectAdoptionRepository:
                     execution_id,
                     result_handle_id,
                     result_digest,
-                    artifact_set_digest,
-                    source_sandbox_run_id,
                     effect_certainty,
                     approval_digest,
                     actor_ref,
                     idempotency_key,
                     request_digest,
                     created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.adoption_id,
@@ -1325,8 +1319,6 @@ class ScientificEffectAdoptionRepository:
                     record.execution_id,
                     record.result_handle_id,
                     record.result_digest,
-                    record.artifact_set_digest,
-                    record.source_sandbox_run_id,
                     record.effect_certainty,
                     record.approval_digest,
                     record.actor_ref,
@@ -1413,137 +1405,8 @@ class ScientificEffectAdoptionRepository:
             execution_id=row["execution_id"],
             result_handle_id=row["result_handle_id"],
             result_digest=row["result_digest"],
-            artifact_set_digest=row["artifact_set_digest"],
-            source_sandbox_run_id=row["source_sandbox_run_id"],
             effect_certainty=row["effect_certainty"],
             approval_digest=row["approval_digest"],
-            actor_ref=row["actor_ref"],
-            idempotency_key=row["idempotency_key"],
-            request_digest=row["request_digest"],
-            created_at=row["created_at"],
-        )
-
-
-@dataclass(slots=True)
-class ScientificArtifactMaterializationRepository:
-    connection: sqlite3.Connection
-
-    def add(
-        self,
-        record: ScientificArtifactMaterialization,
-    ) -> ScientificArtifactMaterialization:
-        try:
-            self.connection.execute(
-                """
-                INSERT INTO scientific_artifact_materialization_records (
-                    receipt_id,
-                    schema_version,
-                    selection_id,
-                    attempt_id,
-                    adoption_id,
-                    source_artifact_id,
-                    source_artifact_digest,
-                    source_sandbox_run_id,
-                    target_sandbox_workspace_id,
-                    target_sandbox_run_id,
-                    target_path,
-                    boundary_materialization_id,
-                    actor_ref,
-                    idempotency_key,
-                    request_digest,
-                    created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    record.receipt_id,
-                    SCIENTIFIC_ARTIFACT_MATERIALIZATION_SCHEMA_VERSION,
-                    record.selection_id,
-                    record.attempt_id,
-                    record.adoption_id,
-                    record.source_artifact_id,
-                    record.source_artifact_digest,
-                    record.source_sandbox_run_id,
-                    record.target_sandbox_workspace_id,
-                    record.target_sandbox_run_id,
-                    record.target_path,
-                    record.boundary_materialization_id,
-                    record.actor_ref,
-                    record.idempotency_key,
-                    record.request_digest,
-                    record.created_at,
-                ),
-            )
-        except sqlite3.IntegrityError as exc:
-            existing = self.get_by_idempotency(
-                selection_id=record.selection_id,
-                actor_ref=record.actor_ref,
-                idempotency_key=record.idempotency_key,
-            )
-            if (
-                existing is not None
-                and replace(
-                    record,
-                    receipt_id=existing.receipt_id,
-                    boundary_materialization_id=existing.boundary_materialization_id,
-                    created_at=existing.created_at,
-                )
-                == existing
-            ):
-                _commit(self.connection)
-                return existing
-            _commit(self.connection)
-            raise ScientificAttemptIdentityConflictError(
-                "scientific materialization identity already has different facts"
-            ) from exc
-        _commit(self.connection)
-        return record
-
-    def get_by_idempotency(
-        self,
-        *,
-        selection_id: str,
-        actor_ref: str,
-        idempotency_key: str,
-    ) -> ScientificArtifactMaterialization | None:
-        row = self.connection.execute(
-            """
-            SELECT *
-            FROM scientific_artifact_materialization_records
-            WHERE selection_id = ? AND actor_ref = ? AND idempotency_key = ?
-            """,
-            (selection_id, actor_ref, idempotency_key),
-        ).fetchone()
-        return None if row is None else self._row(row)
-
-    def list_by_selection(
-        self,
-        selection_id: str,
-    ) -> tuple[ScientificArtifactMaterialization, ...]:
-        rows = self.connection.execute(
-            """
-            SELECT *
-            FROM scientific_artifact_materialization_records
-            WHERE selection_id = ?
-            ORDER BY created_at, receipt_id
-            """,
-            (selection_id,),
-        ).fetchall()
-        return tuple(self._row(row) for row in rows)
-
-    @staticmethod
-    def _row(row: sqlite3.Row) -> ScientificArtifactMaterialization:
-        return ScientificArtifactMaterialization(
-            receipt_id=row["receipt_id"],
-            selection_id=row["selection_id"],
-            attempt_id=row["attempt_id"],
-            adoption_id=row["adoption_id"],
-            source_artifact_id=row["source_artifact_id"],
-            source_artifact_digest=row["source_artifact_digest"],
-            source_sandbox_run_id=row["source_sandbox_run_id"],
-            target_sandbox_workspace_id=row["target_sandbox_workspace_id"],
-            target_sandbox_run_id=row["target_sandbox_run_id"],
-            target_path=row["target_path"],
-            boundary_materialization_id=row["boundary_materialization_id"],
             actor_ref=row["actor_ref"],
             idempotency_key=row["idempotency_key"],
             request_digest=row["request_digest"],
@@ -1679,7 +1542,6 @@ class ScientificAttemptClosureRepository:
                     operation_universe_digest,
                     disposition_digest,
                     adoption_digest,
-                    materialization_digest,
                     authority_consumption_digest,
                     quiescence_receipt_id,
                     quiescence_receipt_digest,
@@ -1688,7 +1550,7 @@ class ScientificAttemptClosureRepository:
                     idempotency_key,
                     request_digest,
                     created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.closure_id,
@@ -1699,7 +1561,6 @@ class ScientificAttemptClosureRepository:
                     record.operation_universe_digest,
                     record.disposition_digest,
                     record.adoption_digest,
-                    record.materialization_digest,
                     record.authority_consumption_digest,
                     record.quiescence_receipt_id,
                     record.quiescence_receipt_digest,
@@ -1776,7 +1637,6 @@ class ScientificAttemptClosureRepository:
             operation_universe_digest=row["operation_universe_digest"],
             disposition_digest=row["disposition_digest"],
             adoption_digest=row["adoption_digest"],
-            materialization_digest=row["materialization_digest"],
             authority_consumption_digest=row["authority_consumption_digest"],
             quiescence_receipt_id=row["quiescence_receipt_id"],
             quiescence_receipt_digest=row["quiescence_receipt_digest"],
@@ -1789,7 +1649,6 @@ class ScientificAttemptClosureRepository:
 
 
 __all__ = [
-    "ScientificArtifactMaterializationRepository",
     "ScientificAttemptAdmissionRequestRepository",
     "ScientificAttemptAuthorizationRepository",
     "ScientificAttemptBindingRepository",

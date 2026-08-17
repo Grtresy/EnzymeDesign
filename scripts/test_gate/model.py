@@ -1,4 +1,4 @@
-"""Strict canonical evidence helpers for repository test-gate artifacts."""
+"""Strict canonical evidence helpers for repository test-gate files."""
 
 from __future__ import annotations
 

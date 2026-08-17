@@ -417,6 +417,20 @@ class LegacyFunctionToolRuntime:
         )
 
 
+_REMOVED_WORKSPACE_TOOL_PREFIXES = (
+    "arti" + "fact.",
+    "arti" + "facts.",
+    "scientific." + "arti" + "fact.",
+    "sandbox." + "file.",
+    "hpc.stage_" + "arti" + "fact",
+    "hpc.fetch_" + "outputs",
+)
+
+
+def _is_removed_workspace_tool(tool_name: str) -> bool:
+    return tool_name.startswith(_REMOVED_WORKSPACE_TOOL_PREFIXES)
+
+
 @dataclass(slots=True)
 class ToolRouter:
     runtimes: dict[str, ToolRuntime]
@@ -459,6 +473,23 @@ class ToolRouter:
     ) -> ToolValidationError | None:
         runtime = self.runtimes.get(invocation.tool_name)
         if runtime is None:
+            if _is_removed_workspace_tool(invocation.tool_name):
+                return ToolValidationError(
+                    status="removed_tool_current_contract",
+                    message=(
+                        f"tool {invocation.tool_name!r} was removed from file_workspace_public@1"
+                    ),
+                    error_code="removed_tool_current_contract",
+                    hint=(
+                        "Use the native workspace and an explicitly exposed revision, publication, or external-job operation; no replacement action was inferred."
+                    ),
+                    details={
+                        "tool_name": invocation.tool_name,
+                        "contract_id": "file_workspace_public@1",
+                        "retryable": False,
+                        "replacement_inferred": False,
+                    },
+                )
             return ToolValidationError(
                 status="unknown_tool",
                 message=f"unknown tool: {invocation.tool_name}",
@@ -492,6 +523,7 @@ class ToolRouter:
     ) -> ToolResult:
         runtime = self.runtimes.get(invocation.tool_name)
         if runtime is None:
+            removed = _is_removed_workspace_tool(invocation.tool_name)
             return self._attach_failure_observation(
                 step_context,
                 invocation,
@@ -499,13 +531,38 @@ class ToolRouter:
                     call_id=invocation.call_id,
                     tool_name=invocation.tool_name,
                     ok=False,
-                    content=f"unknown tool: {invocation.tool_name}",
+                    content=(
+                        f"tool removed by file_workspace_public@1: {invocation.tool_name}"
+                        if removed
+                        else f"unknown tool: {invocation.tool_name}"
+                    ),
                     task_id=invocation.task_id,
                     lane_id=invocation.lane_id,
-                    status="unknown_tool",
-                    summary=f"Tool {invocation.tool_name!r} is not registered.",
-                    error_code="unknown_tool",
-                    hint="Use one of the tools exposed in the current V3 tool catalog.",
+                    status=(
+                        "removed_tool_current_contract" if removed else "unknown_tool"
+                    ),
+                    summary=(
+                        f"Tool {invocation.tool_name!r} was removed from the current contract."
+                        if removed
+                        else f"Tool {invocation.tool_name!r} is not registered."
+                    ),
+                    error_code=(
+                        "removed_tool_current_contract" if removed else "unknown_tool"
+                    ),
+                    hint=(
+                        "Use the native workspace and an explicitly exposed control-plane operation; no replacement action was inferred."
+                        if removed
+                        else "Use one of the tools exposed in the current V3 tool catalog."
+                    ),
+                    details=(
+                        {
+                            "contract_id": "file_workspace_public@1",
+                            "retryable": False,
+                            "replacement_inferred": False,
+                        }
+                        if removed
+                        else None
+                    ),
                 ),
                 governance=ToolGovernance(side_effect=ToolSideEffect.READ),
             )

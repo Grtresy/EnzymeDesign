@@ -283,7 +283,7 @@ def test_protocol_service_builds_correlation_threads_for_delegation() -> None:
         agent_id=agent.agent_id,
         name=display_name_for_agent(agent),
         role="researcher",
-        payload_ref="artifact://delegations/deleg_001.json",
+        payload_ref="file://delegations/deleg_001.json",
         task_id="task_001",
         parent_agent_id="agent:master",
         correlation_id="corr_001",
@@ -299,7 +299,7 @@ def test_protocol_service_builds_correlation_threads_for_delegation() -> None:
         recipient_kind=InboxParticipantKind.HARNESS,
         message_type="delegation_result",
         correlation_id="corr_001",
-        payload_ref="artifact://delegations/deleg_001-result.json",
+        payload_ref="file://delegations/deleg_001-result.json",
     )
     thread = service.build_thread(session.session_id, "corr_001")
 
@@ -389,7 +389,7 @@ def test_protocol_send_to_agent_creates_unread_wakeup_signal() -> None:
         agent_id=agent.agent_id,
         name=display_name_for_agent(agent),
         role="researcher",
-        payload_ref="artifact://delegations/deleg_001.json",
+        payload_ref="file://delegations/deleg_001.json",
         task_id="task_001",
         parent_agent_id="agent:master",
         correlation_id="corr_001",
@@ -1189,7 +1189,7 @@ def test_background_completion_updates_agent_and_invocation_state() -> None:
         agent_id=agent.agent_id,
         name=display_name_for_agent(agent),
         role="executor",
-        payload_ref="artifact://delegations/deleg_002.json",
+        payload_ref="file://delegations/deleg_002.json",
         task_id="task_001",
         parent_agent_id="agent:master",
         correlation_id="corr_bg_001",
@@ -1205,7 +1205,7 @@ def test_background_completion_updates_agent_and_invocation_state() -> None:
             lane_id="lane_001",
             engine_name="execution",
             status=EngineInvocationStatus.RUNNING,
-            input_ref="artifact://engine/inv_001/input.json",
+            input_ref="file://engine/inv_001/input.json",
             output_ref=None,
             approval_id=None,
             idempotency_key="task_001:execution:1",
@@ -1217,7 +1217,7 @@ def test_background_completion_updates_agent_and_invocation_state() -> None:
         session_id=session.session_id,
         correlation_id="corr_bg_001",
         recipient="harness",
-        payload_ref="artifact://engine/inv_001/output.json",
+        payload_ref="file://engine/inv_001/output.json",
         invocation_id="inv_001",
         agent_id=agent.agent_id,
         success=True,
@@ -1245,8 +1245,8 @@ def test_background_completion_preserves_existing_invocation_output_ref() -> Non
             lane_id="lane_001",
             engine_name="execution",
             status=EngineInvocationStatus.RUNNING,
-            input_ref="artifact://engine/inv_002/input.json",
-            output_ref="artifact://engine/inv_002/existing-output.json",
+            input_ref="file://engine/inv_002/input.json",
+            output_ref="file://engine/inv_002/existing-output.json",
             approval_id=None,
             idempotency_key="task_001:execution:2",
             started_at="2026-04-17T12:00:03+00:00",
@@ -1257,9 +1257,9 @@ def test_background_completion_preserves_existing_invocation_output_ref() -> Non
         session_id=session.session_id,
         correlation_id="corr_bg_002",
         recipient="harness",
-        payload_ref="artifact://engine/inv_002/background-notification.json",
+        payload_ref="file://engine/inv_002/background-notification.json",
         invocation_id="inv_002",
         success=True,
     )
 
-    assert repositories.invocations.get("inv_002").output_ref == "artifact://engine/inv_002/existing-output.json"
+    assert repositories.invocations.get("inv_002").output_ref == "file://engine/inv_002/existing-output.json"

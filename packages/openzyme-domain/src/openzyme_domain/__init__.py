@@ -1,4 +1,3 @@
-from .models import ArtifactKind
 from .models import RunStatus
 from .models import SourceRefKind
 from .models import utc_now_iso
@@ -10,17 +9,9 @@ from .failures import FailureObservation
 from .failures import FailureRecoverability
 from .failures import likely_causes_for_error_code
 from .file_workspace_public import FILE_WORKSPACE_PUBLIC_SCHEMA_VERSION
+from .file_workspace_public import FILE_WORKSPACE_PUBLIC_CONTRACT_ID
 from .file_workspace_public import ExecutorOwnerWorkspaceView
 from .file_workspace_public import FileWorkspacePublicProjection
-from .historical_artifacts import HistoricalArtifactEligibility
-from .historical_artifacts import HistoricalArtifactMigrationReceipt
-from .historical_artifacts import HistoricalArtifactMigrationUnitReceipt
-from .historical_artifacts import HistoricalArtifactRef
-from .historical_artifacts import HistoricalArtifactStorage
-from .historical_artifacts import canonical_historical_artifact_digest
-from .scientific_attempts import (
-    SCIENTIFIC_ARTIFACT_MATERIALIZATION_SCHEMA_VERSION,
-)
 from .scientific_attempts import (
     SCIENTIFIC_ATTEMPT_ADMISSION_REQUEST_SCHEMA_VERSION,
 )
@@ -33,7 +24,6 @@ from .scientific_attempts import SCIENTIFIC_ATTEMPT_SCHEMA_VERSION
 from .scientific_attempts import SCIENTIFIC_CHAIN_SELECTION_SCHEMA_VERSION
 from .scientific_attempts import SCIENTIFIC_EFFECT_ADOPTION_SCHEMA_VERSION
 from .scientific_attempts import SCIENTIFIC_OPERATION_DISPOSITION_SCHEMA_VERSION
-from .scientific_attempts import ScientificArtifactMaterialization
 from .scientific_attempts import ScientificAttempt
 from .scientific_attempts import ScientificAttemptAdmissionRequest
 from .scientific_attempts import ScientificAttemptAuthorization
@@ -100,14 +90,12 @@ from .control_plane import SessionRuntimeLease
 from .control_plane import SessionRuntimeLeaseMode
 from .control_plane import ApprovalRequest
 from .control_plane import ApprovalRequestStatus
-from .control_plane import CommandLogArtifactRecord
 from .control_plane import ControlledOperation
 from .control_plane import ControlledOperationStatus
 from .control_plane import ContinuationState
 from .control_plane import ContinuationStateStatus
 from .control_plane import EngineInvocation
 from .control_plane import EngineInvocationStatus
-from .control_plane import FileAuditEntry
 from .control_plane import InboxMessage
 from .control_plane import InboxParticipantKind
 from .control_plane import InboxStatus
@@ -132,7 +120,6 @@ from .control_plane import SessionReportDraftRecord
 from .control_plane import SessionReportDraftStatus
 from .control_plane import SessionReportRecord
 from .control_plane import SessionReportStatus
-from .control_plane import SessionArtifactRecord
 from .control_plane import Session
 from .control_plane import SessionStatus
 from .control_plane import Task
@@ -174,12 +161,14 @@ from .revision_path_handoffs import PROTOCOL_FILE_HANDOFF_SCHEMA_VERSION
 from .revision_path_handoffs import REPORT_REF_SCHEMA_VERSION
 from .revision_path_handoffs import REVISION_PATH_REF_SCHEMA_VERSION
 from .revision_path_handoffs import SCIENTIFIC_DELIVERABLE_REF_SCHEMA_VERSION
+from .revision_path_handoffs import SCIENTIFIC_CLOSURE_REF_SCHEMA_VERSION
 from .revision_path_handoffs import TASK_EVIDENCE_REF_SCHEMA_VERSION
 from .revision_path_handoffs import ControlledOperationResultRef
 from .revision_path_handoffs import ProtocolFileHandoff
 from .revision_path_handoffs import ReportRef
 from .revision_path_handoffs import RevisionPathEntryKind
 from .revision_path_handoffs import RevisionPathRef
+from .revision_path_handoffs import ScientificClosureRef
 from .revision_path_handoffs import TaskEvidenceKind
 from .revision_path_handoffs import TaskEvidenceRef
 from .revision_path_handoffs import canonical_handoff_digest
@@ -367,7 +356,6 @@ __all__ = [
     "SessionRuntimeLeaseMode",
     "ApprovalRequest",
     "ApprovalRequestStatus",
-    "CommandLogArtifactRecord",
     "CONTROLLED_OPERATION_EXECUTION_EVENT_SCHEMA_VERSION",
     "CONTROLLED_OPERATION_EXECUTION_SCHEMA_VERSION",
     "CONTROLLED_OPERATION_DISPATCH_REQUEST_SCHEMA_VERSION",
@@ -399,13 +387,9 @@ __all__ = [
     "FailureObservation",
     "FailureRecoverability",
     "FILE_WORKSPACE_PUBLIC_SCHEMA_VERSION",
+    "FILE_WORKSPACE_PUBLIC_CONTRACT_ID",
     "ExecutorOwnerWorkspaceView",
     "FileWorkspacePublicProjection",
-    "HistoricalArtifactEligibility",
-    "HistoricalArtifactMigrationReceipt",
-    "HistoricalArtifactMigrationUnitReceipt",
-    "HistoricalArtifactRef",
-    "HistoricalArtifactStorage",
     "GIT_LFS_BINDING_POLICY_SCHEMA_VERSION",
     "GIT_LFS_CLOSURE_MANIFEST_SCHEMA_VERSION",
     "GIT_LFS_GC_CANDIDATE_RECEIPT_SCHEMA_VERSION",
@@ -427,7 +411,6 @@ __all__ = [
     "GitLfsUploadStatus",
     "GitObjectFormat",
     "GENERAL_AGENT_CAPABILITIES",
-    "SCIENTIFIC_ARTIFACT_MATERIALIZATION_SCHEMA_VERSION",
     "SCIENTIFIC_ATTEMPT_ADMISSION_REQUEST_SCHEMA_VERSION",
     "SCIENTIFIC_ATTEMPT_AUTHORIZATION_SCHEMA_VERSION",
     "SCIENTIFIC_ATTEMPT_CLOSURE_REQUEST_SCHEMA_VERSION",
@@ -436,7 +419,6 @@ __all__ = [
     "SCIENTIFIC_CHAIN_SELECTION_SCHEMA_VERSION",
     "SCIENTIFIC_EFFECT_ADOPTION_SCHEMA_VERSION",
     "SCIENTIFIC_OPERATION_DISPOSITION_SCHEMA_VERSION",
-    "ScientificArtifactMaterialization",
     "ScientificAttempt",
     "ScientificAttemptAdmissionRequest",
     "ScientificAttemptAuthorization",
@@ -458,7 +440,6 @@ __all__ = [
     "ScientificFileEffectAdoption",
     "canonical_scientific_deliverable_digest",
     "normalize_scientific_path",
-    "FileAuditEntry",
     "InboxMessage",
     "InboxParticipantKind",
     "InboxStatus",
@@ -504,12 +485,14 @@ __all__ = [
     "REPORT_REF_SCHEMA_VERSION",
     "REVISION_PATH_REF_SCHEMA_VERSION",
     "SCIENTIFIC_DELIVERABLE_REF_SCHEMA_VERSION",
+    "SCIENTIFIC_CLOSURE_REF_SCHEMA_VERSION",
     "TASK_EVIDENCE_REF_SCHEMA_VERSION",
     "ControlledOperationResultRef",
     "ProtocolFileHandoff",
     "ReportRef",
     "RevisionPathEntryKind",
     "RevisionPathRef",
+    "ScientificClosureRef",
     "TaskEvidenceKind",
     "TaskEvidenceRef",
     "EXECUTOR_HPC_CLEANUP_INTENT_SCHEMA_VERSION",
@@ -555,13 +538,11 @@ __all__ = [
     "SESSION_REPOSITORY_BINDING_PIN_SCHEMA_VERSION",
     "SessionRepositoryBindingPin",
     "SessionRepositoryBindingStatus",
-    "ArtifactKind",
     "RunStatus",
     "RUNTIME_COMMAND_SCHEMA_VERSION",
     "RuntimeCommandRecord",
     "RuntimeCommandStatus",
     "RuntimeCommandType",
-    "SessionArtifactRecord",
     "Session",
     "SessionStatus",
     "SourceRefKind",
@@ -572,7 +553,6 @@ __all__ = [
     "canonical_capability_digest",
     "canonical_lfs_digest",
     "canonical_handoff_digest",
-    "canonical_historical_artifact_digest",
     "canonical_executor_hpc_digest",
     "canonical_workspace_job_digest",
     "capabilities_for_profile",

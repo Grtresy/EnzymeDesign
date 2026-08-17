@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import shlex
 import subprocess
 import time
-
-from .transport import compile_legacy_ssh
 
 
 @dataclass(slots=True)
@@ -57,9 +54,7 @@ class CommandRunner:
                 elapsed_seconds=elapsed_seconds,
             )
             if check:
-                raise RuntimeError(
-                    f"Command timed out ({stage or 'unknown'}): {shlex.join(args)}\n{stderr}"
-                )
+                raise RuntimeError(f"Command timed out ({stage or 'unknown'})")
             return result
         except OSError as exc:
             elapsed_seconds = time.monotonic() - started_at
@@ -74,14 +69,13 @@ class CommandRunner:
             )
             if check:
                 raise RuntimeError(
-                    f"Command could not start ({stage or 'unknown'}): "
-                    f"{shlex.join(args)}\n{exc}"
+                    f"Command could not start ({stage or 'unknown'})"
                 ) from exc
             return result
         elapsed_seconds = time.monotonic() - started_at
         if check and proc.returncode != 0:
             raise RuntimeError(
-                f"Command failed ({proc.returncode}): {shlex.join(args)}\n{proc.stderr}"
+                f"Command failed ({proc.returncode}) at {stage or 'unknown'}"
             )
         return CommandResult(
             args=args,
@@ -91,60 +85,3 @@ class CommandRunner:
             stage=stage,
             elapsed_seconds=elapsed_seconds,
         )
-
-
-def make_remote_shell_command(cwd: str, argv: list[str]) -> list[str]:
-    return make_remote_shell_command_with_env(cwd, argv, env=None)
-
-
-def make_remote_shell_command_with_env(
-    cwd: str, argv: list[str], env: dict[str, str] | None
-) -> list[str]:
-    exports = ""
-    if env:
-        # Use explicit exports so both ssh and sbatch can share layout hints.
-        # Note: RunSpec.command is argv (not a shell snippet), so callers that
-        # want to use these variables should read them from the process env.
-        exports = "; ".join(
-            f"export {key}={shlex.quote(value)}" for key, value in env.items()
-        )
-        exports = exports + "; "
-    layout_vars = (
-        "WORKDIR",
-        "OUTDIR",
-        "MCP_RUN_DIR",
-        "MCP_WORKDIR",
-        "MCP_OUTDIR",
-        "MCP_TMPDIR",
-        "MCP_LOGDIR",
-    )
-    normalize = (
-        'anchor="${PWD}"; '
-        "_oz_abspath() { "
-        'case "$1" in '
-        "/*) printf '%s' \"$1\" ;; "
-        "~) printf '%s' \"$HOME\" ;; "
-        "~/*) printf '%s/%s' \"$HOME\" \"${1#~/}\" ;; "
-        "*) printf '%s/%s' \"$anchor\" \"$1\" ;; "
-        "esac; "
-        "}; "
-    )
-    if env:
-        normalize += " ".join(
-            (
-                f'if [[ -n "${{{key}:-}}" ]]; then '
-                f'{key}="$(_oz_abspath "${{{key}}}")"; export {key}; '
-                "fi;"
-            )
-            for key in layout_vars
-        )
-        normalize += " "
-    command = (
-        f"{exports}{normalize}"
-        f"cd $(_oz_abspath {shlex.quote(cwd)}) && {shlex.join(argv)}"
-    )
-    return ["bash", "-lc", command]
-
-
-def wrap_ssh(target: str, remote_argv: list[str]) -> list[str]:
-    return compile_legacy_ssh(target, remote_argv)

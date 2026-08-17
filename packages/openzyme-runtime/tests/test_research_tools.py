@@ -45,7 +45,7 @@ def test_bio_research_search_tools_return_research_observation_payloads() -> Non
         "summary",
         "findings",
         "unresolved_gaps",
-        "artifacts",
+        "files",
         "provider",
         "raw_ref",
     }
@@ -55,35 +55,17 @@ def test_bio_research_search_tools_return_research_observation_payloads() -> Non
         "cutover_eligible"
     ] is False
     assert result.payload["findings"] == []
-    assert result.payload["artifacts"] == []
+    assert result.payload["files"] == []
 
 
-def test_bio_research_download_tools_return_artifact_manifests() -> None:
+def test_deep_research_provider_does_not_expose_file_download_tools() -> None:
     tools = {
         tool.name: tool
         for tool in build_bio_research_tools(DeterministicBioResearchService())
     }
 
-    result = tools["uniprot.download_fasta"].invoke(
-        args={"accession": "P12345"},
-        context=_context(),
-    )
-
-    assert result.summary == result.payload["summary"]
-    assert result.payload["findings"] == []
-    assert result.payload["artifacts"][0]["kind"] == "sequence"
-    assert result.payload["artifacts"][0]["storage_uri"]
-    assert result.payload["artifacts"][0]["content_digest"].startswith("sha256:")
-    assert (
-        result.payload["artifacts"][0]["sealed_digest"]
-        == result.payload["artifacts"][0]["content_digest"]
-    )
-    assert result.payload["artifacts"][0]["retrieved_at"]
-    provenance = result.payload["artifacts"][0]["provenance"]
-    assert provenance["provider"] == "uniprot"
-    assert provenance["external_id"] == "P12345"
-    assert provenance["format"] == "fasta"
-    assert provenance["digest"] == result.payload["artifacts"][0]["content_digest"]
+    assert "uniprot.download_fasta" not in tools
+    assert "rcsb_pdb.download_structure" not in tools
 
 
 def test_rcsb_download_structure_provider_route_policy_is_registered() -> None:

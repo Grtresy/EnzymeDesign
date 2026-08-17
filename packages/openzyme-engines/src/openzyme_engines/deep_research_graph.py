@@ -246,15 +246,15 @@ def _summarize_unit_observations(
     findings: list[dict[str, Any]] = []
     unresolved_gaps: list[str] = []
     summary_parts: list[str] = []
-    artifacts: list[dict[str, Any]] = []
+    files: list[dict[str, Any]] = []
     for observation in observations:
         summary_parts.append(str(observation.get("summary") or ""))
         payload = observation.get("payload") or {}
         unresolved_gaps.extend(str(item) for item in payload.get("unresolved_gaps", []))
         findings.extend(list(payload.get("findings", [])))
-        artifacts.extend(dict(item) for item in payload.get("artifacts", []))
+        files.extend(dict(item) for item in payload.get("files", []))
     summary = " ".join(part for part in summary_parts if part).strip()
-    return findings, unresolved_gaps, summary, artifacts
+    return findings, unresolved_gaps, summary, files
 
 
 def _run_research_unit(
@@ -429,7 +429,7 @@ def _run_research_unit(
         if executed_tool_call_count >= max_tool_calls:
             break
 
-    findings, unresolved_gaps, summary, artifacts = _summarize_unit_observations(
+    findings, unresolved_gaps, summary, files = _summarize_unit_observations(
         observations
     )
     had_failure = any(turn["status"] == DecisionStatus.FAILED.value for turn in turns)
@@ -446,7 +446,7 @@ def _run_research_unit(
         "summary": summary or f"Completed research for {unit_query}",
         "findings": findings,
         "unresolved_gaps": unresolved_gaps,
-        "artifacts": artifacts,
+        "files": files,
         "status": status,
         "raw_notes": raw_notes,
         "turns": turns,
@@ -696,7 +696,7 @@ def build_deep_research_subgraph(inputs: DeepResearchGraphInputs) -> Any:
                     unresolved_gaps=[
                         "Research scope needs clarification before evidence collection can continue."
                     ],
-                    artifacts=[],
+                    files=[],
                     raw_notes=list(state.get("raw_notes") or []),
                     recent_turns=_research_turns(state),
                 ).model_dump()
@@ -731,7 +731,7 @@ def build_deep_research_subgraph(inputs: DeepResearchGraphInputs) -> Any:
                     f"Synthesis model failed: {type(exc).__name__}: {exc}"
                 ) from exc
 
-        artifacts: list[dict[str, Any]] = []
+        files: list[dict[str, Any]] = []
         if synthesis is None:
             evidence_items: list[EvidenceSynthesisItem] = []
             unresolved_gaps: list[str] = []
@@ -742,7 +742,7 @@ def build_deep_research_subgraph(inputs: DeepResearchGraphInputs) -> Any:
                 unresolved_gaps.extend(
                     str(gap) for gap in result.get("unresolved_gaps", [])
                 )
-                artifacts.extend(dict(item) for item in result.get("artifacts", []))
+                files.extend(dict(item) for item in result.get("files", []))
                 for finding in result.get("findings", []):
                     evidence_items.append(
                         EvidenceSynthesisItem(
@@ -790,7 +790,7 @@ def build_deep_research_subgraph(inputs: DeepResearchGraphInputs) -> Any:
             summary=synthesis.summary,
             evidence_items=synthesis.evidence_items,
             unresolved_gaps=synthesis.unresolved_gaps,
-            artifacts=artifacts,
+            files=files,
             raw_notes=list(state.get("raw_notes") or []),
             recent_turns=_research_turns(state),
         )

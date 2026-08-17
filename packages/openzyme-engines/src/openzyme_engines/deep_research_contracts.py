@@ -16,7 +16,7 @@ class IntakeClarification(BaseModel):
 class ResearchBriefDraft(BaseModel):
     research_brief: str
     focus_areas: list[str] = Field(default_factory=list)
-    expected_outputs: list[str] = Field(default_factory=list)
+    requested_deliverables: list[str] = Field(default_factory=list)
 
 
 class ResearchSourceItem(BaseModel):
@@ -76,7 +76,7 @@ class ResearchDossier(BaseModel):
     summary: str
     evidence_items: list[EvidenceSynthesisItem] = Field(default_factory=list)
     unresolved_gaps: list[str] = Field(default_factory=list)
-    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    files: list[dict[str, Any]] = Field(default_factory=list)
     raw_notes: list[str] = Field(default_factory=list)
     recent_turns: list[ResearchTurnRecord] = Field(default_factory=list)
 

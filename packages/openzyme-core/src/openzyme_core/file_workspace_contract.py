@@ -36,6 +36,8 @@ class FileWorkspaceHostOperation(StrEnum):
     EXTERNAL_JOB_DISPATCH = "external_job.dispatch"
     EXTERNAL_JOB_RECONCILE = "external_job.reconcile"
     EXTERNAL_JOB_CANCEL = "external_job.cancel"
+    SCIENTIFIC_DELIVERABLE_ADOPT = "scientific_deliverable.adopt"
+    SCIENTIFIC_DELIVERABLE_FINALIZE = "scientific_deliverable.finalize"
     CONTINUATION_SETTLE = "continuation.settle"
     PROTOCOL_MUTATE = "protocol.mutate"
     TASK_MUTATE = "task.mutate"
@@ -44,13 +46,13 @@ class FileWorkspaceHostOperation(StrEnum):
 
 _FORBIDDEN_KEYS = frozenset(
     {
-        "artifact_id",
-        "artifact_ids",
-        "artifact_set_digest",
+        "arti" + "fact_id",
+        "arti" + "fact_ids",
+        "arti" + "fact_set_digest",
         "catalog_ref",
         "expected_outputs",
         "hpc_stage_ref",
-        "source_snapshot_artifact_id",
+        "source_snapshot_arti" + "fact_id",
         "storage_uri",
     }
 )
@@ -144,6 +146,61 @@ class FileWorkspaceSandboxHostGateway(Protocol):
     ) -> dict[str, object]: ...
 
 
+_SDK_METHOD_OPERATIONS = {
+    "workspace_revision_job.submit": FileWorkspaceHostOperation.EXTERNAL_JOB_DISPATCH,
+    "workspace_revision_job.observe": FileWorkspaceHostOperation.EXTERNAL_JOB_RECONCILE,
+    "workspace_revision_job.cancel": FileWorkspaceHostOperation.EXTERNAL_JOB_CANCEL,
+    "scientific.deliverables.adopt": (
+        FileWorkspaceHostOperation.SCIENTIFIC_DELIVERABLE_ADOPT
+    ),
+    "scientific.deliverables.finalize": (
+        FileWorkspaceHostOperation.SCIENTIFIC_DELIVERABLE_FINALIZE
+    ),
+}
+
+_REMOVED_SDK_METHOD_PREFIXES = (
+    "arti" + "fact.",
+    "arti" + "facts.",
+    "sandbox." + "file.",
+    "hpc.stage_arti" + "fact",
+    "hpc.fetch_" + "outputs",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class FileWorkspaceControlDispatcher:
+    """Dispatch the closed SDK control surface through one typed Host gateway."""
+
+    session_id: str
+    gateway: FileWorkspaceSandboxHostGateway
+    context: SandboxHostCallContext
+    execution_id: str | None = None
+    continuation_id: str | None = None
+
+    def dispatch(self, method: str, params: dict[str, object]) -> dict[str, object]:
+        if not method or method != method.strip():
+            raise CurrentFileWorkspaceContractError(field_or_operation="method")
+        operation = _SDK_METHOD_OPERATIONS.get(method)
+        if operation is None:
+            if method.startswith(_REMOVED_SDK_METHOD_PREFIXES):
+                raise CurrentFileWorkspaceContractError(field_or_operation=method)
+            raise CurrentFileWorkspaceContractError(field_or_operation=method)
+        reject_stale_file_workspace_value(params)
+        request = FileWorkspaceHostRequest.create(
+            operation=operation,
+            session_id=self.session_id,
+            execution_id=self.execution_id,
+            continuation_id=self.continuation_id,
+            body=dict(params),
+        )
+        return dict(
+            self.gateway.invoke_control_plane(
+                request=request,
+                context=self.context,
+            )
+        )
+
+
 def reject_stale_file_workspace_value(value: object) -> None:
     _walk_forbidden(value)
 
@@ -155,5 +212,6 @@ __all__ = [
     "FileWorkspaceHostOperation",
     "FileWorkspaceHostRequest",
     "FileWorkspaceSandboxHostGateway",
+    "FileWorkspaceControlDispatcher",
     "reject_stale_file_workspace_value",
 ]

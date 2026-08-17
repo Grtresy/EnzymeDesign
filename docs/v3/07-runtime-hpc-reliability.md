@@ -1,427 +1,57 @@
-# Runtime / HPC 可靠性边界
-
-> Revision-bound external job、executor owner workspace、opaque handle 与 result revision
-> 的候选资源合同见 [file-workspace-migration.md](file-workspace-migration.md)。它不改变
-> occurrence/effect certainty，也不把 timeout、lease release 或 process exit 当作 settlement。
-
-## 1. 文档定位与当前状态
-
-本文描述已经进入主线实现的 Runtime/HPC 可靠性合同。它是
-`runtime-hpc-reliability-refactor` 的稳定架构读物，不是 live campaign 的
-GO 证明。
-
-截至 2026-07-21：
-
-- schema、durable execution、attached-process continuation、command-based drain、
-  generic mutation quiescence 与 runner persistent transport 已落地；
-- deterministic/focused/non-live 验证已全部通过；
-- 外部 real-SSH transport-only soak 与 disabled-mode rollback audit 已通过；
-- 当前配置已恢复 disabled，且没有启动任何编号 `rxx` 实验；是否恢复 campaign 仍由
-  operator 显式决定。
-
-这套机制只忠实表达执行与闭包事实。它不替 agent 选择科学策略，不把 capability
-terminal、runtime idle 或 quiescence seal 解释为业务 task terminal；业务任务仍由
-agent 显式调用 `task.finish` 或经已文档化的机械迁移终结。
-
-## 2. 单一 ownership 链
-
-Git publication create-only ref 复用同一 `ControlledOperationExecution` lifecycle、effect certainty、retry eligibility 与 transition validator，但使用 publication-intent-bound storage adapter，因为旧 sandbox operation SQL identity 强制依赖 sandbox workspace/run。它不是第二套 effect FSM：publication 从 `ready -> claimed -> dispatching` 前持久化 execution lease/fence，dispatch 即进入 `dispatch_in_doubt/reconcile_required`；只有 exact ref observation 才能 terminalize 并 materialize revision。unknown outcome 不能自动重发，different commit 是 terminal integrity conflict。
-
-publication 不复用 sandbox approval/continuation/result-artifact write path，也不创建逐 publication approval。它的 immutable remote receipt绑定 execution dispatch generation/fence、internal Git service、binding version、expected previous absence、new commit/tree 与 server-observed commit；revision、receipt、event/outbox 同一事务完成。该边界不访问 GitHub/upstream，不把 upstream failure 当 internal fallback。
-
-LFS publication proof 在 remote ref dispatch 前已经冻结：stable closure manifest 绑定 exact
-commit/tree/policy/endpoint/authorization，fresh verification 绑定本次 object-read receipts。response
-loss 后 reconcile 只观察原 publication ref，并从原 intent proof materialize pins；不能重新选择
-closure、使用 cache 替代 fresh read、换 endpoint 或重传 unknown-effect upload。空 LFS closure 也有
-显式 proof/link，不能因 object count 为零而丢失 policy 验证事实。
-
-LFS GC 不复用 publication execution FSM，也没有隐式 retry。retention owner 先写 canonical dry-run
-candidate；delete 调用必须提交 exact receipt digest，并重算 repository-wide publication pins、
-workspace-generation links、live upload sessions、whole-generation retirement/LFS reachability receipts
-和 policy identity。candidate 或任一依赖漂移即整批 no-delete。filesystem delete 与 SQLite receipt
-之间若发生本地响应丢失，只能对同一 candidate 做 exact reconciliation，不能扩大 OID 集合。
-
-```text
-agent / task strategy
-        |
-        v
-ControlledOperation + ApprovalRequest        logical intent and approval
-        |
-        v
-ControlledOperationExecution                 only external-effect owner
-        |                         \
-        v                          v
-provider / HPC adapter          RunnerAttempt
-        |                       private execution evidence
-        v
-immutable result handle + atomic artifact set
-        |
-        v
-ContinuationState + delivery generation      exact SDK/tool delivery owner
-        |
-        v
-AgentRuntimeSignal                            next bounded agent turn
-```
-
-`ControlledOperation.status/result/error` 是 compatibility projection。对于
-`owner_mode=durable_async_v1` 的 row，只有
-`ControlledOperationExecutionTransitionService` 可以派生这些字段；sandbox、adapter、
-callback 和 recovery path 的 raw save 会在 repository boundary 被拒绝。
-
-Runner 的 `runner_attempt@1` 冻结 run、operation/execution、approval、RunSpec、route、
-expected outputs、input、effective config、transport identity 与 policy digest。它提供
-phase/effect/recovery 证据，但不成为 task、approval 或 Host execution 的并列 reducer。
-terminal closed metadata 必须同时带 sealed status、safe machine error code、effect
-certainty 与 retry eligibility；历史 sparse metadata 可由同一 sealed attempt 补齐，但
-present conflict 不能被覆盖。Host/adapter 只投影 closed safe fields，不能发布 raw
-exception、stderr、target、credential、command、locator 或 path。
-
-## 3. 五个彼此独立的 authority boundary
-
-| Authority | 负责什么 | 明确不负责什么 |
-| --- | --- | --- |
-| session runtime lease + signal claim | 某个 bounded agent turn 谁能推进 session runtime | 外部 effect、结果投递、task 终态 |
-| sandbox process identity + process epoch | 同一 attached process 发起的后续 Host call，以及其 process-scoped writer parentage | session 调度、external effect ownership、result delivery claim |
-| execution lease + fence | 某个 `ControlledOperationExecution` 谁能 dispatch/poll/reconcile/materialize | session agent 调度、SDK process identity |
-| continuation delivery claim + fence | exact result 向 exact process epoch 的一次投递 | 接管该 process 后续 Host call、重放 scientific effect、任意 Python stack 恢复 |
-| mutation scope generation + writer fence | 哪些 Host writer 仍可改变 canonical evidence，以及何时可出具 receipt/seal | 业务成功、报告质量、下一步科学策略 |
-
-这些 authority 不得互相推断。例如 session lease 过期不表示 provider/HPC 已取消；合法
-continuation delivery 不会把 delivery 或旧 session authority 安装到 sandbox process；本地
-sandbox process 退出只证明对应 local writer 可以退休；execution success 不表示
-continuation 已投递；continuation delivery 也不表示 task completed。
-
-## 4. Durable controlled operation
-
-进入 `durable_async_v1` 的 operation 在一个 transaction 中创建：
-
-- operation 与 frozen owner mode；
-- approval binding；
-- canonical execution；
-- immutable dispatch request；
-- attached continuation origin/process identity；
-- append-only admission event。
-
-Execution worker 每次只做一个短 slice：claim、dispatch、poll/reconcile、result staging、
-materialize 或 terminalize。外部调用期间不持有 SQLite transaction，也不借用 session
-lease。每次外部调用前，以及每次 callback canonical commit 前，必须重新比较 execution
-lease token、fence、state version、immutable identity 与当前 mutation writer authority。
-
-每个 durable worker outcome 还必须显式携带 typed `semantic_progress`。execution worker 只比较
-canonical lifecycle、terminal/effect/retry、dispatch generation、backend/result identity 与
-result/artifact-set digest；claim/lease/fence/version/timestamp、diagnostic/event churn 或 unchanged
-poll/reconcile 不计进展。runtime-command 只在 terminal command commit 后为 true，continuation
-只在 delivered/recovery-failed commit 后为 true；idle、race、fenced/unclaimable work 和
-database busy 均为 false。Host serialization seam 不为缺失/非 boolean 字段提供 action fallback。
-supervisor 保留 no-progress diagnostics，但只统计 true，且只有一个 bounded tick 的全部 slots
-都为 true 时才可通知一次可能 backlog；periodic poll 负责之后的 unchanged external state，
-该 scheduling fact 不授权 replay、effect、task terminal 或科学策略。
-
-Effect certainty 是闭集：
-
-- `no_effect`：只允许完全相同 phase 的有界机械恢复；
-- `dispatch_in_doubt`：禁止 replay，只能保留 reconciliation-required；
-- `effect_known`：只能查询 exact persisted handle；
-- `terminal_known`：可以恢复结果落盘或 declared-output fetch，不能重跑 payload。
-
-对异步 provider，`backend_handle_ref` 继续是 execution 冻结的公开安全请求身份；真实外部
-job id 不创建第二个 execution owner，而是进入 Host-private immutable provider receipt。
-当前 EBI HMMER 路径遵循以下闭集生命周期：
-
-- dispatch slice 只 submit 一次；接受后立即封存 execution/generation、`provider_request_id`、
-  exact job id、HMM/请求 digest、poll interval 与从接受时刻计算的绝对 deadline；
-- poll/reconcile slice 只读取该 receipt 的 job id，并按连续 index 追加 exact response
-  observation；`RETRY` 是 `effect_known` 非终态，不授权 resubmit；
-- restart 从 receipt 恢复同一 deadline，既不重新计时，也不把 config 默认值当成新 authority；
-- terminal success 进入既有 result staging/materialization；terminal failure 或 deadline 到期形成
-  typed terminal handoff，其中到期 code 为 `provider_timeout`；
-- submit 已被 provider 接受、但 callback 在 job id receipt canonical commit 前丢失时，系统只能
-  保留 `dispatch_in_doubt`。在 provider 没有 idempotency key 或按请求 digest 查询 job 的前提下，
-  这段 crash window 不能安全自动修复，任何新 submit 都必须是另行授权的新 operation。
-
-dispatch 与 observation receipt 都是 Host-private、immutable、mutation-authority-covered 的 canonical
-SQLite records，不进入 workspace、agent trace 或 public API。observation 数量由 frozen
-deadline/interval 推导的上限约束；它们记录恢复事实，不是新的业务状态机。
-
-Result handle 与 artifact set 是 Host-owned immutable records。partial、digest-invalid 或
-identity-drifted outputs 不得 promotion。Execution terminal、result ready、continuation
-delivery、agent wakeup 与 task business terminal 是五个不同事实。
-
-Provider 的成功 callback 不是唯一 result materialization 入口。若 external effect 已完成、
-同一 request 的完整 artifacts 与最后一个 `provider_observation.json` 已登记，但 callback 在
-canonical commit 前丢失，reconcile 只能读取该 operation/request 的 sealed
-`provider_request.json` 与 `provider_observation.json`：逐件核 content/sealed digest、strict
-JSON closed schema、route/provider/config/output-dir/artifact identity，再恢复原 provider
-summary、validation、warnings 与 `transcript_manifest`。control document 限 `8 MiB`；完整
-canonical immutable result envelope 与 core 共用 `256 KiB` 上限，inline `bounded_summary` 只是
-其中一部分，bulk identities 必须保留在 digest-bound artifact。EBI HMMER 的完整候选身份只由
-`provider_parsed/parsed_hits.csv` 承载，不复制进 summary。missing、tamper、schema/identity drift
-或任一 envelope 超限均转为 `terminal_known` failure；若 terminal-known observation 本身未通过
-closed validation，execution 直接以 `recovery_failed` 终结，不允许通用 recovered 摘要、provider
-replay、alternate route 或重复 claim/reconcile 热循环。
-
-## 5. Non-blocking continuation 与 runtime command
-
-Durable SDK call 遇到 approval/external wait 时，Host 会 park exact sandbox process，记录
-`sandbox_run/workspace/runtime_identity/process_epoch/tool_call/invocation/signal`，并把进程
-交给 Host-private live-process registry 与 outer sandbox supervisor。原 agent turn、signal
-claim、session lease 和 HTTP request 在 bounded 时间内返回。等待中的 process 不占 agent
-并发槽，也不完成、失败、取消或替换 task。
-
-当前唯一启用的 resume strategy 是 `attached_process`：
-
-- 同一 Host 进程内可向 exact process epoch 投递一次结果；
-- delivery generation、result digest 与 process identity 任一不符即 fail closed；
-- Host restart 后 registry 丢失时，continuation 明确进入 recovery failure，已完成的外部
-  execution/result 仍被保留且绝不重跑；
-- `journaled_sdk_call_boundary` 只是关闭的 schema 值，任意 Python stack replay 尚未实现。
-
-同一 attached process 在一次 durable result delivery 后可以继续执行 source 中的下一条 SDK
-语句，但这不会复活原 agent turn 的 session lease。control server 在 process epoch 启动时
-获取 immutable sandbox-process Host context，并跨 park/delivery 保持；delivery worker 只完成
-短投递，不替换该 context。`hpc.fetch_outputs` 经 typed `SandboxHostGateway` 使用 control-server
-当前 repositories 与 nested artifact-publisher mutation writer；engine 不能持有 scope factory、
-反射 callback 或接受可选 repository escape hatch。若 durable HPC materialization 已在
-immutable adapter envelope 中冻结 `run_id/fetch_refs/registered_artifact_ids/output_artifact_ids`，
-SDK fetch 对 `run_id` 与逐项 `fetch_refs` 做 exact comparison，对两组 artifact-id
-列表按 durable artifact-set 合同规范化排序后检查完整、唯一成员，并保持
-operation row 不变；任何 identity/membership drift 都 fail closed。
-
-`POST /v3/sessions/{session_id}/runtime/drain` 只做 durable command admission：
-
-- 必须带 `Idempotency-Key`；
-- 始终返回 HTTP `202 Accepted` 与 `runtime_command_status@1`；
-- `Prefer: wait=<seconds>` 只允许 `0..2` 秒，超时仍返回 `202`，不会取消 command；
-- 通过 response 中的 `status_url` 或
-  `GET /v3/sessions/{session_id}/runtime/commands/{command_id}` 查询；
-- `locked` 是 command terminal，表示 session lease 被另一个合法 owner 持有；它不会创建
-  replacement command 或并发 scheduler；
-- public DTO 不含 claim owner、lease/fence、process/socket、Host path 或 private locator。
-
-旧同步 HTTP fallback 已退休。`V3HostApiService.drain_runtime()` 仍作为
-`RuntimeCommandWorker` 内部 bounded scheduler executor 存在，不是 public request owner。
-
-## 6. Runner-owned persistent SSH
-
-一个 `MCPHpcServer` 生命周期拥有一个 `SshTransportManager`。manager 按
-deployment/config、normalized target、credential policy、host-key policy 与 transport
-policy 派生 identity，并为每个 identity 持有隔离的 OpenSSH ControlMaster generation。
-
-关键约束：
-
-- Control root 必须是私有 `0700` 真实目录；symlink、foreign owner、ambiguous socket
-  一律拒绝；
-- ssh/scp/rsync 共享同一 option compiler 与 `ControlPath`，每个 remote command 仍是
-  isolated channel，不依赖持久 shell cwd/env；
-- channel concurrency、connect attempts、pre-effect recovery、backoff、health check、
-  ControlPersist 与 shutdown 全部由 trusted bounded policy 决定，RunSpec/caller 不能覆盖；
-- file staging 使用 exact remote SHA-256；directory staging 使用 ordered bounded canonical
-  tree manifest；cache hit 不能代替远端 bytes 验证；
-- 只允许一次额外 same-run、same-identity、proven `no_effect` recovery；
-- direct SSH 写出 payload 后丢失响应一律进入 `dispatch_in_doubt`，dispatch count 不增加；
-- Slurm 只用 exact opaque handle poll/reconcile；当前 AOX 仍不允许把缺 job-internal
-  attestation 的 Slurm 当 cutover proof；
-- known terminal 后的 output fetch interruption 只恢复 fetch/verify，不重跑 payload；
-- shutdown 只退出 proven-owned master，active direct ambiguity 被持久化为 reconcile-required，
-  不宣称 remote cancellation。
-
-Transport responses 只公开 closed phase/effect/retry facts、opaque run/artifact refs 与安全
-计数；target/user、ControlPath/generation、command、remote/Host path、PID/job id、credential、
-private receipt 与 raw log 保持 Host-private。
-
-runner-backed Host route 已存在 exact reservation 时，runner inspect 先于任何 Host-local
-`Run` failure shortcut。sealed pre-dispatch `transport_connect_failed/no_effect` 是
-execution 的 causal source；它原样投影到
-`ControlledOperationExecution`、compatibility operation、continuation 与
-`FailureObservation`。本地 `Run` 只在 runner success 后参与 result
-materialization/recovery。typed cause 缺失、非法或与 sealed attempt 冲突时 fail closed，
-不得回退成 generic `durable_hpc_terminal_failure`、猜测 effect 或自动重发。
-
-## 7. Generic mutation quiescence
-
-Mutation scope 是 session 或 attempt 的通用 Host authority，不是 AOX reducer。一个 session
-同一时刻至多有一个 `open/freezing/quiescent` scope。Scope 固化 policy、coverage manifest、
-generation 与 mutation fence。
-
-Covered canonical writers包括 agent turn、runtime command、sandbox process、controlled
-operation、continuation delivery、runner/provider callback、artifact/report publisher、
-event/outbox publisher 与 live-token ledger writer。异步 child 必须绑定 active parent；只有
-composition root、attempt driver 等明确 trusted root 可以无 parent 注册。
-
-session writer 的 scope 选择不是 registration 前的提示性 read。Host 必须在同一个
-owning atomic transaction 中读取该 session 的 scopes、证明 open scope cardinality
-exactly one、校验 parent、写入 writer 并形成 authority；因此 freeze 与 registration
-只有完整的先后顺序，不存在先读 open、后向已冻结 scope 注册的 TOCTOU。零 scope 仅保留
-旧 session 的 untracked compatibility；零 open、registration 时已关闭与多重 open 分别
-产生 typed admission reason，且多重 open 是 integrity failure，不能作为 rollover 等待。
-
-若 caller 已在同一 repository connection 上持有 Host 管理事务，而且事务内 snapshot
-证明 session 没有任何 mutation-scope 历史，nested publisher 保留本地 untracked
-compatibility，不得通过外部 scope factory 再开一个 SQLite writer connection 去竞争
-caller 自己持有的 write lock。该路径不签发 authority；一旦存在 scope 历史即不适用。
-
-Closure 顺序固定：
-
-```text
-open
-  -> freeze transaction closes admission and advances fence
-  -> old-fence canonical commits fail
-  -> every writer/descendant explicitly retires
-  -> capture two identical bounded SQLite/event/external snapshots
-  -> issue one immutable quiescence receipt
-  -> verify receipt + private snapshot
-  -> seal exact scope generation
-```
-
-Writer retirement不能由 runtime idle、空队列、lease expiry、HTTP 返回、timeout、disconnect
-或 missing handle 推断。Exact local process epoch 可以证明 local writer 退休，但不改变外部
-effect certainty。
-
-Coverage manifest 列举 session-scoped SQLite、event/outbox、artifact、report 与 ledger
-categories。Database triggers 在 commit 时调用 connection-bound authority verifier；artifact、
-report、tool-result 与 callback publication 还在 producer boundary 检查对应 category。AOX
-consumer 的 external snapshot 同时固化 catalog artifact bytes/tree 与 bounded MICU ledger
-rows/high-watermark；public projection 只给 scope/receipt/snapshot ids、state、safe digests、
-timestamps、writer counts/categories 与 blocker code。
-
-Receipt 是 private bounded evidence，可离线重算 receipt、writer proof、high-watermark 与
-snapshot digests。Sealed generation 不可重开；后续合法工作必须创建显式链接的新 generation。
-Seal/closure failure只产生 authority blocker，不改变 task 或自动选择替代 plan。
-
-## 8. Public runtime facts，不设 AOX observer
-
-r67 起不再存在 `RuntimeBarrierProjectionService`、Core observer-writer 或 AOX runtime
-observer。Codex 测试员通过 public runtime-command status、pending approval、workspace、
-events 与 canonical wake facts观察世界，并显式决定是否再发一个 bounded drain。Host
-projection 只呈现 canonical rows；它不返回替 campaign 作业务判断的 `ready`、不登记
-synthetic writer，也不把空队列、无 wakeup、HTTP terminal 或 child exit折叠成 task、attempt
-或 campaign terminal。
-
-mutation scope/writer、operation/execution、continuation、sandbox run、session lease 与
-external-effect ownership 仍由各自 Host service 独占验证。closure finalizer 必须以短事务
-原子提交 attempt scope seal、immutable closure 与 post-attempt child scope；public reader
-只能看到提交前态或提交后态。缺失/多重 scope、active writer、unknown effect 或 identity
-drift 继续 typed fail closed，不能由 conductor 盲重试、私有读库或 observer exclusion 绕过。
-
-## 9. Feature gates 与回滚边界
-
-Host gates：
-
-- `OPENZYME_RELIABILITY_SHADOW_OBSERVABILITY=disabled|shadow_v1`
-- `OPENZYME_RELIABILITY_CONTROLLED_OPERATION_OWNER_POLICY=legacy_only_v1|route_allowlist_v1|durable_only_v1`
-- `OPENZYME_RELIABILITY_DURABLE_EXECUTION_ROUTE_ALLOWLIST=<sorted route ids>`
-- `OPENZYME_RELIABILITY_RUNTIME_DRAIN_CONTRACT=command_v1`；`sync_v1` 已退休且启动失败
-- `OPENZYME_RELIABILITY_MUTATION_CLOSURE_MODE=legacy_v1|generic_v1`
-
-Runner gate 是 trusted TOML 的 `ssh_transport.mode=disabled|controlmaster_v1`。它只适用于
-新启动 deployment 的 admission policy。不能 hot-rebind active attempt；回滚必须先停止新
-admission，让旧 process 按 frozen policy drain/reconcile，再启动 disabled deployment。
-
-`owner_mode` 是 operation 创建时冻结的 immutable field。回滚 durable ownership 只能停止
-新 durable admission；所有 nonterminal durable rows 仍由 durable worker 与 frozen adapters
-推进或保持 reconcile-required，绝不能 relabel 为 legacy、同步执行或创建 replacement。
-
-完整操作步骤与 SQL audit 见
-[runtime-hpc-reliability-operations.md](runtime-hpc-reliability-operations.md)。
-
-AOX 保留的 local POSIX `spawn`/process-group supervisor 是 policy-free evidence shell。
-它只证明 exact child/process-group 已退休并封存 bounded supervision evidence；它不启动
-session、不发 drain、不读业务 terminal、不交付“成功”结果，也不把 zero exit、empty group、
-SQLite/root sync 或 TERM/KILL 解释为 task/operation/campaign terminal。该边界不改变本文件
-的产品 ownership；different UID/cgroup 与 remote-handle/MICU crash reconciliation 仍是
-独立 hardening。
-
-r68 首次把这个 shell 收窄为 production seam；current schema是
-`aox_supervised_host_receipt@4`，只能从 exact `aox_attempt_preflight@5` 与绑定的 attempt-start claim
-启动固定 loopback Host child，使用独立 process group，关闭
-background runtime，并封存 startup 与 terminal supervision receipts。它不接受 arbitrary
-callable/pickled runner，不发送 message、runtime drain或 approval，不执行 scope rollover，
-也不根据 workspace/task/attempt/report state决定退出。parent 的 TERM/KILL 只描述 local
-process retirement；未知 remote effect仍由 Host canonical reconciliation处理。
-
-preflight receipt 同时绑定并复制 pin 时的 credential-free `aox_cutover_launch_profile@1`。Host child
-不再调用 ambient `OpenZymeSettings.from_env()` 取得非敏感 launch truth，而是校验 profile digest 后
-重建 exact settings；ambient 只提供 profile 明确排除的 credential。profile 中的
-credential-bearing URL、ambient shared Host principal/extra-body digest 冲突、profile 内 legacy
-controlled-operation owner 或 profile/config drift 均在 listener/session/effect 前 fail closed；其他
-ambient 非敏感 launch 变量被忽略，不能覆盖 pinned 值或形成 legacy owner fallback。
-
-slot claim前的 current preflight不得只比较 effective-config。它必须调用 full actual launch resolver并
-立即执行 unchanged guard，重算 clean checkout/workflow/scoring、Podman/rootless runtime identity、
-immutable image、Pipeline SDK digest与包含 `aox_exact_calculation_manifest@1` 的
-`aox_sandbox_scientific_backend_probe@2`。safe Podman preflight cause只经 closed
-`sandbox_runtime.failure_code`公开；失败在claim/root前封存，不自动retry或换slot。
-
-preflight 前必须以 mode-private no-replace sibling原子 claim exact ordinal；claim 绑定同一
-campaign/plan/consumption、session/root、authority-policy、campaign-root identity与deterministic
-`launch_id`，不得预造task/envelope/attempt/lane/admission truth。任何
-创建 root 前后的重放都 fail closed。preflight receipt 绑定该 claim、exact authority
-consumption/slot、clean identity、current full
-architecture qualification、config digest、plan、fresh root proof，且必须证明 root 中尚无
-session/attempt。supervisor 对 root/process epoch、startup、exit、settled process group、零
-local mutation writer、SQLite checkpoint/integrity 与 root fsync做 closed validation；任一
-settlement 无法证明都生成 fatal receipt并 fail closed，但不会把它改写成业务 task/attempt
-terminal。operator CLI 的 JSON handoff使用 flush；每个 runtime drain保持 exact bounded
-command，并把admission response与独立terminal status都作为sealed handoff；terminal status
-必须exact绑定唯一`runtime.command.finished` event。digest-only status、stdout、process exit或
-空 drain都不能解释为业务完成。
-
-在`process.start()`前，parent必须再次证明attempt root只含closed prestart evidence且effect roots为空，
-读取pinned MICU ledger，原子no-replace发布唯一attempt-scoped `aox_attempt_start_claim@1`，并立即重读同一ledger。
-claim绑定preflight、slot、launch profile、execution contract、完整baseline与process epoch；污染、drift、
-existing claim或exclusive-create race均在process creation前失败，不使用campaign-global lock或replay。
-child在foundation前重验同一claim digest、epoch、preflight与closed phase。current
-`aox_supervised_host_startup@5`、`aox_supervised_host_receipt@4`、`aox_supervised_host_fatal@2`与
-`aox_supervised_host_pre_ready_failure@2`均绑定该claim。
-
-若`process.start()`在可验证child PID前失败，parent只可封存最小typed spawn outcome，并保持external
-effect unproven、retry terminal与next attempt blocked；不得伪造startup、normal supervision、formal
-closure或reducer decision。
-
-child若在 `sandbox_bootstrap_pre_registry`、child-ready之前失败，不得伪造startup或normal
-supervision receipt。closed child frame必须绑定process epoch、PID=PGID、`/proc` start-time、stage、
-outer Host code、allowlisted Podman subcause与digest；parent只在child仍存活时接受该frame，随后退休exact
-process group。只有attempt root仍为exact initial evidence、四个effect目录全空、control-plane所有业务表
-零行、mutation authority零scope/writer、SQLite integrity与root fsync全部成立，才no-replace封存
-`aox_supervised_host_pre_ready_failure@2`。该receipt绑定start claim，并明确startup/supervision/public receipt均不存在；任一
-process/root/state/effect/cause不确定都保持blocker。它只可进入
-`aox_formal_slot_failure@3 / closure_mode=pre_child_ready`：MICU before只从start claim派生，另读取一次
-unchanged after；standalone current before被拒绝。历史formal failure `@1/@2`只按原shape读取。
-
-supervisor的`launch_id`仅关联local process epoch与launch artifacts，不是scientific attempt
-identity。真实lane与attempt由session内canonical lane tools、assignee-only `attempt.create`及
-Host internal finalizer后续建立；supervision receipt不得猜测、写回或验证尚不存在的
-attempt/lane id。process startup/retirement与scientific admission因此可以分别fail closed，
-二者不能互相冒充成功。
-
-r70在首个drain前停止，只消费authority/slot/root/session/receipt；没有Host scientific
-authorization、admission或attempt。该pre-runtime conductor blocked state不可复用，当前没有
-r71，post-r70 repair只运行non-live验证。
-
-## 10. Executable qualification 与 AOX admission
-
-`local_single_process_file_sqlite@1` 的 deterministic matrix 使用真实 file-backed composition 验证
-runtime-command、controlled-operation、continuation、sandbox authority、restart/fence、reconcile、
-operator retirement、boundary scale 与 evidence projection。它不证明 distributed writer、真实
-SSH/HPC/provider availability 或 remote cancellation。
-
-AOX `pin`、`preflight`、authority mint/consumption 在任何 runner bootstrap、root 或外部
-effect 前必须用当前 checkout pure verifier接受同一 clean/full/zero-P0 report，并把其
-commit/digest-bound receipt贯穿 pin/root/launch/bundle/offline verifier。它们都不会自动
-启动或 drive session。通过只解除 architecture blocker；不会自动恢复 `rxx`、修改 owner
-policy、重放 operation 或放宽 scientific/live gate。
-
-## 11. C8 login workspace 已实现、C9 job execution 仍延后
-
-C8 已增加 canonical `ExecutorHpcWorkspace`、target-native OS principal/root qualification、真实 credential-provider seam、owner-only native locator、exact private/published revision sync identity，以及 provision/cleanup intent、receipt和阶段化 same-handle reconciliation。session end、retirement、lease revoke或generation replacement只停止新credential/admission并进入retention；它们不证明 transfer、process、controlled execution 或外部 job 已settled。cleanup必须先消费 exact zero-unsettled settlement proof，再由target isolation boundary处理同一root。
-
-C8 不提交 payload：current `ExecutorWorkspaceRunSpec` 只接受 workspace/binding/generation/target/cwd/argv/resource identity并明确拒绝 artifact staging/fetch字段；所有新 reservation、execution、job submit和payload resume在C9前硬返回`workspace_revision_execution_required`。C9仍负责 revision-to-compute、one-occurrence scheduler credential、target-side unregistered `sbatch` rejection与普通job admission。
-
-- 任意 Python stack / journaled SDK replay；
-- supervised remote SSH daemon 或 stateful persistent shell；
-- direct SSH exactly-once；
-- Slurm job-internal scientific attestation；
-- multi-Host writer、distributed queue/consensus；
-- 自动恢复 `rxx` campaign。
-
-这些项目不得由 fallback、best-effort inference 或 proposal 草图冒充已实现能力。
+# V3 Runtime 与 HPC Reliability
+
+## Authority 分层
+
+session runtime lease、agent process epoch、controlled-operation execution fence、continuation delivery
+fence、executor workspace generation、scheduler occurrence credential 和 mutation writer fence 相互独立。
+任何跨层借权均拒绝。
+
+## Executor workspace
+
+`ExecutorHpcWorkspace` 绑定 project/session/executor member、target qualification、generation 和 root identity。
+login/file credential 只允许 owner root 内 SSH、Git/LFS、rsync/scp 和 CRUD，不包含 scheduler submit。
+其他 owner/generation、runner sidecar 和 Host path 不可见。
+
+`hpc.workspace.sync_source` 只准备 exact private checkpoint 或 immutable publication；fetch、checkout、merge、
+rebase 和冲突处理由 agent 显式决定。它不发布 revision、不完成 task，也不提交 job。
+
+## Job admission
+
+`workspace_revision_execution_request@1` 必须绑定 exact source revision、commit/tree、LFS closure、clean
+observation、cwd、command、environment、resources、target/runner policy、executor lease/generation、operation/
+execution identity 和 absolute deadline。formal scientific job 还绑定 attempt admission 与 workflow digest。
+
+admission 后 Host 发放一次 scheduler occurrence credential。runner 从 revision 构造 compute source manifest；
+payload 不携带 `.git`、repository credential、LFS endpoint、object-store locator 或 Host path。
+
+## Runner lifecycle
+
+公开 runner handle 是 server-issued opaque `run_id`。raw Slurm job id、remote directory 和 recovery RunSpec
+不跨边界。dispatch 前 crash 可证明 `no_effect`；payload 已交给 transport 但 receipt 未落盘则
+`dispatch_in_doubt`，只能 query/reconcile exact occurrence。
+
+observe、logs、cancel 都必须匹配 occurrence credential 和 opaque handle。cancel intent 不等于 backend 已
+取消；只有 receipt/observation 可更新 effect certainty。
+
+## Results
+
+terminal success 形成 `WorkspaceJobResult`，可选择绑定 result revision。expected outputs 必须由 declared
+contract 与 exact result revision 验证。no-expected-output job 可在没有文件时成功，但仍需要 terminal
+observation、result digest 和 lifecycle receipt；不得创建占位文件。
+
+## Restart
+
+restart 从 durable dispatch intent、handle、observation、deadline 和 fence 恢复，不重新 submit。lease expiry
+只允许另一个 worker 认领同一 occurrence。absolute deadline 不因 restart 重置。
+
+## Mutation quiescence
+
+迁移/发布或 scientific closure 需要时，mutation scope 先 freeze admission，再等待所有显式 writer/descendant
+带 terminal proof 退休，获取两次一致的 SQLite/event/file high-watermark snapshot，最后签发 immutable
+quiescence receipt。空队列、runtime idle、HTTP 返回和 timeout 都不是静默证明。
+
+## 验证
+
+non-live tests 应覆盖 duplicate dispatch、pre-effect failure、dispatch-in-doubt、restart fencing、deadline、
+cancel ambiguity、no-output success、cross-owner/generation denial 和 locator redaction。real SSH/HPC 只在独立
+opt-in 与明确授权下执行。

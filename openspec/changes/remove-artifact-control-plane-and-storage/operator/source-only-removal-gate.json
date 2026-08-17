@@ -1,42 +1,63 @@
 {
-  "schema_id": "artifact_subsystem_removal_source_only_gate@1",
+  "schema_id": "artifact_subsystem_removal_release_gate@4",
   "change_id": "remove-artifact-control-plane-and-storage",
-  "decision": "removal_contract_source_allowed_destructive_removal_forbidden",
+  "decision": "exact_local_deployment_removal_completed",
+  "operator_authorization": {
+    "authorized_by_user": true,
+    "authorization_scope": "resolved_local_control_plane_deployment",
+    "deployment_schema_rebuild_authority": true,
+    "receipt_bound_legacy_storage_deletion_authority": true,
+    "removal_authority_consumed": true,
+    "current_repository_service_git_lfs_deletion_authority": false,
+    "live_provider_hpc_or_network_authority": false
+  },
   "direct_predecessor": {
     "change_id": "migrate-historical-artifacts-to-git-lfs",
-    "source_gate_sha256": "698feaa5e318b7677845e2019bd7a0e5f4e6460180c816014a02e7030568014a",
-    "formal_completion_receipt": "missing",
-    "historical_global_migration_receipt": "missing",
-    "historical_target_fresh_readback": "not_proven",
-    "legacy_source_preservation": "required"
+    "release_gate_schema_id": "historical_artifact_migration_release_gate@3",
+    "inventory_digest": "sha256:bb89fc030c5529c7d13f0f38f43ce0eee40f76bbc1ee384e85599cae8959bc32",
+    "historical_global_migration_receipt_digest": "sha256:ee0c90c4570ede2ed87d6273c0c9570b7649e32cffa48ad764f9036789c1c9ba",
+    "historical_target_fresh_readback_digest": "sha256:b8149b2e01ae68c8e598cf36731dfc6e395208b74cf9845b1a18e763405d94ad",
+    "legacy_source_preserved": true
   },
-  "current_blocking_facts": {
-    "formal_prerequisite_receipt_count": 0,
-    "required_formal_prerequisite_receipt_count": 13,
-    "production_source_files_with_legacy_surface": 72,
-    "migration_files_with_legacy_schema_surface": 21,
-    "public_file_workspace_epoch": "not_activated",
-    "maintenance_quiescence_receipt": "missing",
-    "database_and_storage_backup_receipt": "missing"
+  "current_admission_facts": {
+    "public_file_workspace_epoch": "active",
+    "maintenance_quiescence_receipt_digest": "sha256:47645791a82c4076ee3883d1a08761c300e146da7d8a938d32e1223dbd09139f",
+    "database_backup_digest": "sha256:c086b9b50203ed10281f459a9e731c5325c61811c2b0a3a4c13faa4bc92c0f68",
+    "storage_backup_digest": "sha256:99ad6ab94d3619950c54c5b65f81c2f1a9c80c3d937e6feee37d69d638444800",
+    "legacy_storage_target_count": 0,
+    "legacy_storage_target_bytes": 0,
+    "current_repository_service_excluded": true,
+    "final_prerequisite_receipt_compilation_required": true,
+    "non_mutating_dry_run_required": true
+  },
+  "completion_evidence": {
+    "removal_manifest_digest": "sha256:c3a8ba227161cca3c8a6506f028256ee00291924c268c775ebbdcb368be6f0da",
+    "legacy_subsystem_removal_receipt_digest": "sha256:2a39be53e87abf74b001cb5c5cfbe0f8b4ba8ad742c12976664b74a75c469fc6",
+    "final_schema_generation": "openzyme_file_workspace_final@1",
+    "final_schema_manifest_digest": "sha256:9970db97ee72a1b74136a14b2014eccdeccaad8771378e8407967ce4036ea56c",
+    "post_removal_database_digest": "sha256:c01f4707d4e8fe8d5b6f15879fc7c615a36ff8f79e2c1b25b48d39b212caf502",
+    "removal_state": "offline_removal_complete",
+    "legacy_table_column_fk_trigger_index_count": 0,
+    "removed_storage_object_count": 0,
+    "removed_storage_byte_total": 0,
+    "normal_startup_verified": true,
+    "foreign_key_violation_count": 0,
+    "database_integrity": "ok",
+    "current_repository_service_git_lfs_unchanged": true
   },
   "allowed": [
-    "pure_removal_manifest_source",
-    "pure_admission_verifier_source",
-    "non_mutating_dry_run_contract_source",
-    "explicit_schema_and_storage_inventory_source",
-    "deferred_tests_and_documentation_source",
-    "static_source_audit"
+    "start_the_resolved_local_database_under_the_final_file_workspace_schema",
+    "verify_historical_receipts_from_an_empty_cache",
+    "use_the_pre_removal_backup_only_in_an_isolated_legacy_recovery_environment"
   ],
   "forbidden": [
-    "register_or_execute_destructive_database_migration",
-    "drop_or_rebuild_current_table_column_trigger_or_index",
-    "delete_or_move_legacy_storage_object",
-    "remove_current_runtime_domain_tool_sdk_api_or_ui_surface",
-    "activate_file_workspace_public_epoch",
-    "issue_quiescence_backup_migration_or_removal_receipt",
-    "remote_git_or_lfs_readback",
+    "mutate_an_unspecified_or_different_database",
+    "delete_any_current_repository_service_git_or_lfs_object",
+    "delete_a_path_not_named_by_the_exact_historical_receipt",
+    "bypass_missing_or_mismatched_prerequisite_receipts",
+    "use_force_manual_override_empty_count_or_current_code_unused_as_authority",
     "provider_hpc_network_or_live_effect",
-    "tests_build_validation_before_all_changes"
+    "restore_legacy_state_into_the_current_runtime"
   ],
-  "hard_stop": "source_only_gate_never_grants_migration_authority_or_physical_deletion"
+  "authority_consumption_rule": "consumed_by_the_exact_completed_receipt_and_not_reusable_for_another_deployment_or_manifest"
 }

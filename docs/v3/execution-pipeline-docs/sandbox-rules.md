@@ -1,42 +1,20 @@
-# Sandbox Rules
+# Executor Workspace Rules
 
-Executor work runs in an isolated persistent sandbox.
+受监督进程是执行隔离，不是共享文件真相。遵守以下规则：
 
-Each executor has a session-scoped working copy. The working copy may persist across turns, but it is not canonical OpenZyme state. Canonical state is created only through artifact registration, code snapshots, execution plans, runs, approvals, events, and workspace projection.
+1. 只在当前 owner/generation workspace root 内读写；拒绝 symlink escape、`..`、ambient path 和
+   其他 member 的 locator。
+2. 使用 native filesystem 和 Git。需要共享时显式形成 clean checkpoint 或调用
+   `workspace.publish`；不要传递 mutable checkout path。
+3. 外部 job 只从 exact revision 提交。不要将 Host path、remote absolute path、raw scheduler id、
+   repository credential 或 LFS endpoint放进 request。
+4. login/file credential 不能调用 scheduler。submission 必须经过
+   `workspace_revision_job.submit` 的 Host admission。
+5. approval、operation id、idempotency key、deadline 或 error code 不得自行改写。pending/unknown
+   effect 时等待 durable owner observation，不循环 replay。
+6. 进程退出不表示 external effect settled，也不表示 task/scientific attempt 完成。
+7. 输出先写当前 workspace，再形成 result revision/publication；不得创建未声明的 placeholder。
+8. secret、credential、private ref、raw backend log 和 owner locator 不写入共享文件或 tool result。
 
-Visible paths:
-
-```text
-/workspace         persistent executor working copy
-/workspace/input   authorized artifacts, read-only view
-/workspace/work    temporary working files
-/workspace/output  registerable outputs
-/workspace/logs    stdout/stderr and SDK operation logs
-/openzyme/control.sock  Host supervisor RPC socket
-```
-
-Rules:
-
-- Use sandbox file/command tools for ordinary CRUD, bash, and Python inside `/workspace`.
-- Every otherwise-valid `sandbox.exec` that reaches source preflight, including `python -c`, package/signature inspection, and diagnostics, snapshots the entire non-empty `/workspace/src` first. Earlier request, workspace, layout, and runtime validation can fail before this preflight. It is not a read-only environment-inspection shortcut. Prefer controlled docs for API facts; when runtime introspection is still needed, author an explicit source file under `/workspace/src` before execution. An empty tree returns `source_snapshot_empty` before `SandboxRun` or process creation.
-- Use `artifacts.materialize` to move catalog inputs into the sandbox.
-- Use `artifacts.snapshot_code` before dry-run / execution so plans and approvals bind to an immutable source digest.
-- Treat the configured sandbox image tag as discovery metadata only. The Host binds the plan to the resolved immutable image id, the exact Pipeline SDK source-tree digest, and the sandbox protocol; it revalidates all three before execution and starts Podman by digest. Image-tag or SDK drift fails before any external operation.
-- AOX blank-world launch additionally runs `aox_sandbox_scientific_backend_probe@2` against that immutable image before pin runner or attempt effects. The probe uses the same copied/mode-normalized, digest-checked SDK mount semantics as product execution and a no-pull/no-network/read-only bounded container; it validates the frozen Biopython/NumPy/Gotoh numeric backend plus installed `aox_exact_calculation_manifest@1` without authorizing runtime installation or fallback. Preflight reruns this actual resolver and its unchanged guard immediately before slot claim/root creation; a config-only comparison is insufficient. It is an AOX capability gate, not a general-purpose `sandbox.exec`, product state, or a reproducible dependency-manifest attestation.
-- Use `artifacts.register` for outputs that should become canonical workspace artifacts.
-- Do not read host repo paths, user home, `.ssh`, database files, or runner config.
-- Do not use SSH, Slurm, or direct network access.
-- Do not register files outside `/workspace/output` unless they were returned by SDK fetch.
-- Use Host-supervised SDK calls for all external provider, local bio-tool, and HPC/runner work. `hpc` is the placement / remote workspace / declarative stage-fetch namespace; domain operations should prefer domain modules such as `bio_tools`, `structure_tools`, and `docking` when available.
-- Do not implement approval or resume logic in pipeline code; approval-gated operations are paused and resumed by the Host supervisor through the control plane.
-- Approval resume only wakes the executor to finish the delegated task result; it does not authorize executor output to be written directly into user chat. The master reports terminal execution results.
-- Inside the sandbox, external SDK calls are Host-supervised blocking calls. The sandbox process waits while the Host handles provider requests, local tool execution, runner submission, polling, and fetched artifacts.
-- A persistent `sandbox.exec` records this runtime identity on its `SandboxRun`. Provider/tool/HPC adapter work must inherit that originating run identity; it cannot manufacture provenance from a workspace default or mutable tag.
-- `Pipeline sandbox completed` means only that the wrapper process reached a successful terminal state. It is internal run metadata, not the tool-level user result; executor-facing status/artifacts must be used to summarize fpocket, Vina, or other SDK outputs.
-- SSH/HPC runner timeouts during an active runner-backed call are classified as `hpc_runner_timeout` with a runner stage, not as sandbox startup, Podman preflight, or tool `nonzero_exit` failures. A runner-issued `SSH_CONNECTION_TIMEOUT` maps to retryable `hpc_runner_timeout`; other runner-issued `SSH_CONNECTION_FAILED` transport failures map to retryable `hpc_runner_unavailable`. `retryable=true` is an agent-visible policy fact, not an automatic replay: the harness does not resubmit an operation or select a local fallback on the agent's behalf.
-- Workspace disk quota is a hard Host boundary. File writes and patches are rejected before replacement when their prospective size would exceed quota. After every command, the Host remeasures the whole workspace; a process or SDK write that crosses the limit ends the run as `resource_exceeded`, marks the workspace `quota_exceeded`, and blocks further execution until cleanup brings it under quota.
-- Use `preprocess.*` for molecular input preparation.
-- Expect dry-run to reject unauthorized paths, missing source snapshots, unsupported imports, unbounded loops, undeclared/invalid outputs, and quota violations.
-- Local sandbox workspace and HPC placement workspace are separate work surfaces. File flow must be declared through `stage_artifact` / `fetch_outputs` or equivalent Host-supervised declarations. The scheduler must not silently switch execution backends or rewrite user intent.
-
-Security is enforced by container, mount, user, network, and resource limits. Python-level restrictions are only an extra guard.
+`workspace.exec` 可执行有界本地命令，但不能绕过 Host/provider/HPC authority。不要把它用作读取
+其他 owner 环境或探测 hidden infrastructure 的捷径。

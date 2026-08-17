@@ -219,7 +219,7 @@ def _receipt_identity_payload(receipt: QuiescenceReceipt) -> dict[str, object]:
         "terminal_proof_digest": receipt.terminal_proof_digest,
         "sqlite_high_watermark": receipt.sqlite_high_watermark,
         "event_high_watermark": receipt.event_high_watermark,
-        "artifact_high_watermark": receipt.artifact_high_watermark,
+        "file_high_watermark": receipt.file_high_watermark,
         "snapshot_digest": receipt.snapshot_digest,
         "issued_at": receipt.issued_at,
     }
@@ -295,7 +295,7 @@ def verify_quiescence_evidence(
         "terminal_proof_digest": receipt.terminal_proof_digest,
         "sqlite_high_watermark": receipt.sqlite_high_watermark,
         "event_high_watermark": receipt.event_high_watermark,
-        "artifact_high_watermark": receipt.artifact_high_watermark,
+        "file_high_watermark": receipt.file_high_watermark,
     }
     for field_name, expected in expected_fields.items():
         if evidence.get(field_name) != expected:
@@ -376,19 +376,19 @@ def verify_quiescence_evidence(
             )
         }
     )
-    recomputed_artifact_high_watermark = canonical_digest(
+    recomputed_file_high_watermark = canonical_digest(
         {
             "catalog": high_watermarks[
-                MutationResourceCategory.ARTIFACT_PUBLICATION.value
+                MutationResourceCategory.FILE_PUBLICATION.value
             ],
-            "external": evidence.get("external_artifact_snapshot"),
+            "external": evidence.get("external_file_snapshot"),
         }
     )
     if (
         recomputed_sqlite_high_watermark != receipt.sqlite_high_watermark
         or high_watermarks[MutationResourceCategory.EVENT_OUTBOX.value]
         != receipt.event_high_watermark
-        or recomputed_artifact_high_watermark != receipt.artifact_high_watermark
+        or recomputed_file_high_watermark != receipt.file_high_watermark
     ):
         raise MutationScopeError(
             "quiescence_high_watermark_digest_mismatch",
@@ -479,7 +479,7 @@ class MutationScopeService:
     repositories: CoreRepositories
     now: Callable[[], str] = _utc_now_iso
     id_factory: Callable[[], str] = lambda: uuid4().hex
-    artifact_snapshot_provider: Callable[[str], Mapping[str, object]] | None = None
+    file_snapshot_provider: Callable[[str], Mapping[str, object]] | None = None
 
     @property
     def _connection(self) -> sqlite3.Connection:
@@ -1087,7 +1087,7 @@ class MutationScopeService:
                 terminal_proof_digest=str(second["terminal_proof_digest"]),
                 sqlite_high_watermark=str(second["sqlite_high_watermark"]),
                 event_high_watermark=str(second["event_high_watermark"]),
-                artifact_high_watermark=str(second["artifact_high_watermark"]),
+                file_high_watermark=str(second["file_high_watermark"]),
                 snapshot_digest=snapshot_digest,
                 receipt_digest="",
                 issued_at=issued_at,
@@ -1396,12 +1396,12 @@ class MutationScopeService:
                 for writer in writers
             ]
         )
-        external_artifact_snapshot = _normalize_snapshot_value(
+        external_file_snapshot = _normalize_snapshot_value(
             (
-                self.artifact_snapshot_provider(scope.session_id)
-                if self.artifact_snapshot_provider is not None
+                self.file_snapshot_provider(scope.session_id)
+                if self.file_snapshot_provider is not None
                 else {
-                    "schema_id": "artifact_catalog_commit_markers@1",
+                    "schema_id": "repository_file_commit_markers@1",
                     "publication_contract": "atomic_bytes_before_catalog_row",
                 }
             )
@@ -1420,12 +1420,12 @@ class MutationScopeService:
             )
             for category in MutationResourceCategory
         }
-        artifact_high_watermark = canonical_digest(
+        file_high_watermark = canonical_digest(
             {
                 "catalog": high_watermarks[
-                    MutationResourceCategory.ARTIFACT_PUBLICATION.value
+                    MutationResourceCategory.FILE_PUBLICATION.value
                 ],
-                "external": external_artifact_snapshot,
+                "external": external_file_snapshot,
             }
         )
         sqlite_high_watermark = canonical_digest(
@@ -1455,10 +1455,10 @@ class MutationScopeService:
             "event_high_watermark": high_watermarks[
                 MutationResourceCategory.EVENT_OUTBOX.value
             ],
-            "artifact_high_watermark": artifact_high_watermark,
+            "file_high_watermark": file_high_watermark,
             "resources": resources,
             "writers": writers,
-            "external_artifact_snapshot": external_artifact_snapshot,
+            "external_file_snapshot": external_file_snapshot,
         }
         if len(canonical_json_bytes(snapshot)) > MAX_QUIESCENCE_SNAPSHOT_BYTES:
             raise MutationScopeError(

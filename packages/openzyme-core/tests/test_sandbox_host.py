@@ -215,7 +215,7 @@ def test_child_mutation_writer_is_derived_from_context_authority() -> None:
 
     with bind_mutation_write_authority(root_authority):
         with context.child_mutation_writer(
-            owner_kind=MutationWriterKind.ARTIFACT_PUBLISHER,
+            owner_kind=MutationWriterKind.FILE_PUBLISHER,
             owner_ref="fetch:declared-outputs",
             process_epoch=7,
         ) as child_authority:
@@ -223,7 +223,7 @@ def test_child_mutation_writer_is_derived_from_context_authority() -> None:
             child = repositories.mutation_writers.get(child_authority.writer_id)
             assert child is not None
             assert child.parent_writer_id == root.writer_id
-            assert child.owner_kind is MutationWriterKind.ARTIFACT_PUBLISHER
+            assert child.owner_kind is MutationWriterKind.FILE_PUBLISHER
 
     retired = repositories.mutation_writers.get(str(child.writer_id))
     assert retired is not None
@@ -233,7 +233,7 @@ def test_child_mutation_writer_is_derived_from_context_authority() -> None:
     with bind_mutation_write_authority(root_authority):
         with pytest.raises(MutationScopeError, match="frozen"):
             with context.child_mutation_writer(
-                owner_kind=MutationWriterKind.ARTIFACT_PUBLISHER,
+                owner_kind=MutationWriterKind.FILE_PUBLISHER,
                 owner_ref="fetch:after-freeze",
                 process_epoch=7,
             ):
@@ -242,29 +242,28 @@ def test_child_mutation_writer_is_derived_from_context_authority() -> None:
 
 def test_production_sandbox_host_path_has_no_weak_scope_escape_hatch() -> None:
     repository_root = Path(__file__).resolve().parents[3]
-    sandbox_runtime = (
+    retired_paths = (
         repository_root
-        / "packages/openzyme-core/src/openzyme_core/sandbox_runtime.py"
+        / "packages/openzyme-core/src/openzyme_core/sandbox_runtime.py",
+        repository_root
+        / "packages/openzyme-engines/src/openzyme_engines/execution.py",
+        repository_root
+        / "apps/openzyme-host-api/src/openzyme_host_api/sandbox_host_gateway.py",
+    )
+    assert all(not path.exists() for path in retired_paths)
+
+    agent_capsule_runtime = (
+        repository_root
+        / "packages/openzyme-core/src/openzyme_core/agent_capsule_runtime.py"
     ).read_text(encoding="utf-8")
     teammates = (
         repository_root / "packages/openzyme-core/src/openzyme_core/teammates.py"
     ).read_text(encoding="utf-8")
-    execution = (
-        repository_root
-        / "packages/openzyme-engines/src/openzyme_engines/execution.py"
-    ).read_text(encoding="utf-8")
-    host_gateway = (
-        repository_root
-        / "apps/openzyme-host-api/src/openzyme_host_api/sandbox_host_gateway.py"
-    ).read_text(encoding="utf-8")
 
-    assert "SandboxHpcFetchExecutor" not in sandbox_runtime
-    assert "Callable[...," not in sandbox_runtime
-    assert "sandbox_process_repository_scope_factory" not in execution
-    assert "repositories: Any | None" not in execution
-    assert "repository_scope_factory" not in execution
-    assert 'getattr(self.engine, "repository_scope_factory"' not in host_gateway
-    assert 'hasattr(self.engine, "repository_scope_factory")' not in host_gateway
+    assert "SandboxHpcFetchExecutor" not in agent_capsule_runtime
+    assert "sandbox_process_repository_scope_factory" not in agent_capsule_runtime
+    assert "repositories: Any | None" not in agent_capsule_runtime
+    assert "repository_scope_factory" not in agent_capsule_runtime
     assert 'getattr(execution_engine, "execute_sandbox_adapter_operation"' not in teammates
     assert 'getattr(execution_engine, "fetch_sandbox_hpc_outputs"' not in teammates
 

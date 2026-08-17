@@ -54,9 +54,9 @@
 
 ## 7. Focused tests、文档与 C4 验收 receipt
 
-- [ ] 7.1 在全部连续 change 组合实现完成后运行domain/core/Host/native-Git focused suites，覆盖whole-clean-commit admission、C4-owned intent × lease × execution完整组合、automatic `ControlledOperationExecution`、pre/post-dispatch revoke、无逐publication approval、immutable ref/receipt、effect certainty、explicit fetch和no-auto-merge/retry。
+- [x] 7.1 在全部连续 change 组合实现完成后运行domain/core/Host/native-Git focused suites，覆盖whole-clean-commit admission、C4-owned intent × lease × execution完整组合、automatic `ControlledOperationExecution`、pre/post-dispatch revoke、无逐publication approval、immutable ref/receipt、effect certainty、explicit fetch和no-auto-merge/retry。
 - [x] 7.2 更新 `docs/OpenZyme架构设计.md`、`docs/v3/01-target-architecture.md`、`docs/v3/02-control-plane.md`、`docs/v3/04-public-interfaces.md`、`docs/v3/05-agent-runtime.md` 与execution/reliability文档，记录publication shared-truth和explicit sync边界。
-- [ ] 7.3 在最终统一验收阶段运行 `DO_NOT_TRACK=1 openspec validate publish-and-sync-workspace-revisions --type change --strict --no-interactive` 并保存通过结果。
-- [ ] 7.4 在最终统一验收阶段运行 `./scripts/check-mainline.sh`，确认不得以auto-merge、push retry、manual approval、mutable team branch、private-ref scan或live external service绕过失败。
-- [ ] 7.5 在最终组合源码上审计Git diff、migration、tool/API schemas、approval paths、ref ACL、projection与task/protocol transitions，确认没有silent publication、upstream effect、artifact fallback或automatic workflow completion。
-- [ ] 7.6 最终统一验收全部通过后生成 immutable `workspace_publication_acceptance@1` change receipt，绑定正式C0--C3 receipts、最终source revision、C4-owned authority-matrix proof、code/schema/policy digests、focused/two-agent/recovery tests、docs、strict OpenSpec、mainline、immutable ref/receipt proof与final scope audit；source-only gate不得升级为该receipt。
+- [x] 7.3 在最终统一验收阶段运行 `DO_NOT_TRACK=1 openspec validate publish-and-sync-workspace-revisions --type change --strict --no-interactive` 并保存通过结果。
+- [x] 7.4 在最终统一验收阶段运行 `./scripts/check-mainline.sh`，确认不得以auto-merge、push retry、manual approval、mutable team branch、private-ref scan或live external service绕过失败。
+- [x] 7.5 在最终组合源码上审计Git diff、migration、tool/API schemas、approval paths、ref ACL、projection与task/protocol transitions，确认没有silent publication、upstream effect、artifact fallback或automatic workflow completion。
+- [x] 7.6 最终统一验收全部通过后生成 immutable `workspace_publication_acceptance@1` change receipt，绑定正式C0--C3 receipts、最终source revision、C4-owned authority-matrix proof、code/schema/policy digests、focused/two-agent/recovery tests、docs、strict OpenSpec、mainline、immutable ref/receipt proof与final scope audit；source-only gate不得升级为该receipt。

@@ -732,7 +732,6 @@ class WorkspacePublicationService:
             lease_expires_at=None,
             result_handle_ref=f"publication:{intent.publication_id}",
             result_digest=intent.canonical_digest,
-            artifact_set_digest=intent.manifest.manifest_digest,
             updated_at=now,
             terminal_at=now,
         )

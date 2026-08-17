@@ -18,10 +18,6 @@ from mcp_hpc_runner.config import SshTransportMode
 from mcp_hpc_runner.config import SshTransportPolicy
 from mcp_hpc_runner.config import load_config
 from mcp_hpc_runner.remote import CommandResult
-from mcp_hpc_runner.remote import wrap_ssh
-from mcp_hpc_runner.server import MCPHpcServer
-from mcp_hpc_runner.staging import StagingManager
-from mcp_hpc_runner.store import ArtifactStore
 from mcp_hpc_runner.transport import SshChannelLimitError
 from mcp_hpc_runner.transport import SshCommandCompiler
 from mcp_hpc_runner.transport import SshControlRoot
@@ -120,7 +116,7 @@ def _config(
     return RunnerConfig(
         cluster=cluster
         or ClusterConfig(ssh_host="hpc-login", ssh_user="alice"),
-        execution=ExecutionConfig(artifact_root=str(root.parent / "artifacts")),
+        execution=ExecutionConfig(),
         ssh_transport=policy
         or SshTransportPolicy(
             mode=SshTransportMode.CONTROLMASTER_V1,
@@ -163,7 +159,6 @@ def test_load_config_resolves_transport_and_digest_authority(tmp_path: Path) -> 
                 'credential_policy_id = "cred-a"',
                 'host_key_policy_id = "known-hosts-a"',
                 "[execution]",
-                'artifact_root = "artifacts"',
                 "[ssh_transport]",
                 'mode = "controlmaster_v1"',
                 "control_persist_seconds = 120",
@@ -214,42 +209,6 @@ def test_load_config_resolves_transport_and_digest_authority(tmp_path: Path) -> 
     )
     with pytest.raises(ValueError, match="runner contains unsupported fields"):
         load_config(config_path)
-
-
-def test_legacy_compiler_preserves_exact_ssh_scp_and_rsync_argv(
-    tmp_path: Path,
-) -> None:
-    compiler = SshCommandCompiler.legacy("alice@hpc-login")
-    local = tmp_path / "input.txt"
-    local.write_text("x", encoding="utf-8")
-    expected_options = [
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "ConnectTimeout=15",
-        "-o",
-        "ServerAliveInterval=30",
-        "-o",
-        "ServerAliveCountMax=2",
-    ]
-
-    assert wrap_ssh("alice@hpc-login", ["pwd"]) == [
-        "ssh",
-        *expected_options,
-        "alice@hpc-login",
-        "--",
-        "pwd",
-    ]
-    assert compiler.scp_upload(local, "mcp_runs/r1/input.txt", recursive=False) == [
-        "scp",
-        *expected_options,
-        str(local),
-        "alice@hpc-login:mcp_runs/r1/input.txt",
-    ]
-    assert compiler.rsync_upload(local, "mcp_runs/r1/input.txt")[4] == (
-        "ssh -o BatchMode=yes -o ConnectTimeout=15 "
-        "-o ServerAliveInterval=30 -o ServerAliveCountMax=2"
-    )
 
 
 def test_controlmaster_compiler_shares_one_control_path_without_stateful_shell(
@@ -691,107 +650,3 @@ def test_failed_retire_is_isolated_and_retried_during_shutdown() -> None:
         assert report["clean"] is True
         assert report["closed_generations"] == [1, 2]
         assert list(root.glob("*.owner.json")) == []
-
-
-@pytest.mark.parametrize(
-    "override",
-    [
-        {"ssh_target": "other-host"},
-        {"metadata": {"transport_policy": {"mode": "disabled"}}},
-        {"metadata": {"nested": [{"ControlPath": "/tmp/foreign"}]}},
-        {"metadata": {"connect-attempts": 99}},
-    ],
-)
-def test_server_rejects_all_caller_transport_overrides_before_run_allocation(
-    tmp_path: Path,
-    override: dict[str, object],
-) -> None:
-    config_path = tmp_path / "runner.toml"
-    config_path.write_text(
-        "\n".join(
-            [
-                "[execution]",
-                f'artifact_root = "{tmp_path / "artifacts"}"',
-                "[runner]",
-                f'transport_control_root = "{tmp_path / "control"}"',
-            ]
-        ),
-        encoding="utf-8",
-    )
-    server = MCPHpcServer(config_path)
-    before = sorted(
-        path.relative_to(server.store.root).as_posix()
-        for path in server.store.root.rglob("*")
-    )
-    raw: dict[str, object] = {
-        "name": "safe-run",
-        "stage": "execution",
-        "command": ["true"],
-        **override,
-    }
-    try:
-        with pytest.raises(ValueError, match="transport field"):
-            server._public_runspec(raw)  # noqa: SLF001
-        after = sorted(
-            path.relative_to(server.store.root).as_posix()
-            for path in server.store.root.rglob("*")
-        )
-        assert after == before
-    finally:
-        server.close()
-
-
-def test_server_injects_one_lifespan_transport_manager_everywhere(
-    tmp_path: Path,
-) -> None:
-    config_path = tmp_path / "runner.toml"
-    config_path.write_text(
-        "\n".join(
-            [
-                "[execution]",
-                f'artifact_root = "{tmp_path / "artifacts"}"',
-                "[runner]",
-                f'transport_control_root = "{tmp_path / "control"}"',
-            ]
-        ),
-        encoding="utf-8",
-    )
-    server = MCPHpcServer(config_path)
-    try:
-        assert server.staging.transport_manager is server.transport_manager
-        assert server.ssh_runner.transport_manager is server.transport_manager
-        assert server.slurm_runner.transport_manager is server.transport_manager
-        assert server.transport_manager.command_runner is server.command_runner
-    finally:
-        server.close()
-
-
-def test_staging_uses_the_same_central_compiler_for_all_transfer_families(
-    tmp_path: Path,
-) -> None:
-    config = RunnerConfig(
-        cluster=ClusterConfig(ssh_host="hpc-login", ssh_user="alice"),
-        execution=ExecutionConfig(artifact_root=str(tmp_path / "artifacts")),
-    )
-    runner = RecordingRunner()
-    staging = StagingManager(
-        config,
-        ArtifactStore(config.artifact_root),
-        runner,  # type: ignore[arg-type]
-    )
-    local = tmp_path / "input.txt"
-    local.write_text("x", encoding="utf-8")
-
-    ssh = staging.ssh_compiler.ssh(["true"])
-    scp = staging.build_upload_command(local, "mcp_runs/r/input.txt", False)
-    rsync = staging.build_upload_command(local, "mcp_runs/r/input.txt", True)
-
-    for option in (
-        "BatchMode=yes",
-        "ConnectTimeout=15",
-        "ServerAliveInterval=30",
-        "ServerAliveCountMax=2",
-    ):
-        assert option in ssh
-        assert option in scp
-        assert option in rsync[4]

@@ -9,6 +9,9 @@ from openzyme_domain import ExecutorOwnerWorkspaceView
 from openzyme_domain import FileWorkspacePublicProjection
 
 from .repositories import CoreRepositories
+from .conversation import build_conversation_projection
+from .lane_manager import LaneManager
+from .task_board import TaskBoardService
 
 
 def file_workspace_public_schema_bundle_digest() -> str:
@@ -68,17 +71,7 @@ class FileWorkspaceProjectionBuilder:
             for item in workspaces
         )
         workspace_status = tuple(
-            {
-                "workspace_id": item.workspace_id,
-                "workspace_generation": item.workspace_generation,
-                "head_commit": item.head_commit,
-                "head_tree": item.head_tree,
-                "status": item.status.value,
-                "blocker_code": (
-                    None if item.blocker_code is None else item.blocker_code.value
-                ),
-            }
-            for item in workspaces
+            self._workspace_status(item) for item in workspaces
         )
         private_revisions = tuple(
             {
@@ -161,12 +154,11 @@ class FileWorkspaceProjectionBuilder:
             if handle is not None:
                 external_jobs.append(
                     {
-                        "handle_id": handle.handle_id,
                         "execution_id": handle.execution_id,
                         "operation_id": handle.operation_id,
-                        "workspace_id": handle.workspace_id,
                         "source_commit": handle.source_commit,
-                        "backend": handle.backend.value,
+                        "lifecycle_state": execution.lifecycle_state.value,
+                        "effect_certainty": execution.effect_certainty.value,
                         "accepted_at": handle.accepted_at,
                     }
                 )
@@ -207,10 +199,88 @@ class FileWorkspaceProjectionBuilder:
             subject_agent_member_id=subject_agent_member_id,
             leases=leases,
         )
+        conversation = tuple(
+            entry.to_dict()
+            for entry in build_conversation_projection(self.repositories, session_id)
+        )
+        task_board = TaskBoardService(self.repositories).build_projection(
+            session_id
+        ).to_dict()
+        lane_board = LaneManager(self.repositories).build_projection(session_id).to_dict()
+        agents = tuple(
+            {
+                "member_id": item.member_id,
+                "agent_id": item.agent_id,
+                "name": item.name,
+                "role": item.role,
+                "status": item.status.value,
+                "task_id": item.task_id,
+                "lane_id": item.lane_id,
+                "updated_at": item.updated_at,
+            }
+            for item in self.repositories.agents.list_by_session(session_id)
+        )
+        pending_approvals = tuple(
+            {
+                "approval_id": item.approval_id,
+                "session_id": item.session_id,
+                "task_id": item.task_id,
+                "lane_id": item.lane_id,
+                "kind": item.kind,
+                "status": item.status.value,
+                "requested_action": item.requested_action,
+                "created_at": item.created_at,
+                "resolved_at": item.resolved_at,
+            }
+            for item in self.repositories.approvals.list_pending_by_session(session_id)
+        )
+        allowed_event_prefixes = (
+            "conversation.",
+            "task.",
+            "lane.",
+            "agent.",
+            "protocol.",
+            "workspace.",
+            "publication.",
+            "report.",
+            "scientific.",
+            "external_job.",
+            "runtime.",
+            "failure.",
+        )
+        activity_feed = tuple(
+            {
+                "event_id": item.event_id,
+                "event_type": item.event_type,
+                "created_at": item.created_at,
+            }
+            for item in self.repositories.durable_events.list_by_session(
+                session_id,
+                after_cursor=0,
+                limit=200,
+            )
+            if item.event_type.startswith(allowed_event_prefixes)
+        )
+        failure_observations = tuple(
+            {
+                "failure_id": item.failure_id,
+                "failure_class": item.failure_class.value,
+                "recoverability": item.recoverability.value,
+                "effect_certainty": item.effect_certainty.value,
+                "safe_summary": item.safe_summary,
+                "created_at": item.created_at,
+            }
+            for item in self.repositories.failure_observations.list_by_session(session_id)
+        )
         return FileWorkspacePublicProjection(
             session={
                 "session_id": session.session_id,
+                "project_id": session.project_id,
+                "title": session.title,
+                "objective": session.objective,
                 "status": session.status.value,
+                "created_at": session.created_at,
+                "updated_at": session.updated_at,
                 "repository_binding_status": session.repository_binding_status.value,
             },
             repository_binding=repository_binding,
@@ -224,9 +294,105 @@ class FileWorkspaceProjectionBuilder:
             external_job_results=tuple(external_results),
             capability_leases=capability_leases,
             executor_owner_workspace=owner_view,
+            conversation=conversation,
+            task_board=task_board,
+            lane_board=lane_board,
+            agents=agents,
+            pending_approvals=pending_approvals,
+            activity_feed=activity_feed,
+            failure_observations=failure_observations,
             tool_catalog_digest=self.tool_catalog_digest,
             schema_bundle_digest=file_workspace_public_schema_bundle_digest(),
         )
+
+    def _workspace_status(self, workspace: object) -> dict[str, object]:
+        workspace_id = str(getattr(workspace, "workspace_id"))
+        observation = self.repositories.agent_workspace_state_observations.latest_for_workspace(
+            workspace_id
+        )
+        return {
+            "workspace_id": workspace_id,
+            "workspace_generation": int(getattr(workspace, "workspace_generation")),
+            "head_commit": (
+                getattr(workspace, "head_commit")
+                if observation is None
+                else observation.head_commit
+            ),
+            "head_tree": (
+                getattr(workspace, "head_tree")
+                if observation is None
+                else observation.head_tree
+            ),
+            "status": getattr(workspace, "status").value,
+            "dirty_state": "unknown" if observation is None else observation.dirty_state.value,
+            "staged": None if observation is None else observation.staged,
+            "unstaged": None if observation is None else observation.unstaged,
+            "untracked": None if observation is None else observation.untracked,
+            "changed_paths": (
+                [] if observation is None else list(observation.changed_paths[:100])
+            ),
+            "changed_paths_truncated": (
+                False
+                if observation is None
+                else observation.changed_paths_truncated
+                or len(observation.changed_paths) > 100
+            ),
+            "changed_paths_continuation": (
+                None
+                if observation is None or len(observation.changed_paths) <= 100
+                else f"{observation.observation_id}:100"
+            ),
+            "observed_at": None if observation is None else observation.observed_at,
+            "blocker_code": (
+                None
+                if getattr(workspace, "blocker_code") is None
+                else getattr(workspace, "blocker_code").value
+            ),
+        }
+
+    def build_changed_paths_page(
+        self,
+        *,
+        session_id: str,
+        workspace_id: str,
+        continuation: str,
+    ) -> dict[str, object]:
+        observation_id, separator, offset_text = continuation.rpartition(":")
+        if not separator or not offset_text.isdigit():
+            raise ValueError("changed-path continuation is invalid")
+        offset = int(offset_text)
+        if offset < 100 or offset % 100:
+            raise ValueError("changed-path continuation offset is invalid")
+        workspace = self.repositories.agent_git_workspaces.get(workspace_id)
+        observation = self.repositories.agent_workspace_state_observations.get(
+            observation_id
+        )
+        if (
+            workspace is None
+            or observation is None
+            or workspace.session_id != session_id
+            or observation.session_id != session_id
+            or observation.workspace_id != workspace_id
+            or observation.workspace_generation != workspace.workspace_generation
+        ):
+            raise ValueError("changed-path continuation identity is stale")
+        paths = observation.changed_paths[offset : offset + 100]
+        next_offset = offset + len(paths)
+        return {
+            "schema_version": "workspace_changed_paths_page@1",
+            "workspace_id": workspace_id,
+            "workspace_generation": observation.workspace_generation,
+            "observation_id": observation.observation_id,
+            "head_commit": observation.head_commit,
+            "head_tree": observation.head_tree,
+            "paths": list(paths),
+            "continuation": (
+                f"{observation.observation_id}:{next_offset}"
+                if next_offset < len(observation.changed_paths)
+                else None
+            ),
+            "source_truncated": observation.changed_paths_truncated,
+        }
 
     def _owner_workspace_view(
         self,
@@ -236,6 +402,16 @@ class FileWorkspaceProjectionBuilder:
         leases: list[object],
     ) -> ExecutorOwnerWorkspaceView | None:
         if subject_agent_member_id is None:
+            return None
+        subject = next(
+            (
+                item
+                for item in self.repositories.agents.list_by_session(session_id)
+                if item.member_id == subject_agent_member_id
+            ),
+            None,
+        )
+        if subject is None:
             return None
         owned = tuple(
             item
@@ -249,6 +425,8 @@ class FileWorkspaceProjectionBuilder:
         if not owned:
             return None
         workspace = owned[0]
+        if workspace.executor_agent_id != subject.agent_id:
+            return None
         matching_lease = next(
             (
                 item

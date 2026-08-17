@@ -215,11 +215,11 @@ class WorkspacePublicationExecutionRepository:
                 retry_eligibility, dispatch_generation, state_version,
                 lease_owner, lease_token, lease_expires_at, fencing_token,
                 backend_handle_ref, result_handle_ref, result_digest,
-                artifact_set_digest, error_code, safe_error_summary,
+                error_code, safe_error_summary,
                 created_at, updated_at, terminal_at
             ) VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             """,
             (
@@ -253,7 +253,6 @@ class WorkspacePublicationExecutionRepository:
                 execution.backend_handle_ref,
                 execution.result_handle_ref,
                 execution.result_digest,
-                execution.artifact_set_digest,
                 execution.error_code,
                 execution.safe_error_summary,
                 execution.created_at,
@@ -318,7 +317,7 @@ class WorkspacePublicationExecutionRepository:
                 retry_eligibility = ?, dispatch_generation = ?, state_version = ?,
                 lease_owner = ?, lease_token = ?, lease_expires_at = ?,
                 fencing_token = ?, backend_handle_ref = ?, result_handle_ref = ?,
-                result_digest = ?, artifact_set_digest = ?, error_code = ?,
+                result_digest = ?, error_code = ?,
                 safe_error_summary = ?, updated_at = ?, terminal_at = ?
             WHERE {where}
             """,
@@ -336,7 +335,6 @@ class WorkspacePublicationExecutionRepository:
                 execution.backend_handle_ref,
                 execution.result_handle_ref,
                 execution.result_digest,
-                execution.artifact_set_digest,
                 execution.error_code,
                 execution.safe_error_summary,
                 execution.updated_at,
@@ -390,7 +388,6 @@ class WorkspacePublicationExecutionRepository:
             backend_handle_ref=row["backend_handle_ref"],
             result_handle_ref=row["result_handle_ref"],
             result_digest=row["result_digest"],
-            artifact_set_digest=row["artifact_set_digest"],
             error_code=row["error_code"],
             safe_error_summary=row["safe_error_summary"],
             created_at=row["created_at"],

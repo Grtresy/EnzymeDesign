@@ -593,7 +593,7 @@ class ClarifyThenCompleteRunner:
         )
 
 
-class CompletedWithArtifactRunner:
+class CompletedWithFileRunner:
     def run(
         self,
         *,
@@ -612,7 +612,7 @@ class CompletedWithArtifactRunner:
             summary="Research completed with one downloaded structure.",
             evidence_items=[],
             unresolved_gaps=[],
-            artifacts=[
+            files=[
                 {
                     "external_id": "1ABC",
                     "provider": "rcsb_pdb",
@@ -910,9 +910,6 @@ def test_native_deep_research_runner_returns_dossier_without_control_plane_copy(
     assert repositories.research_evidence.list_by_invocation(
         session.session_id, "inv_graph_native"
     ) == []
-    assert repositories.artifacts.list_by_invocation(
-        session.session_id, "inv_graph_native"
-    ) == []
     assert started.invocation.output_ref is None
 
 
@@ -1033,9 +1030,6 @@ def test_deep_research_engine_does_not_persist_duplicate_research_content() -> N
     assert repositories.research_gaps.list_by_invocation(
         session.session_id, "inv_001"
     ) == []
-    assert repositories.artifacts.list_by_invocation(
-        session.session_id, "inv_001"
-    ) == []
     assert started.invocation.output_ref is None
 
 
@@ -1123,7 +1117,6 @@ def test_deep_research_tools_register_with_tool_registry() -> None:
     assert payload["invocation_id"].startswith("inv_")
     assert payload["engine_status"] == "succeeded"
     assert len(payload["workspace_files"]) == 5
-    assert payload["artifact_alias_created"] is False
     assert payload["engine_document_body_created"] is False
     assert set(context.workspace_files) == {
         f"research/{payload['invocation_id']}/{filename}"
@@ -1227,7 +1220,6 @@ def test_deep_research_dossier_requires_workspace_or_published_ref() -> None:
     assert len(start_payload["workspace_files"]) == 5
     assert status_payload["status"] == "succeeded"
     assert status_payload["engine_status"] == "succeeded"
-    assert status_payload["artifact_alias_created"] is False
     assert status_payload["legacy_research_content_read"] is False
     assert status_payload["workspace_layout"][-1].endswith("/dossier.json")
 
@@ -1251,19 +1243,15 @@ def test_deep_research_engine_tool_descriptors_derive_from_registered_runtimes()
     assert start.description == "Start deep research for the currently assigned task."
 
 
-def test_deep_research_engine_rejects_artifact_era_dossier_manifests() -> None:
+def test_deep_research_engine_rejects_file_era_dossier_manifests() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
-    engine = DeepResearchEngine(repositories, CompletedWithArtifactRunner())
+    engine = DeepResearchEngine(repositories, CompletedWithFileRunner())
 
-    with pytest.raises(RuntimeError, match="artifact-era file manifests"):
+    with pytest.raises(RuntimeError, match="unstored file manifests"):
         engine.start_research(
             session_id=session.session_id,
             task_id="task_001",
             brief="download a supporting structure",
-            invocation_id="inv_artifacts",
+            invocation_id="inv_files",
         )
-
-    assert repositories.artifacts.list_by_invocation(
-        session.session_id, "inv_artifacts"
-    ) == []

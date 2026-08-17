@@ -228,7 +228,7 @@ def test_writer_resource_category_is_closed_and_public_projection_is_redacted() 
     )
     writer = service.register_writer(
         scope_id=scope.scope_id,
-        owner_kind=MutationWriterKind.ARTIFACT_PUBLISHER,
+        owner_kind=MutationWriterKind.FILE_PUBLISHER,
         owner_ref="/private/host/path?token=secret",
         process_epoch=99,
         trusted_root=True,
@@ -237,7 +237,7 @@ def test_writer_resource_category_is_closed_and_public_projection_is_redacted() 
     with repositories.mutation_write_authority(authority):
         repositories.assert_mutation_write_authority(
             session_id=session.session_id,
-            resource_category=MutationResourceCategory.ARTIFACT_PUBLICATION,
+            resource_category=MutationResourceCategory.FILE_PUBLICATION,
         )
         with pytest.raises(MutationWriteFencingError, match="resource authority"):
             repositories.assert_mutation_write_authority(
@@ -250,7 +250,7 @@ def test_writer_resource_category_is_closed_and_public_projection_is_redacted() 
     assert "secret" not in rendered
     assert "process_epoch" not in rendered
     assert "fencing" not in rendered
-    assert projection["active_writer_counts"] == {"artifact_publisher": 1}
+    assert projection["active_writer_counts"] == {"file_publisher": 1}
 
 
 def test_nested_retirement_and_scope_closure_never_change_task_truth() -> None:
@@ -319,18 +319,18 @@ def test_returned_parent_stays_retiring_until_exact_child_epoch_retires() -> Non
     assert repositories.mutation_writers.get(root.writer_id).state.value == "retired"
 
 
-def test_unstable_artifact_snapshot_and_incomplete_guard_withhold_receipt() -> None:
+def test_unstable_file_snapshot_and_incomplete_guard_withhold_receipt() -> None:
     connection, repositories, session = _repositories()
     counter = {"value": 0}
 
-    def changing_artifacts(_: str) -> dict[str, int]:
+    def changing_files(_: str) -> dict[str, int]:
         counter["value"] += 1
         return {"generation": counter["value"]}
 
     service = MutationScopeService(
         repositories,
         now=lambda: NOW,
-        artifact_snapshot_provider=changing_artifacts,
+        file_snapshot_provider=changing_files,
     )
     scope = service.open_scope(
         session_id=session.session_id,

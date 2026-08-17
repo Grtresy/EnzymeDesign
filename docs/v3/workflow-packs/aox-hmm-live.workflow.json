@@ -1,33 +1,34 @@
 {
   "workflow_id": "aox-hmm-live",
   "version": "2.0.0",
-  "content_sha256": "sha256:cdd77451f83c39f1a39fd0a2d43b682e43519be17d7b47d5c2cf21d6869766fa",
-  "title": "AOX/HMM live cutover",
-  "summary": "Digest-pinned exact-14 AOX/HMM cutover with split model/coordinate references, HMMER-to-UniProt identity joins, artifact-derived healthy-empty closure, and scientific fail-closed acceptance.",
+  "content_sha256": "sha256:2a1b2da3761ee01b2a905c8042b400851bb73cd02051b5d886f60e48f231fd7f",
+  "title": "AOX/HMM file-first scientific workflow",
+  "summary": "Digest-pinned AOX/HMM workflow over immutable revisions, exact producer adoptions, typed healthy-empty closure, and fail-closed scientific acceptance.",
   "capability_requirements": [
     "role:executor",
     "engine:execution"
   ],
   "tool_requirements": [
     "docs.read",
-    "sandbox.workspace.status",
-    "sandbox.exec"
+    "workspace.status",
+    "workspace.exec",
+    "workspace.publish"
   ],
   "knowledge_refs": [
     {
       "doc_id": "aox-hmm-live",
       "version": "v3",
-      "content_sha256": "sha256:7955c4056e39c32d187b4d0d9fc8c7e72f3399d7d762b26b1486f39c64752c7e"
+      "content_sha256": "sha256:185a0f099c7349988b923c8b0f10e6333af225ce29538bac8d699526ffd96b10"
     },
     {
       "doc_id": "aox-motif-rule-score-v1",
       "version": "v3",
-      "content_sha256": "sha256:9c6f1f62a77dcade8e8b24c4e23af391e3b308a96bbac43783b8dbf4f7c2d376"
+      "content_sha256": "sha256:2e5c9e08f4750d0cc98c07aba0bc96ef5611ee32812977749d46c65c2ddc4570"
     },
     {
       "doc_id": "aox-sequence-similarity-v1",
       "version": "v3",
-      "content_sha256": "sha256:b003cd392e851b6ecfaf9a5c46d52a58b84f962dfca7476b878c08aaaa712a0f"
+      "content_sha256": "sha256:0efec4c10df2896186928fab621b28382fc0a81f1a371a2226d02a3f21787733"
     }
   ]
 }

@@ -103,7 +103,7 @@ def _seed_session(repositories: CoreRepositories) -> Session:
             kind="tool_use",
             requested_action="Approve research step",
             status=ApprovalRequestStatus.PENDING,
-            request_ref="artifact://approvals/appr_001.json",
+            request_ref="file://approvals/appr_001.json",
             resolution_ref=None,
             created_at="2026-04-17T11:00:05+00:00",
         )
@@ -118,7 +118,7 @@ def _seed_session(repositories: CoreRepositories) -> Session:
             recipient_kind=InboxParticipantKind.AGENT,
             message_type="task_update",
             correlation_id="corr_001",
-            payload_ref="artifact://messages/msg_001.json",
+            payload_ref="file://messages/msg_001.json",
             status=InboxStatus.DELIVERED,
             created_at="2026-04-17T11:00:06+00:00",
         )

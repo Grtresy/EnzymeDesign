@@ -278,7 +278,7 @@ def test_operator_evidence_cannot_target_product_checkout_state(tmp_path: Path) 
     with pytest.raises(TestGateRunnerError, match="outside the checkout"):
         validate_new_output_root(
             REPOSITORY_ROOT,
-            REPOSITORY_ROOT / "artifacts" / "test-gate-receipt",
+            REPOSITORY_ROOT / "evidence" / "test-gate-receipt",
         )
     assert validate_new_output_root(
         REPOSITORY_ROOT,

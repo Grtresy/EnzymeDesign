@@ -9,6 +9,10 @@ import pytest
 from openzyme_host_cli.client import HostApiClient
 from openzyme_host_cli.cli import _build_parser
 from openzyme_host_cli.cli import run_cli
+from openzyme_host_cli.file_workspace_release import FILE_WORKSPACE_CLI_BUILD_DIGEST
+from openzyme_host_cli.file_workspace_release import FILE_WORKSPACE_PUBLIC_SCHEMA
+from openzyme_host_cli.file_workspace_release import FILE_WORKSPACE_SCHEMA_BUNDLE_DIGEST
+from openzyme_host_cli.file_workspace_release import FILE_WORKSPACE_TOOL_CATALOG_DIGEST
 from openzyme_host_cli.receipts import PUBLIC_API_RECEIPT_V2_FIELDS
 from openzyme_host_cli.receipts import PublicReceiptError
 from openzyme_host_cli.receipts import append_public_api_receipt
@@ -37,16 +41,6 @@ class FakeSession:
                         "control_plane": {"status": "ready", "details": {}},
                         "model": {"status": "unavailable", "details": {}},
                     },
-                },
-            )
-        if url.startswith("/v3/mutation-operations/observe?"):
-            return FakeResponse(
-                200,
-                {
-                    "schema_id": "host_mutation_operation_observation@1",
-                    "status": "unproven",
-                    "query_read_only": True,
-                    "resume_applicable": False,
                 },
             )
         if url.startswith("/v3/sessions/") and url.endswith("/workspace"):
@@ -218,51 +212,11 @@ def test_client_rejects_historical_chain_before_http(tmp_path: Path) -> None:
     assert session.calls == []
 
 
-def test_cli_encodes_exact_mutation_observation_identity() -> None:
-    stdout = StringIO()
-    stderr = StringIO()
-    session = FakeSession()
-    request_digest = "sha256:" + "a" * 64
-
-    exit_code = run_cli(
-        [
-            "--session-id",
-            "sess observe/1",
-            "--format",
-            "json",
-            "operations",
-            "observe",
-            "--command-type",
-            "task.update",
-            "--scope-ref",
-            "task:task observe/1",
-            "--idempotency-key",
-            "observe:key/1",
-            "--request-digest",
-            request_digest,
-        ],
-        session=session,
-        stdout=stdout,
-        stderr=stderr,
-    )
-
-    assert exit_code == 0, stderr.getvalue()
-    assert session.calls == [
-        (
-            "GET",
-            "/v3/mutation-operations/observe?"
-            "session_id=sess+observe%2F1&command_type=task.update&"
-            "scope_ref=task%3Atask+observe%2F1&"
-            "idempotency_key=observe%3Akey%2F1&"
-            f"request_digest=sha256%3A{'a' * 64}",
-            None,
-        )
-    ]
-    assert json.loads(stdout.getvalue())["query_read_only"] is True
-
-
 def build_v3_workspace() -> dict[str, object]:
     return {
+        "schema_version": FILE_WORKSPACE_PUBLIC_SCHEMA,
+        "tool_catalog_digest": FILE_WORKSPACE_TOOL_CATALOG_DIGEST,
+        "schema_bundle_digest": FILE_WORKSPACE_SCHEMA_BUNDLE_DIGEST,
         "session": {
             "session_id": "sess_001",
             "project_id": "proj_001",
@@ -299,7 +253,7 @@ def test_cli_uses_env_defaults_and_wires_session_create(monkeypatch) -> None:
     session = FakeSession()
 
     exit_code = run_cli(
-        ["sessions", "create", "--objective", "Design an artifact workspace"],
+        ["sessions", "create", "--objective", "Design a file workspace"],
         session=session,
         stdout=stdout,
         stderr=stderr,
@@ -309,7 +263,7 @@ def test_cli_uses_env_defaults_and_wires_session_create(monkeypatch) -> None:
     assert session.calls[-1] == (
         "POST",
         "/v3/sessions",
-        {"project_id": "proj_001", "objective": "Design an artifact workspace"},
+        {"project_id": "proj_001", "objective": "Design a file workspace"},
     )
     assert "Session sess_001" in stdout.getvalue()
     assert session.last_headers["Authorization"] == "Bearer cli-secret-token"
@@ -635,35 +589,6 @@ def test_cli_seals_sanitized_non_2xx_public_response(tmp_path: Path) -> None:
     assert "sk-private" not in stderr.getvalue()
 
 
-def test_cli_reaches_exact_aox_reference_fault_capability() -> None:
-    session = FakeSession()
-
-    exit_code = run_cli(
-        [
-            "--session-id",
-            "sess_001",
-            "scientific",
-            "inject-aox-reference-fault",
-            "--attempt-id",
-            "attempt_fault",
-            "--artifact-id",
-            "artifact_ref21",
-            "--idempotency-key",
-            "fault-once",
-        ],
-        session=session,
-        stdout=StringIO(),
-        stderr=StringIO(),
-    )
-
-    assert exit_code == 0
-    assert session.calls[-1] == (
-        "POST",
-        "/v3/sessions/sess_001/aox-fault-injections/reference-byte-flip",
-        {"attempt_id": "attempt_fault", "artifact_id": "artifact_ref21"},
-    )
-
-
 def test_cli_reaches_public_events_and_pending_approvals() -> None:
     session = FakeSession()
 
@@ -678,7 +603,12 @@ def test_cli_reaches_public_events_and_pending_approvals() -> None:
     )
     assert session.calls[-1] == (
         "GET",
-        "/v3/sessions/sess_001/events?replay=1&after_cursor=0",
+        "/v3/sessions/sess_001/events?replay=1&after_cursor=0"
+        f"&workspace_contract={FILE_WORKSPACE_PUBLIC_SCHEMA}"
+        f"&tool_catalog_digest={FILE_WORKSPACE_TOOL_CATALOG_DIGEST}"
+        f"&schema_bundle_digest={FILE_WORKSPACE_SCHEMA_BUNDLE_DIGEST}"
+        "&client_kind=host-cli"
+        f"&client_build_digest={FILE_WORKSPACE_CLI_BUILD_DIGEST}",
         None,
     )
     assert (

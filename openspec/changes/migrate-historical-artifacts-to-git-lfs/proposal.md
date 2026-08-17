@@ -21,7 +21,9 @@
 ## Impact
 
 影响 legacy artifact repositories/storage、所有 FK consumer、Git/LFS migration tooling、AOX historical verifier、database migration/backup runbook 和删除 gate。该 change 只迁移，不删除旧表或源 bytes。
-> 连续源码迁移阶段受
-> `operator/source-only-historical-migration-gate.json` 约束：只实现可审计的
-> migration machinery，不读取或写入 remote Git/LFS、不执行 reference rewrite，也不
-> 删除 legacy source。
+> `operator/source-only-historical-migration-gate.json` 保留原文件名作为 gate 审计槽，
+> 当前已升级为 `historical_artifact_migration_release_gate@3`。用户授权的本地
+> deployment 已完成静默、备份、临时 receipt schema 准备、精确 inventory、迁移与
+> standalone empty-cache verification；实测 historical row/object/reference/byte set
+> 均为空且 identity-set equality 闭合。该 gate 仍禁止在本 change 删除 source、写入
+> 未指定 remote、把 historical import 采纳为 current state 或执行 live effect。

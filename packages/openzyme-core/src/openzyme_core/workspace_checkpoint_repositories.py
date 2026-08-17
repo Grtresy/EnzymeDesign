@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import sqlite3
 
 from openzyme_domain import AgentWorkspaceStateObservation
@@ -36,9 +37,10 @@ class AgentWorkspaceStateObservationRepository:
             INSERT INTO agent_workspace_state_observations (
                 observation_id, workspace_id, session_id, agent_member_id,
                 agent_id, workspace_generation, head_commit, head_tree,
-                dirty_state, staged, unstaged, untracked, observed_at,
+                dirty_state, staged, unstaged, untracked, changed_paths_json,
+                changed_paths_truncated, observed_at,
                 schema_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 observation.observation_id,
@@ -53,6 +55,12 @@ class AgentWorkspaceStateObservationRepository:
                 int(observation.staged),
                 int(observation.unstaged),
                 int(observation.untracked),
+                json.dumps(
+                    list(observation.changed_paths),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+                int(observation.changed_paths_truncated),
                 observation.observed_at,
                 observation.schema_version,
             ),
@@ -98,6 +106,8 @@ class AgentWorkspaceStateObservationRepository:
             staged=bool(row["staged"]),
             unstaged=bool(row["unstaged"]),
             untracked=bool(row["untracked"]),
+            changed_paths=tuple(json.loads(row["changed_paths_json"])),
+            changed_paths_truncated=bool(row["changed_paths_truncated"]),
             observed_at=row["observed_at"],
             schema_version=row["schema_version"],
         )

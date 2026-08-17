@@ -21,18 +21,6 @@ class RunStatus(StrEnum):
         return self in {self.SUCCEEDED, self.FAILED, self.CANCELLED}
 
 
-class ArtifactKind(StrEnum):
-    CODE = "code"
-    LOG = "log"
-    SEQUENCE = "sequence"
-    STRUCTURE = "structure"
-    REPORT = "report"
-    RESEARCH_DOSSIER = "research_dossier"
-    RESULT = "result"
-    CACHE = "cache"
-    OTHER = "other"
-
-
 class SourceRefKind(StrEnum):
     WEB_PAGE = "web_page"
     PAPER = "paper"

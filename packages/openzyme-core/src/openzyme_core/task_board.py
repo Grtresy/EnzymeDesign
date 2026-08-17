@@ -204,30 +204,19 @@ def _scientific_attempt_completion_guard(
 
 def _coerce_evidence_refs(
     value: Any,
-) -> tuple[tuple[TaskEvidenceRef | str, ...], str | None]:
+) -> tuple[tuple[TaskEvidenceRef, ...], str | None]:
     if value is None:
         return (), None
     if not isinstance(value, list | tuple):
         return (), "evidence_refs must be an array of TaskEvidenceRef@1 objects."
     if len(value) > 64:
         return (), "evidence_refs cannot contain more than 64 entries."
-    refs: list[TaskEvidenceRef | str] = []
+    refs: list[TaskEvidenceRef] = []
     for item in value:
-        if isinstance(item, str):
-            normalized = item.strip()
-            if normalized.startswith("scientific_closure:") and normalized.partition(
-                ":"
-            )[2]:
-                refs.append(normalized)
-                continue
-            return (), (
-                "legacy evidence strings are source-only compatible only for "
-                "scientific_closure:<closure_id>"
-            )
         if not isinstance(item, dict):
             return (), (
                 "evidence_refs must contain only TaskEvidenceRef@1 objects; "
-                "legacy strings and artifact:<id> are invalid."
+                "legacy strings and aliases are invalid."
             )
         try:
             refs.append(TaskEvidenceRef.from_dict(item))
@@ -240,24 +229,10 @@ def _validate_evidence_refs(
     repositories: CoreRepositories,
     *,
     task_id: str,
-    evidence_refs: tuple[TaskEvidenceRef | str, ...],
+    evidence_refs: tuple[TaskEvidenceRef, ...],
 ) -> str | None:
     service = TaskEvidenceReferenceService(repositories)
     for ref in evidence_refs:
-        if isinstance(ref, str):
-            closure_id = ref.partition(":")[2]
-            closure = repositories.scientific_attempt_closures.get(closure_id)
-            attempt = (
-                None
-                if closure is None
-                else repositories.scientific_attempts.get(closure.attempt_id)
-            )
-            if attempt is None or attempt.task_id != task_id:
-                return (
-                    f"Evidence ref {ref!r} does not resolve to a scientific "
-                    "attempt closure for this task."
-                )
-            continue
         try:
             service.require_for_task(ref, task_id=task_id)
         except RevisionPathHandoffError as exc:
@@ -265,8 +240,8 @@ def _validate_evidence_refs(
     return None
 
 
-def _evidence_ref_payload(ref: TaskEvidenceRef | str) -> dict[str, Any] | str:
-    return ref if isinstance(ref, str) else ref.to_dict()
+def _evidence_ref_payload(ref: TaskEvidenceRef) -> dict[str, Any]:
+    return ref.to_dict()
 
 
 def _can_finish_task(context: SessionRuntimeContext, task: Task) -> bool:
@@ -415,7 +390,7 @@ class TaskFinishCommand:
     status: TaskStatus
     finished_by: str
     summary: str = ""
-    evidence_refs: tuple[TaskEvidenceRef | str, ...] = ()
+    evidence_refs: tuple[TaskEvidenceRef, ...] = ()
     failure_summary: str | None = None
     failure_ref: str | None = None
     blocked_reason: str | None = None

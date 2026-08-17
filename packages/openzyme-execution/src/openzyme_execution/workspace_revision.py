@@ -13,8 +13,8 @@ class WorkspaceRevisionRunnerServer(Protocol):
 class WorkspaceRevisionRunnerAdapter:
     """Private Host adapter for the revision-bound runner contract.
 
-    It deliberately exposes no artifact resolution, staging, expected-output,
-    fetch, or replacement-submit method.
+    It deliberately exposes only revision preparation, dispatch, observation,
+    logs, cancellation, and reconciliation.
     """
 
     server: WorkspaceRevisionRunnerServer
@@ -58,6 +58,17 @@ class WorkspaceRevisionRunnerAdapter:
                 "run_id": runner_run_id,
                 "observation_index": observation_index,
             },
+        )
+
+    def logs(
+        self,
+        runner_run_id: str,
+        *,
+        tail_lines: int = 200,
+    ) -> dict[str, Any]:
+        return self._call(
+            "job.logs",
+            {"run_id": runner_run_id, "tail_lines": tail_lines},
         )
 
     def cancel(

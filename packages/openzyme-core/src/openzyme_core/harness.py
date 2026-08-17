@@ -9,7 +9,6 @@ from dataclasses import replace
 from enum import StrEnum
 import hashlib
 import json
-from pathlib import Path
 import re
 from typing import Any
 from typing import Callable
@@ -59,7 +58,6 @@ from .mutation_quiescence import MutationScopeService
 from .repositories import EngineDocumentRecord
 from .repositories import CoreRepositories
 from .repositories import TaskWriteIntent
-from .sandbox_host import SandboxHostBinding
 from .sandbox_host import SandboxMutationWriterScopeFactory
 from .scientific_workflow_contracts import ScientificWorkflowContractRegistry
 from .conversation import persist_conversation_message
@@ -403,6 +401,16 @@ class ToolRegistry:
     ) -> ToolResult:
         handler = self._handlers.get(invocation.tool_name)
         if handler is None:
+            removed = invocation.tool_name.startswith(
+                (
+                    "arti" + "fact.",
+                    "arti" + "facts.",
+                    "scientific.arti" + "fact.",
+                    "sandbox." + "file.",
+                    "hpc.stage_arti" + "fact",
+                    "hpc.fetch_" + "outputs",
+                )
+            )
             return self._attach_legacy_failure(
                 context,
                 invocation,
@@ -410,13 +418,38 @@ class ToolRegistry:
                     call_id=invocation.call_id,
                     tool_name=invocation.tool_name,
                     ok=False,
-                    content=f"unknown tool: {invocation.tool_name}",
+                    content=(
+                        f"tool removed by file_workspace_public@1: {invocation.tool_name}"
+                        if removed
+                        else f"unknown tool: {invocation.tool_name}"
+                    ),
                     task_id=invocation.task_id,
                     lane_id=invocation.lane_id,
-                    status="unknown_tool",
-                    summary=f"Tool {invocation.tool_name!r} is not registered.",
-                    error_code="unknown_tool",
-                    hint="Use one of the tools exposed in the current V3 tool catalog.",
+                    status=(
+                        "removed_tool_current_contract" if removed else "unknown_tool"
+                    ),
+                    summary=(
+                        f"Tool {invocation.tool_name!r} was removed from the current contract."
+                        if removed
+                        else f"Tool {invocation.tool_name!r} is not registered."
+                    ),
+                    error_code=(
+                        "removed_tool_current_contract" if removed else "unknown_tool"
+                    ),
+                    hint=(
+                        "Use the native workspace and an explicitly exposed control-plane operation; no replacement action was inferred."
+                        if removed
+                        else "Use one of the tools exposed in the current V3 tool catalog."
+                    ),
+                    details=(
+                        {
+                            "contract_id": "file_workspace_public@1",
+                            "retryable": False,
+                            "replacement_inferred": False,
+                        }
+                        if removed
+                        else None
+                    ),
                 ),
                 failure_class=FailureClass.VALIDATION,
                 recoverability=FailureRecoverability.AGENT_CAN_RETRY,
@@ -571,9 +604,6 @@ class SessionRuntimeContext:
     scientific_workflow_contract_registry: ScientificWorkflowContractRegistry | None = (
         None
     )
-    sandbox_workspace_root: Path | None = None
-    artifact_blob_root: Path | None = None
-    artifact_bundle_finalizer: Any | None = None
     signal_notifier: Any | None = None
     reliability_shadow_observer: Any | None = None
     reliability_settings: Any | None = None
@@ -583,6 +613,7 @@ class SessionRuntimeContext:
     ] = field(default_factory=dict)
     delegation_readiness_provider_id: str | None = None
     agent_capsule_process_runner: Any | None = None
+    agent_capsule_control_handler_factory: Any | None = None
     agent_process_credential_router: Any | None = None
     executor_hpc_workspace_service: Any | None = None
     workspace_checkpoint_git_reader: Any | None = None
@@ -591,13 +622,6 @@ class SessionRuntimeContext:
     assistant_response_recipient_kind: InboxParticipantKind = InboxParticipantKind.USER
     persist_conversation: bool = True
     mutation_writer_scope_factory: SandboxMutationWriterScopeFactory | None = None
-    sandbox_host_binding_factory: (
-        Callable[
-            [EngineRegistry, SessionRuntimeLease | None],
-            SandboxHostBinding,
-        ]
-        | None
-    ) = None
     session_runtime_lease: SessionRuntimeLease | None = None
     agent_id: str | None = None
     actor_kind: str | None = None
@@ -686,9 +710,7 @@ class SessionRuntimeContext:
         tool_name: str,
         call_id: str,
     ) -> Any:
-        if tool_name.startswith(("artifact.", "artifacts.")):
-            owner_kind = MutationWriterKind.ARTIFACT_PUBLISHER
-        elif tool_name == "report.publish" or tool_name.startswith("report_draft."):
+        if tool_name == "report.publish" or tool_name.startswith("report_draft."):
             owner_kind = MutationWriterKind.REPORT_PUBLISHER
         else:
             return nullcontext(None)
@@ -794,12 +816,39 @@ def _sha256_digest(payload: Any) -> str:
         default=str,
         separators=(",", ":"),
     ).encode("utf-8")
-    return f"sha256:{hashlib.sha256(encoded).hexdigest()[:16]}"
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
 def _restore_context_public_payload(context: SessionRuntimeContext) -> dict[str, Any]:
     snapshot = context.snapshot
+    from openzyme_domain import FILE_WORKSPACE_PUBLIC_CONTRACT_ID
+    from .file_workspace_projection import file_workspace_public_schema_bundle_digest
+    from .tool_catalog import file_workspace_candidate_catalog_digest
+
+    subject = next(
+        (
+            item
+            for item in snapshot.agents
+            if item.agent_id == context.agent_id and item.member_id is not None
+        ),
+        None,
+    )
+    is_executor = bool(
+        subject is not None
+        and any(
+            item.executor_agent_member_id == subject.member_id
+            for item in context.repositories.executor_hpc_workspaces.list_by_session(
+                snapshot.session.session_id
+            )
+        )
+    )
     return {
+        "schema_version": "file_workspace_restore_context@1",
+        "workspace_contract_id": FILE_WORKSPACE_PUBLIC_CONTRACT_ID,
+        "tool_catalog_digest": file_workspace_candidate_catalog_digest(
+            executor=is_executor
+        ),
+        "schema_bundle_digest": file_workspace_public_schema_bundle_digest(),
         "session": {
             "session_id": snapshot.session.session_id,
             "status": _enum_value(snapshot.session.status),
@@ -1127,8 +1176,6 @@ def _resolve_default_focus(snapshot: SessionRuntimeSnapshot) -> RestoreFocus:
 def _register_builtin_tools(
     registry: ToolRegistry, *, engine_registry: EngineRegistry | None = None
 ) -> None:
-    from .artifact_boundary import register_artifact_boundary_tools
-    from .artifact_tools import register_artifact_tools
     from .docs import register_docs_tools
     from .failure_tools import register_failure_tools
     from .lane_manager import register_lane_tools
@@ -1139,8 +1186,6 @@ def _register_builtin_tools(
     from .task_board import register_task_board_tools
     from .world_inspection import register_world_inspection_tools
 
-    register_artifact_tools(registry)
-    register_artifact_boundary_tools(registry)
     register_task_board_tools(registry)
     register_failure_tools(registry)
     register_subagent_tools(registry)
@@ -1491,7 +1536,7 @@ def _persist_tool_result_observation_file_scoped(
                 {
                     "error_code": exc.error_code,
                     "message": str(exc),
-                    "legacy_artifact_fallback_performed": False,
+                    "legacy_data_fallback_performed": False,
                 },
                 sort_keys=True,
             ),
@@ -2013,9 +2058,6 @@ def run_agent_harness_loop(
     scientific_workflow_contract_registry: (
         ScientificWorkflowContractRegistry | None
     ) = None,
-    sandbox_workspace_root: Path | None = None,
-    artifact_blob_root: Path | None = None,
-    artifact_bundle_finalizer: Any | None = None,
     signal_notifier: Any | None = None,
     reliability_shadow_observer: Any | None = None,
     reliability_settings: Any | None = None,
@@ -2024,18 +2066,12 @@ def run_agent_harness_loop(
     | None = None,
     delegation_readiness_provider_id: str | None = None,
     agent_capsule_process_runner: Any | None = None,
+    agent_capsule_control_handler_factory: Any | None = None,
     agent_process_credential_router: Any | None = None,
     executor_hpc_workspace_service: Any | None = None,
     workspace_checkpoint_git_reader: Any | None = None,
     agent_git_workspace_recovery_service: Any | None = None,
     mutation_writer_scope_factory: SandboxMutationWriterScopeFactory | None = None,
-    sandbox_host_binding_factory: (
-        Callable[
-            [EngineRegistry, SessionRuntimeLease | None],
-            SandboxHostBinding,
-        ]
-        | None
-    ) = None,
 ) -> HarnessResult:
     from .skills import SkillRegistry
 
@@ -2057,9 +2093,6 @@ def run_agent_harness_loop(
         bio_research_service=bio_research_service,
         research_adapter=research_adapter,
         scientific_workflow_contract_registry=(scientific_workflow_contract_registry),
-        sandbox_workspace_root=sandbox_workspace_root,
-        artifact_blob_root=artifact_blob_root,
-        artifact_bundle_finalizer=artifact_bundle_finalizer,
         signal_notifier=signal_notifier,
         reliability_shadow_observer=reliability_shadow_observer,
         reliability_settings=reliability_settings,
@@ -2069,6 +2102,9 @@ def run_agent_harness_loop(
         ),
         delegation_readiness_provider_id=delegation_readiness_provider_id,
         agent_capsule_process_runner=agent_capsule_process_runner,
+        agent_capsule_control_handler_factory=(
+            agent_capsule_control_handler_factory
+        ),
         agent_process_credential_router=agent_process_credential_router,
         executor_hpc_workspace_service=executor_hpc_workspace_service,
         workspace_checkpoint_git_reader=workspace_checkpoint_git_reader,
@@ -2079,7 +2115,6 @@ def run_agent_harness_loop(
         assistant_response_recipient_kind=harness_input.sender_kind,
         persist_conversation=harness_input.persist_conversation,
         mutation_writer_scope_factory=mutation_writer_scope_factory,
-        sandbox_host_binding_factory=sandbox_host_binding_factory,
         agent_id=harness_input.agent_id,
         actor_kind=harness_input.actor_kind,
         actor_role=harness_input.actor_role,

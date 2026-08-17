@@ -1,480 +1,54 @@
-# OpenZyme V3 Capability Engines
+# V3 Capability Engines
 
-> Sandbox/Pipeline/HPC 从 artifact staging 迁移到 native file + immutable revision 的
-> 候选边界见 [file-workspace-migration.md](file-workspace-migration.md)；source-only gate
-> 不授予 dispatch、provider、HPC 或 live authority。
+## 定位
 
-## 1. 定位
+capability engine 把 research、scientific calculation 或受控执行能力接入 harness。它可以使用
+局部 graph、provider SDK 或受监督进程，但不拥有 session/task/approval/publication/scientific
+selection 的顶层真状态。
 
-Capability engine 是 V3 harness 可调用的专业子系统。
+## Tool contract
 
-它们的共同约束：
+每个 model-visible tool 使用 canonical dotted name、closed JSON schema 和结构化 `ToolResult`。
+provider adapter 可以临时映射不支持 dotted name 的 wire alias，但 response 进入 router 前必须恢复
+canonical name；alias 不写入 event、trace、continuation 或 catalog identity。
 
-- 对外暴露稳定输入输出
-- 不拥有产品顶层真状态
-- 可以有自己的局部执行图、局部 prompt、局部 tool loop
-- 结果必须回写到 control plane canonical objects
-- 启动、恢复、重试与并发由 `engine invocation` 统一标识
-- provider/tool 调用必须经过 limiter：agent/session/global concurrency、LLM provider、research provider、execution/HPC submission 分别表达
-- 同步 SDK 只能通过受控 `to_thread` 或等价 adapter 包装在 limiter 内运行；线程池大小不是 quota 或 agent 并发策略
+参数错误返回 LLM 可读的 closed error。engine 不得：
 
-### 1.1 Capability lease 不是 engine/tool exposure
+- 静默修正参数或选择“能跑”的替代 route；
+- 捕获 provider/runtime error 后伪装 success；
+- 自动完成 task、发布 revision 或采用 scientific result；
+- 从 ambient filesystem、credential 或 Host path 读取输入；
+- 暴露已删除 artifact/staging helper。
 
-C2 `AgentCapabilityLease` 的 general/executor profile 是 closed policy declaration，不是本文所述
-engine runtime 已安装、tool 已对模型暴露或物理 target 已 reachable 的证明。C2 只建立
-generation reservation/readiness、`pending_workspace | active | revoked` lease、policy、
-credential/admission seam 与 immediate runtime/delegation gate。真实 versioned capsule image、native
-filesystem/shell/Git/Git LFS/curl、ordinary network、upload/download 及 reachable/unreachable proof
-属于 C3；publication 属于 C4；real remote-HPC credential/workspace/CRUD 与 ordinary job/
-one-occurrence `sbatch` 属于后继 changes。
+## Research
 
-C3 未来的 ordinary deployment network 不增加 Host destination allowlist；这项 deferred
-network 语义不放宽 Host-issued credential 的 exact audience/service/target/protocol 校验。
+research provider 输出 bounded observation、source provenance 和 safe summary。需要共享的研究正文
+由 producer 写入自己的 workspace 并发布；research index 引用 exact published path。provider
+transcript 或 engine document 不是 file publication，也不自动成为 scientific evidence。
 
-### 1.2 Git LFS 是 repository capability，不是第二个文件 engine
+## Pipeline SDK
 
-large work product 由 native Git LFS client 通过 binding 固定的 Batch API v2/basic endpoint
-传输。harness 只呈现 policy、quota、credential scope、publication closure 和 typed failure；
-不向 agent 暴露通用 CAS、object-store locator、Host typed file gateway 或 custom pointer。
-agent 仍可自由选择何时下载、编辑、配置 `.gitattributes`、commit 和 private push，但共享文件
-真相只由显式 `workspace.publish` 的 whole-tree validator 创建。
+`openzyme_pipeline` 当前提供纯 scientific calculation 模块和 `workspace_revision` job adapter。
+executor 先在 native workspace 写源文件、形成 clean checkpoint/publication，再用 exact revision
+request 提交 job。SDK 不提供通用 register/materialize/stage/fetch catalog。
 
-publication validator 是 Host repository capability：它拒绝 malformed pointer、symlink/
-submodule policy drift、missing/corrupt object 和全部 oversized ordinary blobs；它不修改 agent
-工作树或替 agent 选择表示方式。GC 是独立 retention-owner capability，只能消费 exact dry-run
-receipt 并在删除前重验全部 holds/reachability/pins。二者均不能由 engine terminal、tool success、
-runtime idle 或一枚 source-only gate 推导 authority。
+`scientific.deliverables.finalize` 只接收 published revision path、producer adoption 和 format contract，
+Host fresh-read immutable bytes 后形成 validation receipt。
 
-engine 或 tool router 在可见性治理之外，还必须尊重 C2 的 exact-generation admission
-gate；旧 tool registration、sandbox record、process、namespace hold 或 `SessionRuntimeLease` 不能使
-`pending_workspace`/missing/revoked lease 的 agent 获得运行权。在 C3 readiness provider 未
-ready 的 staged window 内，正确状态是 `provisioning_required` 与 non-runnable，不是去找一个旧
-engine fallback。
+## Process isolation
 
-## 2. Deep Research Engine
+Podman/agent capsule 或局部 sandbox 是 process isolation 实现，不是共享文件模型。process callback
+绑定 process epoch 和 scoped Host context；不能继承 session turn lease。process exit 只说明进程状态，
+不说明 provider/HPC effect、publication、scientific closure 或 task terminal。
 
-### 2.1 默认定位
+## External operations
 
-`deep_research` 是 V3 的首个重点 capability engine。
+通用 provider effect 由 `ControlledOperationExecution` 监督；HPC 由 revision-bound job lifecycle 监督。
+引擎只提交 typed request 并观察 durable outcome。`dispatch_in_doubt` 只允许 reconcile；deadline 到期
+不允许换 request identity 或重复 submit。
 
-C7 后 engine 的 durable deliverable 是 owner workspace 中的 versioned files，而不是内联 dossier 或
-artifact。direct provider observation、source snapshot、citation、notes、analysis 与 dossier manifest 由
-Host-supervised bounded writer 写入；单 invocation 总输入最多 16 MiB，临时文件 owner-only，整文件 digest
-校验后原子 rename。任何写入失败都使 invocation `failed`，不得把 engine 内部 success 提前暴露为
-`succeeded`。显式 `workspace.publish` 和 research index 才使这些文件成为 shared truth。
+## Domain specialization
 
-默认实现形态：
-
-- 用 `LangGraph` 承担 engine 内部控制流与状态推进
-- 用 `LangChain` 承担 model、tool、prompt、structured output 与 provider adapter 组装
-- 作为 harness / teammate loop 可调用的专业能力存在，而不是顶层产品 orchestrator
-
-engine 内部 LLM 调用不得自建 provider retry/fallback。`deep_research` 的 researcher、supervisor、synthesis 等 model call 与顶层 harness 一样经过 `LlmInvocationRuntime`，由 runtime 统一处理 limiter、timeout、retry/backoff、`Retry-After`、错误 taxonomy、LLM debug 与 MICU tool aliasing 兼容。session compaction、restore context rebuild、task/protocol 状态仍属于顶层 harness 或 teammate runtime，不进入 engine 内部 runtime。
-
-默认参考：
-
-- `/home/grtresy/VSCodeRepo/26/open_deep_research/src/open_deep_research/deep_researcher.py`
-- `/home/grtresy/VSCodeRepo/26/open_deep_research/src/open_deep_research/state.py`
-- `/home/grtresy/VSCodeRepo/26/open_deep_research/src/open_deep_research/configuration.py`
-- `/home/grtresy/VSCodeRepo/26/open_deep_research/docs/deep_researcher_graph_详解.md`
-
-### 2.2 推荐吸收的模式
-
-- `clarify -> write_research_brief -> supervisor -> parallel researchers -> synthesis`
-- 研究 brief 与 researcher context 分离
-- researcher 子过程并行执行
-- compression / synthesis 作为单独内部阶段
-- 输出一组有界、版本化、可发布的 research files，而不是内联 dossier 或随意文本
-
-对 enzyme design 的默认扩展：
-
-- 保留上述通用 deep research 骨架
-- 额外叠加 enzyme-design-aware prompt overlay
-- 在 tool / provider 层接入生物 research 来源，而不是把领域逻辑硬编码进 harness
-- 让 sequence / structure retrieval 可以作为 research 内部动作之一，但仍通过 canonical artifact / evidence 回填对外暴露
-
-### 2.3 Research Teammate 与 Deep Research 的边界
-
-`research teammate` 与 `deep_research` 不是同一层对象。
-
-- `research teammate` 是 harness / protocol 语义中的 worker，围绕明确 `task_id` 读取 workspace、选择工具、与 peers 沟通并向用户路径回填结果
-- `deep_research` 是 teammate 可调用的一种重能力 engine，适合多步拆解、并行检索、跨来源综合与 dossier synthesis
-- `deep_research` 内部的 supervisor / researcher workers 只是 engine 内部 LangGraph 子过程，不等于产品级 teammate
-
-默认策略：
-
-- 简单事实查询、已知 accession / PDB id 的确定性抓取、轻量 annotation 查询，不要求先进入 `deep_research`
-- 开放式 literature review、query decomposition、跨 provider 证据融合、gap detection、clarification，优先走 `deep_research`
-
-### 2.4 不应直接照搬的部分
-
-- 让 deep_researcher graph 直接变成整个 OpenZyme 的顶层产品架构
-- 让 open_deep_research 的内部 state 直接暴露给 V3 UI
-- 让 research session 替代 V3 的 session / task / lane control plane
-- 让所有 research teammate 行为都被强制折叠进 `deep_research`
-
-### 2.5 生物 Provider 与 Prompt 分层
-
-V3 deep research 默认面向 enzyme design 接入一组受控 bio provider baseline：
-
-- `PubMed`
-- `Semantic Scholar`
-- `UniProt`
-- `RCSB PDB`
-- `InterPro`
-
-推荐分层：
-
-- 通用 deep research prompts：clarify、briefing、supervision、research execution、synthesis
-- enzyme design overlay prompts：文献可信度、酶家族/底物/结构语义、序列与结构检索启发式、引用与证据规范
-- provider adapters：把 literature、sequence、structure、annotation 来源统一转换为 engine 可消费的工具结果与 canonical evidence payload
-
-这些 provider adapter 应尽量同时服务两类调用面：
-
-- `deep_research` 内部 tool loop
-- `research teammate` 的 direct provider actions
-
-provider adapter 的统一边界应是轻量 `ResearchObservation`，而不是 provider-specific raw response。
-
-literature adapter 的内部返回先使用 `ProviderCallResult`：outcome 固定为 `completed | empty | degraded | failed`，provenance 至少包含 safe request digest、endpoint identity、bounded attempts、`Retry-After`、retrieval time、response digest/status 和 allowlisted headers。PubMed 是 AOX/HMM required evidence；Semantic Scholar/Tavily 是 enrichment，rate limit、retry exhaustion、absence、schema drift 或 empty 归一化为 explicit degradation，禁止 fallback 到 deterministic/synthetic result。required/enrichment 的最终 quorum 由显式 evidence contract 汇总，provider adapter 不替 agent 改 query 或选替代证据。
-
-概念形状：
-
-- `status`：`completed` / `partial` / `failed`
-- `summary`：供 LLM 直接阅读的一句话或短段摘要
-- `findings`：结构化 evidence candidates，每项包含 `summary`、`query`、`confidence_label`、`sources`
-- `unresolved_gaps`：仍需补证或澄清的问题
-- `artifacts`：真实下载或生成的 workspace asset manifest
-- `provider`：来源 provider 标识
-- `raw_ref`：可选调试引用，不默认进入长期 prompt / read model
-
-其中 `sources` 表示 evidence 的可追溯来源，如 paper、web page、dataset locator；`artifacts` 只表示实际 materialized 的 sequence、structure、report、result 等文件资产。普通 search hit 不应被伪装成 artifact。
-
-两类调用面的包装不同，但 research payload 应保持一致：
-
-- `deep_research` 内部 tool loop 使用 `ResearchObservation` 作为 `ResearchToolResult.payload`
-- `research teammate` direct provider actions 使用同一 `ResearchObservation` JSON 作为 `ToolResult.content`
-- provider raw response 只作为调试数据通过 `raw_ref` 或 engine document 追踪，不作为 canonical evidence schema
-- direct literature tool 必须在 provider I/O 前建立 `research_tool` invocation，并在所有 outcome（包括 typed `failed`、required PubMed `empty` 与 evidence sealing 失败）终结同一 invocation；安全 citation evidence 通过 artifact boundary external ingress 写入 Host 注入的 attempt-scoped Blob root，不能把 mutable `/tmp` 文件配上 digest metadata 冒充 sealed artifact
-- provider evidence artifact 只保存 allowlisted citation/provenance 与 call-local quorum；PMID/DOI/title/authors/venue/date、不可逆 NCBI identity digest 与 request/response digest 同步进入 canonical evidence/source ref，credential、private URL/query/header 与 Host path 不进入 engine document 或 public projection。required PubMed 只有真实 provider、schema-valid PMID、完整 provenance、非 fixture citation 全部成立时才可标为 accepted
-
-### 2.6 V3 外部接口
-
-deep research 对 harness 至少提供：
-
-- `start_research(invocation_id, task_id, brief)`
-- `resume_research(invocation_id, resolution)`
-- `get_research_status(invocation_id)`
-- `get_research_dossier(invocation_id)`
-
-输出至少包含：
-
-- `summary`
-- `evidence_items`
-- `source_refs`
-- `unresolved_gaps`
-
-可选调试产物：
-
-- `raw_notes`
-- `research_turns`
-
-若内部 runner 或 provider 异常在 shared runtime 内恢复，`deep_research` invocation 继续执行；若异常不可恢复，engine 必须写入 failed dossier 与 failed `EngineInvocation`，并把 taxonomy/summary 写入 `raw_notes` 或 failure output，不能让 invocation 保持 `RUNNING`。
-
-对 enzyme design 的补充输出约束：
-
-- 当 research 过程中下载 sequence / structure 文件时，engine 应返回足够的 artifact metadata，使 control plane 可以将其持久化为 workspace artifact
-- dossier 可以引用这些 artifact，但 artifact 本身不应只作为 engine 内部临时文件存在
-
-要求：
-
-- 同一 `task_id` 允许存在多个 research invocation
-- engine 内部 graph/checkpoint 只能作为 invocation 局部运行态
-- 对 harness 可恢复的状态必须回写 `engine_invocation + evidence artifacts`
-- search / lookup 类 observation 应能规范化为 canonical evidence 与 source refs
-- download 类 observation 应能规范化为 workspace artifacts，并可附带 evidence/source provenance
-- `ResearchUnit.topic` 是科学语义主题，不是 provider category。Tavily `web.search.topic` 只暴露 `general` / `news` / `finance` 枚举并默认使用 adapter 配置；非法类别在 provider 前返回 `invalid_tool_arguments`，不能把 scientific subject 透传给 Tavily 或静默替换
-
-## 3. Execution Engine
-
-本节描述的是现有 Host-supervised execution 路径，不是 C3 未来的 general
-agent capsule。C2 不修改这套 execution/AOX 语义：rootless Podman sandbox 仍保持
-无网络，AOX 仍保持实际 `--network=none` 边界，executor code 仍只通过
-`openzyme_pipeline`/Host supervisor 访问 provider、local tool 与 HPC。它们在自己既有执行
-owner 中继续存在，但不能被当作 active capability lease 缺失时的 compatibility
-fallback，也不能用 C2 profile 声明绕过它们的 approval、execution fence、artifact/provenance
-或 scientific authority。
-
-定位：
-
-- 负责将某项 task 或 artifact 集合转化为可执行请求
-- 继续复用 `apps/mcp-hpc-runner` 作为外部执行边界
-- 负责为 executor 提供 session-scoped persistent sandbox workspace
-- 负责把 sandbox working copy 中的 pipeline source 固化为 `ArtifactKind.CODE` 审计快照
-- 负责通过 Host supervisor 把 sandbox 内的受控 SDK / adapter 调用转换为 provider、local tool 或 runner 请求
-- 负责把 sandbox、本地工具或 runner 下载后的 declared outputs 回填为 canonical workspace artifacts
-
-要求：
-
-- 对 harness 至少提供 executor-facing `sandbox.workspace.status`，并在 sandbox runtime session 中提供 `sandbox.file.list`、`sandbox.file.read`、`sandbox.file.write`、`sandbox.file.patch`、`sandbox.file.delete` 与 `sandbox.exec`；`execution.pipeline.start` / `execution.pipeline.status` 若继续存在，只作为 Host 内部或迁移兼容桥，不再作为 executor 日常 authoring 主路径
-- executor 在自己的 persistent sandbox 中拥有完整文件 CRUD、bash 与 Python 能力；sandbox working copy 是执行准备工作面，canonical truth 仍然是 artifact catalog、engine invocation、run、approval、task board 与 workspace projection
-- executor 不得直接调用 runner tool、SSH、Slurm、runner config 或 Host 本地 artifact path；它通过 sandbox 内预装的 `openzyme_pipeline` SDK 与 Host supervisor 通信，由 supervisor 间接请求 provider、本地工具、HPC runner 或 artifact catalog
-- `artifact.create_text` / `artifact.patch_text` / `artifact.diff_text` 可以保留为受控 catalog 源码编辑兼容面和审计工具，但不再是 executor authoring pipeline 的主路径；主路径是 sandbox file/command tool，运行或提交前由 Host 创建 `artifacts.snapshot_code` 快照
-- 敏感性由 SDK operation policy / Host supervisor 判定，而不是由 master 或 executor 判断；例如耗时、计算量大、会提交外部 job 或高 quota 消耗的 operation 必须标记为 approval-gated；AOX/HMM fixture gate 使用 `inputs.approval_policy="single_plan"` 验证单一 plan approval 语义
-- 受控执行的默认主路径是 dry-run / validation first：Host supervisor 先构建 `ExecutionPlan`，再让用户批准该 plan；批准前不得提交外部 job，也不得启动会触发 runner/HPC 的正式执行
-- dry run 是校验过程，`ExecutionPlan` 是结果；plan 至少绑定 `plan_digest`、`sandbox_workspace_id`、entrypoint、source snapshot、artifact reads、local/preprocess/provider operations、external/HPC operation list、逐 operation `max_calls`、expected outputs、resource / quota estimate、doc hints 与 approval requirements。重复调用与 literal bounded loop 计入上界；函数体、动态 iterable、while/comprehension 等无法静态证明有限次数的外部 SDK 调用以 `execution_plan_unbounded_calls` fail-closed
-- plan、approval、execution invocation、output artifact provenance 与 workspace projection 必须记录 `source_code_artifact_id`、`source_code_digest`、`source_code_version` 与 `sandbox_workspace_id`；正式执行前 Host 重新读取源码快照并校验 digest，防止批准后 working copy 漂移
-- approval 绑定 `plan_digest`、operation list、逐 operation `max_calls`、artifact reads、expected outputs 与 resource/quota 摘要；用户 approve 后，Host supervisor 才启动正式 sandbox 执行；每次 provider/tool/HPC 外部调用前必须原子消费对应 call budget，耗尽时返回 `execution_plan_quota_exceeded`，不得调用 adapter/runner
-- runtime SDK call approval gate 只作为兜底：正式执行时若出现未被 approved plan 覆盖的外部 operation、artifact id 或参数 / quota 范围，Host supervisor 必须再次创建 `ApprovalRequest` 并进入 `waiting_approval`，不得提交该 operation
-- approval 由 harness/API 统一 resolve；`POST /v3/approvals/{approval_id}/resolve` 是唯一改变 approval 状态的外部入口
-- execution engine、pipeline SDK 与 supervisor 都不代表用户批准；pending approval 下，对应 SDK step / engine invocation 必须保持 `waiting_approval`，直到 resolved approval 通过 runtime signal 唤醒并继续
-- Host-supervised pipeline completion 是 engine/workspace event，不是用户最终答复；approval resolved 后无论 pipeline `succeeded`、`failed` 还是 `cancelled`，Host 都应把原 executor 唤醒，由 executor 读取 sandbox/execution status、artifacts 和 structured error 后生成用户可见收尾
-- 成功时 executor 必须总结工具级结果和 output artifacts，例如 fpocket pocket count / artifact ids；失败时 executor 根据 `pipeline.error` 决定 materially changed retry，或在明确不可修复时用 `task.finish(status="failed", failure_summary, failure_ref)` 写入 canonical 失败状态
-- “成功”必须由对应 output artifact parser 证明，不能由 runner `raw_result` 自报字段代替。Host-supervised pipeline step 在生成 parsed result 时必须传入本次 runner 实际返回的 artifact refs，不能以空列表调用 parser；fpocket 缺失/不可读/不可解析 `target_info.txt` 时必须保留 `missing_artifact` / `read_error` / `unparsed`，不得用 `pockets_found` fallback 生成 `proceed`；未注册 parser 的工具默认 `revise` 而不是 `proceed`
-- execution / HPC retry 与失败诊断策略属于 executor prompt、受控 docs 或 tool result hints；runtime wakeup instruction 只应携带 invocation/status/artifact/error evidence，不应规定重试或修复策略
-- 执行结果必须回填 `run`、`artifact`
-- 结果必须能对 report draft / workspace UI 统一投影
-- command 不得直接引用 Host 本地 `SessionArtifactRecord.storage_uri`；HPC command 只能引用 `/work`、`/out`、`$MCP_WORKDIR`、`$MCP_OUTDIR` 等远端路径
-- runner/HPC 不得直接使用 Host 本地 artifact path；所有输入必须先经 artifact catalog 授权，再通过 runner staging 映射为远端工作目录路径
-- pre-execution staging 在 `remote_layout`、`input_parent`、`input_transfer` 或 Slurm `runner_control_transfer` 发生终态失败时，runner 必须尽早经本地 `ArtifactStore` 持久化 Host-trusted `runner_failure@1`。closed manifest / typed exception / engine safe projection 只允许 exact `schema_id`、opaque `run_id`、phase、一基 input ordinal、`sha256` 内容 digest、`returncode`、`timed_out` 与 `elapsed_seconds`；layout 的 ordinal/digest 为 `null`，control transfer 的 ordinal 为 `null` 且 digest 绑定 `job.sbatch` bytes。engine error type 仍为 `hpc_staging_failed`；adapter、sandbox control response 与 dependency-free SDK 必须把安全 `stage="hpc_staging"` 和 boolean `retryable` 保留为顶层 typed 字段，同时传递 sanitized hint 与 `details.runner_failure`，不能只把前两者折叠进 details。projector 存在但字段开放、格式畸形或执行抛错时只返回固定泛化 reason，不回退异常文本。任何 SSH target、argv、stderr、credential、local/remote path、`remote_run_dir` 或 locator 均不得越过边界。`retryable=true` 不授权同 attempt 自动 replay、重开 approval、backend fallback 或 effect adoption。该诊断不授予 artifact 读取 authority，不把失败/partial output 变成成功 artifact，也不新增额外 retry、reconnect、connection reuse 或 timeout 数值放宽；既有 rsync→最多一次 scp fallback 保持有界，Slurm layout/control transfer 纠正性应用既有 `staging_timeout_seconds`
-- runner 已进入 `remote_execution` 后，失败命令不会产生成功专用的 toolchain identity marker；因此 remote exit 非零时必须保留已分类的 transport/tool 主失败，只有 remote exit 为零但 marker 缺失或畸形时才以 `TOOLCHAIN_IDENTITY_MISSING` fail closed。`SSH_CONNECTION_TIMEOUT` 必须投影为 retryable `hpc_runner_timeout`，其他 `SSH_CONNECTION_FAILED` 必须投影为 retryable `hpc_runner_unavailable`；两者都不能伪装成生信工具 `nonzero_exit`。该 retryability 只向 agent 忠实呈现恢复可能性，不自动重放、重开 approval、改变 controlled-operation 计数或切换到 Host-local/sandbox backend；无法归类的传输/执行失败继续 fail closed
-- 本地 sandbox workspace 与 HPC placement workspace 是两个独立工作面；文件流必须通过显式 `stage_artifact` / `fetch_outputs` 或等价 Host-supervised declarations 表达，scheduler 不得把本地执行和 HPC 执行自动重写成不同后端
-- 多输入工具必须通过多个 `RunSpec.inputs` 明确 staging，例如 Vina 的 receptor 与 ligand
-- 远端结果只有在 `expected_outputs` 中声明且 runner 返回可读内容后才会被下载并登记为 artifact；Host 不得为 missing output 或 failed run 合成占位产物。显式 `fixture_non_cutover` / `simulation_non_cutover` 测试 outcome 可生成带 `synthetic_source=true`、`cutover_eligible=false` 的 fixture placeholder，但不能进入产品/cutover 证据
-- configured foundation 缺真实 execution backend 时使用显式 unavailable adapter；缺 Tavily 时只不注册 `web.search/web.fetch`，PubMed/Semantic Scholar direct tools 仍独立装配；缺 bio service 时才不注册 bio research tools。任何位置都不得自动回退 deterministic adapter。deterministic foundation 仅供显式 fixture eval，Web UI 本地 server 也必须通过 `--fixture-non-cutover` 才能选择，且其 outcome 全链路保持 non-cutover 标记
-- output artifact 必须保留相对路径层级，不能只保留 basename
-
-### 3.1 Execution Pipeline Sandbox
-
-execution engine 的目标入口是 executor persistent sandbox，而不是固定 tool-specific
-preprocess adapter，也不是每次执行即销毁的一次性源码容器。executor 可以在 sandbox 中
-用文件、bash、Python 与预装 SDK 组织判断、循环、批处理和分支；真正进入 canonical state
-的是显式登记的 artifacts、execution plans、runs、approvals、events 与源码快照。
-
-默认运行边界：
-
-- sandbox 运行在 rootless Podman 容器中，默认无网络、非 root、资源受限，并按 executor/session 持久化工作目录
-- 默认多个 executor 使用同一个 Host-configured sandbox base image digest，分别启动各自的 container process 并挂载各自的 persistent `/workspace`；image layer 可以共享，sandbox workspace volume 不共享
-- executor sandbox base image 由 Host-level image registry / bootstrap contract 管理，记录 `image_ref`、resolved `image_digest`、最低能力声明和 `sandbox_protocol_version`；缺失或不兼容返回结构化 image error，不自动换 image 或回退到旧 pipeline runner
-- `image_ref` 只用于配置与 preflight 查找。Host preflight必须解析完整 `sha256:<64hex>` immutable image id，并对将要只读注入 sandbox 的 `openzyme_pipeline` SDK source tree计算 digest；Podman `image inspect .Id` 在不同版本可能返回裸64位hex或带`sha256:`前缀，Host只允许这两种精确格式并统一规范化为后者。只有exact authority-bound formal supervised child可在fresh SQLite上，以将用于health/execution的同一runner显式登记closed identity；dev Web UI、eval/live fixture与普通Host不得从ambient Podman状态静默登记。image、SDK与runtime protocol形成`runtime_identity_digest`，Core workspace-manifest protocol保持独立typed version。执行前重新preflight、逐字段比对，SDK copy后重新验哈希，Podman必须按immutable id启动；任何缺失或漂移均在sandbox/adapter/runner前结构化失败
-- 持久化语义绑定 sandbox workspace volume、manifest、projection summary 和 canonical records；container process/container id 是可重建的 runtime envelope，不是 public/canonical state
-- workspace root 必须由 Host composition 作为单一依赖注入，并由 status、显式/隐式 workspace lookup、file/exec、source snapshot 与 container bind 一致使用；局部 service 不得独立回落到共享默认 root。显式 workspace id 也必须重新校验当前 session/executor ownership，不能绕过 canonical member 绑定
-- 无 canonical workspace row 时，派生 leaf 必须不存在并以 no-replace/exclusive-create 建立 `src/input/work/output/logs/manifest` 六目录；预存目录、文件或 symlink 返回 `sandbox_volume_corrupt`，不得接管、补建或修改。已有 workspace 缺目录、目录为 symlink 或布局失真时同样 fail closed。`sandbox.exec` 必须在 source snapshot、run 持久化和 process invocation 前重新验证六个 mount source 都是同一 configured root 下的真实目录
-- 通过前序 request、workspace、layout 与 runtime 校验并进入 source preflight 的每次 `sandbox.exec` 都在 `SandboxRun` 与 process 前封存整个非空 `/workspace/src`，包括 `python -c`、package/signature inspection 与 diagnostics；前序校验可以更早返回自身错误。`sandbox.exec` 不是 read-only environment inspection shortcut。能力/签名事实优先通过 `docs.search` / `docs.read` 读取，确需 runtime introspection 时由 executor 先以 `sandbox.file.*` 在 `/workspace/src` 写入显式 inspection source。进入 source preflight 后的空树固定返回 `source_snapshot_empty`，不创建 run/process，也不自动生成伪源码或绕过 provenance
-- sandbox 至少提供持久 `/workspace` 与运行时 Host supervisor control socket；旧 `/openzyme/input|work|output|logs` 只能作为兼容视图或实现细节
-- sandbox control transport 使用一连接一请求/一响应的 JSON-RPC 2.0 NDJSON framing。request 与 response payload 均以 `4 MiB` 为硬上限且不计终止 newline；`64 KiB` 只是 receiver chunk size，Host 和 SDK 都必须聚合到 newline 并实施对称边界。非 null request `id` 只允许 UTF-8 编码不超过 `256` bytes 的 string 或 signed int64（bool 不算 int）；若其余 request semantics 非法但已提取 safe id，error 必须回显该 id，id 本身超限/非法或无法安全提取时 error `id=null`。EOF 残帧、畸形 UTF-8/JSON、非法 RPC/response identity、任一方向超限都结构化 fail closed；首 newline 后已观察到的非空 trailing bytes 在 dispatch 前拒绝。硬保证是每 connection 最多执行一个 request：首 request 接受后才晚到的第二帧可以只遇到 connection 关闭而没有第二个 error，但不得执行。坏连接按 connection 隔离，不能杀死 accept worker、解释 partial method、创建额外 operation、授权 replay/fallback 或污染下一连接。SDK 在发送前拒绝超限 request 并有界读取 response，Host 以小型 structured error 替代超限 response。连接建立、request send、首字节后的 partial-frame read 使用固定 5 秒 I/O timeout；对于 `durable_async_v1`，new-owner control worker 在 bounded 时间内完成 admission 后，把 exact socket/process epoch 交给 attached-process supervisor，并退出原 agent/request/session authority。approval、provider 或 HPC wall time 由 execution/continuation workers 管理，结果就绪后才向 exact connection 投递。只有 frozen `legacy_sync` owner 保留兼容同步等待，不能成为新 operation 的 fallback。该 transport 不创建第二套 canonical execution state，也不升级 sandbox protocol/image version
-- artifact registration metadata 使用独立的 bounded logical transport：public `artifacts.register(path, kind, format=None, metadata=None)` 不增加 agent 参数，SDK 自动把 `<=256 KiB` canonical object 内联，把 `(256 KiB, 32 MiB]` object 写成 `/workspace/work/.openzyme/artifact-metadata/<digest>.json` 并只发送 `artifact_registration_metadata_sidecar@1` descriptor；更大值在 connect 前拒绝。local backend 的物理 work root 由 harness-owned `OPENZYME_SANDBOX_WORK_ROOT` 注入且覆盖 user env，container logical root 固定 `/workspace/work`。Host 以 fd-anchored/no-follow read 在 effect 前严格核 exact wire path spelling、size/digest/UTF-8/duplicate/non-finite/object/canonical bytes；top-level `content_digest`、`sealed_digest`、`tree_digest` 由Host计算，caller自报在SDK/Host effect前拒绝。sidecar 不成为 Artifact 或 catalog storage，完整 logical metadata 仍进入 immutable Artifact row。成功 response 使用 `artifact_registration_response@2`，其artifact为exact `{artifact_id,metadata}`且metadata/validation为bounded summary；兼容 runner 的compact provisional response明确`canonical=false`并在128-item上限内保持bounded。`register_many` 有 128-item 和 32 MiB unique metadata aggregate cap，先解析全部 metadata transport，但逐项 artifact commit 的全面事务化仍留在 outcome-unknown proposal
-- `/workspace` 是 executor 的持久 working copy，可放 pipeline source、脚本、临时 notes 与中间文件；它不是 artifact catalog
-- `/workspace/input` 只读，且只包含已授权 session artifacts 的副本或受控映射
-- `/workspace/work` 与 `/workspace/output` 可写；只有 SDK 明确登记或 Host 明确 snapshot 的文件可进入 artifact catalog
-- Host repo、用户 home、`.ssh`、数据库、runner config 和 HPC credentials 不得挂载进 sandbox
-- sandbox 内代码不能直接访问网络、SSH、Slurm 或 runner；NCBI/UniProt/EBI HMMER、本地生信工具、HPC runner 与 artifact catalog 请求都必须通过 `openzyme_pipeline` 走 Host supervisor
-- MAFFT、CD-HIT、HMMER、Apptainer SIF、HPC runner 和领域 toolchain packaging 不进入 executor base image；它们属于 Host supervisor 的 backend/toolchain registry 和 bio_tools route policy
-- 同一 `sandbox_workspace_id` 同时只允许一个 active `sandbox.exec`；run record、file audit、log artifact 和 changed-file summary 是审计状态，container process id 不是 canonical state
-- `sandbox.exec` 默认仍为 `120s`，`s09.exec_policy.v2` 的全局有限上限为 `3600s`。AOX 中可能到达真实 `bio.hmmer_search` 的 command 必须请求 exact `3600s`；不可能到达 HMMER 的 inspection/source-repair command 可使用更短 bound。该约束只呈现当前 Host-supervised 长 provider 的真实等待窗口，不规定 agent 的脚本结构、合法 operation 顺序或修复策略
-- `durable_async_v1` 的 EBI HMMER 不在一个 adapter callback 内占满该等待窗口。Execution Engine 将它拆成 `dispatch_hmmer_search`、`poll_hmmer_search` 与 `materialize_hmmer_search` 三个 provider-local phase，由既有 `ControlledOperationExecution` worker 每次执行一个有界 slice；Host 在首次 submit 接受后封存 private immutable exact-job receipt，后续只 poll 同一 job，`RETRY` 保持非终态，restart 复用原绝对 deadline，terminal success 才读取 result pages。缺 receipt 的 accepted-submit callback gap 必须 `dispatch_in_doubt`，不得切回同步路径或重新 submit。同步 `hmmer_search` loop 仅保留为 `legacy_sync` 兼容边界，不是 durable 产品 owner
-- core `sandbox.exec` 与兼容 `PodmanPipelineSandboxRunner` 复用同一个 Host runtime container-lease seam：Host 在未挂载给 container 的 sibling `0700` lease root 中预留 absent/no-replace CID target，再由 Podman `--cidfile` 写入 CID；随机 run id 的 container name、run-id label、sandbox-root-digest label 绑定 exact identity。run 前必须证明 name 不存在；正常、非零与 timeout 路径都必须在 control socket 停止和 workspace/result observation 前退休该 lease。CID file 一旦存在就是主身份：即使 name 被 rename，也按 exact CID inspect labels 后 `kill -> wait -> rm`，并在 CID 和 name 都经过稳定重复不存在检查后才移除 CID file和返回。invalid CID、identity drift或 Podman lifecycle error都保持同进程 fail-stop并重试，不得在 rw mount writer 仍可能存活时生成 run/evidence。generic product sandbox 的该等待仍不获得独立 hard-kill authority；AOX 保留的 local POSIX supervisor 只是 policy-free process-retirement/evidence shell，kill 只产生 harness-fatal unknown，不改写 sandbox/operation 产品状态，也不 drive session 或声明业务终态
-- public diagnostic 是独立安全边界：已知 workspace/control-socket Host root 只在 schema 声明的 diagnostic/locator field 中映射为逻辑 `/workspace`/`/openzyme/control.sock`，随后递归脱敏已测试的 high-risk Unix/HPC、Windows、UNC、file URI、private URL/locator 与 credential corpus。credential-URI 检测必须从真实 scheme token 左边界开始，避免对长 benign scalar 在逐字符位置重启 greedy scan；architecture qualification 用未截断 `64 KiB` 输入和 identity-bound child hard deadline 验证该边界，同时要求长混合输入不弱化 credential redaction。该有限 producer sanitizer 不扫描或改写任意用户/科学正文；AOX verifier 独立拒绝 surviving private locator/absolute Host path。stdio 以 binary capture，完整 raw bytes 只进入 attempt-local Host-private command log；run directory/file 以 exclusive `0700`/no-follow `0600` 创建，public ref 不含读取 authority，digest/size 按 raw bytes 计算。projection 只对历史 diagnostic/schema-declared locator field执行第二道防御
-- disk quota 是 Host hard limit：file write/patch 在落盘前按 prospective workspace bytes 拒绝超额，exec 完成后按整个 workspace 重算；任何子进程或 SDK 写入造成的超额都必须把 run 标为 `resource_exceeded`、workspace 标为 `quota_exceeded`，清理前拒绝后续执行
-- sandbox 对外能力是 file+command+SDK bridge；后台 scheduler 只唤醒 agent 和 engine continuation，不替 executor 判断该用本地、HPC 还是其它 backend
-
-`openzyme_pipeline` SDK 至少提供概念能力：
-
-- `artifacts.materialize(artifact_id, target_path=None)`：把授权 artifact 显式搬入 sandbox working tree 或 input view，返回 sandbox-safe path；Host 在复制前验证 sealed source digest、复制后验证 target digest 并再次确认 source 未漂移，任何不一致都结构化失败且不得留下 materialization record
-- `artifacts.get(artifact_id)`：读取授权 artifact 的 sandbox-safe catalog record，保留为轻量兼容入口；它不是 control-plane `artifact.get(path, offset, limit)`，当前不承诺 sandbox metadata paging。若完整 record 超过 4 MiB，transport 显式失败而不返回虚假可执行 hint；真正 bounded manifest paging 只记录于 metadata-manifest proposal
-- `artifacts.register(path, kind, format, metadata)`：登记 pipeline output artifact；SDK 内部选择 inline/sidecar wire transport，Host 保存完整 logical metadata，direct response 只回 `artifact_registration_response@2` bounded projection
-- Host-supervised bio provider 的 sequence Artifact metadata 必须对 record count 保持有界：NCBI/UniProt 的完整逐序列 identity records 保存在独立 canonical `metadata.json` Artifact，FASTA Artifact 只以 `sequence_digest_count`、exact canonical `sequence_digest_index_digest` 与 `canonical_sequence_digest_index@1` 替代线性 map，固定 provider provenance 继续保留。index 对 NCBI 使用 requested accession，对 UniProt 只使用 active primary accession并排除 typed inactive identity；其 digest preimage 固定为 key-sorted、`indent=2`、ASCII-safe escape、末尾单 LF 的 UTF-8 JSON object，count 同时绑定 object member 与 FASTA record 数。该摘要只是 catalog projection，不进入 cutover eligibility；formal UniProt 的既有 raw response、parsed `metadata.json` 与 FASTA 闭包仍独立验证，其他 provider 路径继续依赖各自 byte-Artifact/operation contract 而不能把摘要当作 raw normalization 证明。在写入任一 provider draft 前，Host 对整组 draft 预检 path、组内重复、既有 catalog digest conflict 与 registration metadata transport；该 preflight 不等于跨 Artifact 的事务化 commit，晚项 content validation/seal 失败的 set-level atomicity 仍属于既有 outcome-unknown proposal
-- `artifacts.snapshot_code(paths, entrypoint, metadata)`：把 sandbox `/workspace/src` 中的源码固化为 `ArtifactKind.CODE` 审计快照，供 plan、approval 与 run provenance 绑定
-- `bio.ncbi_fetch_proteins(accessions=[...], output_dir="/workspace/output/...", fields=[...])`：Host 托管 NCBI protein FASTA/metadata 拉取，返回 bounded summary 和 artifact refs
-- `bio.uniprot_fetch(accessions=[...], output_dir="/workspace/output/...", fields=[...], batch_size=...)`：Host 托管 UniProt sequence/metadata 批量拉取；route policy id 保持 `bio.uniprot_fetch.provider:v1`，`provider_config:uniprot:v3` 绑定 `uniprot_primary_sequence_identity@2`。一次 controlled operation 最多 `100000` 个 accession，并固定拆为每 query 最多 `100` 个；`batch_size` 必须是 exact non-bool integer，且仍只控制 response page size（上限 `100`），不能把 boolean、float 或 numeric string 静默 coercion 成可执行请求。`Link` pagination cap 按 query 独立计算。每个 response page 必须绑定生成它的 exact query slice；即使返回 identity 存在于 operation 的其他 query，跨 query swap 仍以 `provider_identity_mismatch` fail closed。active sequence 与 exact-requested typed `Inactive/DELETED|MERGED` 必须形成 complete requested-set partition；`DELETED` 封存非空 reason，`MERGED` 封存非空、去重 replacement-target annotations，两者均封存 UniParc id、release 与 response/record digests，固定 `identity_replaced=false`，不跟随/抓取替换且不使用 sequence；unknown、`DEMERGED`、malformed/missing identity 仍 fail closed。所有 query/page 仍属于同一个 operation/approval。当前 SDK 在 approval 前给出的 accession/query count 是默认 `100` query cap 下的透明预测，不是授权真值；Host provider config 可收紧实际 limit，并在 HTTP 前拥有最终 validation authority。HTTP failure 只投影 batch index/count/start/count/digest 和 bounded page progress，不回显 URL、accession list 或 cursor。[Host-authoritative controlled-operation resource estimate and limit snapshot](architecture-proposals/host-authoritative-controlled-operation-resource-estimate-and-limit-snapshot.md) 的跨层迁移仅记录为 proposal，本 Goal 不实现
-- `bio.hmmer_search(hmm_artifact_id=..., database="refprot", output_dir="/workspace/output/...", params=...)`：Host 托管 EBI HMMER REST 搜索，route policy id 保持 `bio.hmmer_search.provider:v1`，`provider_config:ebi_hmmer:v3` 保留 v2 的 `page_size=1000` 默认/上限与无缺口 materialization，并把 EBI/Celery `RETRY` 作为同一 accepted job 的非终态。poll 继续使用原 job id、显式 `page=1&page_size=<configured>`，不重新 submit；总 poll deadline 为 `3300s`，超时映射为 retryable `provider_timeout`。terminal payload 只作 status/`stats.nreported` closure；result 必须从同宽显式 `page=1` 重新物化，逐页绑定稳定 `page_count`。`FAILURE`/未知状态、非截断 raw hit count 不等于 `nreported`、或 SUCCESS empty 不是 `nreported=0/page_count=0/hits=[]` 均 fail closed。Host 登记 result-page raw hits JSON 与 parsed hits CSV，不把 terminal poll hits 当成 result page
-- sandbox provider request 已建立后的 `PipelineSdkFailure` 必须先通过同一 artifact boundary 登记 `provider_request.json`、`provider_observation.json`、`provider_error.json` 三件 diagnostic artifact，再保留原 canonical code/stage/retryable 重抛并仅附 safe refs；不 retry、不 replay，不把 diagnostics 当 provider success 或 AOX normalized deliverable
-- `bio_tools.cdhit(...)` / `bio_tools.mafft(...)` / `bio_tools.hmmbuild(...)` / `bio_tools.hmmalign(...)` / `bio_tools.hmmer_search_cli(...)`：Host 托管 AOX/HMM 生信工具链；pipeline 不直接 shell/subprocess 调 MAFFT、CD-HIT 或 HMMER binary。Session 14 先启用 `cdhit` / `mafft` / `hmmbuild` / `hmmalign` 的 HPC route，`hmmer_search_cli` 保留 public SDK 名称但固定返回 `unsupported_in_s14`
-- 上述已启用 bio-tool 的 runner template 产生固定 canonical output path set；Host 在 runner/HPC dispatch 前精确校验 `expected_outputs` 路径集合。任意缺失、额外、重复或自定义路径返回 LLM-readable `bio_tool_output_contract_mismatch` 及 exact expected/declared paths，不消耗 HPC job，也不替 agent 静默改写声明
-- `preprocess.convert_format(...)`
-- `preprocess.prepare_receptor(...)`
-- `preprocess.prepare_ligand(...)`
-- `preprocess.smiles_to_3d(...)`
-- `hpc.workspace(label)` / `stage_artifact` / `fetch_outputs`：声明 Host-supervised HPC placement workspace 与文件流；`hpc_workspace_id` 按 `sandbox_workspace_id + normalized_label` 复用，不暴露真实远端路径
-- backend/tool adapter calls：例如 fpocket、Vina、AOX/HMM 相关工具；领域 operation 优先由 `bio_tools` / `structure_tools` / `docking` 表达，HPC 文件流由 `hpc` placement namespace 表达
-- `run.wait()` 与 `run.fetch_artifacts()`
-
-Host supervisor 负责：
-
-- 校验 pipeline 是否只能读取当前 session/task/lane 授权 artifact
-- 执行 dry-run / plan，列出预计 artifact 读写、provider/local/HPC operations、资源与输出
-- 执行 SDK operation policy、approval gate、provider/tool quota、timeout、输出大小限制、declared output 校验和失败分类
-- 对 approval-gated SDK operation 创建 canonical `ApprovalRequest`，并把 pending operation 与 session/task/lane/invocation/step id 关联，供 Web UI 通过 workspace projection 展示 approval card
-- 把每个外部 backend/tool adapter 调用转换为 `packages/openzyme-tools` 的 tool contract compiler 输入；`hpc` 是稳定 executor-facing placement / remote workspace / declarative stage-fetch namespace，领域工具通过 `bio_tools` / `structure_tools` / `docking` 表达；公开 SDK/docs/examples/prompt 不暴露旧 runner-backed shorthand，Host 不提供兼容 stub
-- 由 Host API composition root 实例化 `apps/mcp-hpc-runner` server 并注入 `packages/openzyme-execution` adapter；package adapter 只规范化 runner boundary 调用和输出，不直接依赖 app
-- S12 sandbox wire envelope 只声明 operation plan，不接受 `adapter_result` 或 `result_summary`；sandbox/SDK 不能用自报结果绕过 Host adapter executor，也不能自报 toolchain identity。Host executor 结果只有在 status 明确为 success/completed、无 error/error_code 且 result summary 不矛盾时，才会产生 `result_origin=host_adapter_executor` 的持久化 envelope；repository 同时在 caller 无法写入的独立 Host-owned column 记录该来源。只有该 column 已经 Host 确认的已批准、已完成结果才能在相同 operation digest 经校验后 reuse。当前 schema 中来源 column 为空的记录，即使 caller-owned JSON 含同名字符串，同一 idempotency key 也以 `adapter_result_origin_untrusted` 拒绝且不得隐式重跑；新 key 必须创建新 operation 并重新 approval。旧 schema SQLite 仍按现有 doctrine 显式 schema mismatch，不声称自动原位迁移
-- 记录 `sandbox_workspace_id`、pipeline code digest、immutable image digest、Pipeline SDK digest、`runtime_identity_digest`、SDK operation log、provider request summary、tool command template/sanitized args、RunSpec、run id、artifact lineage 与 provenance；approval 按包含 runtime identity 的完整 plan/operation digest 复用，任一 digest 漂移必须重新审批或失败。persistent `sandbox.exec` 将 runtime identity 持久化到 `SandboxRun.compatibility`，其 Host adapter operation 必须从原始 run 继承 identity，不得从 workspace/tag 猜测；bio output artifact 必须记录 provider、query/accession/database、request window、pagination cursor、response digest、retrieved_at、tool/API version；bio_tools output artifact 必须记录 toolchain id、runtime packaging id、tool name/version、input artifact ids、parameter digest、resource estimate 与 output validation 结果
-- frozen `legacy_sync` 首次 admission 只允许以一个短原子事务共同发布 operation、pending approval、approval binding 与 continuation；control/UI connection 不得先看到 approval 再等待尚未存在的 continuation。人工 approval wait 与 adapter execution 都在 commit 后进行，不把 SQLite write lock 带过外部 wall time，也不把该兼容路径用作 `durable_async_v1` fallback
-- AOX/HMM cutover 的 SIF execution identity 只能由 runner 签发，不能由 SDK、engine 或 caller 自报。runner-owned manifest 绑定 tool/adapter/command template/contract digest/private locator；SSH runner 只接受 canonical `bash -lc` 中唯一的 direct、固定绝对路径 Apptainer executable，在同一受控 shell 中主动 scrub 所有继承的 `APPTAINER_*` / `SINGULARITY_*` runtime-control 环境并二次确认不存在；任一变量无法移除则在 payload 前 fail closed，不得因 trusted Host 的正常 ambient runtime 配置迫使 agent 猜测或覆写环境。runner 要求 runner-owned SIF 是实际 image argument，并按四个 allowlisted command template 校验完整 shell payload（包括参数、重定向与 CD-HIT normalizer），而非只检查 entrypoint 前缀。runner 在执行实际 payload 的同一 login shell 中对该 SIF 做 payload 前后两次哈希；只有 payload 成功且两次 digest 相同才签发 `mcp_hpc_toolchain_runtime_identity@1`。公开闭集仅含 schema/scope/mode、tool/adapter/template ids、runner contract digest 和 observed image digest。adapter、engine、sandbox operation、durable result materializer 与 collector 分别 closed-reconstruct 该投影；durable materializer 必须把 terminal runner raw result 中的 exact safe identity 带入 immutable result envelope，并剥离 private SIF locator。present-but-invalid/错绑 identity 以 terminal-known `durable_hpc_toolchain_runtime_identity_invalid` 终结；missing identity 不得从 toolchain id、pin 或 artifact metadata 推断，collector 继续 fail closed
-- runner/server/adapter/engine 对任何 non-success、unknown status、missing identity、output validation failure 或 partial execution 都把普通 scientific artifacts 投影为空；失败诊断不能混入 declared scientific outputs。Slurm fetch 只有在同一 handle 的 authoritative state 为 `COMPLETED` 且 exit code 为 0 后才允许下载和登记，running/unknown/failed/cancelled 或无 exit receipt 均不消费 partial outputs
-- 只有 `attestation_scope=same_ssh_login_shell_pre_exec` 且 `execution_mode=ssh` 的上述 receipt 满足当前 AOX cutover identity。Slurm runner 仍可服务一般 workload，但提交/预检发生在 job 外，当前尚无 job-internal same-execution SIF attestation，因此不能把 Slurm metadata 解释为 cutover proof。跨 manifest、route policy、template、DTO 和 verifier 的 single-source registry 计划见 [deferred proposal](architecture-proposals/single-source-hpc-toolchain-contract-registry.md)，不属于当前 Goal 的实现范围
-- Host composition 必须能为一次 blank-world attempt 显式注入独立的 `sandbox_workspace_root` 与 `artifact_blob_root`；ExecutionEngine 的 pipeline、provider callback、HPC fetch 和 source snapshot 必须一致使用这两个 root，不得在局部路径静默回落到共享 `/tmp`。root identity 属于 operator/private launch state，public evidence 只记录无路径 digest 和 preflight emptiness proof
-- Host adapter executor 在任何 provider/HPC dispatch 前，必须对 approved input artifact ids/digests 做等长、当前 session 与 catalog digest 校验，并经 `ArtifactBoundaryService.materialize(mode="readonly")` 重新验证实际 sealed blob bytes。一旦 blob 与 catalog digest 分离，以 canonical `artifact_blob_digest_mismatch` 在 `adapter_input_integrity` 阶段失败，不调用 provider/runner，也不把仅元数据匹配解释为完整性证明
-- Provider cache 只能作为 Host-private optimization；cache key/digest 可进入 provenance，但不能作为 live cutover passed 证据。AOX/HMM live cutover 必须生成 sealed evidence bundle。
-
-#### 3.1.1 Durable operation、continuation 与 HPC transport
-
-`durable_async_v1` operation 在同一 admission transaction 中冻结 owner mode、approval binding、唯一 `ControlledOperationExecution`、immutable dispatch request、continuation origin/process identity 与 admission event。`ControlledOperationExecutionWorker` 是唯一 external-effect owner，只做短 claim、dispatch、poll/reconcile、materialize slice；它不持 agent session lease，也不持 SQLite transaction 跨 provider/HPC 调用。`ControlledOperation.status/result/error` 只是由 transition service 派生的兼容投影，sandbox、adapter、callback 与 recovery path 不得 raw save durable row。durable provider materialization 保存的 immutable handle 是 Host 校验后的完整 S12 adapter envelope；兼容投影必须把该 envelope 原样写入 `adapter_result_envelope`，只把其 exact object `bounded_summary` 写入 `result_summary`，从而与同步 Host executor 的 direct provider response 保持同一 SDK wire contract。若 provider artifacts 已完整登记而 callback 丢失，reconcile 不得生成通用 `status=recovered` 摘要：它只读取同一 operation/request 的 sealed request/observation control documents，核实际 content/sealed digest、strict JSON closed schema、route/provider/config/output-dir 与 artifact metadata 后，恢复原 summary、validation、warnings 与 transcript manifest；control document 限 `8 MiB`，完整 canonical immutable result envelope 限 `256 KiB`，inline summary 必须与其余 envelope 字段共同满足该 core 上限。EBI HMMER 不在 summary 内复制 `candidate_accessions`，exact candidate identities 只从 digest-bound `provider_parsed/parsed_hits.csv` 读取。任一缺失、超限或漂移 terminal-known fail closed，且不 replay provider；terminal-known invalid observation 直接把 execution 终结为 `recovery_failed`，不得重新排队形成 reconcile 热循环。HPC run handle 或 failure envelope 没有 `bounded_summary` 时仍 direct 投影；畸形字段不得 fallback。
-
-sandbox control 到 execution engine 的组合边界统一为 typed `SandboxHostGateway`。每次调用必须携带一个 exact `SandboxHostCallContext`，其 owner 只能是 session turn、sandbox process、durable execution 或 continuation delivery，并同时携带当前 mutation-writer authority。control server 不反射 engine bound methods，engine 不拥有 repository scope factory，也没有 optional repository override。attached process 在 continuation 后调用 `fetch_outputs` 仍使用 process context；durable route adapter 使用 execution context；delivery context 不能接管二者。
-
-Execution effect certainty 是闭集：`no_effect` 只允许同 phase、同 run、同 identity 的一次有界机械恢复；`dispatch_in_doubt` 禁止 replay；`effect_known` 只能查询已持久化的 exact backend handle；`terminal_known` 只能恢复 result staging、declared-output fetch 或 immutable artifact promotion。Execution terminal、result artifact ready、continuation delivered、agent wakeup 与 task business terminal 是独立事实。
-
-当前 continuation 只实现 `attached_process`：Host-private registry 绑定 exact sandbox run/workspace、runtime identity、process epoch、tool call、invocation 与 signal。delivery generation、result digest 或 process identity 漂移均 fail closed；Host restart 丢失 live process 时明确标记 delivery recovery failure，保留已完成 execution/result，不重跑 effect。`journaled_sdk_call_boundary` 仅是关闭的 schema 值，任意 Python stack replay 尚未实现。
-
-`mcp-hpc-runner` 的 server 生命周期拥有一个 `SshTransportManager`，按 deployment/config、normalized target、credential/host-key/transport policy 隔离 per-target OpenSSH ControlMaster generation。ssh/scp/rsync 共享同一 option compiler 与 ControlPath，但每个 command 仍是隔离 channel，不依赖持久 shell state。staging 必须重新验证 exact remote file SHA-256 或有界 canonical tree manifest；cache hit 不能代替 bytes 证明。direct SSH 在 payload 已写出后丢失 response 进入 `dispatch_in_doubt`，不允许重发；Slurm 只通过 exact persisted handle poll/reconcile；known terminal 后只恢复 output fetch/verify。完整边界见 [Runtime / HPC 可靠性边界](07-runtime-hpc-reliability.md)。
-
-C8 breaking cutover 后，上一段 staging/fetch 只描述历史 occurrence 的读取语义，不再是新执行入口。新 executor login workspace 在任何 SSH create 前持久化 exact intent，以 runner-private local binding、target sidecar、opaque handle 与 immutable receipt 做 compare-and-create；provision 与 cleanup 的 response-loss 状态分开持久化，只能查询同一 handle/path。remote root 必须由 target-native isolation command 按 OS principal policy分配、验证和清理，runner 不直接 `rm -rf` owner root。agent-native credential只含 login/file/Git/LFS operation class，没有 `scheduler.submit` 或 `sbatch` authority。
-
-SSH/Slurm closed attempt metadata 还必须封存 terminal status、safe machine error code 与
-既有 effect/retry envelope。adapter 只接受 bounded safe identifier，不要求全大写，也不
-透传 exception message、target、locator、path 或 raw stderr。runner-backed durable route
-在 exact reservation 存在时以该 observation 为唯一 causal input；例如 pre-dispatch
-`transport_connect_failed/no_effect` 必须保持同一 error/effect 对进入 execution、
-continuation 与 failure projection，不能被本地 failed `Run` 覆盖成
-`durable_hpc_terminal_failure/terminal_known`。
-
-### 3.2 Pipeline SDK Docs
-
-SDK 用法是 execution capability contract 的一部分，不是模型常识。executor prompt
-只应给最小框架、关键词和要求，不应把完整 SDK reference 长篇内嵌进系统提示。
-
-V3 默认提供可检索的 pipeline SDK 文档库：
-
-- 文档根目录：`docs/v3/execution-pipeline-docs/`
-- executor 默认可使用只读 `docs.search` / `docs.read`
-- 文档库必须与当前 SDK 版本同步，并优先覆盖 persistent sandbox、artifact materialize/register/snapshot、preprocess、tool adapter、batch pattern、sandbox rule 与示例
-
-execution teammate 的默认 authoring 流程：
-
-```text
-restore task + artifact catalog
-  -> read minimal prompt keywords
-  -> docs.search for needed SDK/API details
-  -> docs.read selected references/examples
-  -> edit sandbox files and pipeline code
-  -> snapshot source when needed
-  -> run sandbox dry-run / validation through the Host supervisor
-  -> fix from structured feedback or request approval
-```
-
-dry-run 反馈必须给出可检索关键词或相关 doc id。例如 Vina ligand 不是 PDBQT 时，
-反馈应提示查询 `preprocess.prepare_ligand` 或 `hpc-vina.md`，而不是只返回低层
-Python exception。
-
-### 3.3 Execution Tool Contract 与 External Backend SDK
-
-tool contract 至少描述：
-
-- required input slots 与目标远端路径
-- optional params 与资源请求
-- expected outputs 与 success checks
-- failure signatures 与 parser hints
-- preprocess requirements，例如 Vina 需要 receptor/ligand PDBQT
-
-外部 backend SDK 函数的实现默认应由 tool contract 驱动，而不是不断增加
-tool-specific command 拼接分支。每次 runner-backed 调用都必须生成可审计
-`RunSpec`；旧 runner-backed `hpc.fpocket` / `hpc.vina` shorthand 只是迁移期实现债，
-不是稳定 executor-facing product namespace。稳定 public SDK 中 `hpc` 保留为
-placement / remote workspace / declarative stage-fetch namespace。
-
-第一阶段架构瘦身后，`packages/openzyme-tools` 是 fpocket、Vina 和 `bio_tools.*`
-execution contract、command rendering、compiler helper 与 result parser 的唯一实现位置。
-`packages/openzyme-engines` 的 execution engine 只编排 control-plane invocation、approval、
-artifact/run 持久化和 sandbox/provider/HPC supervisor 流程，不维护第二套 command
-template、parser 或 HPC catalog data。`openzyme-runtime.hpc_catalog` 仅作为旧 import
-兼容 shim，真实 catalog data 位于 `packages/openzyme-tools/src/openzyme_tools/data/hpc_catalog`。
-
-preprocess 是 pipeline 的受控本地能力：
-
-- `convert_format` 负责通用分子格式转换
-- `prepare_receptor` 负责 receptor PDBQT 准备
-- `prepare_ligand` 负责 ligand PDBQT 准备
-- `smiles_to_3d` 负责 SMILES 到三维 ligand 中间结构
-
-executor 在 pipeline code 中判断是否需要 preprocess；preprocess 输出必须先成为可信
-session artifact，再被后续外部 backend/tool adapter 调用作为 `RunSpec.inputs` 或本地
-tool 输入消费。
-
-## 4. Reporting 默认不属于 Capability Engine
-
-定位：
-
-- 报告总结默认由 report teammate 直接在共享 workspace 上完成
-- `report draft` 是 control-plane 中可恢复、可修订、可发布的正式工作对象
-
-默认要求：
-
-- report teammate 读取 research、execution、artifact workspace 与 protocol thread
-- report teammate 直接更新 `report_draft`
-- final `report` 作为 `report_draft` 的发布结果进入 workspace projection
-
-补充边界：
-
-- 若未来需要离线批处理、重算、严格 schema 生成，可额外定义可选 reporting engine
-- 该可选 engine 不属于当前 V3 默认 capability baseline，也不应反向主导主路径
-
-## 5. Engine Registration
-
-所有 capability engine 必须挂入统一 registry。
-
-registry 至少记录：
-
-- `engine_name`
-- `tool_names`
-- `input_schema`
-- `output_schema`
-- `requires_approval`
-- `supports_background`
-- `idempotency_key_shape`
-- `produces_artifact_types`
-- `capability_key`
-
-engine-facing tools 的模型可见 contract 不再由 `EngineDescriptor.tool_names` 加一份平行 `engine_tool_descriptors()` schema 决定。每个可被 agent 调用的 capability tool 必须注册为 `ToolRuntime`：
-
-- `register_tools(registry)` 调用 `registry.register_runtime(runtime)`，runtime 自身提供稳定 `tool_name`
-- `runtime.spec(step_context)` 是 provider-visible schema 的来源
-- `runtime.governance(step_context)` 声明 role scope、side effect、approval requirement 与 parallel metadata
-- `runtime.validate(step_context, invocation)` 在 dispatch 前做结构化参数校验
-- `runtime.dispatch(step_context, invocation, runtime_context)` 复用 engine 既有受控 handler，不绕过 approval、sandbox、artifact catalog、runner adapter 或 provider adapter
-
-`EngineDescriptor.tool_names` 仍用于 engine 能力摘要、workspace/debug 投影和迁移一致性校验，但它不能列出没有 registered runtime、无法 dispatch 的模型可见工具。兼容期若仍保留 `engine_tool_descriptors()`，它只能临时调用 engine 的 `register_tools()` 并从 registered runtime 的 `ToolSpec` 派生 `ToolDescriptor`；不得维护第二份 execution / deep_research schema truth。
-
-当前已迁移的 engine tools：
-
-- `execution.pipeline.start`：executor-scoped compatibility bridge，`side_effect=approval` 且 `approval_required=true`；dispatch 继续进入现有 Host-supervised execution pipeline，不允许直接调用 runner、SSH、Slurm、runner config 或 Host 本地 artifact path
-- `execution.pipeline.status`：executor-scoped read tool
-- `deep_research.start` 与 `deep_research.resume`：researcher-scoped external/write 类 tool
-- `deep_research.status` 与 `deep_research.dossier`：researcher-scoped read tool
-
-## 6. AI 提醒
-
-后续 AI 在实现 capability engine 时必须记住：
-
-- 能力引擎是 harness 的被调对象，不是 product orchestrator
-- 如果实现过程中又在 engine 外层包一个更大的 phase graph，说明方向错了
-
-## 7. Qualification 中的 engine 边界
-
-可执行架构资格使用 production engine registry、durable coordinator/supervisor/worker 和 sandbox
-Host gateway，但所有外部端口默认禁止；只有 registry 显式声明的 controlled adapter 或
-identity-bound local fault process 可用，并必须记录 effect ledger。资格矩阵验证调用 mechanics、
-authority、reconciliation、boundedness 与 evidence closure，不验证真实 provider/HPC availability
-或 scientific quality，也不得根据测试 fixture 给 engine 增加隐藏 fallback。
-
-## 8. Failure 与 selected-result engine contract
-
-Capability engine 的 ordinary validation/local/provider failure 在 effect 已知时必须返回 typed
-failed result，保留 canonical invocation/execution identity，并把控制权交还 agent。engine
-不得因失败自行切 backend、改参数、创建 replacement operation 或新 attempt。external effect
-未知时只可进入 reconciliation-required state。
-
-科学 workflow 可以包含多个 trial run。engine 负责忠实产出每次 occurrence、effect/result 和
-artifact provenance；它不决定哪些 occurrence 被采用。selection/disposition/adoption/
-materialization/closure 属于通用 attempt control plane。相同 attempt 跨 run materialization
-必须经 Host artifact catalog authority；跨 attempt effect reuse 一律拒绝。
+AOX/HMM 等垂直能力通过显式 workflow contract/registry 和 installed pure calculations 组合。generic
+core 不增加 AOX 条件分支。formal scientific path 必须绑定 attempt admission、selection、producer
+effect、published files 和 exact validation receipt；历史 campaign 不回填。

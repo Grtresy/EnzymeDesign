@@ -1,30 +1,50 @@
 {
-  "schema_id": "historical_artifact_migration_source_only_gate@1",
+  "schema_id": "historical_artifact_migration_release_gate@3",
   "change_id": "migrate-historical-artifacts-to-git-lfs",
-  "decision": "migration_implementation_source_allowed_execution_and_deletion_forbidden",
+  "decision": "exact_local_deployment_migration_completed_source_preserved",
+  "operator_authorization": {
+    "authorized_by_user": true,
+    "authorization_scope": "resolved_local_control_plane_deployment",
+    "deployment_inventory_and_migration_authority": true,
+    "physical_source_deletion_authority": false,
+    "live_provider_hpc_or_network_authority": false
+  },
   "direct_predecessor": {
     "change_id": "cut-over-workspace-public-interfaces",
-    "source_gate_sha256": "b6292251e7ba4200e87ec64feff0e44a562b6c2b35151f3014e5764bf54fe87e",
-    "formal_completion_receipt": "missing",
-    "public_epoch_activation": "not_proven"
+    "formal_completion_receipt_digest": "sha256:a1192dd51598a0b66b6e5e66c48ae04a5ae9e7a0de22c27eae6275bccc56969b",
+    "release_bundle_digest": "sha256:f89b88fd40747b80b27ece4cfbde46b62f27d11037d8eafd7f84eaa61b2a619e",
+    "activation_evidence_digest": "sha256:0c34b281bd50c5a099707ec49a3d8f02faed5d86a80fae0d624552c2f6cb5bd8",
+    "active_public_contract": "file_workspace_public@1"
+  },
+  "deployment_evidence": {
+    "quiescence_receipt_digest": "sha256:47645791a82c4076ee3883d1a08761c300e146da7d8a938d32e1223dbd09139f",
+    "database_backup_digest": "sha256:c086b9b50203ed10281f459a9e731c5325c61811c2b0a3a4c13faa4bc92c0f68",
+    "storage_backup_digest": "sha256:99ad6ab94d3619950c54c5b65f81c2f1a9c80c3d937e6feee37d69d638444800",
+    "historical_schema_preparation_receipt_digest": "sha256:f94e93269e3e5714253cc141fd953a2c7237af279cf7012e6f783e9419ba53eb",
+    "inventory_digest": "sha256:bb89fc030c5529c7d13f0f38f43ce0eee40f76bbc1ee384e85599cae8959bc32",
+    "historical_migration_receipt_digest": "sha256:ee0c90c4570ede2ed87d6273c0c9570b7649e32cffa48ad764f9036789c1c9ba",
+    "standalone_verification_digest": "sha256:b8149b2e01ae68c8e598cf36731dfc6e395208b74cf9845b1a18e763405d94ad",
+    "expected_object_count": 0,
+    "migrated_object_count": 0,
+    "expected_reference_count": 0,
+    "migrated_reference_count": 0,
+    "expected_byte_total": 0,
+    "migrated_byte_total": 0,
+    "negative_item_count": 0,
+    "source_preserved": true,
+    "current_adoption_authorized": false
   },
   "allowed": [
-    "historical_domain_repository_and_forward_schema_source",
-    "pure_inventory_and_path_reader_source",
-    "deterministic_unit_and_receipt_source",
-    "non_adoption_verifier_source",
-    "deferred_tests_and_documentation_source",
-    "static_source_audit"
+    "admit_exact_receipt_bound_artifact_subsystem_removal",
+    "retain_historical_receipts_for_standalone_verification",
+    "keep_current_repository_service_git_and_lfs_storage_untouched"
   ],
   "forbidden": [
-    "database_or_storage_snapshot_execution",
-    "legacy_writer_freeze_execution",
-    "remote_git_or_lfs_write_or_readback",
-    "reference_rewrite_or_migration_execution",
-    "legacy_source_deletion",
-    "current_publication_or_scientific_adoption",
+    "modify_or_delete_any_legacy_source_in_this_change",
+    "write_an_unlisted_or_unspecified_git_or_lfs_remote",
+    "adopt_historical_imports_into_current_product_state",
     "provider_hpc_network_or_live_effect",
-    "tests_build_validation_before_all_changes"
+    "treat_empty_identity_sets_as_omitted_inventory"
   ],
-  "hard_stop": "even_a_future_global_migration_receipt_does_not_authorize_physical_removal"
+  "next_gate": "artifact_subsystem_removal_release_gate@3"
 }

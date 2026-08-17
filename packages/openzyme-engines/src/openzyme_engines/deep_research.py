@@ -61,7 +61,7 @@ class NormalizedResearchDossier:
     evidence_items: tuple[ResearchEvidenceItem, ...]
     source_refs: tuple[dict[str, Any], ...]
     unresolved_gaps: tuple[str, ...]
-    artifacts: tuple[dict[str, Any], ...] = ()
+    files: tuple[dict[str, Any], ...] = ()
     raw_notes: tuple[str, ...] = ()
     clarification_question: str | None = None
     recent_turns: tuple[dict[str, Any], ...] = ()
@@ -75,7 +75,7 @@ class NormalizedResearchDossier:
             "evidence_items": [item.to_dict() for item in self.evidence_items],
             "source_refs": [dict(source) for source in self.source_refs],
             "unresolved_gaps": list(self.unresolved_gaps),
-            "artifacts": [dict(item) for item in self.artifacts],
+            "files": [dict(item) for item in self.files],
             "raw_notes": list(self.raw_notes),
             "clarification_question": self.clarification_question,
             "recent_turns": [dict(turn) for turn in self.recent_turns],
@@ -112,7 +112,7 @@ class NormalizedResearchDossier:
             evidence_items=tuple(evidence_items),
             source_refs=tuple(flattened_sources),
             unresolved_gaps=tuple(payload.unresolved_gaps),
-            artifacts=tuple(dict(item) for item in getattr(payload, "artifacts", [])),
+            files=tuple(dict(item) for item in payload.files),
             raw_notes=tuple(payload.raw_notes),
             clarification_question=payload.clarification_question,
             recent_turns=tuple(turn.model_dump() for turn in payload.recent_turns),
@@ -143,7 +143,6 @@ def _tool_payload(
         "gap_count": len(dossier.unresolved_gaps),
         "workspace_files": list(workspace_files),
         "publication_required_for_handoff": True,
-        "artifact_alias_created": False,
         "engine_document_body_created": False,
     }
 
@@ -426,7 +425,7 @@ class DeepResearchEngine:
             requires_approval=False,
             supports_background=True,
             idempotency_key_shape="{task_id}:deep_research:{nonce}",
-            produces_artifact_types=(),
+            produces_file_types=(),
             capability_key="deep_research",
         )
 
@@ -558,7 +557,6 @@ class DeepResearchEngine:
             f"{root}/analysis.json",
             f"{root}/dossier.json",
         ]
-        payload["artifact_alias_created"] = False
         payload["persistent_content_authority"] = "workspace_file_then_publication"
         payload["legacy_research_content_read"] = False
         return payload
@@ -590,9 +588,9 @@ class DeepResearchEngine:
                 resolution=resolution,
             )
             dossier = NormalizedResearchDossier.from_runner_payload(runner_output)
-            if dossier.artifacts:
+            if dossier.files:
                 raise ValueError(
-                    "deep research runner returned artifact-era file manifests; "
+                    "deep research runner returned unstored file manifests; "
                     "provider files must be written directly into the researcher workspace"
                 )
         except Exception as exc:

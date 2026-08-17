@@ -17,11 +17,34 @@ class HostPrincipal:
     roles: frozenset[str]
     project_ids: frozenset[str]
 
+    def __post_init__(self) -> None:
+        agent_principal = self.principal_id.startswith("agent-member:") and len(
+            self.principal_id
+        ) > len("agent-member:")
+        if agent_principal != (self.roles == frozenset({"agent"})):
+            raise ValueError(
+                "agent-member principals must have exactly the agent role"
+            )
+        if not agent_principal and (
+            not self.principal_id.startswith("user:")
+            or len(self.principal_id) <= len("user:")
+        ):
+            raise ValueError("user principals must have a non-empty user: identity")
+        if not self.project_ids or "" in self.project_ids:
+            raise ValueError("Host principals require non-empty project scope")
+
     def has_role(self, *roles: str) -> bool:
         return bool(self.roles.intersection(roles))
 
     def can_access_project(self, project_id: str) -> bool:
         return "*" in self.project_ids or project_id in self.project_ids
+
+    @property
+    def agent_member_id(self) -> str | None:
+        prefix = "agent-member:"
+        if self.roles == frozenset({"agent"}) and self.principal_id.startswith(prefix):
+            return self.principal_id.removeprefix(prefix)
+        return None
 
 
 @dataclass(frozen=True, slots=True)

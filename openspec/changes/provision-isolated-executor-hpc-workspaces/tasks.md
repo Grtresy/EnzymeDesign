@@ -19,16 +19,16 @@
 - [x] 3.2 在Host任何SSH effect前持久化 immutable provision intent/idempotency key，并将provisioning作为canonical controlled external operation绑定owner、lease/fence和absolute deadline。
 - [x] 3.3 在runner-private local/remote sidecar实现same-key compare-and-create、opaque path allocation、safe ownership/mode setup、independent clone、binding/base/remote verification和immutable provision receipt。
 - [x] 3.4 实现accepted response丢失后的exact reconciler，只查询同一intent/key/handle/sidecar/path；matching receipt幂等adopt，conflict fail closed，unknown保持`dispatch_in_doubt`且零replacement create。
-- [ ] 3.5 增加runner/Host restart恢复与stale worker fencing，证明只有current execution owner可提交canonical workspace state，authoritative receipt不得被old callback覆盖。
+- [x] 3.5 增加runner/Host restart恢复与stale worker fencing，证明只有current execution owner可提交canonical workspace state，authoritative receipt不得被old callback覆盖。
 
 ## 4. Owner-scoped native HPC login data plane
 
 - [x] 4.1 接入真实credential provider与target authenticator，实现绑定session、executor、target profile、local/remote generation、canonical root、lease id/version和login/file operation classes的短期SSH credential issuance/authentication/revocation；credential不得包含`scheduler.submit`/`sbatch` claim或落入workspace/public projection。
-- [ ] 4.2 在HPC login环境安装并资格验证native Git、Git LFS、OpenSSH、rsync、scp和shell工具，使clone使用session-pinned internal remote且不挂Host repo/home/SSH或runner-private metadata；在target OS principal/root层落实owner、mode/ACL/jail或等价强制隔离。
-- [ ] 4.3 将owner login alias/path/credential注入到executor capsule的scoped native view，使用真实native path证明SSH/rsync/scp/Git/LFS与create/read/update/delete直接运行而不调用Host typed transfer gateway或逐命令approval。
-- [ ] 4.4 增加native positive/negative qualification tests，覆盖跨executor、跨target、跨generation、stale/revoked credential、`..`/absolute path、symlink/hardlink、rsync/scp destination与sidecar tamper；任何失败不得改用shared account、alternate path、Host proxy或其他credential，mock/config-only proof不得激活target。
-- [ ] 4.5 证明native transfer、remote CRUD、local/private commit和private-ref push仅改变owner private state，不创建`PublishedRevision`、protocol handoff、task completion、artifact或job result。
-- [ ] 4.6 验证C2 exact/session-policy/subtree revoke的canonical结果会停止对应exact lease的新credential与connection admission且child revoke不反向影响parent；本change不得自行遍历genealogy，也不得把revoke推断为既有transfer/job settled。
+- [x] 4.2 在HPC login环境安装并资格验证native Git、Git LFS、OpenSSH、rsync、scp和shell工具，使clone使用session-pinned internal remote且不挂Host repo/home/SSH或runner-private metadata；在target OS principal/root层落实owner、mode/ACL/jail或等价强制隔离。
+- [x] 4.3 将owner login alias/path/credential注入到executor capsule的scoped native view，使用真实native path证明SSH/rsync/scp/Git/LFS与create/read/update/delete直接运行而不调用Host typed transfer gateway或逐命令approval。
+- [x] 4.4 增加native positive/negative qualification tests，覆盖跨executor、跨target、跨generation、stale/revoked credential、`..`/absolute path、symlink/hardlink、rsync/scp destination与sidecar tamper；任何失败不得改用shared account、alternate path、Host proxy或其他credential，mock/config-only proof不得激活target。
+- [x] 4.5 证明native transfer、remote CRUD、local/private commit和private-ref push仅改变owner private state，不创建`PublishedRevision`、protocol handoff、task completion、artifact或job result。
+- [x] 4.6 验证C2 exact/session-policy/subtree revoke的canonical结果会停止对应exact lease的新credential与connection admission且child revoke不反向影响parent；本change不得自行遍历genealogy，也不得把revoke推断为既有transfer/job settled。
 
 ## 5. Revision sync、drift handling 与 cleanup
 
@@ -41,14 +41,14 @@
 ## 6. mcp-hpc-runner workspace cutover
 
 - [x] 6.1 将runner provisioning/inspection API切换为exact executor workspace id/generation与opaque handle，删除new path中的artifact input、Host path、`stage_to`、catalog ref和`HpcStageRef`字段。
-- [ ] 6.2 删除per-run artifact staging、Host output-fetch publication、artifact-store manifest与对应stage/fetch callbacks/mutation writers，使job-specific目录只属于persistent executor workspace。
-- [ ] 6.3 将runner preflight、phase/effect journal、normalized result和transport diagnostics切换为workspace owner/generation/root/clone facts及safe opaque ids，不公开raw path给非owner。
-- [ ] 6.4 将provision/validation/lifecycle的runner-private ControlMaster与agent-native SSH sessions明确分离，补socket ownership/generation/shutdown tests，并证明agent login/file credential与runner transport credential都没有scheduler-submit authority；C9 payload只有额外present并consume exact one-occurrence credential后才能使用isolated runner channel调用`sbatch`。
+- [x] 6.2 删除per-run artifact staging、Host output-fetch publication、artifact-store manifest与对应stage/fetch callbacks/mutation writers，使job-specific目录只属于persistent executor workspace。
+- [x] 6.3 将runner preflight、phase/effect journal、normalized result和transport diagnostics切换为workspace owner/generation/root/clone facts及safe opaque ids，不公开raw path给非owner。
+- [x] 6.4 将provision/validation/lifecycle的runner-private ControlMaster与agent-native SSH sessions明确分离，补socket ownership/generation/shutdown tests，并证明agent login/file credential与runner transport credential都没有scheduler-submit authority；C9 payload只有额外present并consume exact one-occurrence credential后才能使用isolated runner channel调用`sbatch`。
 - [x] 6.5 对旧artifact-staging RunSpec做versioned hard rejection，并在`execute-hpc-jobs-from-workspace-revisions`尚未完成时让current HPC job admission明确返回`workspace_revision_execution_required`；不得在本change提前实现one-occurrence `sbatch` credential、target unregistered-submit rejection、ordinary-job execution admission、双写或fallback到旧runner。
 
 ## 7. 验证、架构文档与 change receipt
 
-- [ ] 7.1 运行domain/repository、provision response-loss/restart、真实credential issuance/authentication/revoke、target OS/root owner isolation、native SSH/Git/LFS/rsync/scp/CRUD正反向、private/published sync、drift/replacement/cleanup、runner schema与no-stage/fetch focused tests及 touched Ruff/integration fixtures，并保存exact results；每个activated target必须有native proof而非config/mock assertion。
+- [x] 7.1 运行domain/repository、provision response-loss/restart、真实credential issuance/authentication/revoke、target OS/root owner isolation、native SSH/Git/LFS/rsync/scp/CRUD正反向、private/published sync、drift/replacement/cleanup、runner schema与no-stage/fetch focused tests及 touched Ruff/integration fixtures，并保存exact results；每个activated target必须有native proof而非config/mock assertion。
 - [x] 7.2 同步 `docs/OpenZyme架构设计.md`、相关 `docs/v3/` control-plane/capability/runtime 文档、`docs/v3/execution-pipeline-docs/README.md` 与 `docs/v3/harness-complexity-audit.md`，明确owner-visible login locator、isolated remote clone、native data plane、same-handle provisioning与C9 admission gate。
-- [ ] 7.3 运行 `DO_NOT_TRACK=1 openspec validate provision-isolated-executor-hpc-workspaces --strict`、`git diff --check`、HpcStageRef/staging/fetch/Host-gateway/fallback audit 与 `./scripts/check-mainline.sh`，确认测试不触发真实HPC/live effect。
-- [ ] 7.4 生成并 pure-verify `provision-isolated-executor-hpc-workspaces` change receipt，绑定 prerequisite receipts、source/config/schema/migration digests、credential provider/authenticator、target-native OS/root与native CRUD qualification、focused/mainline/docs results和`implementation_complete=true`；receipt必须声明C2仅提供lease seam，且不得证明C9 job path、one-occurrence scheduler credential、unregistered-submit rejection、task/scientific completion或外部job settlement。
+- [x] 7.3 运行 `DO_NOT_TRACK=1 openspec validate provision-isolated-executor-hpc-workspaces --strict`、`git diff --check`、HpcStageRef/staging/fetch/Host-gateway/fallback audit 与 `./scripts/check-mainline.sh`，确认测试不触发真实HPC/live effect。
+- [x] 7.4 生成并 pure-verify `provision-isolated-executor-hpc-workspaces` change receipt，绑定 prerequisite receipts、source/config/schema/migration digests、credential provider/authenticator、target-native OS/root与native CRUD qualification、focused/mainline/docs results和`implementation_complete=true`；receipt必须声明C2仅提供lease seam，且不得证明C9 job path、one-occurrence scheduler credential、unregistered-submit rejection、task/scientific completion或外部job settlement。

@@ -15,9 +15,6 @@ SCIENTIFIC_ATTEMPT_SCHEMA_VERSION = "scientific_attempt@1"
 SCIENTIFIC_CHAIN_SELECTION_SCHEMA_VERSION = "scientific_chain_selection@1"
 SCIENTIFIC_OPERATION_DISPOSITION_SCHEMA_VERSION = "scientific_operation_disposition@1"
 SCIENTIFIC_EFFECT_ADOPTION_SCHEMA_VERSION = "scientific_effect_adoption@1"
-SCIENTIFIC_ARTIFACT_MATERIALIZATION_SCHEMA_VERSION = (
-    "scientific_artifact_materialization@1"
-)
 SCIENTIFIC_ATTEMPT_CLOSURE_REQUEST_SCHEMA_VERSION = (
     "scientific_attempt_closure_request@1"
 )
@@ -473,8 +470,6 @@ class ScientificEffectAdoption:
     execution_id: str
     result_handle_id: str
     result_digest: str
-    artifact_set_digest: str
-    source_sandbox_run_id: str
     effect_certainty: str
     approval_digest: str | None
     actor_ref: str
@@ -493,53 +488,7 @@ class ScientificEffectAdoption:
             execution_id=self.execution_id,
             result_handle_id=self.result_handle_id,
             result_digest=self.result_digest,
-            artifact_set_digest=self.artifact_set_digest,
-            source_sandbox_run_id=self.source_sandbox_run_id,
             effect_certainty=self.effect_certainty,
-            actor_ref=self.actor_ref,
-            idempotency_key=self.idempotency_key,
-            request_digest=self.request_digest,
-            created_at=self.created_at,
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        return _serialize_record(self, schema_version=self.SCHEMA_VERSION)
-
-
-@dataclass(frozen=True, slots=True)
-class ScientificArtifactMaterialization:
-    SCHEMA_VERSION: ClassVar[str] = SCIENTIFIC_ARTIFACT_MATERIALIZATION_SCHEMA_VERSION
-
-    receipt_id: str
-    selection_id: str
-    attempt_id: str
-    adoption_id: str
-    source_artifact_id: str
-    source_artifact_digest: str
-    source_sandbox_run_id: str
-    target_sandbox_workspace_id: str
-    target_sandbox_run_id: str
-    target_path: str
-    boundary_materialization_id: str
-    actor_ref: str
-    idempotency_key: str
-    request_digest: str
-    created_at: str
-
-    def __post_init__(self) -> None:
-        _require_nonempty(
-            type(self).__name__,
-            receipt_id=self.receipt_id,
-            selection_id=self.selection_id,
-            attempt_id=self.attempt_id,
-            adoption_id=self.adoption_id,
-            source_artifact_id=self.source_artifact_id,
-            source_artifact_digest=self.source_artifact_digest,
-            source_sandbox_run_id=self.source_sandbox_run_id,
-            target_sandbox_workspace_id=self.target_sandbox_workspace_id,
-            target_sandbox_run_id=self.target_sandbox_run_id,
-            target_path=self.target_path,
-            boundary_materialization_id=self.boundary_materialization_id,
             actor_ref=self.actor_ref,
             idempotency_key=self.idempotency_key,
             request_digest=self.request_digest,
@@ -591,7 +540,6 @@ class ScientificAttemptClosure:
     operation_universe_digest: str
     disposition_digest: str
     adoption_digest: str
-    materialization_digest: str
     authority_consumption_digest: str
     quiescence_receipt_id: str
     quiescence_receipt_digest: str
@@ -611,7 +559,6 @@ class ScientificAttemptClosure:
             operation_universe_digest=self.operation_universe_digest,
             disposition_digest=self.disposition_digest,
             adoption_digest=self.adoption_digest,
-            materialization_digest=self.materialization_digest,
             authority_consumption_digest=self.authority_consumption_digest,
             quiescence_receipt_id=self.quiescence_receipt_id,
             quiescence_receipt_digest=self.quiescence_receipt_digest,
@@ -627,7 +574,6 @@ class ScientificAttemptClosure:
 
 
 __all__ = [
-    "SCIENTIFIC_ARTIFACT_MATERIALIZATION_SCHEMA_VERSION",
     "SCIENTIFIC_ATTEMPT_ADMISSION_REQUEST_SCHEMA_VERSION",
     "SCIENTIFIC_ATTEMPT_AUTHORIZATION_SCHEMA_VERSION",
     "SCIENTIFIC_ATTEMPT_CLOSURE_REQUEST_SCHEMA_VERSION",
@@ -636,7 +582,6 @@ __all__ = [
     "SCIENTIFIC_CHAIN_SELECTION_SCHEMA_VERSION",
     "SCIENTIFIC_EFFECT_ADOPTION_SCHEMA_VERSION",
     "SCIENTIFIC_OPERATION_DISPOSITION_SCHEMA_VERSION",
-    "ScientificArtifactMaterialization",
     "ScientificAttempt",
     "ScientificAttemptAdmissionRequest",
     "ScientificAttemptAuthorization",

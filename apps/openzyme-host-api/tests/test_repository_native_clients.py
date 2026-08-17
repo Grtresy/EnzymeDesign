@@ -529,6 +529,15 @@ def test_native_git_v2_acl_lfs_and_restart(tmp_path: Path) -> None:
         workspace_generation=1,
     )
     clone = tmp_path / "executor-clone"
+    with fixture.provider.read() as unit_of_work:
+        shared_truth_before = {
+            "published_revisions": unit_of_work.connection.execute(
+                "SELECT COUNT(*) FROM published_revisions"
+            ).fetchone()[0],
+            "task_evidence": unit_of_work.connection.execute(
+                "SELECT COUNT(*) FROM task_finish_evidence_records"
+            ).fetchone()[0],
+        }
 
     try:
         tls_context = ssl.create_default_context(
@@ -825,6 +834,16 @@ def test_native_git_v2_acl_lfs_and_restart(tmp_path: Path) -> None:
             "FETCH_HEAD",
         )
         assert (downloaded / "large.bin").read_bytes() == lfs_content
+
+        with fixture.provider.read() as unit_of_work:
+            assert shared_truth_before == {
+                "published_revisions": unit_of_work.connection.execute(
+                    "SELECT COUNT(*) FROM published_revisions"
+                ).fetchone()[0],
+                "task_evidence": unit_of_work.connection.execute(
+                    "SELECT COUNT(*) FROM task_finish_evidence_records"
+                ).fetchone()[0],
+            }
 
         wrong_repository = _git(
             fixture,

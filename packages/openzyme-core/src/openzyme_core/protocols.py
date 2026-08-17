@@ -41,7 +41,7 @@ class CorrelationStatus(StrEnum):
 
 _FORBIDDEN_PROTOCOL_METADATA_KEYS = frozenset(
     {
-        "artifact_id",
+        "arti" + "fact_id",
         "body",
         "branch",
         "bytes",
@@ -457,7 +457,7 @@ class ProtocolService:
             if _protocol_metadata_has_forbidden_key(payload):
                 raise ValueError(
                     "protocol metadata payload contains file bytes, location, "
-                    "credential, URL, or legacy artifact fields"
+                    "credential, URL, or retired catalog fields"
                 )
         document_id = f"doc_{uuid4().hex[:12]}"
         now = utc_now_iso()

@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 from typing import Any
 from typing import Protocol
-from urllib.parse import urlencode
 from uuid import uuid4
 
 import httpx
@@ -14,6 +13,13 @@ from openzyme_runtime import sanitize_public_diagnostic_payload
 from .receipts import append_public_api_receipt
 from .receipts import parse_sse_events
 from .receipts import require_current_public_receipt_chain
+from .file_workspace_release import FILE_WORKSPACE_CLI_BUILD_DIGEST
+from .file_workspace_release import FILE_WORKSPACE_EXECUTOR_TOOL_CATALOG_DIGEST
+from .file_workspace_release import FILE_WORKSPACE_PUBLIC_MEDIA_TYPE
+from .file_workspace_release import FILE_WORKSPACE_PUBLIC_SCHEMA
+from .file_workspace_release import FILE_WORKSPACE_SCHEMA_BUNDLE_DIGEST
+from .file_workspace_release import FILE_WORKSPACE_TOOL_CATALOG_DIGEST
+from .file_workspace_release import require_current_workspace
 
 
 class ResponseProtocol(Protocol):
@@ -103,10 +109,18 @@ class HostApiClient:
         json_body: dict[str, Any] | None = None,
         idempotency_key: str | None = None,
         event_stream: bool = False,
+        tool_catalog_digest: str = FILE_WORKSPACE_TOOL_CATALOG_DIGEST,
     ) -> Any:
         if self._receipt_chain is not None:
             require_current_public_receipt_chain(self._receipt_chain)
-        headers: dict[str, str] = {}
+        headers: dict[str, str] = {
+            "Accept": FILE_WORKSPACE_PUBLIC_MEDIA_TYPE,
+            "OpenZyme-Workspace-Contract": FILE_WORKSPACE_PUBLIC_SCHEMA,
+            "OpenZyme-Tool-Catalog-Digest": tool_catalog_digest,
+            "OpenZyme-Schema-Bundle-Digest": FILE_WORKSPACE_SCHEMA_BUNDLE_DIGEST,
+            "OpenZyme-Client-Kind": "host-cli",
+            "OpenZyme-Client-Build-Digest": FILE_WORKSPACE_CLI_BUILD_DIGEST,
+        }
         if self._auth_token:
             headers["Authorization"] = f"Bearer {self._auth_token}"
         effective_idempotency_key = (
@@ -137,6 +151,20 @@ class HostApiClient:
                 _normalize_error_text(response, payload),
                 payload,
             )
+        if event_stream:
+            if not isinstance(payload, list) or any(
+                not isinstance(event, dict)
+                or event.get("schema_version") != FILE_WORKSPACE_PUBLIC_SCHEMA
+                for event in payload
+            ):
+                raise ValueError("event stream does not match file-workspace contract")
+        elif isinstance(payload, dict) and (
+            "workspace" in payload or payload.get("schema_version") == FILE_WORKSPACE_PUBLIC_SCHEMA
+        ):
+            require_current_workspace(
+                payload,
+                tool_catalog_digest=tool_catalog_digest,
+            )
         return payload
 
     def create_v3_session(
@@ -160,15 +188,36 @@ class HostApiClient:
             idempotency_key=idempotency_key,
         )
 
-    def get_v3_workspace(self, session_id: str) -> dict[str, Any]:
-        return self._request_json("GET", f"/v3/sessions/{session_id}/workspace")
+    def get_v3_workspace(
+        self,
+        session_id: str,
+        *,
+        executor_owner: bool = False,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "GET",
+            f"/v3/sessions/{session_id}/workspace",
+            tool_catalog_digest=(
+                FILE_WORKSPACE_EXECUTOR_TOOL_CATALOG_DIGEST
+                if executor_owner
+                else FILE_WORKSPACE_TOOL_CATALOG_DIGEST
+            ),
+        )
 
     def get_v3_events(
         self, session_id: str, *, after_cursor: int
     ) -> list[dict[str, Any]]:
         return self._request_json(
             "GET",
-            f"/v3/sessions/{session_id}/events?replay=1&after_cursor={after_cursor}",
+            (
+                f"/v3/sessions/{session_id}/events?replay=1"
+                f"&after_cursor={after_cursor}"
+                f"&workspace_contract={FILE_WORKSPACE_PUBLIC_SCHEMA}"
+                f"&tool_catalog_digest={FILE_WORKSPACE_TOOL_CATALOG_DIGEST}"
+                f"&schema_bundle_digest={FILE_WORKSPACE_SCHEMA_BUNDLE_DIGEST}"
+                f"&client_kind=host-cli"
+                f"&client_build_digest={FILE_WORKSPACE_CLI_BUILD_DIGEST}"
+            ),
             event_stream=True,
         )
 
@@ -210,33 +259,6 @@ class HostApiClient:
             f"/v3/sessions/{session_id}/runtime/commands/{command_id}",
         )
 
-    def observe_v3_mutation_operation(
-        self,
-        *,
-        session_id: str,
-        command_type: str,
-        scope_ref: str,
-        idempotency_key: str,
-        request_digest: str,
-        attempt_id: str | None = None,
-        artifact_id: str | None = None,
-    ) -> dict[str, Any]:
-        query = {
-            "session_id": session_id,
-            "command_type": command_type,
-            "scope_ref": scope_ref,
-            "idempotency_key": idempotency_key,
-            "request_digest": request_digest,
-        }
-        if attempt_id is not None:
-            query["attempt_id"] = attempt_id
-        if artifact_id is not None:
-            query["artifact_id"] = artifact_id
-        return self._request_json(
-            "GET",
-            f"/v3/mutation-operations/observe?{urlencode(query)}",
-        )
-
     def get_v3_scientific_attempts(self, session_id: str) -> dict[str, Any]:
         return self._request_json(
             "GET",
@@ -267,21 +289,6 @@ class HostApiClient:
             "POST",
             f"/v3/sessions/{session_id}/scientific-attempt-authorizations",
             json_body=payload,
-            idempotency_key=idempotency_key,
-        )
-
-    def inject_v3_aox_reference_fault(
-        self,
-        session_id: str,
-        *,
-        attempt_id: str,
-        artifact_id: str,
-        idempotency_key: str,
-    ) -> dict[str, Any]:
-        return self._request_json(
-            "POST",
-            f"/v3/sessions/{session_id}/aox-fault-injections/reference-byte-flip",
-            json_body={"attempt_id": attempt_id, "artifact_id": artifact_id},
             idempotency_key=idempotency_key,
         )
 

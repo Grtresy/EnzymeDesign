@@ -15,7 +15,6 @@ from openzyme_domain import ScientificOperationDispositionKind
 from openzyme_domain import ScientificSelectionState
 
 from .repositories import CoreRepositories
-from .result_artifacts import controlled_operation_artifact_set_digest
 from .scientific_attempt_repositories import ResolvedScientificSelectionHead
 from .scientific_workflow_contracts import HistoricalScientificWorkflowContract
 from .scientific_workflow_contracts import ScientificWorkflowContract
@@ -38,7 +37,6 @@ _ISSUE_PRIORITY = {
     "selection_occurrence_not_closed": 50,
     "selection_adoption_incomplete": 60,
     "selection_adoption_unexpected": 70,
-    "selection_materialization_unexpected": 71,
     "selection_workflow_role_duplicated": 80,
     "workflow_role_invalid": 90,
     "workflow_role_operation_kind_invalid": 91,
@@ -86,8 +84,6 @@ class ScientificSelectionOccurrenceEvaluation:
     disposition_role: str | None
     adoption_id: str | None
     adoption_role: str | None
-    materialization_count: int
-    materialization_ids: tuple[str, ...]
     allowed_roles: tuple[str, ...]
     compatible_roles: tuple[str, ...]
     issue_codes: tuple[str, ...]
@@ -115,12 +111,6 @@ class ScientificSelectionOccurrenceEvaluation:
             "adoption": {
                 "adoption_id": self.adoption_id,
                 "workflow_role": self.adoption_role,
-            },
-            "materializations": {
-                "count": self.materialization_count,
-                "ids": list(self.materialization_ids),
-                "truncated": self.materialization_count
-                > len(self.materialization_ids),
             },
             "allowed_roles": list(self.allowed_roles),
             "compatible_roles": list(self.compatible_roles),
@@ -312,11 +302,6 @@ class ScientificSelectionEvaluator:
                 selection.selection_id
             )
         )
-        materializations = (
-            self.repositories.scientific_artifact_materializations.list_by_selection(
-                selection.selection_id
-            )
-        )
         dispositions_by_operation: dict[str, list[Any]] = {}
         for disposition in dispositions:
             dispositions_by_operation.setdefault(
@@ -328,12 +313,6 @@ class ScientificSelectionEvaluator:
             adoptions_by_operation.setdefault(adoption.operation_id, []).append(
                 adoption
             )
-        materializations_by_adoption: dict[str, list[Any]] = {}
-        for materialization in materializations:
-            materializations_by_adoption.setdefault(
-                materialization.adoption_id,
-                [],
-            ).append(materialization)
 
         universe_ids = set(occurrence_by_id)
         disposition_ids = set(dispositions_by_operation)
@@ -450,7 +429,7 @@ class ScientificSelectionEvaluator:
                         )
                     )
                 run = self.repositories.sandbox_runs.get(
-                    operation.sandbox_run_id
+                    str(occurrence["sandbox_run_id"])
                 )
                 if run is None or not run.status.is_terminal:
                     operation_issues.append(
@@ -629,28 +608,6 @@ class ScientificSelectionEvaluator:
                     )
                 )
 
-            materialization_records = (
-                []
-                if adoption is None
-                else materializations_by_adoption.get(adoption.adoption_id, [])
-            )
-            materialization_ids = tuple(
-                sorted(item.receipt_id for item in materialization_records)[
-                    :20
-                ]
-            )
-            for materialization in materialization_records:
-                if (
-                    materialization.selection_id != selection.selection_id
-                    or materialization.attempt_id != attempt.attempt_id
-                ):
-                    operation_issues.append(
-                        ScientificSelectionIssue(
-                            code="selection_materialization_scope_invalid",
-                            operation_ids=(operation_id,),
-                        )
-                    )
-
             issues.extend(operation_issues)
             occurrence_evaluations.append(
                 ScientificSelectionOccurrenceEvaluation(
@@ -707,8 +664,6 @@ class ScientificSelectionEvaluator:
                     adoption_role=(
                         None if adoption is None else adoption.workflow_role
                     ),
-                    materialization_count=len(materialization_records),
-                    materialization_ids=materialization_ids,
                     allowed_roles=allowed_roles,
                     compatible_roles=compatible_roles,
                     issue_codes=tuple(
@@ -727,26 +682,6 @@ class ScientificSelectionEvaluator:
                 ScientificSelectionIssue(
                     code="selection_adoption_unexpected",
                     operation_ids=unexpected_adoptions,
-                )
-            )
-        adoption_ids = {item.adoption_id for item in adoptions}
-        unexpected_materializations = tuple(
-            sorted(
-                item.receipt_id
-                for item in materializations
-                if item.adoption_id not in adoption_ids
-            )
-        )
-        if unexpected_materializations:
-            issues.append(
-                ScientificSelectionIssue(
-                    code="selection_materialization_unexpected",
-                    facts=(
-                        (
-                            "unexpected_count",
-                            len(unexpected_materializations),
-                        ),
-                    ),
                 )
             )
         for role, operation_ids in adopted_roles.items():
@@ -920,7 +855,6 @@ class ScientificSelectionEvaluator:
             or result.terminal_outcome
             is not ControlledOperationExecutionTerminalOutcome.SUCCEEDED
             or result.result_digest != execution.result_digest
-            or result.artifact_set_digest != execution.artifact_set_digest
         ):
             issues.append(
                 ScientificSelectionIssue(
@@ -929,21 +863,6 @@ class ScientificSelectionEvaluator:
                 )
             )
             return tuple(issues)
-        refs = (
-            self.repositories.controlled_operation_result_artifacts.list_by_result_handle(
-                result.result_handle_id
-            )
-        )
-        if (
-            controlled_operation_artifact_set_digest(refs)
-            != result.artifact_set_digest
-        ):
-            issues.append(
-                ScientificSelectionIssue(
-                    code="effect_adoption_result_invalid",
-                    operation_ids=(operation_id,),
-                )
-            )
         if operation.approval_id is not None and (
             operation.approval_state != "approved"
             or execution.approval_digest is None
@@ -960,8 +879,6 @@ class ScientificSelectionEvaluator:
             or adoption.execution_id != execution.execution_id
             or adoption.result_handle_id != result.result_handle_id
             or adoption.result_digest != result.result_digest
-            or adoption.artifact_set_digest != result.artifact_set_digest
-            or adoption.source_sandbox_run_id != operation.sandbox_run_id
             or adoption.effect_certainty != execution.effect_certainty.value
             or adoption.approval_digest != execution.approval_digest
         ):

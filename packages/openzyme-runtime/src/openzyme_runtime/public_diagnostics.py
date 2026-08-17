@@ -57,6 +57,8 @@ _PERCENT_ENCODED_PRIVATE_LOCATION_PATTERN = re.compile(
     r"project|root|run|scratch|srv|tmp|usr|var|Users)%2f[^\s\"'<>]*"
 )
 _MACHINE_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9._:@-]{0,127}$")
+_PUBLIC_DIAGNOSTIC_TEXT_MAX_BYTES = 64 * 1024
+_PUBLIC_DIAGNOSTIC_TRUNCATION_MARKER = "[truncated]"
 _CAMEL_CASE_BOUNDARY_PATTERN = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
 _CREDENTIAL_KEY_ALIASES = frozenset(
@@ -395,7 +397,12 @@ def sanitize_public_diagnostic_text(
         or _PRIVATE_LOCATION_PATTERN.search(sanitized)
     ):
         return "[redacted-private-diagnostic]"
-    return sanitized
+    encoded = sanitized.encode("utf-8")
+    if len(encoded) <= _PUBLIC_DIAGNOSTIC_TEXT_MAX_BYTES:
+        return sanitized
+    marker = _PUBLIC_DIAGNOSTIC_TRUNCATION_MARKER.encode("utf-8")
+    prefix = encoded[: _PUBLIC_DIAGNOSTIC_TEXT_MAX_BYTES - len(marker)]
+    return prefix.decode("utf-8", errors="ignore") + _PUBLIC_DIAGNOSTIC_TRUNCATION_MARKER
 
 
 def sanitize_public_diagnostic_payload(value: object) -> object:

@@ -5,7 +5,6 @@ from typing import Any
 
 from openzyme_domain import ScientificOperationDispositionKind
 
-from .artifact_boundary import ArtifactBoundaryService
 from .harness import SessionRuntimeContext
 from .harness import ToolInvocation
 from .harness import ToolRegistry
@@ -25,12 +24,7 @@ def _actor(context: SessionRuntimeContext) -> str:
 def _service(context: SessionRuntimeContext) -> ScientificAttemptService:
     return ScientificAttemptService(
         context.repositories,
-        workflow_contract_registry=(context.scientific_workflow_contract_registry),
-        artifact_boundary=ArtifactBoundaryService(
-            context.repositories,
-            workspace_root=context.sandbox_workspace_root,
-            blob_store_root=context.artifact_blob_root,
-        ),
+        workflow_contract_registry=context.scientific_workflow_contract_registry,
     )
 
 
@@ -292,26 +286,6 @@ def register_scientific_attempt_tools(registry: ToolRegistry) -> None:
             ),
         )
 
-    def materialize_handler(
-        context: SessionRuntimeContext,
-        invocation: ToolInvocation,
-    ) -> ToolResult:
-        arguments = invocation.arguments
-        return _execute(
-            invocation,
-            lambda: _service(context).materialize_adopted_artifact(
-                selection_id=str(arguments["selection_id"]),
-                adoption_id=str(arguments["adoption_id"]),
-                source_artifact_id=str(arguments["source_artifact_id"]),
-                target_sandbox_run_id=str(arguments["target_sandbox_run_id"]),
-                target=str(arguments["target"]),
-                actor_ref=_actor(context),
-                idempotency_key=str(arguments["idempotency_key"]),
-            ),
-            status="scientific_artifact_materialized",
-            summary="Materialized verified adopted bytes under Host authority.",
-        )
-
     def seal_handler(
         context: SessionRuntimeContext,
         invocation: ToolInvocation,
@@ -359,7 +333,6 @@ def register_scientific_attempt_tools(registry: ToolRegistry) -> None:
         "scientific.operation.adopt",
         adopt_operation_handler,
     )
-    registry.register("scientific.artifact.materialize", materialize_handler)
     registry.register("scientific.selection.seal", seal_handler)
     registry.register("scientific.attempt.close", close_handler)
 

@@ -14,7 +14,7 @@ REMOTE_PRIVATE_REF_OBSERVATION_SCHEMA_VERSION = (
     "remote_private_ref_observation@1"
 )
 AGENT_WORKSPACE_STATE_OBSERVATION_SCHEMA_VERSION = (
-    "agent_workspace_state_observation@1"
+    "agent_workspace_state_observation@2"
 )
 VERIFIED_WORKSPACE_CHECKPOINT_SCHEMA_VERSION = "verified_workspace_checkpoint@1"
 CLEAN_COMMITTED_REVISION_PROOF_SCHEMA_VERSION = "clean_committed_revision_proof@1"
@@ -152,6 +152,8 @@ class AgentWorkspaceStateObservation:
     staged: bool
     unstaged: bool
     untracked: bool
+    changed_paths: tuple[str, ...]
+    changed_paths_truncated: bool
     observed_at: str
     schema_version: str = AGENT_WORKSPACE_STATE_OBSERVATION_SCHEMA_VERSION
 
@@ -176,6 +178,21 @@ class AgentWorkspaceStateObservation:
             raise ValueError("clean workspace observation cannot carry dirty entries")
         if self.dirty_state is WorkspaceDirtyState.DIRTY and not has_dirty_entry:
             raise ValueError("dirty workspace observation requires a dirty entry")
+        if len(self.changed_paths) > 2_000 or len(self.changed_paths) != len(
+            set(self.changed_paths)
+        ):
+            raise ValueError("changed workspace paths must be unique and bounded")
+        for path in self.changed_paths:
+            if (
+                not path
+                or len(path.encode("utf-8")) > 1024
+                or path.startswith("/")
+                or "\x00" in path
+                or ".." in path.split("/")
+            ):
+                raise ValueError("changed workspace path is unsafe")
+        if self.dirty_state is WorkspaceDirtyState.CLEAN and self.changed_paths:
+            raise ValueError("clean workspace observation cannot carry changed paths")
 
 
 @dataclass(frozen=True, slots=True)

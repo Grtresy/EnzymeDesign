@@ -44,7 +44,7 @@ def _manifest_payload(document_registry: DocumentRegistry) -> dict[str, object]:
         "title": "Controlled workflow",
         "summary": "A versioned workflow binding.",
         "capability_requirements": ["role:executor", "engine:execution"],
-        "tool_requirements": ["docs.read", "sandbox.exec"],
+        "tool_requirements": ["docs.read", "workspace.exec"],
         "knowledge_refs": [
             {
                 "doc_id": document.doc_id,
@@ -106,7 +106,7 @@ def test_selected_workflow_pack_exposes_registry_owners_without_reloading_manife
     ) in rendered
 
 
-def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> None:
+def test_aox_workflow_v2_pins_file_first_scientific_acceptance() -> None:
     registry = default_workflow_registry()
     manifest = next(
         item for item in registry.list_manifests() if item.workflow_id == "aox-hmm-live"
@@ -114,7 +114,7 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
 
     assert manifest.selection_ref == (
         "workflow:aox-hmm-live@2.0.0#"
-        "sha256:cdd77451f83c39f1a39fd0a2d43b682e43519be17d7b47d5c2cf21d6869766fa"
+        "sha256:2a1b2da3761ee01b2a905c8042b400851bb73cd02051b5d886f60e48f231fd7f"
     )
     pack = registry.resolve(manifest.selection_ref)
     documents = {document.doc_id: document for document in pack.documents}
@@ -122,13 +122,13 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
         doc_id: document.content_sha256 for doc_id, document in documents.items()
     } == {
         "aox-hmm-live": (
-            "sha256:7955c4056e39c32d187b4d0d9fc8c7e72f3399d7d762b26b1486f39c64752c7e"
+            "sha256:185a0f099c7349988b923c8b0f10e6333af225ce29538bac8d699526ffd96b10"
         ),
         "aox-motif-rule-score-v1": (
-            "sha256:9c6f1f62a77dcade8e8b24c4e23af391e3b308a96bbac43783b8dbf4f7c2d376"
+            "sha256:2e5c9e08f4750d0cc98c07aba0bc96ef5611ee32812977749d46c65c2ddc4570"
         ),
         "aox-sequence-similarity-v1": (
-            "sha256:b003cd392e851b6ecfaf9a5c46d52a58b84f962dfca7476b878c08aaaa712a0f"
+            "sha256:0efec4c10df2896186928fab621b28382fc0a81f1a371a2226d02a3f21787733"
         ),
     }
 
@@ -152,6 +152,7 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
         0
     ]
     assert tuple(accession_block.splitlines()) == expected_accessions
+    normalized_sop = " ".join(sop.split())
     for required_identity in (
         "PubMed supplies the required literature evidence",
         "NCBI supplies one exact 14-record protein FASTA aggregate",
@@ -163,87 +164,21 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
         "`aox_scoring_input_assembly@1`",
         "`hmmer_score_filtered_accessions@1`",
         "`aox_sequence_length_join@2`",
-        "`aox_known_positive_probe@2`",
         "`aox_motif_rule_score@1`",
         "`hmmer_afa_alignment_canonicalization@1`",
         "`cdhit_cluster_membership@1`",
         "`aox_candidate_graph_nodes@1`",
         "`aox_candidate_graph_edges@1`",
         "`aox_candidate_similarity_graph_manifest@1`",
-        "full post-motif,\npre-clustering candidate set",
+        "full post-motif, pre-clustering candidate set",
         "representative-only `aox_hmm/AOX_candidates_cdhit85.fasta`",
         "`candidate_membership_set_mismatch`",
         '`scientific_outcome.status="empty"`',
         "Scientific fail-closed matrix",
-        "workflow graph",
-        "execution order",
-        "openzyme_pipeline.aox_reference.select_hmm_reference_set",
-        "openzyme_pipeline.aox_reference.select_scoring_reference",
-        "openzyme_pipeline.aox_reference.assemble_scoring_input",
-        "openzyme_pipeline.aox_hmmer.parse_and_filter_csv",
-        "openzyme_pipeline.aox_sequence_join.join_score_filtered_accessions",
-        "openzyme_pipeline.aox_motif.score_aligned_fasta",
-        "openzyme_pipeline.aox_similarity.build_similarity_graph",
-        "result.to_fasta() -> str",
-        "result.to_csv() -> str",
-        "result.metadata() -> dict[str, object]",
-        "result.manifest_json() -> str",
-        'encode it exactly once with `.encode("utf-8")`',
-        "`str` to a bytes-only writer",
-        "`/workspace/input` is a Host-managed read-only mount",
-        "Never create a directory or file there",
-        "materialize call itself creates",
-        "`biopython_trace_guarded_numpy_gotoh@1`",
-        "`numpy_three_state_gap_switch_correction@1`",
-        "`similarity_parallel_execution_failed`",
-        "available cgroup v2/v1 CPU quota",
-        "Reference validation used NumPy `2.4.6`",
-        "cutover runtime pin",
-        "NumPy `2.4.4`",
-        "new calculation id",
-        "Do not use `sandbox.exec` as a read-only environment-inspection shortcut",
-        "`source_snapshot_empty` before `SandboxRun` or process creation",
-        "sha256:ace8baa8bfa070a621186d7b3db3acddcdf39abe26070e72270fc727b0017b5e",
-        "`request_digest`",
-        "`params_digest`",
-        "`uniprot_raw_response`",
-        "`uniprot_metadata`",
-        "`uniprot_sequences`",
-        "UniProtKB reviewed (Swiss-Prot)",
-        "expected_score_filtered_csv_digest",
-        "expected_uniprot_fasta_digest",
-        "expected_uniprot_metadata_digest",
-        "expected_candidate_fasta_digest",
-        "expected_membership_digest",
-        "bio_tools/mafft/alignment.fasta",
-        "bio_tools/hmmbuild/model.hmm",
-        "bio_tools/cdhit/clustered.fasta",
-        "bio_tools/cdhit/clusters.csv",
-        "bio_tools/hmmalign/aligned.fasta",
-        "`artifact_kind_invalid`",
-        "`sequence/fasta`",
-        "`result/hmm`",
-        "`result/csv`",
-        "| `result` | `json` |",
-        "artifacts.provider_file_ref",
-        "artifacts.registered_artifact_ref",
-        "artifacts.fetched_output_ref",
-        "mafft_stage = workspace.stage_artifact(",
-        "alignment=mafft_stage",
-        "not `hpc_stage_ref` values",
-        "rename `content_digest` to\n`artifact_digest`",
-        "pass that exact returned stage ref\nunchanged",
-        "`/workspace/work` checkpoints",
-        '`validation_profile="fasta_zero_records@1"`',
-        "exact zero-byte regular file",
-        "`scientific.attempt.close` before",
-        "`task.finish(status=completed)`",
-        "ordinary source-bound wake",
-        "`closure_request_ready=true`",
-        "`closure_finalization_ready=false`",
-        "`host_finalization_after_request`",
+        "publication ref, commit, tree, normalized path",
+        "Job success alone and local path presence are insufficient",
     ):
-        assert required_identity in sop
+        assert " ".join(required_identity.split()) in normalized_sop
 
 
 def test_document_registry_exact_read_rejects_version_and_digest_drift() -> None:
@@ -353,7 +288,7 @@ def test_workflow_requirement_validation_is_fail_closed(tmp_path) -> None:
     registry = _registry(tmp_path, payload)
     pack = registry.resolve(registry.list_manifests()[0].selection_ref)
 
-    with pytest.raises(ValueError, match="missing_tools=.*sandbox.exec"):
+    with pytest.raises(ValueError, match="missing_tools=.*workspace.exec"):
         validate_workflow_requirements(
             pack,
             available_tools={"docs.read"},
@@ -362,6 +297,6 @@ def test_workflow_requirement_validation_is_fail_closed(tmp_path) -> None:
     with pytest.raises(ValueError, match="missing_capabilities=.*engine:execution"):
         validate_workflow_requirements(
             pack,
-            available_tools={"docs.read", "sandbox.exec"},
+            available_tools={"docs.read", "workspace.exec"},
             available_capabilities={"role:executor"},
         )

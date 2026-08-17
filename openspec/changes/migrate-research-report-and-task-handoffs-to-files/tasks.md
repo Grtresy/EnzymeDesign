@@ -9,7 +9,7 @@
 
 - [x] 2.1 在 domain 中实现版本化 `RevisionPathRef@1`，绑定 publication、repository binding、commit/tree、normalized path、entry kind，以及 Git blob、LFS pointer/OID/size 或 tree/path-manifest identity。
 - [x] 2.2 实现 path normalization、entry/object lookup 和 authorization validator，覆盖 absolute/traversal、symlink/submodule escape、mutable branch/private ref/URL/Host/HPC path 与 identity drift。
-- [ ] 2.3 实现 closed `TaskEvidenceRef@1` discriminated union，限定 `RevisionPathRef`、`ReportRef`、`ControlledOperationResultRef`、`ScientificDeliverableRef`，并拒绝 unknown variant、free-form digest 和 `artifact:<id>`。
+- [x] 2.3 实现 closed `TaskEvidenceRef@1` discriminated union，限定 `RevisionPathRef`、`ReportRef`、`ControlledOperationResultRef`、`ScientificDeliverableRef`，并拒绝 unknown variant、free-form digest 和 `artifact:<id>`。
 - [x] 2.4 增加 revision-path/task-evidence repositories、migrations、immutable/foreign-owner constraints 与 bounded serializers，公共 projection 不暴露 bytes、credential、internal remote locator 或 remote absolute path。
 
 ## 3. Research 与 large tool result 文件化
@@ -25,7 +25,7 @@
 - [x] 4.2 将 `protocol.send` 与 inbox/event serializers切换为 exact refs，证明发送只持久化 message/wakeup，不 fetch、merge、同步运行 recipient 或改变 task terminal state。
 - [x] 4.3 实现 recipient native Git/Git LFS exact-publication fetch 与 commit/tree/path/object verification，不提供 Host materialize/download gateway或 alternate-ref fallback。
 - [x] 4.4 增加已有 `PublishedRevision` handoff 回归：producer 当前 workspace 即使 dirty/untracked，validator 只检查 immutable publication/path且不得读取、拒绝或修改 producer 当前 tree。
-- [ ] 4.5 增加 recipient inspect/merge/rebase/cherry-pick/conflict flows，保证 integration strategy由agent选择，Git冲突不触发自动merge、revision substitution、task completion或 synchronous run。
+- [x] 4.5 增加 recipient inspect/merge/rebase/cherry-pick/conflict flows，保证 integration strategy由agent选择，Git冲突不触发自动merge、revision substitution、task completion或 synchronous run。
 
 ## 5. Report 文件身份与业务 publication
 
@@ -38,12 +38,12 @@
 
 - [x] 6.1 将 `task.finish` schema/service/repository切换为 `TaskEvidenceRef@1`，在同一事务验证project/session/task ownership和canonical immutable owner后写入terminal decision。
 - [x] 6.2 删除 current `artifact:<id>`、bare workspace path、branch、private ref、URL、Host/HPC path 和 free-form digest evidence authoring/compatibility parser，stale caller返回明确schema error。
-- [ ] 6.3 更新 task board、protocol wakeup、controlled-operation/report/scientific consumers，证明 evidence availability、report publication和job terminal均不会机械完成、失败、阻塞或恢复task。
-- [ ] 6.4 增加 exact replay、variant/owner drift、missing publication/path、LFS identity mismatch、stale writer 与 transaction rollback tests，保证零partial evidence或task terminal mutation。
+- [x] 6.3 更新 task board、protocol wakeup、controlled-operation/report/scientific consumers，证明 evidence availability、report publication和job terminal均不会机械完成、失败、阻塞或恢复task。
+- [x] 6.4 增加 exact replay、variant/owner drift、missing publication/path、LFS identity mismatch、stale writer 与 transaction rollback tests，保证零partial evidence或task terminal mutation。
 
 ## 7. 验证、架构文档与 change receipt
 
-- [ ] 7.1 运行 RevisionPathRef/path security、research/tool writers、protocol handoff/native fetch、dirty-producer immutable handoff、report.publish、task.finish union与no-auto-transition focused tests及 touched Python/TypeScript lint/test/build，并保存exact results。
+- [x] 7.1 运行 RevisionPathRef/path security、research/tool writers、protocol handoff/native fetch、dirty-producer immutable handoff、report.publish、task.finish union与no-auto-transition focused tests及 touched Python/TypeScript lint/test/build，并保存exact results。
 - [x] 7.2 同步 `docs/OpenZyme架构设计.md`、相关 `docs/v3/` control-plane/public-interface/report/runtime 文档、`docs/v3/execution-pipeline-docs/README.md` 与 `docs/v3/harness-complexity-audit.md`，明确 revision/path 单一交付真相、report双publish动作和 task authority。
-- [ ] 7.3 运行 `DO_NOT_TRACK=1 openspec validate migrate-research-report-and-task-handoffs-to-files --strict`、`git diff --check`、forbidden artifact/bytes-payload/fallback audit 与 `./scripts/check-mainline.sh`，确认无 live/provider/HPC effect。
-- [ ] 7.4 生成并 pure-verify `migrate-research-report-and-task-handoffs-to-files` change receipt，绑定 prerequisite receipts、source/schema/migration digests、writer cutover inventory、focused/mainline/docs results及 `implementation_complete=true`；receipt 不得完成 task、publish report或授予scientific authority。
+- [x] 7.3 运行 `DO_NOT_TRACK=1 openspec validate migrate-research-report-and-task-handoffs-to-files --strict`、`git diff --check`、forbidden artifact/bytes-payload/fallback audit 与 `./scripts/check-mainline.sh`，确认无 live/provider/HPC effect。
+- [x] 7.4 生成并 pure-verify `migrate-research-report-and-task-handoffs-to-files` change receipt，绑定 prerequisite receipts、source/schema/migration digests、writer cutover inventory、focused/mainline/docs results及 `implementation_complete=true`；receipt 不得完成 task、publish report或授予scientific authority。

@@ -3,7 +3,6 @@ from .app import create_app
 from .security import HostPrincipal
 from .security import HostSecurityPolicy
 from .foundation import build_configured_foundation
-from .foundation import build_local_eval_foundation
 from .tracing import build_trace_metadata
 from .tracing import build_trace_tags
 from .tracing import tracing_enabled
@@ -15,7 +14,6 @@ __all__ = [
     "V3EventStore",
     "V3HostApiService",
     "build_configured_foundation",
-    "build_local_eval_foundation",
     "build_trace_metadata",
     "build_trace_tags",
     "create_app",

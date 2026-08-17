@@ -94,7 +94,7 @@ def test_public_projection_and_ui_changes_include_frontend_contracts() -> None:
     projection = expand_affected_scope(
         REPOSITORY_ROOT,
         inventory=_inventory(
-            "packages/openzyme-core/src/openzyme_core/projections.py"
+            "packages/openzyme-core/src/openzyme_core/file_workspace_projection.py"
         ),
         scope_map=scope_map,
     )
@@ -107,7 +107,7 @@ def test_public_projection_and_ui_changes_include_frontend_contracts() -> None:
     assert projection.matched_rules == ("core-public-ui-contracts",)
     assert projection.frontend is True
     assert "apps/openzyme-host-api/tests/test_api.py" in projection.pytest_paths
-    assert "packages/openzyme-core/tests/test_projections.py" in (
+    assert "packages/openzyme-core/tests/test_agent_git_workspaces.py" in (
         projection.pytest_paths
     )
     assert web_ui.matched_rules == ("web-ui-owner",)
@@ -121,13 +121,13 @@ def test_public_projection_and_ui_changes_include_frontend_contracts() -> None:
     (
         "apps/openzyme-host-api/src/openzyme_host_api/app.py",
         "packages/openzyme-domain/src/openzyme_domain/control_plane.py",
-        "packages/openzyme-core/src/openzyme_core/projections.py",
+        "packages/openzyme-core/src/openzyme_core/file_workspace_projection.py",
         "packages/openzyme-core/src/openzyme_core/controlled_operation_projection.py",
         "packages/openzyme-core/src/openzyme_core/runtime_command_projection.py",
         "packages/openzyme-core/src/openzyme_core/report_publication.py",
-        "packages/openzyme-core/src/openzyme_core/artifact_projection.py",
+        "packages/openzyme-core/src/openzyme_core/file_workspace_contract.py",
         "packages/openzyme-core/src/openzyme_core/task_evidence.py",
-        "packages/openzyme-runtime/src/openzyme_runtime/artifact_projection.py",
+        "packages/openzyme-runtime/src/openzyme_runtime/public_diagnostics.py",
     ),
 )
 def test_public_ui_shape_families_have_exact_frontend_closure(

@@ -16,6 +16,7 @@ from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import DurableLfsObjectStore
 from openzyme_core import GitLfsGarbageCollector
 from openzyme_core import GitLfsPrivateReachabilityFinalizer
+from openzyme_core import FileWorkspacePublicContractService
 from openzyme_core import RepositoryPrivateNamespaceRetentionService
 from openzyme_domain import GitObjectFormat
 from openzyme_domain import ProjectRepositoryBinding
@@ -30,6 +31,11 @@ from openzyme_runtime import OpenZymeSettings
 from openzyme_runtime import RuntimeFoundation
 from openzyme_host_api import HostApiDependencies
 from openzyme_host_api import create_app
+from tests.agent_capability_test_support import (
+    activate_file_workspace_public_contract_for_test,
+)
+from tests.agent_capability_test_support import file_workspace_public_test_headers
+from tests.agent_capability_test_support import public_test_client
 
 from .repository_test_support import build_repository_test_fixture
 
@@ -731,7 +737,7 @@ def test_v3_session_creation_pins_binding_and_projects_only_safe_identity(
         v3_durable_work_enabled=True,
         v3_repository_root_boundary=transport.root_boundary,
     )
-    with TestClient(create_app(dependencies)) as client:
+    with public_test_client(dependencies) as client:
         response = client.post(
             "/v3/sessions",
             json={
@@ -769,7 +775,7 @@ def test_v3_session_creation_without_active_binding_fails_without_partial_row(
         v3_durable_work_enabled=True,
         v3_repository_root_boundary=transport.root_boundary,
     )
-    with TestClient(create_app(dependencies)) as client:
+    with public_test_client(dependencies) as client:
         response = client.post(
             "/v3/sessions",
             json={
@@ -796,6 +802,7 @@ def test_v3_product_session_path_requires_repository_service_configuration(
         v3_background_runtime_enabled=False,
         v3_durable_work_enabled=True,
     )
+    activate_file_workspace_public_contract_for_test(dependencies)
     with provider.write() as scope:
         scope.repositories.sessions.save(
             Session.create(
@@ -805,7 +812,13 @@ def test_v3_product_session_path_requires_repository_service_configuration(
                 "Remain blocked without an exact repository mapping",
             )
         )
-    with TestClient(create_app(dependencies)) as client:
+        FileWorkspacePublicContractService(
+            scope.repositories
+        ).classify_new_session("sess_legacy_unpinned_product")
+    with TestClient(
+        create_app(dependencies),
+        headers=file_workspace_public_test_headers(),
+    ) as client:
         response = client.post(
             "/v3/sessions",
             json={

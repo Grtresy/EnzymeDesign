@@ -119,8 +119,13 @@ def _require_https_endpoint(value: str, field_name: str) -> None:
 
 
 def _require_logical_clone_root(value: str) -> None:
-    if not value.startswith("/") or value.endswith("/") or value in {"/", ""}:
-        raise ValueError("clone_logical_root must be a non-root absolute path")
+    if (
+        value != "/workspace"
+        and not value.startswith("/workspace/")
+    ) or value.endswith("/"):
+        raise ValueError(
+            "clone_logical_root must be /workspace or a path below /workspace"
+        )
     if ".." in value.split("/") or "\\" in value:
         raise ValueError("clone_logical_root must not escape its workspace volume")
     if any(character.isspace() for character in value):
@@ -267,6 +272,8 @@ class AgentGitWorkspace:
             required=self.status is AgentGitWorkspaceStatus.READY,
         )
         _require_logical_clone_root(self.clone_logical_root)
+        if re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,127}", self.volume_id) is None:
+            raise ValueError("volume_id must be one exact Podman named-volume identity")
         if re.fullmatch(r"[^\s]+@sha256:[0-9a-f]{64}", self.image_ref) is None:
             raise ValueError("image_ref must be an OCI digest-pinned ref")
         _require_ref_namespace(self.private_ref_namespace)

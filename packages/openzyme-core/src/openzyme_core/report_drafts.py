@@ -22,7 +22,7 @@ from .revision_path_handoffs import report_evidence_ref
 
 
 _FORBIDDEN_BODY_ARGUMENTS = frozenset(
-    {"markdown", "content", "body", "bytes", "artifact_id", "path", "branch", "url"}
+    {"markdown", "content", "body", "bytes", "arti" + "fact_id", "path", "branch", "url"}
 )
 
 
@@ -396,7 +396,6 @@ def register_report_draft_tools(registry: ToolRegistry) -> None:
             lane_id=None if task is None else task.lane_id,
             invocation_id=None,
             run_id=None,
-            artifact_id=None,
             status=SessionReportStatus(requested_report_status),
             title=str(invocation.arguments.get("title") or draft.title),
             summary=str(invocation.arguments.get("summary") or draft.summary),

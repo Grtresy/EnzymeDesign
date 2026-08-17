@@ -1,28 +1,29 @@
 {
   "workflow_id": "generic-sandbox-execution",
   "version": "1.0.0",
-  "content_sha256": "sha256:0719422d008a4f46b0c45273347ac8c24b34beb5f687a165e4875cc0e11262d2",
-  "title": "Generic sandbox execution",
-  "summary": "Domain-neutral controlled sandbox authoring and Host-supervised execution workflow.",
+  "content_sha256": "sha256:e6f97407fa3d176ab370dabbd47aa863d7401fa0279d1a072dac317369caebfc",
+  "title": "Generic revision-bound execution",
+  "summary": "Domain-neutral native workspace authoring and Host-supervised revision job workflow.",
   "capability_requirements": [
     "role:executor",
     "engine:execution"
   ],
   "tool_requirements": [
     "docs.read",
-    "sandbox.workspace.status",
-    "sandbox.exec"
+    "workspace.status",
+    "workspace.exec",
+    "workspace.publish"
   ],
   "knowledge_refs": [
     {
       "doc_id": "sandbox-rules",
       "version": "v3",
-      "content_sha256": "sha256:8e01a584dc9a0ce777f4734e722d3b1418d45d1028ec3c532d768657f82a5101"
+      "content_sha256": "sha256:320f9a5f186f950ec112efc4d9ddd649cdb92a2e9030b664a6fbfd6994b13410"
     },
     {
       "doc_id": "sdk-overview",
       "version": "v3",
-      "content_sha256": "sha256:81b7767963f8d13b0764eef9c6f2807dee38eba43b021f2f0f61198880428e51"
+      "content_sha256": "sha256:6c9091db12681a37676a4a1fc7c120bf9d4b345a9faaa449b835da2fe5ba7eae"
     }
   ]
 }

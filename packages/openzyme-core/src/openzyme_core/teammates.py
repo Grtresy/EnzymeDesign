@@ -13,8 +13,6 @@ from openzyme_runtime import ToolSpec
 
 from .agent_capsule_runtime import agent_capsule_tools_available
 from .agent_capsule_runtime import register_agent_capsule_tools
-from .artifact_boundary import register_artifact_boundary_tools
-from .artifact_tools import register_artifact_tools
 from .bio_research_tools import register_bio_research_tools
 from .bio_research_tools import register_web_research_tools
 from .docs import register_docs_tools
@@ -49,20 +47,15 @@ from .protocol_tools import register_protocol_tools
 from .protocols import ProtocolService
 from .report_drafts import register_report_draft_tools
 from .scientific_attempt_tools import register_scientific_attempt_tools
-from .sandbox_workspace import register_sandbox_workspace_tools
-from .sandbox_host import SandboxHostBinding
 from .sandbox_host import SandboxMutationWriterScopeFactory
-from .sandbox_runtime import register_sandbox_runtime_tools
 from .task_board import register_task_board_tools
 from .task_evidence import task_finish_evidence_refs_schema
 from .skills import SkillRegistry
 from .skills import render_selected_workflow_context
 from .tool_catalog import agent_capsule_tool_descriptors
-from .tool_catalog import artifact_tool_descriptors
 from .tool_catalog import engine_tool_descriptors
 from .tool_catalog import executor_hpc_workspace_tool_descriptors
 from .tool_catalog import failure_tool_descriptors
-from .tool_catalog import sandbox_tool_descriptors
 from .tool_catalog import scientific_attempt_tool_descriptors
 from .tool_catalog import ToolDescriptor
 from .tool_catalog import world_tool_descriptors
@@ -83,9 +76,6 @@ def _web_tool_enabled(adapter: object | None) -> bool:
 def teammate_tool_descriptors(
     *, role: str, research_adapter: object | None = None
 ) -> tuple[ToolDescriptor, ...]:
-    current_artifact_descriptors = (
-        () if role == "researcher" else artifact_tool_descriptors()
-    )
     shared = (
         *failure_tool_descriptors(),
         *scientific_attempt_tool_descriptors(),
@@ -171,7 +161,6 @@ def teammate_tool_descriptors(
             },
         ),
         *world_tool_descriptors(),
-        *current_artifact_descriptors,
         ToolDescriptor(
             tool_name="protocol.thread",
             description="Read one team protocol thread by correlation id.",
@@ -201,7 +190,7 @@ def teammate_tool_descriptors(
                 "Persist a bounded protocol message and queue only its wakeup. File "
                 "handoffs require message_type='file_handoff' plus a complete "
                 "ProtocolFileHandoff@1; bytes, paths, credentials, branches, URLs, "
-                "artifact aliases, fetch, merge, synchronous run, and task transitions "
+                "untyped aliases, fetch, merge, synchronous run, and task transitions "
                 "are forbidden."
             ),
             input_schema={
@@ -515,21 +504,6 @@ def teammate_tool_descriptors(
                         "additionalProperties": False,
                     },
                 ),
-                ToolDescriptor(
-                    tool_name="sandbox.workspace.status",
-                    description=(
-                        "Read or initialize the executor's persistent sandbox workspace status. "
-                        "Returns sandbox_workspace_id, image digest/version, quota, safe directory summary, and recent diagnostics."
-                    ),
-                    input_schema={
-                        "type": "object",
-                        "properties": {
-                            "sandbox_workspace_id": {"type": "string"},
-                        },
-                        "additionalProperties": False,
-                    },
-                ),
-                *sandbox_tool_descriptors(),
             )
         )
     if role == "reporter":
@@ -660,7 +634,6 @@ def build_teammate_registry(
     agent_id: str | None = None,
     role: str | None = None,
     engine_registry: EngineRegistry | None = None,
-    sandbox_host_binding: SandboxHostBinding | None = None,
     mutation_writer_scope_factory: SandboxMutationWriterScopeFactory | None = None,
     bio_research_service: Any | None = None,
     research_adapter: Any | None = None,
@@ -674,41 +647,9 @@ def build_teammate_registry(
     if engine_registry is not None:
         for engine in engine_registry.list_engines():
             engine.register_tools(registry)
-    live_process_registry = None
-    signal_notifier = None
-    if engine_registry is not None:
-        execution_engine = engine_registry.get("execution")
-        live_process_registry = getattr(
-            execution_engine,
-            "sandbox_process_registry",
-            None,
-        )
-        signal_notifier = getattr(
-            execution_engine,
-            "sandbox_process_signal_notifier",
-            None,
-        )
     register_web_research_tools(registry, adapter=research_adapter)
     register_bio_research_tools(registry, service=bio_research_service)
-    if role != "researcher":
-        register_artifact_tools(registry)
-        register_artifact_boundary_tools(registry)
-    register_sandbox_workspace_tools(registry, agent_id=agent_id)
-    register_sandbox_runtime_tools(
-        registry,
-        agent_id=agent_id,
-        host_gateway=(
-            None if sandbox_host_binding is None else sandbox_host_binding.gateway
-        ),
-        host_call_context_factory=(
-            None
-            if sandbox_host_binding is None
-            else sandbox_host_binding.context_factory
-        ),
-        mutation_writer_scope_factory=mutation_writer_scope_factory,
-        live_process_registry=live_process_registry,
-        signal_notifier=signal_notifier,
-    )
+    del mutation_writer_scope_factory
     register_agent_capsule_tools(registry, agent_id=agent_id)
     if role == "executor":
         register_executor_hpc_workspace_tools(registry, agent_id=agent_id)
@@ -744,29 +685,12 @@ def _stringify_content(content: Any) -> str:
     return str(content)
 
 
-def _execution_resume_summary(tool_results: tuple[ToolResult, ...]) -> str | None:
+def _resume_tool_summary(tool_results: tuple[ToolResult, ...]) -> str | None:
     if len(tool_results) != 1:
         return None
     result = tool_results[0]
-    if result.tool_name != "execution.pipeline.start" or not result.ok:
+    if not result.ok:
         return None
-    try:
-        payload = json.loads(result.content)
-    except (TypeError, json.JSONDecodeError):
-        return result.summary or result.content or None
-    run = payload.get("run")
-    if isinstance(run, dict):
-        summary = run.get("summary")
-        if isinstance(summary, str) and summary.strip():
-            return summary.strip()
-    parsed_result = payload.get("parsed_result")
-    if isinstance(parsed_result, dict):
-        summary = parsed_result.get("result_summary")
-        if isinstance(summary, str) and summary.strip():
-            return summary.strip()
-    artifacts = payload.get("artifacts")
-    if isinstance(artifacts, list) and artifacts:
-        return f"Execution completed with {len(artifacts)} artifact(s)."
     return result.summary or result.content or None
 
 
@@ -857,7 +781,7 @@ class TeammateConversationDriver(HarnessDriver):
             return self.instructions
         return (
             self.instructions[:1200]
-            + "\n[delegated instructions truncated by prompt budget compaction; use task/protocol/artifact tools for exact recoverable details]"
+            + "\n[delegated instructions truncated by prompt budget compaction; use task, protocol, workspace, and revision tools for exact recoverable details]"
         )
 
     def _system_prompt(
@@ -866,15 +790,6 @@ class TeammateConversationDriver(HarnessDriver):
         restore = context.restore_context
         assert restore is not None
         instructions = self._instructions_for_prompt(compact=compact_instructions)
-        artifact_bits = (
-            ", ".join(
-                f"{artifact.artifact_id} kind={artifact.kind.value} title={artifact.title or 'untitled'}"
-                for artifact in restore.artifacts[:8]
-            )
-            or "none"
-        )
-        if self.role == "researcher":
-            artifact_bits = "not projected into the current research path"
         research_file_bits = (
             ", ".join(
                 (
@@ -923,9 +838,9 @@ class TeammateConversationDriver(HarnessDriver):
             "You are not user-facing. Do not speak to the user directly.",
             "When coordinating with other agents, prefer their nickname or @handle in natural language, but tool calls must use resolvable agent references that the service can convert to canonical agent_id.",
             "Work on your assigned task using your exact generation-owned Git clone and your role-scoped tools. Lanes retain task focus and claim semantics, but lane cwd, branch metadata, and another agent's workspace never select your clone, branch, index, refs, or HEAD.",
-            "Use world.inspect when you need structured facts about task state, artifacts, approvals, operations, outcomes, runtime warnings, visible tools, or route policies; it is an observation tool, not a workflow planner.",
+            "Use world.inspect when you need structured facts about task state, workspace revisions, publications, approvals, operations, outcomes, runtime warnings, visible tools, or route policies; it is an observation tool, not a workflow planner.",
             "Prefer tools over narration. When you decide the assigned task stage is completed, blocked, failed, or cancelled, call task.finish with a concise summary and evidence refs instead of natural-language closure or ordinary task.update. task.finish ends your current turn; send protocol updates before it only when useful.",
-            "When workspace.exec is exposed, use it for ordinary filesystem, shell, Git, Git LFS, and network-client work in your own persistent clone. Its short-lived process container is not the source of durability: tracked, staged, unstaged, untracked, downloaded, Git-object, and private-ref state remain in the owning generation volume. Stay focused on your assigned task and lane. Never request or use Host local paths, storage_uri, runner paths, Host checkout paths, Host home/SSH storage, another agent's volume, or a shared .git.",
+            "When workspace.exec is exposed, use it for ordinary filesystem, shell, Git, Git LFS, and network-client work in your own persistent clone. Its short-lived process container is not the source of durability: tracked, staged, unstaged, untracked, downloaded, Git-object, and private-ref state remain in the owning generation volume. Stay focused on your assigned task and lane. Never request or use Host-local locators, runner paths, Host checkout paths, Host home/SSH storage, another agent's volume, or a shared .git.",
             "Workspace checkpoint contract: unfinished exploration may remain staged, unstaged, or untracked. Before you report a completed research, implementation, or verification step that produced durable files as a durable checkpoint, or cross a publication, handoff, external-job, or task-terminal boundary, you must select the coherent files yourself, create an intentional local commit, and explicitly create or fast-forward that commit to your append-only private ref. A local commit alone is not a durable checkpoint. Never force-update or delete a pushed private ref; create a new private ref when histories diverge.",
             "The Host never auto-stages, auto-commits, auto-pushes, auto-cleans, stashes, merges, chooses coherent files, changes branches, or publishes for you. Native Git and network errors are returned from the exact process without retry, endpoint substitution, SDK fallback, or reopened approval; decide whether to correct the command, continue dirty exploration, or create another authorized private ref.",
             "Never request more than 3 tool calls in one response.",
@@ -934,7 +849,7 @@ class TeammateConversationDriver(HarnessDriver):
             "In ordinary execution, use controlled docs when capability details are needed; documentation informs strategy but never replaces current structured world facts or authority checks.",
             "For structure-dependent research, distinguish public source metadata from versioned workspace files. If a real structure file is needed, use the provider/download tool, inspect the returned workspace path, then intentionally commit and publish the exact file before handoff; a fetched web page is never a structure file.",
             "Executor contract: use the generation-owned local clone for ordinary source authoring and native diagnostics. When an exact owner-only HPC login workspace is listed below, workspace.exec may request its scoped credential service and directly use native SSH, rsync/scp, Git/LFS, shell, and file CRUD inside that remote root. Use hpc.workspace.sync_source to obtain an exact private checkpoint or immutable publication ref/commit/tree/LFS identity, then choose and execute fetch, checkout, merge, rebase, or conflict resolution explicitly; the Host never mutates the working tree for you. This native login/file credential never grants scheduler submission. Controlled scientific job dispatch remains a separate Host-supervised boundary: never invoke sbatch, Slurm clients, runner APIs/configuration, or treat login-side mutation as a submitted job, publication, task completion, provenance, or settlement.",
-            "Execution evidence must come from the real controlled operation and declared artifacts. Never present synthetic output, a local stand-in, or an undeclared fallback as a successful external/scientific result; return the structured failure and preserve evidence when the required route cannot complete.",
+            "Execution evidence must come from the real controlled operation, immutable job result, and any explicitly committed revision/path reference. Never present synthetic output, a local stand-in, or an undeclared fallback as a successful external/scientific result; return the structured failure and preserve evidence when the required route cannot complete.",
             "A failed tool result does not automatically end your turn. Inspect failure_observation facts, effect_certainty, retry_eligibility, likely_causes, and evidence_refs, then choose a safe repair, replan, request for help/authority, or explicit task.finish.",
             "Use task.finish(status='blocked') for user/operator/authority or harness recovery needs, and status='failed' only when the assigned objective is genuinely impossible. Never replay dispatch_in_doubt external work.",
             "Do not infer a workflow from task words. Only an explicit structured workflow reference selects versioned workflow knowledge; missing or digest-drifted references must fail closed.",
@@ -948,7 +863,6 @@ class TeammateConversationDriver(HarnessDriver):
             f"Session objective: {context.snapshot.session.objective}",
             f"Focused task: {restore.focused_task_id or 'none'}",
             f"Focused lane: {restore.focused_lane_id or 'none'}",
-            "Artifact catalog: " + artifact_bits,
             "Published research files: " + research_file_bits,
             "Report draft catalog: " + draft_titles,
             "Report catalog: " + report_titles,
@@ -1261,7 +1175,7 @@ class TeammateConversationDriver(HarnessDriver):
         assistant_message = (
             response_text
             or (
-                _execution_resume_summary(tool_results)
+                _resume_tool_summary(tool_results)
                 if harness_input.resume is not None
                 else None
             )
@@ -1371,20 +1285,10 @@ def run_teammate_loop(
         task_id=task_id,
         correlation_id=correlation_id,
     )
-    sandbox_host_binding = None
-    if (
-        parent_context.engine_registry is not None
-        and parent_context.sandbox_host_binding_factory is not None
-    ):
-        sandbox_host_binding = parent_context.sandbox_host_binding_factory(
-            parent_context.engine_registry,
-            parent_context.session_runtime_lease,
-        )
     registry = build_teammate_registry(
         agent_id=agent_id,
         role=role,
         engine_registry=parent_context.engine_registry,
-        sandbox_host_binding=sandbox_host_binding,
         mutation_writer_scope_factory=(parent_context.mutation_writer_scope_factory),
         bio_research_service=parent_context.bio_research_service,
         research_adapter=parent_context.research_adapter,
@@ -1430,9 +1334,6 @@ def run_teammate_loop(
         scientific_workflow_contract_registry=(
             parent_context.scientific_workflow_contract_registry
         ),
-        sandbox_workspace_root=parent_context.sandbox_workspace_root,
-        artifact_blob_root=parent_context.artifact_blob_root,
-        artifact_bundle_finalizer=parent_context.artifact_bundle_finalizer,
         signal_notifier=parent_context.signal_notifier,
         reliability_shadow_observer=parent_context.reliability_shadow_observer,
         reliability_settings=parent_context.reliability_settings,
@@ -1447,6 +1348,9 @@ def run_teammate_loop(
         ),
         agent_capsule_process_runner=(
             parent_context.agent_capsule_process_runner
+        ),
+        agent_capsule_control_handler_factory=(
+            parent_context.agent_capsule_control_handler_factory
         ),
         agent_process_credential_router=(
             parent_context.agent_process_credential_router

@@ -115,7 +115,7 @@ def test_contract_ids_accessions_and_payloads_are_fixed() -> None:
 def test_contract_and_implementation_digests_are_canonical_and_recomputable() -> None:
     implementation_digest = aox_reference.implementation_digest()
     assert implementation_digest == (
-        "sha256:8abb77c737fcf29ee659e0ae0ef7204ecc8f0f49843eb4a0098a4b5edc2666ba"
+        "sha256:a0d2bc834b12bd35bcce9f8231e5100837a6428e77fadada54baf277863f4eca"
     )
     assert (
         aox_reference.HMM_REFERENCE_SET_SELECTION_IMPLEMENTATION_DIGEST
@@ -135,7 +135,7 @@ def test_contract_and_implementation_digests_are_canonical_and_recomputable() ->
         )
     )
     assert aox_reference.HMM_REFERENCE_SET_SELECTION_CONTRACT_DIGEST == (
-        "sha256:34659d9f384af0b9d63f2d7d66f21927cd438ad222458169114835ec368ebbbf"
+        "sha256:498b11bd7c268529a0f6abb351dfd187a10573b6ebadf15c2110ca01b5bbfac1"
     )
     assert aox_reference.SCORING_REFERENCE_SELECTION_CONTRACT_DIGEST == (
         aox_reference.scoring_reference_selection_contract_digest(
@@ -143,7 +143,7 @@ def test_contract_and_implementation_digests_are_canonical_and_recomputable() ->
         )
     )
     assert aox_reference.SCORING_REFERENCE_SELECTION_CONTRACT_DIGEST == (
-        "sha256:1923a047f4bf0ce5b70f9c1bfa16a2e6453379abd1850d7bf7654a4721bb0f49"
+        "sha256:953bd9dcf794baeca8aba910b03153fd07dd0531ded4dd31b0133516bc0288be"
     )
     assert aox_reference.SCORING_INPUT_ASSEMBLY_CONTRACT_DIGEST == (
         aox_reference.scoring_input_assembly_contract_digest(
@@ -151,7 +151,7 @@ def test_contract_and_implementation_digests_are_canonical_and_recomputable() ->
         )
     )
     assert aox_reference.SCORING_INPUT_ASSEMBLY_CONTRACT_DIGEST == (
-        "sha256:42e9926ac2f9a8b88d3117838f919d8a966171a65265854dabb6105ef4255e85"
+        "sha256:b94b6077dec93dbb18d26416e2ccb1e9d1bc49cdd8a694b5864ee9542bb989a8"
     )
     for digest in (
         implementation_digest,

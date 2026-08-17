@@ -347,33 +347,6 @@ def test_terminal_owner_reconciliation_is_append_only_and_idempotent(
         )
 
 
-def test_mutation_observation_receipt_binds_encoded_query_identity(
-    tmp_path: Path,
-) -> None:
-    chain = tmp_path / "observation.jsonl"
-    route = (
-        "/v3/mutation-operations/observe?session_id=sess+one&"
-        "command_type=task.update&scope_ref=task%3Atask+one&"
-        "idempotency_key=observe%3Aone&request_digest=sha256%3A"
-        + "a" * 64
-    )
-    receipt = append_public_api_receipt(
-        chain,
-        method="GET",
-        route=route,
-        request_body=None,
-        response=_Response(200, {"status": "unproven"}),
-    )
-
-    assert receipt["request"] == {
-        "command_type": "task.update",
-        "idempotency_key": "observe:one",
-        "request_digest": "sha256:" + "a" * 64,
-        "scope_ref": "task:task one",
-        "session_id": "sess one",
-    }
-
-
 def test_historical_receipt_chain_is_read_only(tmp_path: Path) -> None:
     chain = tmp_path / "historical-receipts.jsonl"
     current = append_public_api_receipt(

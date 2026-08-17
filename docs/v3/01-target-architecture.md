@@ -1,518 +1,71 @@
-# OpenZyme V3 目标架构
+# V3 Target Architecture
 
-> File workspace 的分阶段目标合同及当前 source-only/NO-GO 边界见
-> [file-workspace-migration.md](file-workspace-migration.md)。在 exact activation receipt
-> 前，本页的目标态不能替代 current code/schema 事实。
-
-## 1. 目标结论
-
-OpenZyme V3 的目标不是“更复杂的 graph workflow”，而是一个 **harness-first scientific agent platform**。
-
-角色模型默认采用：
-
-- 用户是甲方
-- OpenZyme 是乙方
-- `master agent` 作为对外负责人，与用户对话、理解目标、创建和编排 task
-- `teammate agent` 作为内部执行者，与 master 同属一个 agent team，默认推进具体 task
-- `harness` 作为系统层，负责状态、协议、约束、恢复和投影
-
-顶层结构：
+## 目标形态
 
 ```text
-User
-  |
-  v
-Web UI / CLI / API Client
-  |
-  v
-V3 Host Control Plane
-  |
-  +--> session manager
-  +--> task board
-  +--> lane manager
-  +--> approval protocol
-  +--> memory / compaction
-  +--> inbox / team protocols
-  +--> delegation / agent roster
-  +--> project repository binding / session pin
-  +--> workspace generation reservation / capability lease / retirement
-  +--> immutable workspace publication / explicit revision sync
-  +--> shared workspace / artifact catalog
-  +--> projection engine
-  |
-  v
-Agent Runtime / Scheduler
-  |
-  +--> resident agent roster (master + teammates)
-  +--> user / inbox wakeups
-  +--> explicit scheduler auto-claim for recovery/debug
-  +--> approval / engine completion wakeups
-  +--> idle / shutdown policy
-  |
-  v
-Agent Harness Kernel
-  |
-  +--> tool registry
-  +--> docs retrieval
-  +--> master / teammate loop runtime
-  +--> capability dispatch
-  +--> background jobs
-  |
-  +--> deep_research engine
-  +--> execution engine
-  |
-  v
-Persistence + Infra
-  |
-  +--> relational store
-  +--> Host-owned bare Git + repository-scoped LFS
-  +--> artifact store
-  +--> event log
-  +--> mcp-hpc-runner / SSH / Slurm
+User / CLI / Web UI
+        |
+        v
+Host API: authentication, media contract, command admission
+        |
+        v
+Canonical control plane: repositories + durable events + projections
+        |
+        +--> Resident agent runtime: signals, leases, bounded turns
+        +--> Git workspace/publication: private refs, revisions, Git LFS
+        +--> Capability engines: research, controlled operations
+        +--> Revision-bound execution: executor workspace -> HPC runner
 ```
 
-## 2. V3 产品语义
+Host 是组合根，不是所有长流程的同步执行线程。SQLite 是 control-plane persistence；项目 Git
+仓库是文件内容和修订真相；runner/provider 是外部 effect boundary。
 
-### 2.0 私有 workspace 与共享 revision 的唯一边界
+## 权威 owner
 
-agent generation-owned clone 保留完整策略自由：本地编辑、commit、private ref push 仍是私有事实。共享文件真相只有 append-only `PublishedRevision`。`workspace.publish` 要求 whole clean commit、exact publication checkpoint 与 active generation-bound lease，并在 remote I/O 前冻结 intent 和唯一 `ControlledOperationExecution`；Host 只 create 预分配 publication ref，绝不移动 team branch、自动 retry possible effect 或访问 upstream。读取者只取得 exact ref/commit/tree/manifest identity，并在自己的 clone 中显式 fetch 与选择整合策略。
+| 事实 | 唯一 owner |
+|---|---|
+| session、task、lane、approval | 对应 core repository/service |
+| delegation/inbox | `ProtocolService` |
+| agent wakeup/turn | `AgentRuntimeSignal` + session lease |
+| agent file edits | owner-scoped workspace generation |
+| shared files | `PublishedRevision` + `RevisionPathRef` |
+| large bytes | Git LFS closure/pin/read receipt |
+| provider/runner effect | `ControlledOperationExecution` 或 revision job owner |
+| scientific deliverable | selection adoption + published file + validation receipt |
+| task terminal | `task.finish` / task finish repository |
+| public state | `FileWorkspaceProjectionBuilder` 从 typed repositories 投影 |
 
-publication 成功不会自动发送 protocol、唤醒 recipient、满足 dependency 或完成 task。`supersedes` 只建立新旧 immutable revision 的推荐关系，不改变旧 record/ref 的可寻址性。当前实现仍处于 source-only gate 下，不能解释为 production/live cutover 已通过。
+一个 owner 的状态不能通过另一个 owner 的事件间接猜测。
 
-C7 在该共享 revision 边界上增加 closed `RevisionPathRef@1`、`ProtocolFileHandoff@1` 和
-`TaskEvidenceRef@1`。research、report 与 ordinary task evidence 只引用 exact publication path，不复制
-正文进 control-plane document/artifact storage。participant 在 own clone 中 native fetch Git/Git LFS，
-Host 不替其物化或整合。report 的 workspace publication 与业务 publish 是两个显式状态；两者都不自动
-完成 task。scientific deliverable evidence 仍由 C10 提供，C7 遇到该 variant 必须 fail closed。
+## Repository 与 workspace
 
-V3 的产品主语义是：
+project repository binding 是版本化、不可变的连接和 policy identity。session 固定一个 version。
+agent workspace 绑定 member、generation、private namespace 和 capability lease。checkpoint 是私有
+修订；publication 是显式共享边界。published revision 不受之后私有 dirty state 影响。
 
-- `session`
-- `task DAG`
-- `master agent -> teammate` delegation
-- `lane / workspace isolation`
-- `approval + inbox + team protocols`
-- `capability engines` 被 harness 按需调用
-- immutable project repository binding 与 per-session exact base pin
-- exact agent workspace generation 与 `pending_workspace | active | revoked` capability lease
-- `report draft` 作为可恢复、可修订、可发布的中间交付物
-- published research/report files、participant-bound file handoff 与 exact task evidence refs
-- `workspace projection` 统一对外暴露当前状态
-- 显式 `local-dev` / `shared` deployment profile，以及持久化 session ownership
+Git LFS object 与 ordinary blob 都属于 exact tree。发布前必须验证 actual bytes；shared revision
+出现后必须有 immutable closure、verification 和 pins。GC 只能依据不可达证明和删除 receipt。
 
-V3 里不再要求所有产品动作都投射为顶层 phase。
+## Capability engine
 
-同时，V3 的 agent 不应继续建模为 REST 调用栈里的临时 loop 或一次性 subagent。默认语义是 resident agent team：
+引擎通过 `ToolSpec` 与 Host context 使用 canonical service，不直接写顶层状态。局部 graph、
+provider adapter 或 process runner 可以在 engine 内部存在。engine error 不允许自动换 backend、
+改参数、完成 task 或合成文件。
 
-- master agent 是默认 resident member，例如 `agent:master`；它负责 user-facing conversation、task 编排与 teammate 协调
-- teammate 的 canonical `agent_id`、role、nickname/display name/handle、inbox、task focus、status 与 protocol threads 跨多轮对话持久存在；role 是能力类型，不是身份
-- 常驻不表示持续占用 LLM 推理；idle agent 不运行模型，只等待 scheduler 的 wakeup signal
-- 用户消息只持久化消息并排队 `agent:master` wakeup；Host API 不直接运行 master loop
-- teammate 默认由 master delegation 唤醒，也可以被 inbox message、approval resolution、engine completion 或 manual resume 唤醒；task auto-claim 仅用于显式 recovery/debug/operator 场景
-- `protocol.send` 不只是写入消息记录，还应产生 recipient 可消费的 wakeup signal
+## Executor 与 HPC
 
-## 3. 顶层组件边界
+executor 使用独立远端 workspace 并持 login/file credential。scheduler credential 只由一次已准入
+revision job occurrence 发行。runner 接收 exact source manifest、command/resource/environment digest，
+返回 opaque handle 和 bounded observation。结果以 result receipt/revision link 表达，不返回 Host path。
 
-### 3.1 V3 Host Control Plane
+## Public projection
 
-职责：
+`file_workspace_public@1` 是唯一 current workspace media contract。共享 view 不含 credential、
+private ref、host/remote path、raw scheduler id 或 backend log。owner locator 只在 subject/member/lease/
+generation 全部匹配的专用 executor view 中出现。
 
-- 管理 `session` 生命周期
-- 持久化 `task / lane / approval / inbox / memory / agent roster / engine invocation`
-- 持久化 immutable repository binding versions、active pointer、legacy mapping receipt 与 per-session exact pin
-- 持久化 agent workspace generation reservation/readiness、capability lease lifecycle 与 explicit retirement fact
-- 持久化 `artifact catalog / report draft / report / run` 并将其暴露为 session 共享工作面
-- 提供统一 API / streaming / projection
-- 将用户动作与 control-plane 变化转换为 agent wakeup signal
-- 为 UI / CLI 提供 canonical workspace snapshot
-- 在 shared profile 执行 Bearer AuthN、project allowlist、session owner/collaborator AuthZ、operator command gate 与服务端 actor attribution
-- 启动 configured Host 时，在 background worker 前验证 repository durable roots、active bindings、exact base 与 inventory；新 session 在 workspace provisioning 前原子 pin active binding
+## Deployment
 
-不负责：
-
-- 理解用户意图
-- 决定 task 内容或项目级拆解
-- 深研究推理细节
-- HPC 执行编排细节
-- 报告具体写作、修订与发布细节
-
-### 3.1.1 Repository service
-
-repository service 属于 Host infrastructure 与 control-plane authority 的交界面，不是新的
-agent tool protocol。control plane 持有 immutable binding/session pin/credential issuance/
-retention receipt；独立 TLS app 持有 bare Git/LFS roots、signing key、TLS key 和标准协议
-transport。普通 `/v3` app 与 repository app 复用同一 SQLite truth，但认证面分离：前者使用
-产品 principal，后者只接受 repository-scoped bearer。
-
-internal remote 通过 Git smart HTTP v2 over HTTPS 和 Git LFS Batch API v2/basic 提供协作；
-upstream origin 只作为 binding 中的独立 identity，不是 internal service 的 fallback。agent
-private namespace精确绑定 `session + agent_member + workspace_generation`，只允许 create 与
-fast-forward；写 credential 还要求 exact namespace 为 `open` 并存在同 lease id 的未释放
-`active_capability_lease` hold，签发与每次写认证都重验。publication 是 Host create-only，
-historical 是 migration-owner；两条内部 owner writer 都先消费 ACL，再以 exact old/new CAS
-原子更新 bare refs。retention owner
-只能在完整 generation 关闭、deadline 已过且无 hold 后先写 terminal receipt 再整代删除。
-
-C1 只建立 repository universe 与 protocol/service boundary；其 acceptance-only
-`ActiveCapabilityLeaseAssertion` 与临时 hold 不是 production capability truth。C2 的
-production seam 必须改为在同一 transaction 内重读 canonical active lease，再闭合
-session pin、namespace/hold 与 credential issuance record；Git/LFS 每次认证也重读同一
-lease。C3/C4 才创建 per-agent Git workspace 与 publish/sync。因此 target
-architecture 不得把 local native-client acceptance、C2 policy declaration 或一枚仍有 TTL
-的 bearer 描述为 agent workspace 已切换完成。
-
-C5 把 large work product 收敛到上述同一 internal remote 的标准 Git LFS protocol。binding
-version 固定 endpoint、`sha256` object format、path rules、ordinary-blob threshold、quota、
-retention 与 policy digest；不存在 server-global default 或 alternate object source。publication
-admission 对 exact commit/tree 生成稳定 closure identity，并另外记录每次 authoritative object
-read 的 fresh verification；cache 只复用 closure identity，不能替代当前 bytes 的 size/SHA-256
-重验。成功 materialization 才把 closure 全量 pin 到 `PublishedRevision`。native transfer、LFS
-upload 和 private ref push 本身不创建 shared truth、task evidence 或业务终态。
-
-Podman agent 与后续 HPC login workspace 使用原生 Git/Git LFS；compute payload 必须接收已解析
-的普通文件树，且无 `.git`、Git/Git LFS binary、repository credential 或 internal-remote access。
-本段当前只描述 C5 source contract；真实 HPC login image 与 compute materialization 由后继 C8/C9
-完成，统一 image/client/focused/mainline 验收前不得声明 production cutover。
-
-### 3.1.2 Agent workspace generation 与 capability lease
-
-C2 在 repository pin 之上增加一层独立 control-plane authority。
-`AgentWorkspaceGenerationReservation` 只保留
-`session + agent_member + generation`、单调 replacement 以及 typed readiness
-owner/ref/digest；它不声明 clone path、volume、`.git`、HEAD、capsule、network 或
-toolchain 事实。`AgentCapabilityLease` 精确绑定该 generation、closed profile/capability
-set、target scope、policy digest 与 parent provenance，lifecycle 只有
-`pending_workspace | active | revoked`。
-
-切换采用 staged activation：C2 可以保留 generation 并创建
-`pending_workspace` lease，但只有注册的 provisioner 能提交 exact readiness 并在原子
-transition 中激活该 lease。C2 不从 legacy sandbox、进程、tool catalog、namespace
-hold 或 ambient config 回填 ready/active；C3 是第一个提供真实 Git workspace/capsule
-readiness 的 production owner。因此 C2 启用而 C3 尚未 ready 时，existing/new agents
-必须如实投影 `provisioning_required` 并保持 non-runnable。
-
-这个 gate 在 C2 切换时立即生效：runtime claim、restore-to-runtime 和 delegation
-admission 都要按当前 `session + member + exact generation` 重读 active lease。
-`SessionRuntimeLease` 只授权 scheduler 推进，不能绕过 provisioning gate。delegation
-先校验 parent 自身的 exact active lease；Host 可原子创建 child identity、generation
-reservation 与 derived pending lease，但在 child 自身 ready/active 前不排队 runnable
-wakeup，也不借 parent capsule、workspace、token 或 credential 执行。
-
-revocation 与 retirement 保持明确拓扑：ordinary revoke 默认只撤销 exact lease；
-session end 和 policy invalidation 分别按明确 session/policy scope bulk revoke；workspace
-replacement 只撤销被替换 generation；subtree 只在 operator 明确给出 root 与 scope
-时递归。parent exact revoke 不自动级联，child revoke 不影响 parent/siblings。
-retirement 先提交绑定 exact current generation/lease 与 registered cleanup provider 的 immutable
-request，作为该 member 的 admission freeze；新 signal enqueue/claim/turn、lease activation/issuance
-与 repository credential/hold 均停止，但既有 claimed occurrence 不被 request 伪装成已结算。
-只有零 claimed signal 后重新验证并持久化 exact cleanup proof，最终 transaction 再次重验
-request/proof/零 claim，immutable `AgentRetirementRecord` 所表达的 cleanup/shutdown-completed
-fact才可触发 agent-wide revoke。`FAILED`、`COMPLETED`、`STOPPED`、task terminal、idle、budget
-exhaustion、单独 request 或进程消失都不是 retirement。
-
-capability lease 与 session runtime lease、controlled-operation execution lease/fence、mutation
-writer/fence 以及 `ScientificAttemptAuthorization` 正交，不能相互推导。attempt/MICU/
-cost/wall-time ceilings 仍由 scientific authorization 拥有；prompt/context/step budget 仍是
-runtime 机械约束。C2 不创建 publication、remote HPC/job 或真实 capsule/network/
-transfer effect；这些分别留给 C3、C4 与后继 remote-HPC/job changes。
-
-### 3.2 Agent Harness Kernel
-
-职责：
-
-- 维护统一 top-level harness loop
-- 执行工具分发
-- 协调 tasks / lanes / approvals / delegation / background jobs 的持久化与协议推进
-- 注入 docs snippets、memory、tool results
-- 维护 teammate spawn / resume / shutdown seam
-- 为每个 agent 构建 focused restore context，并暴露 role-scoped tool surface
-- 执行 agent 通过 typed tool/protocol 明确选择的 capability dispatch 或等待语义
-- 通过 tool-calling model 驱动顶层消息回合
-
-不负责：
-
-- 直接理解用户意图
-- 直接决定 task 的业务内容
-- 取代 master agent 做项目经理式编排
-- 以 session-specific phase、exact trace、自动 retry/wakeup 或 handoff matcher 限制 agent 策略
-
-- 直接成为业务记录存储层
-- 直接替代 external runner
-- 在顶层重新引入 graph orchestration
-
-### 3.2.1 Agent Runtime / Scheduler
-
-Agent runtime / scheduler 负责让 master 与 teammate 都以“持久 agent 成员”存在，而不是让 master 在 REST handler 调用栈中运行、teammate 在 `task.delegate` 调用栈中短暂运行。
-
-第一阶段目标是单进程 async scheduler：Host 进程内 worker 从持久化 signal queue claim lease，并运行 master 或 teammate 的 bounded turn。多进程 worker、Redis/外部队列、跨进程共享 limiter 是后续扩展，不作为第一版阻塞项；但 claim API、worker id、lease expiry 与 limiter 抽象必须从第一版开始保留。
-
-职责：
-
-- 维护 master 与 teammate lifecycle：`spawned -> working -> idle -> working ... -> shutdown`
-- 根据 user message、inbox unread、pending task、approval resolved、engine completed、manual resume 等信号唤醒对应 agent
-- 在 claim 或 restore 任何 agent turn 前重读当前 generation 的 exact active capability lease；缺失时保留 signal 与 `provisioning_required` blocker，不运行 agent
-- 在 agent idle 时停止 LLM turn loop，只保留可恢复身份与 control-plane 状态
-- 将 user message、`protocol.send`、explicit delegation、显式 task auto-claim、background completion 转化为可审计的 wakeup event
-- 为被唤醒 agent 构建 focused restore context；master context 包含 conversation、task board、protocol threads 与 workspace evidence，teammate context 包含 identity、role、task/lane focus、unread inbox、protocol thread、workspace artifacts 与相关 memory
-- 执行 idle timeout、shutdown handshake，以及 owner 声明的 transport/runtime containment；
-  business recovery、alternate action 与是否重试仍由 agent 显式选择
-
-不负责：
-
-- 直接决定业务任务内容
-- 替代 master 做项目管理
-- 把所有 agent 变成永远运行的后台 LLM process
-- 把 runtime 内部队列暴露成普通用户需要操作的产品界面
-
-顶层 loop 的默认形态是一个 bounded turn loop：
-
-```text
-restore context
-  -> call top-level model with tool schemas
-  -> inspect tool calls / assistant output
-  -> dispatch tools through harness registry
-  -> stop immediately if a successful terminal tool result requests turn termination
-  -> feed tool results back into next model turn
-  -> stop when the model emits a final assistant message
-  -> or return a waiting state for approval / delegation
-```
-
-实现约束：
-
-- 顶层 loop 继续由 OpenZyme 自己维护，不使用顶层 LangGraph / agent graph 编排
-- 顶层只复用 LangChain / LangGraph 的模型接入层，例如 chat model 初始化、tool binding、tool-calling response 解析
-- capability engine 内部可以继续使用 LangGraph，但 engine state 不能反向成为产品顶层真状态
-
-### 3.3 Capability Engines
-
-能力引擎是被 harness 调用的可替换模块。
-
-初始包括：
-
-- `deep_research`
-- `execution`
-
-要求：
-
-- 输入输出稳定
-- 内部实现可替换
-- 对外暴露统一 tool / command contract
-- 被 `engine invocation` 统一调度和恢复
-- 不拥有产品顶层真状态
-- `execution` 默认通过 executor-owned persistent sandbox workspace 承载脚本迭代、Python/bash 操作和 SDK 调用，而不是让 executor 直接调用 runner tool
-- C2 general/executor profile 中的 filesystem、shell、Git/LFS、ordinary network、upload/download、SSH/Slurm 名称只是 policy declaration，不是 engine/tool 已可用证明
-- 本节其余 Host-supervised execution 与 AOX sandbox 语义保持当前 `--network=none`/无网络边界；它们是旧执行能力面，不是 active capability lease 缺失时的 compatibility fallback
-- 通过前序 request、workspace、layout 与 runtime 校验并进入 source preflight 的每次 `sandbox.exec`（包括 `python -c`、包/签名探测与诊断）都先对整个非空 `/workspace/src` 建立 CODE snapshot；前序校验可以更早返回自身错误，空树则在 `SandboxRun` 与进程创建前以 `source_snapshot_empty` fail closed。只读 API 事实优先来自受控 docs，确需 runtime introspection 时先把显式探测源码写入 `/workspace/src`，不得把 exec 当作无审计环境检查捷径
-- 进入 dry-run、approval、正式执行或结果审计的源码必须 snapshot 为 CODE artifact；Host 用 snapshot digest 绑定 plan、run、artifact provenance 和 workspace projection
-- 外部 provider、明确配置的本地 adapter 和 HPC 调用必须通过 `openzyme_pipeline` SDK 进入 Host supervisor，再由 Host 选择受控 adapter、runner 或独立 HPC placement workspace；AOX/HMM `bio_tools` 的 S14 产品 route 是 HPC-only，不以 Host-local Apptainer 作为 fallback
-- preprocess 是 pipeline 可调用能力，由 executor 在受控代码中判断和编排；preprocess 产物必须先登记为可信 workspace artifact，再被 HPC step 消费
-
-## 4. 数据流
-
-### 4.1 主路径
-
-```text
-create session
-  -> resolve one active ProjectRepositoryBinding and verify exact base object
-  -> atomically persist session + SessionRepositoryBindingPin
-  -> ensure resident agent:master
-  -> reserve master workspace generation + create pending capability lease
-  -> after C3 is deployed, its registered provisioner may submit exact readiness and atomically activate that lease
-  -> if exact active lease is absent, project provisioning_required and stop before runtime claim
-  -> user message is persisted and queues agent:master wakeup
-  -> scheduler claims master signal
-  -> re-read master exact-generation active capability lease
-  -> master agent understands user goal
-  -> master agent create / prioritize tasks
-  -> master agent spawn / assign / resume teammate agents when needed
-  -> agent runtime records roster state and wakeup signals
-  -> scheduler claims teammate signal
-  -> re-read teammate exact-generation active capability lease
-  -> teammate agent wakes on delegation, inbox, task claim, approval, or engine completion
-  -> teammate agent restores on shared session workspace with task/lane focus
-  -> teammate inspects artifacts / protocols / task state
-  -> teammate chooses tools / capability calls when needed
-  -> teammate returns to idle when no immediate work remains
-  -> teammate protocol / task / report change queues agent:master wakeup
-  -> scheduler claims master signal
-  -> report teammate may update report draft directly on shared workspace
-  -> assign / claim lane for delegated task when execution context is required
-  -> resolve approvals through unified protocol
-  -> teammates may communicate peer-to-peer through team protocols
-  -> materialize artifacts / runs / report drafts / reports
-  -> master agent synthesize progress / deliverables back to user
-  -> project workspace snapshot
-```
-
-### 4.1.1 消息回合路径
-
-```text
-POST /v3/sessions/{session_id}/messages
-  -> persist user message
-  -> scheduler later resolves current agent member/generation and active capability lease
-  -> provisioning_required stops before provider/tool execution
-  -> build restore context
-  -> preflight token budget against model context profile
-       warn at 80%
-       auto compact session/lane at 85% and rebuild restore context
-       fail with context_budget_exceeded at 90%, without provider call
-  -> call top-level tool-calling model
-  -> if tool calls exist:
-       dispatch tools
-       persist tool side effects
-       artifactize over-budget tool results as RESULT artifacts
-       feed bounded observations into the next model turn
-  -> else if assistant output exists:
-       persist assistant message
-       auto compact
-       return completed
-  -> else if approval / delegation wait state exists:
-       persist wait state
-       auto compact
-       return waiting
-```
-
-### 4.2 恢复路径
-
-```text
-reload session
-  -> restore exact workspace-generation reservation/readiness and lease state
-  -> reject runtime restore unless the current generation has an active lease
-  -> restore conversation
-  -> restore task board
-  -> restore lane bindings
-  -> restore pending approvals
-  -> restore inbox / agent roster / background completions
-  -> derive pending wakeup signals for resident teammates
-  -> restore memory summary / compressed context
-  -> restore engine invocations
-  -> continue harness loop
-```
-
-### 4.3 UI / CLI 路径
-
-```text
-UI/CLI
-  -> query / stream v3 workspace projection
-  -> display tasks / approvals / runs / artifacts / reports / lane state
-  -> send structured commands back to control plane
-```
-
-Web UI 的默认交互是 conversation-first：用户通过消息表达目标，通过 approval cards 确认高风险动作；task / lane / engine invocation 等 control-plane 对象由 harness tools 维护，并以只读 workspace inspector 形式展示。CLI 可以保留 task / lane mutation 作为 operator、调试、自动化能力，但这不是普通 Web 用户推进工作的默认方式。
-
-默认主路径不是“用户消息直接触发 capability”，而是：
-
-- 用户与 master agent 对话
-- master agent 创建和编排 task
-- master agent 将具体 task 分配给 teammate agents
-- teammate agents 在共享 session workspace 上围绕 task 推进工作，并按需绑定 lane、调用 capability、读写 artifacts / report drafts / reports
-- 显式 recovery/debug/operator auto-claim 可以根据 role、`blocked_by` 与 assignment policy 认领 ready unassigned task，但默认产品路径仍是 master 显式委派
-- teammate 之间通过 team protocol 协作，master 负责对外汇报和最终交付
-
-## 5. 关键设计默认值
-
-- `project` 继续保留为上层业务锚点
-- `session` 替代 `episode` 成为交互锚点
-- `task` 是默认工作组织单元
-- `lane` 是默认执行隔离单元
-- `delegation` / `team protocol` 默认作为 task-aware harness tool / protocol 存在，而不是 prompt 惯例
-- `workspace projection` 是 UI / CLI 唯一合法读模型
-- `workspace.conversation` 是 V3 对话真读模型
-- teammate 默认拥有 session-wide artifact catalog 的读视野，并以 task / lane focused restore context 工作
-- teammate 默认采用 role-scoped tool surface；共享读工具可见，危险写操作保持结构化约束
-- teammate 默认是 resident agent member：身份与 inbox 常驻，LLM 推理只在 scheduler 唤醒后运行
-- teammate lifecycle 默认包含 `working`、`idle`、`blocked`、`failed`、`shutdown` 等可投影状态
-- 上述 runtime/display status 不构成 retirement；只有 explicit shutdown cleanup 闭合后的 immutable retirement record 可以撤销该 member 的全 generation leases
-- `protocol.send` 默认产生可被 recipient teammate 消费的 wakeup signal；recipient 下一次恢复时必须看到相关 thread 与 unread payload
-- `report draft` 默认不是 capability invocation 的副产物，而是 report teammate 可持续修订的共享工作对象
-- `deep_research` 默认优先内嵌 LangGraph / LangChain 实现
-- `execution` 默认继续复用 `apps/mcp-hpc-runner`
-- C2 到 C3 之间没有 active exact-generation lease 的 agent 默认 non-runnable；不得为了继续运行而借用 legacy sandbox、parent capsule 或现有 tool exposure
-- `execution` 的 executor-facing 默认入口是 generation-owned Git clone 与 `workspace.exec`；只有 exact active executor lease 才能请求 C8 owner-only HPC login workspace credential。普通 SSH/Git/LFS/rsync/scp/CRUD 是 agent-native data plane，不代表 scheduler job admission
-- `sandbox.exec` 中通过前序 request/workspace/layout/runtime 校验并进入 source preflight 的所有调用都先封存整个非空 `/workspace/src`；即使只是 `python -c`、包/签名探测或诊断也不例外。前序校验仍可更早失败；进入 source preflight 后的空树在 run/process 前返回 `source_snapshot_empty`。harness 应把该真实约束和受控 docs/显式 inspection source 路径呈现给 agent，但不替 agent 规定科学策略
-- `execution` 默认运行在 rootless Podman persistent sandbox 中，通过注入的 `openzyme_pipeline` SDK 和 agent-facing `sandbox.*` tools 访问受控 sandbox workspace、artifacts、bio、bio_tools、preprocess 与后续领域 SDK
-- executor sandbox base image 默认由 Host-level image registry / bootstrap contract 管理，记录 `image_ref`、resolved `image_digest`、最低能力声明和 `sandbox_protocol_version`；MAFFT、CD-HIT、HMMER、Apptainer SIF、HPC runner 等领域 packaging 不进入 base image，由后续 backend/toolchain registry 管理
-- 同一 `sandbox_workspace_id` 默认单活 `sandbox.exec`；artifact materialization 按 artifact digest、target path 和 mode 幂等复用；SDK approval 按完整 operation digest 复用，digest 漂移必须重新审批或结构化失败
-- execution teammate 默认通过 `docs.search` / `docs.read` 按需读取 `docs/v3/execution-pipeline-docs/`，而不是依赖 prompt 内嵌完整 SDK reference
-- C8 的 `ExecutorHpcWorkspace` 按 project binding、session、executor member、local generation、target profile 与 remote generation唯一绑定；owner 才能看到 login alias/path，公共 projection 只保留 opaque id 与 lifecycle。target 必须有真实 credential/authenticator、OS principal/root isolation 与 native positive/negative qualification，配置声明本身不能激活
-- `bio.*` / `rcsb_pdb.*` SDK 调用默认由 Host supervisor 执行 provider 配置、网络访问、分页、quota、artifact 登记和 provenance；sandbox 不直接联网；`rcsb_pdb.download_structure` 在 executor sandbox 内是 `rcsb_pdb.download_structure.provider:v1` 受控 provider operation，返回 sealed artifact manifest 而不是 Host local path；Host provider cache 只能作为私有优化，不能替代真实 provider/live prerequisite 证据
-- `bio_tools.*` SDK 调用默认由 Host supervisor 执行 tool preflight、静态 route policy、declared output 校验、artifact 登记和 provenance；AOX/HMM S14 启用 route 是 HPC-only，sandbox 不直接 shell/subprocess 调 CLI
-- C8 current runner schema 已拒绝 artifact staging、Host path、catalog ref、`HpcStageRef` 与 output-fetch 字段；agent 通过 private checkpoint 或 immutable publication ref 同步 exact commit/tree/LFS identity。C9 receipt 建立前，`exec.run`、`job.submit`、reservation 与 payload resume 均返回 `workspace_revision_execution_required`
-- AOX/HMM live cutover 默认在 S15 eval result 中产出 sealed inline evidence payload 与 `evidence_bundle_digest`，回链 prompt、配置 snapshot、image/toolchain/route/provider digest、approval、operation trace、artifact ids 和 final answer；该证据不进入顶层 control-plane canonical state
-- preprocess 默认作为 pipeline SDK 能力存在，至少覆盖格式转换、Vina receptor/ligand PDBQT 准备与 SMILES 到 3D ligand
-- 顶层 LLM 默认最大单回合 tool call 并发上限为 `3`
-- research / execution / reporting 这类具体工作默认由 teammate agent 推进，而不是长期由 master 直接亲自完成
-- reporting 默认由 report teammate 直接在共享 workspace 上完成，不要求单独 reporting engine
-
-## 6. 推荐 Monorepo 包布局
-
-V3 默认不沿用拆散的产品级 graph/storage 包切法。
-
-推荐收敛为：
-
-- `packages/openzyme-domain`
-  负责共享 domain models、canonical types、稳定词汇表
-- `packages/openzyme-core`
-  负责 control plane、repositories、agent runtime、scheduler、memory、approval、lane、projection、host-facing core services；对已下沉的 runtime SPI 保留兼容重导出
-- `packages/openzyme-engines`
-  负责 `deep_research`、`execution` 等 capability engines；不依赖 `openzyme-core` 的 concrete harness 类型，engine/tool SPI 来自 `openzyme-runtime`
-- `apps/openzyme-host-api`
-  HTTP/SSE composition root：装配 repositories、runtime foundation、engine registry、background worker、SSE 与 runner server，不新增 capability-local compiler/parser/eval 权威
-- `apps/openzyme-host-cli`
-- `apps/openzyme-web-ui`
-- `apps/mcp-hpc-runner`
-
-这样划分的原因：
-
-- `domain` 的边界稳定，适合单独保留
-- control plane、runtime、storage、tool dispatch 在 V3 里耦合很强，早期继续拆成多个包只会增加摩擦
-- engines 的替换性和演进节奏与 core 不同，适合单独收口
-- apps 仍然维持产品入口和外部执行边界
-
-当前边界：
-
-- `packages/openzyme-runtime` 保留 settings、LLM、limits、research tool seams、engine/tool SPI、artifact projection / artifact boundary service 与 static route policy；不得承载新的顶层产品真状态
-- `packages/openzyme-tools` 是 HPC catalog、tool execution contract、command rendering、RunSpec compiler helper 与 result parser 的唯一权威
-- `packages/openzyme-research` 保留 provider integration
-- `packages/openzyme-execution` 保留 runner adapter normalization；runner server 由 `apps/openzyme-host-api` composition root 注入，不从 package 反向依赖 `apps/mcp-hpc-runner`
-
-所有边界必须满足两条约束：
-
-- 新增 V3 顶层语义只能先落到 `domain / core / engines` 的目标边界，不得继续扩展旧的产品级包职责
-- capability-local state 必须回写 control plane 后才能成为产品可见状态
-
-## 7. 参考实现路径
-
-Harness 思想参考：
-
-- `/home/grtresy/VSCodeRepo/learn-claude-code/README-zh.md`
-- `/home/grtresy/VSCodeRepo/learn-claude-code/docs/zh/s09-agent-teams.md`
-- `/home/grtresy/VSCodeRepo/learn-claude-code/docs/zh/s10-team-protocols.md`
-- `/home/grtresy/VSCodeRepo/learn-claude-code/docs/zh/s11-autonomous-agents.md`
-- `/home/grtresy/VSCodeRepo/learn-claude-code/agents/s_full.py`
-
-Deep research 参考：
-
-- `/home/grtresy/VSCodeRepo/26/open_deep_research/src/open_deep_research/deep_researcher.py`
-- `/home/grtresy/VSCodeRepo/26/open_deep_research/docs/deep_researcher_graph_详解.md`
-
-OpenZyme 主线参考：
-
-- `/home/grtresy/VSCodeRepo/EnzymeDesign/docs/OpenZyme架构设计.md`
-- `/home/grtresy/VSCodeRepo/EnzymeDesign/packages/openzyme-core/src/openzyme_core/`
-
-## 可执行架构资格的依赖方向
-
-稳定合同与当前产品实现是被验证对象；owner/constraint registry、`invariant-registry.json`、production-composition 场景、
-canonical report 和 pure verifier 依次位于其外侧。产品 runtime 不反向读取 qualification report
-来决定 task、agent 或 engine 行为。只有 AOX operator launch boundary 可消费当前 clean commit 的
-full/zero-P0 receipt，而且必须发生在任何 attempt root 或外部 effect 之前。首版只声明 trusted
-Host 的 `local_single_process_file_sqlite@1`，不得外推为 multi-process、multi-Host 或 distributed
-architecture guarantee。
-
-current registry必须把“约束owner”和“agent strategy”分开：actor、assignment、authority、effect、
-fence、quiescence、integrity、provenance、isolation、budget和atomicity由canonical owner执行；
-workflow task cardinality、report/source linkage和deliverable completeness由pure final-state
-acceptance判断。`strategy-neutrality`场景用合法trace transformation检查Harness没有固定tool顺序，
-`world-fidelity`场景检查source-bound earliest cause在下一次decision前真实可见。单条scripted
-reachability不构成这两类证明。
+fresh install 直接创建 final schema。旧部署不能在 Host startup 中自动升级，只能按离线两阶段
+operator 流程迁移。partial removal 会阻止 normal startup。历史 Git/LFS ref 可被 standalone
+verifier 读取，但永远不可被 current workflow 采用。

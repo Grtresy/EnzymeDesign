@@ -6,7 +6,7 @@ test "$(id -g)" = "10001"
 test "${HOME}" = "/home/openzyme"
 test "$(pwd)" = "/workspace/repository"
 
-for binary in bash cat cp curl find git git-lfs grep mkdir mv rsync scp sed ssh tar; do
+for binary in bash cat cp curl find git git-lfs grep mkdir mv python3 rsync scp sed ssh tar; do
     command -v "${binary}" >/dev/null
 done
 
@@ -22,6 +22,9 @@ require_package_version git-lfs '3.3.0-1+b5'
 require_package_version openssh-client '1:9.2p1-2+deb12u7'
 require_package_version rsync '3.2.7-1+deb12u2'
 require_package_version curl '7.88.1-10+deb12u14'
+require_package_version python3 '3.11.2-1+b1'
+
+python3 -c 'from openzyme_pipeline import workspace_revision; from openzyme_pipeline.client import supervised_sandbox_mode; assert supervised_sandbox_mode() is False'
 
 git --version
 git lfs version

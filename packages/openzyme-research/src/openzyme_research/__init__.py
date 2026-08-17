@@ -18,7 +18,7 @@ from .bio import asset_manifest
 from .bio import literature_hits_to_findings
 from .bio import safe_literature_evidence_payload
 from .bio import structure_hits_to_findings
-from .observations import ResearchArtifactManifest
+from .observations import ResearchFileManifest
 from .observations import ResearchObservation
 from .provider_runtime import BoundedCallableClient
 from .provider_runtime import BoundedHttpClient
@@ -69,7 +69,7 @@ __all__ = [
     "MissingTavilyApiKeyError",
     "MissingTavilyDependencyError",
     "ResearchAdapter",
-    "ResearchArtifactManifest",
+    "ResearchFileManifest",
     "ResearchFinding",
     "ResearchObservation",
     "ResearchSource",

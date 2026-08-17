@@ -33,7 +33,6 @@ from .repositories import CoreRepositories
 from .repositories import _json_dumps
 from .reliability_repositories import CanonicalRecordConflictError
 from .reliability_repositories import OptimisticStateConflictError
-from .result_artifacts import ControlledOperationResultArtifactRef
 
 
 class InvalidExecutionTransitionError(ValueError):
@@ -156,7 +155,6 @@ def build_controlled_operation_result_handle(
     *,
     terminal_outcome: ControlledOperationExecutionTerminalOutcome,
     bounded_result_envelope: dict[str, object],
-    artifact_set_digest: str,
     origin: str,
     created_at: str,
 ) -> ControlledOperationResultHandle:
@@ -170,7 +168,6 @@ def build_controlled_operation_result_handle(
             "dispatch_generation": execution.dispatch_generation,
             "terminal_outcome": terminal_outcome.value,
             "result_digest": result_digest,
-            "artifact_set_digest": artifact_set_digest,
             "origin": origin,
         }
     )
@@ -183,7 +180,6 @@ def build_controlled_operation_result_handle(
         terminal_outcome=terminal_outcome,
         bounded_result_envelope=dict(bounded_result_envelope),
         result_digest=result_digest,
-        artifact_set_digest=artifact_set_digest,
         origin=origin,
         created_at=created_at,
     )
@@ -276,11 +272,9 @@ class DurableControlledOperationAdmissionService:
 
         return replace(
             operation,
-            planned_fetch_intent=operation.planned_fetch_intent or {},
             approval_requirement=operation.approval_requirement or {},
             adapter_approval_envelope=operation.adapter_approval_envelope or {},
             adapter_result_envelope=operation.adapter_result_envelope or {},
-            expected_outputs_summary=operation.expected_outputs_summary or {},
             resource_estimate=operation.resource_estimate or {},
             result_summary=operation.result_summary or {},
         )
@@ -338,7 +332,6 @@ class DurableControlledOperationAdmissionService:
         if (
             continuation.operation_id != operation.operation_id
             or continuation.session_id != operation.session_id
-            or continuation.sandbox_run_id != operation.sandbox_run_id
             or continuation.approval_id != approval.approval_id
             or continuation.status is not ContinuationStateStatus.WAITING_APPROVAL
         ):
@@ -349,7 +342,6 @@ class DurableControlledOperationAdmissionService:
                 is not ContinuationDeliveryState.AWAITING_RESULT
                 or continuation.delivery_generation != 1
                 or continuation.state_version != 1
-                or continuation.sandbox_workspace_id != operation.sandbox_workspace_id
                 or not continuation.sandbox_runtime_identity
                 or continuation.process_epoch is None
                 or continuation.process_epoch < 1
@@ -635,7 +627,6 @@ class ControlledOperationExecutionTransitionService:
         expected_lease_token: str | None = None,
         expected_fencing_token: int | None = None,
         result_handle: ControlledOperationResultHandle | None = None,
-        result_artifacts: tuple[ControlledOperationResultArtifactRef, ...] = (),
         workspace_job_result: WorkspaceJobResult | None = None,
     ) -> ControlledOperationExecution:
         if result_handle is not None and workspace_job_result is not None:
@@ -669,10 +660,6 @@ class ControlledOperationExecutionTransitionService:
             self.repositories.controlled_operation_execution_events.append(event)
             if result_handle is not None:
                 self.repositories.controlled_operation_results.save_once(result_handle)
-                self.repositories.controlled_operation_result_artifacts.promote(
-                    result_handle,
-                    result_artifacts,
-                )
             if workspace_job_result is not None:
                 self.repositories.workspace_revision_executions.add_result(
                     workspace_job_result
@@ -683,7 +670,7 @@ class ControlledOperationExecutionTransitionService:
                     execution.execution_id
                 )
             )
-            legacy_result = (
+            result_record = (
                 result_handle
                 or self.repositories.controlled_operation_results.get_by_execution_id(
                     execution.execution_id
@@ -714,33 +701,27 @@ class ControlledOperationExecutionTransitionService:
                     if (
                         (result_required and not exact_workspace_result)
                         or (not result_required and not no_result_identity)
-                        or execution.artifact_set_digest is not None
-                        or legacy_result is not None
+                        or result_record is not None
                     ):
                         raise InvalidExecutionTransitionError(
-                            "workspace execution lacks its exact non-artifact result"
+                            "workspace execution lacks its exact revision result"
                         )
                 else:
                     if (
-                        legacy_result is None
-                        or legacy_result.result_handle_id
+                        result_record is None
+                        or result_record.result_handle_id
                         != execution.result_handle_ref
-                        or legacy_result.result_digest != execution.result_digest
-                        or legacy_result.artifact_set_digest
-                        != execution.artifact_set_digest
+                        or result_record.result_digest != execution.result_digest
                         or (
                             execution.lifecycle_state
                             is ControlledOperationExecutionLifecycle.TERMINAL
-                            and legacy_result.terminal_outcome
+                            and result_record.terminal_outcome
                             is not execution.terminal_outcome
                         )
                     ):
                         raise InvalidExecutionTransitionError(
                             "result-bearing execution lacks its exact immutable result"
                         )
-                    self.repositories.controlled_operation_result_artifacts.assert_exact(
-                        legacy_result
-                    )
                 continuation = (
                     self.repositories.continuation_states.get_by_operation_id(
                         execution.operation_id
@@ -762,7 +743,7 @@ class ControlledOperationExecutionTransitionService:
                     )
             self._project_compatibility(
                 execution=execution,
-                result_handle=legacy_result,
+                result_handle=result_record,
                 workspace_job_result=workspace_result,
             )
         return execution
@@ -892,7 +873,6 @@ class ControlledOperationExecutionTransitionService:
                 or result_handle.dispatch_generation != updated.dispatch_generation
                 or updated.result_handle_ref != result_handle.result_handle_id
                 or updated.result_digest != result_handle.result_digest
-                or updated.artifact_set_digest != result_handle.artifact_set_digest
             ):
                 raise InvalidExecutionTransitionError(
                     "result handle does not exactly match the execution transition"
@@ -909,7 +889,6 @@ class ControlledOperationExecutionTransitionService:
                 or workspace_job_result.operation_id != updated.operation_id
                 or updated.result_handle_ref != workspace_job_result.result_id
                 or updated.result_digest != workspace_job_result.result_digest
-                or updated.artifact_set_digest is not None
                 or (
                     updated.lifecycle_state
                     is ControlledOperationExecutionLifecycle.TERMINAL

@@ -3,10 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import re
 from typing import Any
 
 
 FILE_WORKSPACE_PUBLIC_SCHEMA_VERSION = "file_workspace_public@1"
+FILE_WORKSPACE_PUBLIC_CONTRACT_ID = "file_workspace_public@1"
 
 
 _PRIVATE_KEYS = frozenset(
@@ -23,12 +25,23 @@ _PRIVATE_KEYS = frozenset(
         "token",
     }
 )
+_REMOVED_PUBLIC_KEY_FRAGMENTS = (
+    "arti" + "fact",
+    "catalog",
+    "materialization",
+    "staging_ref",
+    "storage_uri",
+)
 
 
 def _assert_shared_safe(value: object, *, path: str = "projection") -> None:
     if isinstance(value, dict):
         for key, item in value.items():
-            if str(key).lower() in _PRIVATE_KEYS:
+            normalized_key = str(key).lower()
+            if normalized_key in _PRIVATE_KEYS or any(
+                fragment in normalized_key
+                for fragment in _REMOVED_PUBLIC_KEY_FRAGMENTS
+            ):
                 raise ValueError(f"private field is forbidden at {path}.{key}")
             _assert_shared_safe(item, path=f"{path}.{key}")
     elif isinstance(value, (list, tuple)):
@@ -48,9 +61,28 @@ class ExecutorOwnerWorkspaceView:
     schema_version: str = "executor_owner_workspace_view@1"
 
     def __post_init__(self) -> None:
+        locator_text = f"{self.login_alias}\n{self.workspace_path}".lower()
         if self.workspace_generation < 1:
             raise ValueError("executor owner workspace generation must be positive")
-        if not self.login_alias or not self.workspace_path.startswith("/"):
+        if (
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", self.login_alias)
+            is None
+            or not self.workspace_path.startswith("/")
+            or len(self.workspace_path.encode("utf-8")) > 4096
+            or any(part in {"", ".", ".."} for part in self.workspace_path.split("/")[1:])
+            or any(character in self.workspace_path for character in ("\x00", "\n", "\r"))
+            or any(
+                marker in locator_text
+                for marker in (
+                    "authorization:",
+                    "bearer ",
+                    "password=",
+                    "private_key",
+                    "secret=",
+                    "token=",
+                )
+            )
+        ):
             raise ValueError("executor owner view requires exact native locator")
         if self.view_digest != self.canonical_digest:
             raise ValueError("executor owner workspace view digest mismatch")
@@ -109,6 +141,13 @@ class FileWorkspacePublicProjection:
     external_job_results: tuple[dict[str, object], ...]
     capability_leases: tuple[dict[str, object], ...]
     executor_owner_workspace: ExecutorOwnerWorkspaceView | None
+    conversation: tuple[dict[str, object], ...]
+    task_board: dict[str, object]
+    lane_board: dict[str, object]
+    agents: tuple[dict[str, object], ...]
+    pending_approvals: tuple[dict[str, object], ...]
+    activity_feed: tuple[dict[str, object], ...]
+    failure_observations: tuple[dict[str, object], ...]
     tool_catalog_digest: str
     schema_bundle_digest: str
     schema_version: str = FILE_WORKSPACE_PUBLIC_SCHEMA_VERSION
@@ -126,6 +165,13 @@ class FileWorkspacePublicProjection:
             "external_jobs": self.external_jobs,
             "external_job_results": self.external_job_results,
             "capability_leases": self.capability_leases,
+            "conversation": self.conversation,
+            "task_board": self.task_board,
+            "lane_board": self.lane_board,
+            "agents": self.agents,
+            "pending_approvals": self.pending_approvals,
+            "activity_feed": self.activity_feed,
+            "failure_observations": self.failure_observations,
         }
         _assert_shared_safe(shared)
         for value in (self.tool_catalog_digest, self.schema_bundle_digest):
@@ -148,6 +194,13 @@ class FileWorkspacePublicProjection:
             "external_jobs": list(self.external_jobs),
             "external_job_results": list(self.external_job_results),
             "capability_leases": list(self.capability_leases),
+            "conversation": list(self.conversation),
+            "task_board": self.task_board,
+            "lane_board": self.lane_board,
+            "agents": list(self.agents),
+            "pending_approvals": list(self.pending_approvals),
+            "activity_feed": list(self.activity_feed),
+            "failure_observations": list(self.failure_observations),
             "executor_owner_workspace": (
                 None
                 if self.executor_owner_workspace is None
@@ -158,6 +211,7 @@ class FileWorkspacePublicProjection:
 
 __all__ = [
     "FILE_WORKSPACE_PUBLIC_SCHEMA_VERSION",
+    "FILE_WORKSPACE_PUBLIC_CONTRACT_ID",
     "ExecutorOwnerWorkspaceView",
     "FileWorkspacePublicProjection",
 ]

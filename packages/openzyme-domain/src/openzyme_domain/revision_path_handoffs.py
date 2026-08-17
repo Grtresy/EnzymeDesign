@@ -8,6 +8,7 @@ import re
 from typing import Any
 
 from .git_lfs_work_products import require_repository_path
+from .scientific_deliverables import ScientificDeliverableRef
 
 
 REVISION_PATH_REF_SCHEMA_VERSION = "revision_path_ref@1"
@@ -16,6 +17,7 @@ PROTOCOL_FILE_HANDOFF_SCHEMA_VERSION = "protocol_file_handoff@1"
 REPORT_REF_SCHEMA_VERSION = "report_ref@1"
 CONTROLLED_OPERATION_RESULT_REF_SCHEMA_VERSION = "controlled_operation_result_ref@1"
 SCIENTIFIC_DELIVERABLE_REF_SCHEMA_VERSION = "scientific_deliverable_ref@1"
+SCIENTIFIC_CLOSURE_REF_SCHEMA_VERSION = "scientific_closure_ref@1"
 
 
 class RevisionPathEntryKind(StrEnum):
@@ -31,6 +33,70 @@ class TaskEvidenceKind(StrEnum):
     REPORT = "report"
     CONTROLLED_OPERATION_RESULT = "controlled_operation_result"
     SCIENTIFIC_DELIVERABLE = "scientific_deliverable"
+    SCIENTIFIC_CLOSURE = "scientific_closure"
+
+
+@dataclass(frozen=True, slots=True)
+class ScientificClosureRef:
+    closure_id: str
+    project_id: str
+    session_id: str
+    task_id: str
+    attempt_id: str
+    selection_id: str
+    closure_digest: str
+    schema_version: str = SCIENTIFIC_CLOSURE_REF_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        if self.schema_version != SCIENTIFIC_CLOSURE_REF_SCHEMA_VERSION:
+            raise ValueError("unsupported scientific closure ref schema")
+        for field_name in (
+            "closure_id",
+            "project_id",
+            "session_id",
+            "task_id",
+            "attempt_id",
+            "selection_id",
+        ):
+            _require_identifier(getattr(self, field_name), field_name)
+        _require_digest(self.closure_digest, "closure_digest")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "closure_id": self.closure_id,
+            "project_id": self.project_id,
+            "session_id": self.session_id,
+            "task_id": self.task_id,
+            "attempt_id": self.attempt_id,
+            "selection_id": self.selection_id,
+            "closure_digest": self.closure_digest,
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "ScientificClosureRef":
+        expected = {
+            "schema_version",
+            "closure_id",
+            "project_id",
+            "session_id",
+            "task_id",
+            "attempt_id",
+            "selection_id",
+            "closure_digest",
+        }
+        if set(value) != expected:
+            raise ValueError("scientific closure ref has unknown or missing fields")
+        return cls(
+            schema_version=_strict_string(value["schema_version"], "schema_version"),
+            closure_id=_strict_string(value["closure_id"], "closure_id"),
+            project_id=_strict_string(value["project_id"], "project_id"),
+            session_id=_strict_string(value["session_id"], "session_id"),
+            task_id=_strict_string(value["task_id"], "task_id"),
+            attempt_id=_strict_string(value["attempt_id"], "attempt_id"),
+            selection_id=_strict_string(value["selection_id"], "selection_id"),
+            closure_digest=_strict_string(value["closure_digest"], "closure_digest"),
+        )
 
 
 def canonical_handoff_digest(payload: dict[str, Any]) -> str:
@@ -447,6 +513,8 @@ class TaskEvidenceRef:
     revision_path_ref: RevisionPathRef | None = None
     report_ref: ReportRef | None = None
     controlled_operation_result_ref: ControlledOperationResultRef | None = None
+    scientific_deliverable_ref: ScientificDeliverableRef | None = None
+    scientific_closure_ref: ScientificClosureRef | None = None
     schema_version: str = TASK_EVIDENCE_REF_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -467,7 +535,12 @@ class TaskEvidenceRef:
                 or self.revision_path_ref.session_id != self.session_id
             ):
                 raise ValueError("revision_path evidence owner identity differs from its ref")
-            if self.report_ref is not None or self.controlled_operation_result_ref is not None:
+            if (
+                self.report_ref is not None
+                or self.controlled_operation_result_ref is not None
+                or self.scientific_deliverable_ref is not None
+                or self.scientific_closure_ref is not None
+            ):
                 raise ValueError("revision-path evidence carries another evidence variant")
         elif self.kind is TaskEvidenceKind.REPORT:
             if self.report_ref is None:
@@ -480,7 +553,12 @@ class TaskEvidenceRef:
                 or self.report_ref.task_id != self.task_id
             ):
                 raise ValueError("report evidence owner identity differs from its ref")
-            if self.revision_path_ref is not None or self.controlled_operation_result_ref is not None:
+            if (
+                self.revision_path_ref is not None
+                or self.controlled_operation_result_ref is not None
+                or self.scientific_deliverable_ref is not None
+                or self.scientific_closure_ref is not None
+            ):
                 raise ValueError("report evidence carries another evidence variant")
         elif self.kind is TaskEvidenceKind.CONTROLLED_OPERATION_RESULT:
             if self.controlled_operation_result_ref is None:
@@ -498,14 +576,64 @@ class TaskEvidenceRef:
                 raise ValueError(
                     "controlled-operation evidence owner identity differs from its ref"
                 )
-            if self.revision_path_ref is not None or self.report_ref is not None:
+            if (
+                self.revision_path_ref is not None
+                or self.report_ref is not None
+                or self.scientific_deliverable_ref is not None
+                or self.scientific_closure_ref is not None
+            ):
                 raise ValueError(
                     "controlled-operation evidence carries another evidence variant"
                 )
-        else:
-            raise ValueError(
-                "scientific deliverable evidence is unavailable until its closed schema is installed"
-            )
+        elif self.kind is TaskEvidenceKind.SCIENTIFIC_DELIVERABLE:
+            if self.scientific_deliverable_ref is None:
+                raise ValueError(
+                    "scientific-deliverable evidence requires a ScientificDeliverableRef"
+                )
+            deliverable_ref = self.scientific_deliverable_ref
+            if (
+                deliverable_ref.ref_id != self.owner_id
+                or deliverable_ref.ref_digest != self.owner_digest
+                or deliverable_ref.project_id != self.project_id
+                or deliverable_ref.session_id != self.session_id
+            ):
+                raise ValueError(
+                    "scientific-deliverable evidence owner identity differs from its ref"
+                )
+            if (
+                self.revision_path_ref is not None
+                or self.report_ref is not None
+                or self.controlled_operation_result_ref is not None
+                or self.scientific_closure_ref is not None
+            ):
+                raise ValueError(
+                    "scientific-deliverable evidence carries another evidence variant"
+                )
+        elif self.kind is TaskEvidenceKind.SCIENTIFIC_CLOSURE:
+            if self.scientific_closure_ref is None:
+                raise ValueError(
+                    "scientific-closure evidence requires a ScientificClosureRef"
+                )
+            closure_ref = self.scientific_closure_ref
+            if (
+                closure_ref.closure_id != self.owner_id
+                or closure_ref.closure_digest != self.owner_digest
+                or closure_ref.project_id != self.project_id
+                or closure_ref.session_id != self.session_id
+                or closure_ref.task_id != self.task_id
+            ):
+                raise ValueError(
+                    "scientific-closure evidence owner identity differs from its ref"
+                )
+            if (
+                self.revision_path_ref is not None
+                or self.report_ref is not None
+                or self.controlled_operation_result_ref is not None
+                or self.scientific_deliverable_ref is not None
+            ):
+                raise ValueError(
+                    "scientific-closure evidence carries another evidence variant"
+                )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -523,6 +651,16 @@ class TaskEvidenceRef:
                 if self.controlled_operation_result_ref is None
                 else self.controlled_operation_result_ref.to_dict()
             ),
+            "scientific_deliverable_ref": (
+                None
+                if self.scientific_deliverable_ref is None
+                else self.scientific_deliverable_ref.to_dict()
+            ),
+            "scientific_closure_ref": (
+                None
+                if self.scientific_closure_ref is None
+                else self.scientific_closure_ref.to_dict()
+            ),
         }
 
     @classmethod
@@ -538,6 +676,8 @@ class TaskEvidenceRef:
             "revision_path_ref",
             "report_ref",
             "controlled_operation_result_ref",
+            "scientific_deliverable_ref",
+            "scientific_closure_ref",
         }
         if set(value) != expected:
             raise ValueError("task evidence reference has unknown or missing fields")
@@ -554,6 +694,18 @@ class TaskEvidenceRef:
             raise ValueError(
                 "controlled_operation_result_ref must be an object or null"
             )
+        raw_scientific_deliverable = value["scientific_deliverable_ref"]
+        if raw_scientific_deliverable is not None and not isinstance(
+            raw_scientific_deliverable, dict
+        ):
+            raise ValueError(
+                "scientific_deliverable_ref must be an object or null"
+            )
+        raw_scientific_closure = value["scientific_closure_ref"]
+        if raw_scientific_closure is not None and not isinstance(
+            raw_scientific_closure, dict
+        ):
+            raise ValueError("scientific_closure_ref must be an object or null")
         return cls(
             kind=TaskEvidenceKind(_strict_string(value["kind"], "kind")),
             project_id=_strict_string(value["project_id"], "project_id"),
@@ -567,6 +719,16 @@ class TaskEvidenceRef:
                 None
                 if raw_controlled_result is None
                 else ControlledOperationResultRef.from_dict(raw_controlled_result)
+            ),
+            scientific_deliverable_ref=(
+                None
+                if raw_scientific_deliverable is None
+                else ScientificDeliverableRef.from_dict(raw_scientific_deliverable)
+            ),
+            scientific_closure_ref=(
+                None
+                if raw_scientific_closure is None
+                else ScientificClosureRef.from_dict(raw_scientific_closure)
             ),
             schema_version=_strict_string(value["schema_version"], "schema_version"),
         )
@@ -697,10 +859,12 @@ __all__ = [
     "ReportRef",
     "REVISION_PATH_REF_SCHEMA_VERSION",
     "SCIENTIFIC_DELIVERABLE_REF_SCHEMA_VERSION",
+    "SCIENTIFIC_CLOSURE_REF_SCHEMA_VERSION",
     "TASK_EVIDENCE_REF_SCHEMA_VERSION",
     "ProtocolFileHandoff",
     "RevisionPathEntryKind",
     "RevisionPathRef",
+    "ScientificClosureRef",
     "TaskEvidenceKind",
     "TaskEvidenceRef",
     "canonical_handoff_digest",

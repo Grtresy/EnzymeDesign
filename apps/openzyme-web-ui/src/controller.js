@@ -293,7 +293,6 @@ export class WorkspaceController {
     this.state.currentSection = "conversation";
     this.state.mobilePane = "conversation";
     this.state.selectedTeammateAgentId = "";
-    this.state.selectedArtifactId = "";
     this.state.sidebarExpandedSessionIds = [];
     this._clearErrors(
       "sidebar",
@@ -362,7 +361,6 @@ export class WorkspaceController {
       this.state.currentSection = "conversation";
       this.state.mobilePane = "conversation";
       this.state.selectedTeammateAgentId = "";
-      this.state.selectedArtifactId = "";
       this._setExpandedSession(response.session_id);
       this._syncSummaryFromWorkspace();
       await this._refreshSessionSummaries(this.state.currentProjectId);
@@ -396,7 +394,6 @@ export class WorkspaceController {
     this.state.currentSection = section;
     this.state.mobilePane = section === "conversation" ? "conversation" : "inspector";
     this.state.selectedTeammateAgentId = "";
-    this.state.selectedArtifactId = "";
     this._setExpandedSession(sessionId);
     this._clearErrors("session", "message", "approvals");
     this.state.pendingApprovalId = "";
@@ -433,17 +430,6 @@ export class WorkspaceController {
     this._emit();
   }
 
-  selectArtifact(artifactId) {
-    if (!artifactId || !this.state.workspace?.session) {
-      return;
-    }
-    this.state.currentSection = "outputs";
-    this.state.mobilePane = "inspector";
-    this.state.selectedTeammateAgentId = "";
-    this.state.selectedArtifactId = artifactId;
-    this._emit();
-  }
-
   selectTeammate(agentId) {
     if (!agentId || !this.state.workspace?.session) {
       return;
@@ -451,7 +437,6 @@ export class WorkspaceController {
     this.state.currentSection = "team";
     this.state.mobilePane = "conversation";
     this.state.selectedTeammateAgentId = agentId;
-    this.state.selectedArtifactId = "";
     this._emit();
   }
 

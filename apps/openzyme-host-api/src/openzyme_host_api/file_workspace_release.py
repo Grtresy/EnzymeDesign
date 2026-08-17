@@ -1,0 +1,9 @@
+from __future__ import annotations
+
+
+FILE_WORKSPACE_HOST_BUILD_DIGEST = (
+    "sha256:4bd348320e55875b7fcc76f19d3c08039311e4e6b1d11631613e85620ce7f083"
+)
+
+
+__all__ = ["FILE_WORKSPACE_HOST_BUILD_DIGEST"]

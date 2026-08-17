@@ -1299,8 +1299,6 @@ def test_c2_capability_modules_define_no_publication_or_shared_truth_authority()
         / "packages/openzyme-core/src/openzyme_core/agent_capability_projection.py",
         repository_root
         / "packages/openzyme-core/src/openzyme_core/runtime_signal_occurrences.py",
-        repository_root
-        / "packages/openzyme-core/src/openzyme_core/migrations/039_v3_agent_capability_leases.sql",
     )
     source = "\n".join(
         path.read_text(encoding="utf-8") for path in c2_sources

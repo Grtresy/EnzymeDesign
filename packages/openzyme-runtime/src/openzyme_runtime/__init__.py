@@ -51,19 +51,6 @@ from .reliability import RuntimeDrainContract
 from .reliability import ShadowObservabilityMode
 from .bootstrap import RuntimeFoundation
 from .bootstrap import validate_runtime_foundation_support
-from .artifact_boundary import ArtifactBoundaryError
-from .artifact_boundary import ArtifactBoundaryService
-from .artifact_boundary import FASTA_ZERO_RECORDS_VALIDATION_PROFILE
-from .artifact_boundary import load_artifact_registration_metadata_sidecar
-from .artifact_boundary import register_artifact_boundary_tools
-from .artifact_boundary import summarize_workspace_directory
-from .artifact_projection import PRIVATE_ARTIFACT_KEYS
-from .artifact_projection import project_artifact_for_agent
-from .artifact_projection import project_artifact_list_for_agent
-from .artifact_projection import project_artifact_list_item_for_agent
-from .artifact_projection import project_artifacts_for_agent
-from .artifact_projection import sanitize_private_artifact_fields
-from .artifact_projection import serialize_artifact_projection
 from .contracts import CanonicalResearchSnapshot
 from .contracts import ConstraintItem
 from .contracts import ConstraintSet
@@ -72,19 +59,8 @@ from .contracts import DesignToolCallResult
 from .contracts import DesignBriefDraft
 from .contracts import EvidenceSynthesis
 from .contracts import EvidenceSynthesisItem
-from .contracts import ExecutionHandoff
-from .contracts import ExecutionExpectedOutputDraft
-from .contracts import ExecutionFailureSignatureDraft
-from .contracts import ExecutionPlanDraft
-from .contracts import ExecutionResultHandoff
 from .contracts import ResearchDossier
 from .contracts import ResearchSourceItem
-from .contracts import ExecutionRequestDraft
-from .contracts import ExecutionResourceDraft
-from .contracts import ExecutionRunSpecDraft
-from .contracts import ExecutionStagedInputDraft
-from .contracts import ExecutionSuccessCheckDraft
-from .contracts import HpcCatalogEntrySummary
 from .contracts import IntakeClarification
 from .contracts import IntakePhaseOutput
 from .contracts import ReportDraft
@@ -101,7 +77,6 @@ from .environment_contract import canonical_digest
 from .checkpointer import MissingLangGraphPostgresDependencyError
 from .checkpointer import PostgresCheckpointerConfig
 from .checkpointer import PostgresCheckpointerFactory
-from .hpc_catalog import RepoBackedHpcCatalogProvider
 from .research_tools import CompositeResearchToolProvider
 from .research_tools import build_bio_research_tools
 from .research_tools import DefaultResearchToolProvider
@@ -114,12 +89,8 @@ from .research_tools import WebFetchTool
 from .research_tools import WebSearchArgs
 from .research_tools import WebSearchTool
 from .route_policies import S12_ROUTE_POLICIES
-from .seams import ExecutionAdapter
 from .seams import DesignTool
 from .seams import DesignToolContext
-from .seams import HpcCatalogProvider
-from .seams import HpcCatalogQuery
-from .seams import HpcExecutionRegistry
 from .seams import ResearchAdapter
 from .seams import ResearchTool
 from .seams import ResearchToolContext
@@ -191,9 +162,6 @@ __all__ = [
     "canonical_digest",
     "ChatModelFactory",
     "CapabilityEngine",
-    "ArtifactBoundaryError",
-    "ArtifactBoundaryService",
-    "FASTA_ZERO_RECORDS_VALIDATION_PROFILE",
     "ConstraintItem",
     "ConstraintSet",
     "ControlledOperationOwnerPolicy",
@@ -202,24 +170,13 @@ __all__ = [
     "DesignToolCallResult",
     "DesignToolContext",
     "DesignBriefDraft",
-    "ExecutionAdapter",
     "EngineDescriptor",
     "EngineDocumentRecord",
     "EngineRegistry",
     "EvidenceSynthesis",
     "EvidenceSynthesisItem",
-    "ExecutionHandoff",
-    "ExecutionExpectedOutputDraft",
-    "ExecutionFailureSignatureDraft",
-    "ExecutionPlanDraft",
-    "ExecutionResourceDraft",
-    "ExecutionResultHandoff",
     "ResearchDossier",
     "ResearchSourceItem",
-    "ExecutionRequestDraft",
-    "ExecutionRunSpecDraft",
-    "ExecutionStagedInputDraft",
-    "ExecutionSuccessCheckDraft",
     "ExecutionSettings",
     "get_settings",
     "HOST_API_DEPLOYMENT_PROFILES",
@@ -228,10 +185,6 @@ __all__ = [
     "HostApiSettings",
     "HostApiPrincipalSettings",
     "HostCliSettings",
-    "HpcCatalogEntrySummary",
-    "HpcCatalogProvider",
-    "HpcCatalogQuery",
-    "HpcExecutionRegistry",
     "IntakeClarification",
     "IntakePhaseOutput",
     "LangChainModelFactory",
@@ -270,7 +223,6 @@ __all__ = [
     "openzyme_settings_environment_contract",
     "openzyme_settings_environment_fields",
     "openzyme_settings_source_projection",
-    "PRIVATE_ARTIFACT_KEYS",
     "PostgresCheckpointerConfig",
     "PostgresCheckpointerFactory",
     "ProviderToolAdapter",
@@ -280,7 +232,6 @@ __all__ = [
     "safe_public_machine_identifier",
     "sanitize_tool_result_diagnostics",
     "CompositeResearchToolProvider",
-    "RepoBackedHpcCatalogProvider",
     "build_bio_research_tools",
     "classify_llm_provider_error",
     "extract_llm_usage",
@@ -307,13 +258,11 @@ __all__ = [
     "ResearchUnitDraft",
     "ResearchUnitPlan",
     "ReportDraft",
-    "register_artifact_boundary_tools",
     "reset_settings_cache",
     "resolve_openzyme_settings_environment_field",
     "S12_ROUTE_POLICIES",
     "StructuredOutputInvoker",
     "StaticResearchToolProvider",
-    "summarize_workspace_directory",
     "summarize_live_micu_token_ledger",
     "ThinkResearchTool",
     "ThinkToolArgs",
@@ -358,16 +307,9 @@ __all__ = [
     "live_hpc_skip_reason",
     "live_llm_skip_reason",
     "live_tavily_skip_reason",
-    "load_artifact_registration_metadata_sidecar",
     "quality_eval_skip_reason",
     "record_failure_observation",
-    "project_artifact_for_agent",
-    "project_artifact_list_for_agent",
-    "project_artifact_list_item_for_agent",
-    "project_artifacts_for_agent",
     "PodmanContainerLease",
-    "sanitize_private_artifact_fields",
-    "serialize_artifact_projection",
     "serialize_llm_payload",
     "validate_runtime_foundation_support",
 ]

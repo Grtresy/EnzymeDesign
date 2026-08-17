@@ -342,32 +342,10 @@ class SlurmConfig:
 
 @dataclass(slots=True)
 class ExecutionConfig:
-    default_mode: str = "auto"
-    create_remote_dir_for_ssh: bool = True
-    artifact_root: str = ".mcp_hpc_runner/artifacts"
     use_rsync: bool = True
     staging_timeout_seconds: int = 120
     preflight_timeout_seconds: int = 60
     remote_execution_timeout_seconds: int = 7200
-    artifact_fetch_timeout_seconds: int = 120
-    apptainer_executable: str = "/usr/bin/apptainer"
-
-    def __post_init__(self) -> None:
-        path = PurePosixPath(self.apptainer_executable)
-        if (
-            not path.is_absolute()
-            or path.name != "apptainer"
-            or any(part in {"", ".", ".."} for part in path.parts[1:])
-            or re.fullmatch(
-                r"/(?:[A-Za-z0-9._-]+/)*apptainer",
-                self.apptainer_executable,
-            )
-            is None
-        ):
-            raise ValueError(
-                "execution.apptainer_executable must be an absolute path ending in /apptainer"
-            )
-        self.apptainer_executable = path.as_posix()
 
 
 @dataclass(slots=True)
@@ -444,10 +422,6 @@ class RunnerConfig:
         self.slurm.allowed_partitions = tuple(dict.fromkeys(operator_partitions))
 
     @property
-    def artifact_root(self) -> Path:
-        return Path(self.execution.artifact_root).expanduser().resolve()
-
-    @property
     def control_root(self) -> Path:
         return Path(self.transport_control_root).expanduser().resolve()
 
@@ -481,11 +455,6 @@ class RunnerConfig:
                     "mem_threshold_mb": self.slurm.mem_threshold_mb,
                 },
                 "execution": {
-                    "artifact_root": str(self.artifact_root),
-                    "default_mode": self.execution.default_mode,
-                    "create_remote_dir_for_ssh": (
-                        self.execution.create_remote_dir_for_ssh
-                    ),
                     "use_rsync": self.execution.use_rsync,
                     "staging_timeout_seconds": (
                         self.execution.staging_timeout_seconds
@@ -496,10 +465,6 @@ class RunnerConfig:
                     "remote_execution_timeout_seconds": (
                         self.execution.remote_execution_timeout_seconds
                     ),
-                    "artifact_fetch_timeout_seconds": (
-                        self.execution.artifact_fetch_timeout_seconds
-                    ),
-                    "apptainer_executable": self.execution.apptainer_executable,
                 },
                 "limits": {
                     "max_cpus": self.limits.max_cpus,
@@ -557,6 +522,18 @@ def _merge_defaults(data: dict[str, Any] | None) -> RunnerConfig:
         raise ValueError(
             "ssh_transport contains unsupported fields: "
             + ", ".join(unexpected_transport)
+        )
+    allowed_execution_fields = {
+        "use_rsync",
+        "staging_timeout_seconds",
+        "preflight_timeout_seconds",
+        "remote_execution_timeout_seconds",
+    }
+    unexpected_execution = sorted(set(execution_raw) - allowed_execution_fields)
+    if unexpected_execution:
+        raise ValueError(
+            "execution contains unsupported fields: "
+            + ", ".join(unexpected_execution)
         )
     allowed_executor_workspace_fields = {
         "activated",
@@ -626,21 +603,10 @@ def _merge_defaults(data: dict[str, Any] | None) -> RunnerConfig:
             mem_threshold_mb=int(slurm_raw.get("mem_threshold_mb", 32768)),
         ),
         execution=ExecutionConfig(
-            default_mode=str(execution_raw.get("default_mode", "auto")),
-            create_remote_dir_for_ssh=bool(
-                execution_raw.get("create_remote_dir_for_ssh", True)
-            ),
-            artifact_root=str(
-                execution_raw.get("artifact_root", ".mcp_hpc_runner/artifacts")
-            ),
             use_rsync=bool(execution_raw.get("use_rsync", True)),
             staging_timeout_seconds=int(execution_raw.get("staging_timeout_seconds", 120)),
             preflight_timeout_seconds=int(execution_raw.get("preflight_timeout_seconds", 60)),
             remote_execution_timeout_seconds=int(execution_raw.get("remote_execution_timeout_seconds", 7200)),
-            artifact_fetch_timeout_seconds=int(execution_raw.get("artifact_fetch_timeout_seconds", 120)),
-            apptainer_executable=str(
-                execution_raw.get("apptainer_executable", "/usr/bin/apptainer")
-            ),
         ),
         logging=LoggingConfig(
             inline_log_limit=int(logging_raw.get("inline_log_limit", 4096)),
@@ -768,11 +734,6 @@ def load_config(path: str | Path | None) -> RunnerConfig:
     config_path = Path(path).expanduser().resolve()
     raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
     config = _merge_defaults(raw)
-
-    artifact_root = Path(config.execution.artifact_root).expanduser()
-    if not artifact_root.is_absolute():
-        artifact_root = (config_path.parent / artifact_root).resolve()
-    config.execution.artifact_root = str(artifact_root)
 
     control_root = Path(config.transport_control_root).expanduser()
     if not control_root.is_absolute():

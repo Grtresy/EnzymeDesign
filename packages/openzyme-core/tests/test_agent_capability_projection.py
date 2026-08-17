@@ -13,7 +13,7 @@ from openzyme_core import AgentRuntimeOutcome
 from openzyme_core import CoreRepositories
 from openzyme_core import MemoryEventBus
 from openzyme_core import RestoreFocus
-from openzyme_core import SessionProjectionBuilder
+from openzyme_core import FileWorkspaceProjectionBuilder
 from openzyme_core import SessionRuntimeContext
 from openzyme_core import SessionRuntimeSnapshot
 from openzyme_core import ToolRegistry
@@ -787,33 +787,23 @@ def test_workspace_and_world_inspection_share_the_safe_projection() -> None:
         )
     )
 
-    workspace = (
-        SessionProjectionBuilder(repositories)
-        .build_session_workspace(session.session_id)
-        .to_dict()
-    )
-    capability = workspace["agent_capabilities"][0]
-    delegated_agent = workspace["delegation"]["agents"][0]["agent"]
+    workspace = FileWorkspaceProjectionBuilder(
+        repositories,
+        tool_catalog_digest="sha256:" + "0" * 64,
+    ).build(
+        session_id=session.session_id,
+        subject_agent_member_id=agent.member_id,
+    ).to_dict()
+    capability = workspace["capability_leases"][0]
+    delegated_agent = workspace["agents"][0]
 
-    assert capability["runnable"] is True
-    assert delegated_agent["capability"] == capability
-    assert delegated_agent["runnable"] is True
-    assert "member_id" not in delegated_agent
-    agent_event = next(
-        item
-        for item in workspace["activity_feed"]
-        if item["event_type"] == "agent.spawned"
-    )
-    signal_event = next(
-        item
-        for item in workspace["activity_feed"]
-        if item["event_type"] == "agent.wakeup_pending"
-    )
-    assert agent_event["payload"]["capability"] == capability
-    assert "member_id" not in agent_event["payload"]
-    assert "session_lease_token" not in signal_event["payload"]
+    assert capability["status"] == "active"
+    assert delegated_agent["agent_id"] == agent.agent_id
+    assert delegated_agent["member_id"] == agent.member_id
+    # Repository writes do not synthesize public events. Only canonical durable
+    # events emitted by the owning services may enter the activity feed.
+    assert workspace["activity_feed"] == []
     serialized_workspace = json.dumps(workspace, sort_keys=True)
-    assert "agent_member_id" not in serialized_workspace
     assert "bearer-private-session-token" not in serialized_workspace
     assert "private.internal" not in serialized_workspace
     assert "/home/host/private" not in serialized_workspace
@@ -831,7 +821,12 @@ def test_workspace_and_world_inspection_share_the_safe_projection() -> None:
         repositories
     ).project_runtime_outcome(runtime_outcome)
     serialized_outcome = json.dumps(projected_outcome, sort_keys=True)
-    assert projected_outcome["agent"]["capability"] == capability
+    outcome_capability = projected_outcome["agent"]["capability"]
+    assert outcome_capability["lease_id"] == capability["lease_id"]
+    assert outcome_capability["lifecycle"]["status"] == capability["status"]
+    assert outcome_capability["workspace_generation"] == (
+        capability["workspace_generation"]
+    )
     assert "member_executor_projection" not in serialized_outcome
     assert "bearer-private-session-token" not in serialized_outcome
 
@@ -846,16 +841,13 @@ def test_workspace_and_world_inspection_share_the_safe_projection() -> None:
         actor_role="executor",
     )
     world = WorldInspectionService(context).inspect(
-        sections=("agents", "runtime_signals"),
+        sections=("agents", "capability_leases", "activity_feed"),
     )
 
-    assert world["agents"][0]["capability"] == capability
-    assert world["agents"][0]["runnable"] is True
-    assert set(world["runtime_signals"]["items"][0]).isdisjoint(
-        {"session_lease_token", "session_fencing_token", "claimed_by"}
-    )
+    assert world["agents"] == workspace["agents"]
+    assert world["capability_leases"] == workspace["capability_leases"]
+    assert world["activity_feed"] == []
     serialized_world = json.dumps(world, sort_keys=True)
-    assert "member_executor_projection" not in serialized_world
     assert "bearer-private-session-token" not in serialized_world
 
 

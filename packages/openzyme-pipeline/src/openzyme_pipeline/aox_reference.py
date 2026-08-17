@@ -380,7 +380,7 @@ def _validate_digest(value: str, *, field: str) -> None:
     if _DIGEST_PATTERN.fullmatch(value) is None:
         raise ScientificPrerequisiteError(
             "aox_reference_bound_digest_invalid",
-            "an AOX reference contract or artifact digest is not canonical sha256",
+            "an AOX reference contract or file digest is not canonical sha256",
             details={"field": field, "value": value},
         )
 
@@ -655,7 +655,7 @@ def _parse_exact_ncbi_reference_set(
         if input_digest != expected_input_digest:
             raise ScientificPrerequisiteError(
                 "aox_reference_input_digest_mismatch",
-                "the NCBI reference FASTA does not match its bound artifact digest",
+                "the NCBI reference FASTA does not match its bound file digest",
                 details={
                     "expected_input_digest": expected_input_digest,
                     "actual_input_digest": input_digest,
@@ -769,7 +769,7 @@ def assemble_scoring_input(
         if reference_digest != expected_scoring_reference_input_digest:
             raise ScientificPrerequisiteError(
                 "aox_scoring_reference_input_digest_mismatch",
-                "the scoring reference FASTA does not match its bound artifact digest",
+                "the scoring reference FASTA does not match its bound file digest",
                 details={
                     "expected_input_digest": expected_scoring_reference_input_digest,
                     "actual_input_digest": reference_digest,
@@ -783,7 +783,7 @@ def assemble_scoring_input(
         if target_digest != expected_target_input_digest:
             raise ScientificPrerequisiteError(
                 "aox_scoring_target_input_digest_mismatch",
-                "the scoring target FASTA does not match its bound artifact digest",
+                "the scoring target FASTA does not match its bound file digest",
                 details={
                     "expected_input_digest": expected_target_input_digest,
                     "actual_input_digest": target_digest,

@@ -10,7 +10,6 @@ from openzyme_runtime import ToolSpec
 from openzyme_runtime import ToolRuntime
 
 from .engines import EngineRegistry
-from .sandbox_runtime import EXEC_MAX_TIMEOUT_SECONDS
 from .task_evidence import task_finish_evidence_refs_schema
 from .teammate_roster import TEAMMATE_ROLE_NAMES
 
@@ -32,248 +31,6 @@ class ToolDescriptor:
         # Compatibility helper only. Product runtime model calls should convert
         # ToolDescriptor -> ToolSpec -> ProviderToolAdapter instead.
         return self.to_tool_spec().to_openai_tool()
-
-
-def artifact_tool_descriptors() -> tuple[ToolDescriptor, ...]:
-    return (
-        ToolDescriptor(
-            tool_name="artifact.list",
-            description=(
-                "List safe session artifact records or artifacts scoped to a task/invocation. "
-                "The serialized response has a hard 100k-character budget and reports "
-                "returned_count/truncated_by_budget; continue from next_offset without skipped "
-                "records. Per-artifact metadata and free text are bounded, with omitted-field "
-                "digests and exact or root-only artifact.get read scope. Results never include "
-                "Host storage_uri or local paths."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "task_id": {"type": "string"},
-                    "invocation_id": {"type": "string"},
-                    "kind": {
-                        "type": "string",
-                        "enum": [
-                            "code",
-                            "log",
-                            "sequence",
-                            "structure",
-                            "report",
-                            "research_dossier",
-                            "result",
-                            "cache",
-                            "other",
-                        ],
-                    },
-                    "offset": {"type": "integer", "minimum": 0},
-                    "limit": {"type": "integer", "minimum": 0, "maximum": 50},
-                },
-                "additionalProperties": False,
-            },
-        ),
-        ToolDescriptor(
-            tool_name="artifact.create_text",
-            description=(
-                "Create a new immutable Python pipeline source artifact in the current session. "
-                "The artifact is stored as kind=code, format=python, semantic_type=pipeline_source, "
-                "with SHA-256 content_digest and version metadata. Results never include Host paths."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "filename": {
-                        "type": "string",
-                        "description": "Safe basename ending in .py, for example pipeline.py.",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Complete UTF-8 Python source text for the artifact.",
-                    },
-                    "title": {"type": "string"},
-                    "description": {"type": "string"},
-                },
-                "required": ["filename", "content"],
-                "additionalProperties": False,
-            },
-        ),
-        ToolDescriptor(
-            tool_name="artifact.patch_text",
-            description=(
-                "Create a new immutable version of a Python pipeline source artifact from complete patched "
-                "UTF-8 source text. Requires base_artifact_id and matching base_content_digest for concurrency "
-                "control; the old artifact is not overwritten."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "base_artifact_id": {"type": "string"},
-                    "base_content_digest": {"type": "string"},
-                    "content": {
-                        "type": "string",
-                        "description": "Complete patched UTF-8 Python source text.",
-                    },
-                    "filename": {
-                        "type": "string",
-                        "description": "Optional safe .py basename; defaults to the base artifact filename.",
-                    },
-                    "title": {"type": "string"},
-                    "description": {"type": "string"},
-                },
-                "required": ["base_artifact_id", "base_content_digest", "content"],
-                "additionalProperties": False,
-            },
-        ),
-        ToolDescriptor(
-            tool_name="artifact.diff_text",
-            description=(
-                "Return a bounded unified diff between two Python pipeline source artifacts or versions. "
-                "Results include safe artifact metadata and content digests, never Host paths."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "base_artifact_id": {"type": "string"},
-                    "target_artifact_id": {"type": "string"},
-                    "context_lines": {"type": "integer", "minimum": 0, "maximum": 20},
-                },
-                "required": ["base_artifact_id", "target_artifact_id"],
-                "additionalProperties": False,
-            },
-        ),
-        ToolDescriptor(
-            tool_name="artifact.get",
-            description=(
-                "Read one safe artifact catalog record and linked engine metadata by artifact_id. "
-                "Large linked output fields are summarized by default; use path/offset/limit from read_hint "
-                "to page fields such as output_payload.evidence_items. When path targets a large dict, "
-                "the result returns pageable keys; only safe path segments have exact child paths. Large "
-                "strings are pageable by character offset. A missing path reports the deepest resolved "
-                "prefix, missing segment, parent type, and a bounded parent read hint while retaining "
-                "top-level options. Results never include Host paths."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "artifact_id": {"type": "string"},
-                    "path": {"type": "string"},
-                    "offset": {"type": "integer", "minimum": 0},
-                    "limit": {"type": "integer", "minimum": 0, "maximum": 12000},
-                    "include_full": {"type": "boolean"},
-                },
-                "required": ["artifact_id"],
-                "additionalProperties": False,
-            },
-        ),
-        ToolDescriptor(
-            tool_name="artifact.preview",
-            description="Preview a UTF-8 text artifact by artifact_id without exposing the Host storage path.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "artifact_id": {"type": "string"},
-                    "lines": {"type": "integer", "minimum": 1, "maximum": 200},
-                    "limit": {"type": "integer", "minimum": 0, "maximum": 50000},
-                },
-                "required": ["artifact_id"],
-                "additionalProperties": False,
-            },
-        ),
-        ToolDescriptor(
-            tool_name="artifact.read_text",
-            description="Read a UTF-8 text artifact by character offset and bounded limit.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "artifact_id": {"type": "string"},
-                    "offset": {"type": "integer", "minimum": 0},
-                    "limit": {"type": "integer", "minimum": 0, "maximum": 50000},
-                },
-                "required": ["artifact_id"],
-                "additionalProperties": False,
-            },
-        ),
-        ToolDescriptor(
-            tool_name="artifact.range",
-            description="Read a UTF-8 text artifact by 1-based line range, suitable for logs, PDB, FASTA, JSON, and Markdown.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "artifact_id": {"type": "string"},
-                    "start_line": {"type": "integer", "minimum": 1},
-                    "end_line": {"type": "integer", "minimum": 1},
-                },
-                "required": ["artifact_id"],
-                "additionalProperties": False,
-            },
-        ),
-        ToolDescriptor(
-            tool_name="artifacts.materialize",
-            description=(
-                "Copy or map an authorized catalog artifact into the executor sandbox input tree. "
-                "The /workspace/input mount is Host-managed and read-only to the sandbox process: "
-                "materialize creates the requested target and parent directories, so caller source "
-                "must not mkdir, write, or pre-create them. Returns only a sandbox-safe /workspace "
-                "path and digest; never returns Host storage paths."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "sandbox_workspace_id": {"type": "string"},
-                    "artifact_id": {"type": "string"},
-                    "target": {"type": "string"},
-                    "mode": {"type": "string", "enum": ["copy", "readonly"]},
-                },
-                "required": ["sandbox_workspace_id", "artifact_id"],
-                "additionalProperties": False,
-            },
-        ),
-        ToolDescriptor(
-            tool_name="artifacts.snapshot_code",
-            description=(
-                "Seal source files from /workspace/src as an immutable CODE snapshot for sandbox provenance. "
-                "The returned payload contains source_snapshot_artifact_id and source_tree_digest."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "sandbox_workspace_id": {"type": "string"},
-                    "paths": {
-                        "oneOf": [
-                            {"type": "string"},
-                            {"type": "array", "items": {"type": "string"}},
-                        ]
-                    },
-                    "entrypoint": {"type": "string"},
-                    "metadata": {"type": "object"},
-                },
-                "required": ["sandbox_workspace_id", "entrypoint"],
-                "additionalProperties": False,
-            },
-        ),
-        ToolDescriptor(
-            tool_name="artifacts.register",
-            description=(
-                "Seal a file or directory under /workspace/output into Host-owned artifact storage and create "
-                "an immutable artifact catalog record. Requires an existing source snapshot."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "sandbox_workspace_id": {"type": "string"},
-                    "path": {"type": "string"},
-                    "kind": {"type": "string"},
-                    "format": {"type": "string"},
-                    "validation_profile": {
-                        "type": "string",
-                        "enum": ["fasta_zero_records@1"],
-                    },
-                    "metadata": {"type": "object"},
-                },
-                "required": ["sandbox_workspace_id", "path"],
-                "additionalProperties": False,
-            },
-        ),
-    )
 
 
 def executor_hpc_workspace_tool_descriptors() -> tuple[ToolDescriptor, ...]:
@@ -349,118 +106,6 @@ def executor_hpc_workspace_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                         "not": {"required": ["checkpoint_id"]},
                     },
                 ],
-                "additionalProperties": False,
-            },
-        ),
-    )
-
-
-def sandbox_tool_descriptors() -> tuple[ToolDescriptor, ...]:
-    return (
-        ToolDescriptor(
-            tool_name="sandbox.file.list",
-            description="List files in the executor persistent sandbox workspace without exposing Host paths.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "sandbox_workspace_id": {"type": "string"},
-                    "path": {"type": "string"},
-                    "recursive": {"type": "boolean"},
-                },
-                "additionalProperties": False,
-            },
-        ),
-        ToolDescriptor(
-            tool_name="sandbox.file.read",
-            description="Read a bounded UTF-8 text page or binary digest summary from the executor sandbox workspace.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "sandbox_workspace_id": {"type": "string"},
-                    "path": {"type": "string"},
-                    "offset": {"type": "integer", "minimum": 0},
-                    "limit": {"type": "integer", "minimum": 0, "maximum": 262144},
-                },
-                "required": ["path"],
-                "additionalProperties": False,
-            },
-        ),
-        ToolDescriptor(
-            tool_name="sandbox.file.write",
-            description="Atomically write a small UTF-8 text file under /workspace/src, /workspace/work, /workspace/output, or /workspace/logs.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "sandbox_workspace_id": {"type": "string"},
-                    "path": {"type": "string"},
-                    "content": {"type": "string"},
-                    "create_dirs": {"type": "boolean"},
-                    "expected_digest": {"type": "string"},
-                },
-                "required": ["path", "content"],
-                "additionalProperties": False,
-            },
-        ),
-        ToolDescriptor(
-            tool_name="sandbox.file.patch",
-            description="Apply a single-file unified diff under the executor sandbox workspace with base digest concurrency control.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "sandbox_workspace_id": {"type": "string"},
-                    "path": {"type": "string"},
-                    "base_digest": {"type": "string"},
-                    "patch": {"type": "string"},
-                },
-                "required": ["path", "base_digest", "patch"],
-                "additionalProperties": False,
-            },
-        ),
-        ToolDescriptor(
-            tool_name="sandbox.file.delete",
-            description="Delete one regular file under an allowed executor sandbox workspace directory.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "sandbox_workspace_id": {"type": "string"},
-                    "path": {"type": "string"},
-                    "expected_digest": {"type": "string"},
-                },
-                "required": ["path"],
-                "additionalProperties": False,
-            },
-        ),
-        ToolDescriptor(
-            tool_name="sandbox.exec",
-            description=(
-                "Run bounded direct argv only after the Host snapshots the entire "
-                "non-empty /workspace/src tree. Every otherwise-valid invocation, "
-                "including Python -c, package/signature inspection, and diagnostics, "
-                "fails closed with source_snapshot_empty when that tree has no files. "
-                "This is not a read-only environment-inspection shortcut; author "
-                "explicit source first. No implicit shell (use bash -lc explicitly)."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "sandbox_workspace_id": {"type": "string"},
-                    "argv": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 1,
-                    },
-                    "cwd": {"type": "string"},
-                    "timeout_seconds": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": EXEC_MAX_TIMEOUT_SECONDS,
-                    },
-                    "env": {
-                        "type": "object",
-                        "additionalProperties": {"type": "string"},
-                    },
-                },
-                "required": ["argv"],
                 "additionalProperties": False,
             },
         ),
@@ -744,7 +389,7 @@ def world_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             tool_name="world.inspect",
             description=(
                 "Inspect structured session world facts for the current agent step, including task board, "
-                "agents, inbox, runtime signals, artifacts, capabilities, controlled operations, approvals, "
+                "agents, inbox, runtime signals, revisions, capabilities, controlled operations, approvals, "
                 "outcomes, diagnostics, tool schemas, route policies, approval requirements, and input constraints. "
                 "This tool returns facts and constraints only; it does not recommend next actions or decide task completion."
             ),
@@ -761,7 +406,7 @@ def world_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                                 "agents",
                                 "inbox",
                                 "runtime_signals",
-                                "artifacts",
+                                "revisions",
                                 "capabilities",
                                 "operations",
                                 "approvals",
@@ -920,34 +565,6 @@ def scientific_attempt_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                     "operation_id",
                     "workflow_role",
                     "reason_code",
-                    "idempotency_key",
-                ],
-                "additionalProperties": False,
-            },
-        ),
-        ToolDescriptor(
-            tool_name="scientific.artifact.materialize",
-            description=(
-                "Materialize sealed bytes from an adopted same-attempt result into "
-                "another bound sandbox run through the Host artifact boundary. "
-                "Shared paths or manual copies do not create adoption authority."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "selection_id": {"type": "string"},
-                    "adoption_id": {"type": "string"},
-                    "source_artifact_id": {"type": "string"},
-                    "target_sandbox_run_id": {"type": "string"},
-                    "target": {"type": "string"},
-                    "idempotency_key": idempotency,
-                },
-                "required": [
-                    "selection_id",
-                    "adoption_id",
-                    "source_artifact_id",
-                    "target_sandbox_run_id",
-                    "target",
                     "idempotency_key",
                 ],
                 "additionalProperties": False,
@@ -1294,8 +911,7 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             },
         ),
         *world_tool_descriptors(),
-        *artifact_tool_descriptors(),
-        *sandbox_tool_descriptors(),
+        *agent_capsule_tool_descriptors(),
         ToolDescriptor(
             tool_name="memory.compact",
             description="Write a compact summary for session, lane, or task context.",
@@ -1362,40 +978,20 @@ def top_level_tool_descriptors(
     return builtin_tool_descriptors()
 
 
-_FILE_WORKSPACE_FORBIDDEN_TOOL_PREFIXES = (
-    "artifact.",
-    "artifacts.",
-    "sandbox.file.",
-    "hpc.stage_artifact",
-    "hpc.fetch_outputs",
-)
-
-
 def file_workspace_candidate_tool_descriptors(
     *,
     executor: bool = False,
 ) -> tuple[ToolDescriptor, ...]:
-    """Return the not-yet-public file-workspace candidate catalog.
-
-    This deliberately does not mutate ``builtin_tool_descriptors`` or advance a
-    public epoch.  The successor public-interface cutover consumes this closed
-    projection after its own admission gate.
-    """
+    """Return the active file-workspace catalog for the requested role."""
 
     descriptors = (
         *builtin_tool_descriptors(),
-        *agent_capsule_tool_descriptors(),
         *(executor_hpc_workspace_tool_descriptors() if executor else ()),
     )
-    candidate = tuple(
-        descriptor
-        for descriptor in descriptors
-        if not descriptor.tool_name.startswith(_FILE_WORKSPACE_FORBIDDEN_TOOL_PREFIXES)
-    )
-    names = tuple(descriptor.tool_name for descriptor in candidate)
+    names = tuple(descriptor.tool_name for descriptor in descriptors)
     if len(names) != len(set(names)):
         raise ValueError("file-workspace candidate catalog contains duplicate tools")
-    return candidate
+    return descriptors
 
 
 def file_workspace_candidate_catalog_digest(*, executor: bool = False) -> str:
@@ -1421,14 +1017,12 @@ def file_workspace_candidate_catalog_digest(*, executor: bool = False) -> str:
 
 __all__ = [
     "ToolDescriptor",
-    "artifact_tool_descriptors",
     "builtin_tool_descriptors",
     "engine_tool_descriptors",
     "executor_hpc_workspace_tool_descriptors",
     "failure_tool_descriptors",
     "file_workspace_candidate_tool_descriptors",
     "file_workspace_candidate_catalog_digest",
-    "sandbox_tool_descriptors",
     "scientific_attempt_tool_descriptors",
     "top_level_tool_descriptors",
     "world_tool_descriptors",

@@ -18,10 +18,9 @@ from urllib.parse import urlencode
 from urllib.request import Request
 from urllib.request import urlopen
 
-from openzyme_domain import ArtifactKind
 from openzyme_domain import SourceRefKind
 
-from .observations import ResearchArtifactManifest
+from .observations import ResearchFileManifest
 from .provider_runtime import BoundedHttpClient
 from .provider_runtime import ProviderAttempt
 from .provider_runtime import ProviderCallResult
@@ -97,7 +96,7 @@ class AnnotationRecord:
 class DownloadedResearchAsset:
     provider: str
     external_id: str
-    kind: ArtifactKind
+    kind: str
     filename: str
     format: str
     locator: str
@@ -121,7 +120,7 @@ def _content_digest(content: bytes) -> str:
     return f"sha256:{hashlib.sha256(content).hexdigest()}"
 
 
-def _sealed_asset_metadata(
+def _provider_asset_metadata(
     asset: DownloadedResearchAsset,
     *,
     retrieved_at: str | None = None,
@@ -145,7 +144,6 @@ def _sealed_asset_metadata(
         "format": asset.format,
         "source_locator": asset.locator,
         "content_digest": digest,
-        "sealed_digest": digest,
         "retrieved_at": timestamp,
         "provenance": provenance,
     }
@@ -479,7 +477,7 @@ class DeterministicBioResearchService:
         return DownloadedResearchAsset(
             provider="uniprot",
             external_id=accession,
-            kind=ArtifactKind.SEQUENCE,
+            kind="sequence",
             filename=f"{accession}.fasta",
             format="fasta",
             locator=f"https://rest.uniprot.org/uniprotkb/{accession}.fasta",
@@ -508,7 +506,7 @@ class DeterministicBioResearchService:
         return DownloadedResearchAsset(
             provider="rcsb_pdb",
             external_id=pdb_id,
-            kind=ArtifactKind.STRUCTURE,
+            kind="structure",
             filename=f"{pdb_id}.{suffix}",
             format=suffix,
             locator=f"https://files.rcsb.org/download/{pdb_id}.{suffix}",
@@ -844,7 +842,7 @@ class DefaultBioResearchService:
         return DownloadedResearchAsset(
             provider="uniprot",
             external_id=accession,
-            kind=ArtifactKind.SEQUENCE,
+            kind="sequence",
             filename=f"{accession}.fasta",
             format="fasta",
             locator=f"https://rest.uniprot.org/uniprotkb/{accession}.fasta",
@@ -912,7 +910,7 @@ class DefaultBioResearchService:
         return DownloadedResearchAsset(
             provider="rcsb_pdb",
             external_id=pdb_id,
-            kind=ArtifactKind.STRUCTURE,
+            kind="structure",
             filename=f"{pdb_id}.{normalized_format}",
             format=normalized_format,
             locator=f"https://files.rcsb.org/download/{pdb_id}.{normalized_format}",
@@ -1041,8 +1039,8 @@ def structure_hits_to_findings(hits: tuple[StructureHit, ...], *, query: str) ->
 
 
 def asset_manifest(asset: DownloadedResearchAsset) -> dict[str, Any]:
-    metadata = _sealed_asset_metadata(asset)
-    return ResearchArtifactManifest(
+    metadata = _provider_asset_metadata(asset)
+    return ResearchFileManifest(
         external_id=asset.external_id,
         provider=asset.provider,
         kind=asset.kind,
@@ -1053,7 +1051,6 @@ def asset_manifest(asset: DownloadedResearchAsset) -> dict[str, Any]:
         source_locator=asset.locator,
         metadata=metadata,
         content_digest=str(metadata["content_digest"]),
-        sealed_digest=str(metadata["sealed_digest"]),
         retrieved_at=str(metadata["retrieved_at"]),
         provenance=dict(metadata["provenance"]),
     ).to_dict()

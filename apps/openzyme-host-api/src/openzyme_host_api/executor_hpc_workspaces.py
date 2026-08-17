@@ -220,6 +220,7 @@ class McpExecutorHpcWorkspaceProvisioner:
             intent_id=intent.intent_id,
             intent_digest=intent.intent_digest,
             workspace_id=intent.workspace_id,
+            remote_workspace_generation=intent.remote_workspace_generation,
             target_profile_digest=intent.target_profile_digest,
             repository_endpoint=binding.internal_git_endpoint,
             repository_remote_digest=binding.canonical_digest,

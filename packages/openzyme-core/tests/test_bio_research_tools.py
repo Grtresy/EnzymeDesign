@@ -194,7 +194,7 @@ def test_bio_research_tools_do_not_install_implicit_fixture_service() -> None:
     assert result.error_code == "unknown_tool"
 
 
-def test_download_writes_workspace_files_without_artifact_alias() -> None:
+def test_download_writes_workspace_files_without_secondary_record() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     context, runner = _context(repositories, session)
@@ -219,7 +219,6 @@ def test_download_writes_workspace_files_without_artifact_alias() -> None:
     ]
     assert download_path.endswith("/downloads/P12345.fasta")
     assert runner.files[download_path].startswith(b">P12345")
-    assert repositories.artifacts.list_by_session(session.session_id) == []
     assert repositories.research_summaries.list_by_session(session.session_id) == []
 
 
@@ -268,7 +267,6 @@ def test_research_argument_metadata_is_bounded_before_provider_call() -> None:
 
     assert result.ok is False
     assert "bounded metadata limit" in result.content
-    assert repositories.artifacts.list_by_session(session.session_id) == []
 
 
 def test_workspace_file_writer_chunks_large_content_and_publishes_no_alias() -> None:
@@ -289,7 +287,6 @@ def test_workspace_file_writer_chunks_large_content_and_publishes_no_alias() -> 
     )
     assert written.commit_performed is False
     assert written.publication_performed is False
-    assert repositories.artifacts.list_by_session(session.session_id) == []
 
 
 def test_workspace_write_failure_cleans_temporary_and_fails_invocation() -> None:

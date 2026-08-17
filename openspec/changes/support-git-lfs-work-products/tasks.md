@@ -17,8 +17,8 @@
 - [x] 3.1 在 C1 已验收的 Git LFS Batch API v2/basic transfer service 上增加版本化 policy、quota、retention 与 closure 所需字段和 canonical errors，复用同一 endpoint/object root/repository identity，不建立第二个 LFS server 或 alternate object source。
 - [x] 3.2 将既有 basic upload 路径扩展为受 quota reservation 约束的 streaming size/SHA-256 验证、no-replace install、fsync/atomic commit 和 identical-OID idempotency，错误 bytes 不得进入可读 object closure。
 - [x] 3.3 将既有 basic download 路径扩展为 streaming authoritative object-read probe 与 closure receipt，保证返回 bytes、declared size 和 OID 一致且不暴露底层对象存储路径。
-- [ ] 3.4 在版本化 Podman capsule 与 HPC login image 安装并资格验证原生 Git LFS client；增加 compute image/fixture 负向检查，确保 compute 无 Git、Git LFS、repository credential 与 internal-remote access。
-- [ ] 3.5 增加 native clone/fetch/checkout/private-push integration，证明 Git/LFS 使用标准 endpoint 且普通 curl/scp/rsync/LFS upload 不创建 `PublishedRevision`、task evidence 或 artifact record。
+- [x] 3.4 在版本化 Podman capsule 与 HPC login image 安装并资格验证原生 Git LFS client；增加 compute image/fixture 负向检查，确保 compute 无 Git、Git LFS、repository credential 与 internal-remote access。
+- [x] 3.5 增加 native clone/fetch/checkout/private-push integration，证明 Git/LFS 使用标准 endpoint 且普通 curl/scp/rsync/LFS upload 不创建 `PublishedRevision`、task evidence 或 artifact record。
 
 ## 4. Publication closure 与大文件拒绝
 
@@ -38,7 +38,7 @@
 
 ## 6. 验证、架构文档与 change receipt
 
-- [ ] 6.1 运行 LFS Batch/basic transfer、pointer/closure、oversized blob、quota/GC、cross-repository authorization、native Podman/HPC-login 和 Gitless compute focused tests及 touched Python Ruff，并保存 exact command/source/results。
+- [x] 6.1 运行 LFS Batch/basic transfer、pointer/closure、oversized blob、quota/GC、cross-repository authorization、native Podman/HPC-login 和 Gitless compute focused tests及 touched Python Ruff，并保存 exact command/source/results。
 - [x] 6.2 同步 `docs/OpenZyme架构设计.md`、相关 `docs/v3/` control-plane/capability/public-interface 文档、`docs/v3/execution-pipeline-docs/README.md` 与 `docs/v3/harness-complexity-audit.md`，明确标准 LFS、无 agent-facing CAS、closure/pin/GC 和 native transfer 非 publication 边界。
-- [ ] 6.3 运行 `DO_NOT_TRACK=1 openspec validate support-git-lfs-work-products --strict`、`git diff --check`、文档链接/forbidden-pattern audit 与 `./scripts/check-mainline.sh`，确认不存在 custom pointer、CAS/file gateway、compute Git credential、publication fallback 或 live effect。
-- [ ] 6.4 生成并 pure-verify `support-git-lfs-work-products` change receipt，绑定 prerequisite receipts、source commit、schema/migration/policy digests、focused/mainline results、docs digests、closure/GC invariants与 `implementation_complete=true`；receipt 不得授予 publication、HPC 或 scientific authority。
+- [x] 6.3 运行 `DO_NOT_TRACK=1 openspec validate support-git-lfs-work-products --strict`、`git diff --check`、文档链接/forbidden-pattern audit 与 `./scripts/check-mainline.sh`，确认不存在 custom pointer、CAS/file gateway、compute Git credential、publication fallback 或 live effect。
+- [x] 6.4 生成并 pure-verify `support-git-lfs-work-products` change receipt，绑定 prerequisite receipts、source commit、schema/migration/policy digests、focused/mainline results、docs digests、closure/GC invariants与 `implementation_complete=true`；receipt 不得授予 publication、HPC 或 scientific authority。

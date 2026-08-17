@@ -549,7 +549,7 @@ def test_task_board_can_filter_and_select_tasks_by_lane() -> None:
     assert next_task.task_id == "task_lane"
 
 
-def test_research_task_finish_does_not_hardcode_structure_artifact_gate() -> None:
+def test_research_task_finish_does_not_hardcode_structure_file_gate() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     agent = _seed_agent(repositories, session, role="researcher")
@@ -558,7 +558,7 @@ def test_research_task_finish_does_not_hardcode_structure_artifact_gate() -> Non
             session_id=session.session_id,
             project_id=session.project_id,
             title=session.title,
-            objective="Find a real RCSB PDB structure artifact and run fpocket execution.",
+            objective="Find a real RCSB PDB structure file and run fpocket execution.",
             status=session.status,
             created_at=session.created_at,
             updated_at=session.updated_at,
@@ -569,7 +569,7 @@ def test_research_task_finish_does_not_hardcode_structure_artifact_gate() -> Non
             task_id="task_research",
             session_id=session.session_id,
             subject="Collect evidence",
-            description="Identify evidence and a PDB structure artifact.",
+            description="Identify evidence and a PDB structure file.",
             status=TaskStatus.IN_PROGRESS,
             priority=TaskPriority.HIGH,
             kind="research",
@@ -706,7 +706,7 @@ def test_task_finish_rejects_bare_evidence_id_with_canonical_contract() -> None:
                 "task_id": "task_finish_evidence",
                 "status": "completed",
                 "summary": "Evidence is available.",
-                "evidence_refs": ["artifact_123"],
+                "evidence_refs": ["file_123"],
             },
             task_id="task_finish_evidence",
         ),

@@ -14,7 +14,7 @@ class EngineDescriptor:
     requires_approval: bool
     supports_background: bool
     idempotency_key_shape: str
-    produces_artifact_types: tuple[str, ...]
+    produces_file_types: tuple[str, ...]
     capability_key: str
 
     def to_dict(self) -> dict[str, Any]:
@@ -26,7 +26,7 @@ class EngineDescriptor:
             "requires_approval": self.requires_approval,
             "supports_background": self.supports_background,
             "idempotency_key_shape": self.idempotency_key_shape,
-            "produces_artifact_types": list(self.produces_artifact_types),
+            "produces_file_types": list(self.produces_file_types),
             "capability_key": self.capability_key,
         }
 

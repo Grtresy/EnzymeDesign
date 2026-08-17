@@ -217,6 +217,7 @@ class SchemaRebuildEntry:
 class LegacyStorageDeletionTarget:
     object_identity: str
     allowlisted_root_identity: str
+    allowlisted_root_path_digest: str
     relative_path: str
     content_digest: str
     size_bytes: int
@@ -233,6 +234,10 @@ class LegacyStorageDeletionTarget:
             or not self.non_symlink
         ):
             raise RemovalAdmissionError("legacy storage target is not exactly bounded")
+        _require_digest(
+            self.allowlisted_root_path_digest,
+            "legacy storage root path digest",
+        )
         _require_digest(self.content_digest, "legacy storage content_digest")
 
 
@@ -274,10 +279,16 @@ def build_removal_dry_run(
     drop_structures: Iterable[str],
     storage_targets: Iterable[LegacyStorageDeletionTarget],
 ) -> RemovalDryRun:
+    receipt_sequence = tuple(prerequisite_receipts)
     receipts_by_id: Mapping[str, PrerequisiteCompletionReceipt] = {
-        receipt.change_id: receipt for receipt in prerequisite_receipts
+        receipt.change_id: receipt for receipt in receipt_sequence
     }
-    if tuple(receipts_by_id) != PREREQUISITE_CHANGE_IDS:
+    if (
+        len(receipt_sequence) != len(PREREQUISITE_CHANGE_IDS)
+        or tuple(item.change_id for item in receipt_sequence)
+        != PREREQUISITE_CHANGE_IDS
+        or len(receipts_by_id) != len(receipt_sequence)
+    ):
         raise RemovalAdmissionError(
             "prerequisite receipts are missing, duplicated, extra, or out of order"
         )
@@ -291,8 +302,16 @@ def build_removal_dry_run(
     rebuild = tuple(rebuild_entries)
     drops = tuple(drop_structures)
     targets = tuple(storage_targets)
-    if len(drops) != len(set(drops)) or len(targets) != len(
-        {target.object_identity for target in targets}
+    if (
+        len(drops) != len(set(drops))
+        or len(targets) != len({target.object_identity for target in targets})
+        or len(targets)
+        != len(
+            {
+                (target.allowlisted_root_identity, target.relative_path)
+                for target in targets
+            }
+        )
     ):
         raise RemovalAdmissionError("removal plan contains duplicate identities")
     for entry in rebuild:
@@ -333,6 +352,9 @@ def build_removal_dry_run(
             {
                 "object_identity": target.object_identity,
                 "allowlisted_root_identity": target.allowlisted_root_identity,
+                "allowlisted_root_path_digest": (
+                    target.allowlisted_root_path_digest
+                ),
                 "relative_path": target.relative_path,
                 "content_digest": target.content_digest,
                 "size_bytes": target.size_bytes,

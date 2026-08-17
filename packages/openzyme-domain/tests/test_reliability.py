@@ -100,7 +100,6 @@ def test_execution_event_and_result_handle_keep_audit_and_result_separate() -> N
         terminal_outcome=ControlledOperationExecutionTerminalOutcome.SUCCEEDED,
         bounded_result_envelope={"summary": "completed"},
         result_digest="sha256:result",
-        artifact_set_digest="sha256:artifacts",
         origin="host_adapter_executor",
         created_at="2026-07-21T00:00:02+00:00",
     )
@@ -193,7 +192,7 @@ def test_mutation_scope_writer_and_receipt_are_versioned_data_contracts() -> Non
         terminal_proof_digest="sha256:terminal-proof",
         sqlite_high_watermark="sqlite:25:100",
         event_high_watermark="event:200",
-        artifact_high_watermark="artifact:50",
+        file_high_watermark="file:50",
         snapshot_digest="sha256:snapshot",
         receipt_digest="sha256:receipt",
         issued_at="2026-07-21T00:02:00+00:00",

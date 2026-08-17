@@ -1000,7 +1000,6 @@ class AgentRuntimeService:
             or operation.task_id != task_id
             or continuation.session_id != session_id
             or continuation.operation_id != operation.operation_id
-            or continuation.sandbox_run_id != operation.sandbox_run_id
             or continuation.originating_task_id != task_id
         ):
             raise ValueError(
@@ -1074,9 +1073,6 @@ class AgentRuntimeService:
             scientific_workflow_contract_registry=(
                 self.context.scientific_workflow_contract_registry
             ),
-            sandbox_workspace_root=self.context.sandbox_workspace_root,
-            artifact_blob_root=self.context.artifact_blob_root,
-            artifact_bundle_finalizer=(self.context.artifact_bundle_finalizer),
             signal_notifier=self.context.signal_notifier,
             reliability_shadow_observer=self.context.reliability_shadow_observer,
             reliability_settings=self.context.reliability_settings,
@@ -1091,6 +1087,9 @@ class AgentRuntimeService:
             ),
             agent_capsule_process_runner=(
                 self.context.agent_capsule_process_runner
+            ),
+            agent_capsule_control_handler_factory=(
+                self.context.agent_capsule_control_handler_factory
             ),
             agent_process_credential_router=(
                 self.context.agent_process_credential_router
@@ -1954,7 +1953,7 @@ class AgentRuntimeService:
                 f"Approval {signal.source_ref or signal.correlation_id or 'unknown'} was resolved for your assigned task.",
                 "Continue the existing delegated work from the shared workspace state."
                 + status_line,
-                "Relevant execution invocation/status, captured artifacts, and sanitized failure evidence are available in the shared workspace.",
+                "Relevant execution status, result revisions, and sanitized failure evidence are available in the shared workspace.",
                 "If the execution status includes sanitized failure evidence, use it as context for your own task decision.",
             ]
             if failure is not None:

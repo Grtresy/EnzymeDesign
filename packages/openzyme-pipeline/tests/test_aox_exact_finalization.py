@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 from pathlib import Path
 
 import pytest
@@ -102,9 +103,9 @@ def test_conditional_empty_chain_accepts_only_installed_typed_sources() -> None:
     hmmer_receipt = aox_finalization.hmmer_zero_source_receipt(
         _empty_hmmer_result()
     )
-    upstream = aox_finalization.materialize_upstream_empty(hmmer_receipt)
+    upstream = aox_finalization.encode_upstream_empty(hmmer_receipt)
     upstream_receipt = upstream.calculation_receipt()
-    reference = aox_finalization.materialize_reference_only_alignment(
+    reference = aox_finalization.encode_reference_only_alignment(
         b">AAB57849.1\nACDE\n",
         upstream_receipt,
     )
@@ -114,11 +115,15 @@ def test_conditional_empty_chain_accepts_only_installed_typed_sources() -> None:
         targets=(),
         candidates=(),
     )
-    membership = aox_finalization.materialize_empty_membership(
+    membership = aox_finalization.encode_empty_membership(
         candidate_zero.calculation_receipt()
     )
 
-    assert upstream.output_bytes == b""
+    upstream_file = json.loads(upstream.output_bytes)
+    assert upstream_file["schema_id"] == "aox_conditional_empty_file@1"
+    assert upstream_file["empty_result_reason"] == (
+        "no_accessions_after_hmmer_score_filter"
+    )
     assert reference.output_bytes == b">AAB57849.1\nACDE\n"
     assert membership.output_bytes.startswith(b"cluster_id,member_id")
     for receipt in (
@@ -140,7 +145,7 @@ def test_conditional_empty_rejects_arbitrary_source_snapshot_identity() -> None:
     }
 
     with pytest.raises(ScientificPrerequisiteError) as error:
-        aox_finalization.materialize_upstream_empty(fabricated)
+        aox_finalization.encode_upstream_empty(fabricated)
 
     assert error.value.code == "conditional_empty_source_receipt_invalid"
 
@@ -157,7 +162,7 @@ def test_conditional_empty_receipt_rejects_schema_or_source_drift(
     field: str,
     value: str,
 ) -> None:
-    upstream = aox_finalization.materialize_upstream_empty(
+    upstream = aox_finalization.encode_upstream_empty(
         aox_finalization.hmmer_zero_source_receipt(_empty_hmmer_result())
     ).calculation_receipt()
     upstream[field] = value
@@ -199,10 +204,14 @@ def test_finalizer_sdk_submits_each_exact_path_once(
     )
 
     result = aox_finalization.finalize_deliverable_bundle(
+        publication_id="publication_1",
         attempt_id="attempt_1",
         selection_id="selection_1",
-        execution_task_id="task_1",
-        items=_finalization_items(),
+        execution_fencing_token=1,
+        producer_adoption_ids_by_role={
+            role: f"adoption_{index}"
+            for index, role in enumerate(aox_finalization.FIXED_DELIVERABLE_ROLES)
+        },
         calculation_receipts=[
             candidate.calculation_receipt(),
             aox_finalization.finalization_calculation_receipt(),
@@ -210,12 +219,53 @@ def test_finalizer_sdk_submits_each_exact_path_once(
     )
 
     assert result["receipt_id"] == "receipt_1"
-    assert observed["method"] == "artifacts.finalize_bundle"
+    assert observed["method"] == "scientific.deliverables.finalize"
     params = observed["params"]
     assert isinstance(params, dict)
-    assert [item["relative_path"] for item in params["items"]] == list(
-        aox_finalization.FIXED_DELIVERABLE_PATHS
+    assert params["publication_id"] == "publication_1"
+    assert set(params["producer_adoption_ids_by_role"]) == set(
+        aox_finalization.FIXED_DELIVERABLE_ROLES
     )
+
+
+def test_producer_adoption_sdk_submits_exact_revision_result_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_call(method: str, params: dict[str, object]) -> dict[str, object]:
+        observed.update({"method": method, "params": params})
+        return {
+            "schema_version": "scientific_file_effect_adoption_result@1",
+            "adoption": {"adoption_id": "adoption_1"},
+        }
+
+    monkeypatch.setattr(aox_finalization, "call", fake_call)
+
+    result = aox_finalization.adopt_producer_result(
+        selection_id="selection_1",
+        operation_id="operation_1",
+        execution_id="execution_1",
+        result_id="result_1",
+        workflow_role=aox_finalization.FIXED_DELIVERABLE_ROLES[0],
+        execution_fencing_token=3,
+        idempotency_key="adopt-role-1",
+    )
+
+    assert result["adoption"] == {"adoption_id": "adoption_1"}
+    assert observed["method"] == "scientific.deliverables.adopt"
+    params = observed["params"]
+    assert isinstance(params, dict)
+    assert params == {
+        "schema_version": "scientific_file_effect_adoption_request@1",
+        "selection_id": "selection_1",
+        "operation_id": "operation_1",
+        "execution_id": "execution_1",
+        "result_id": "result_1",
+        "workflow_role": aox_finalization.FIXED_DELIVERABLE_ROLES[0],
+        "execution_fencing_token": 3,
+        "idempotency_key": "adopt-role-1",
+    }
 
 
 def test_finalizer_sdk_rejects_incomplete_bundle_before_transport() -> None:
@@ -228,17 +278,23 @@ def test_finalizer_sdk_rejects_incomplete_bundle_before_transport() -> None:
 
     with pytest.raises(PipelineSdkError) as error:
         aox_finalization.finalize_deliverable_bundle(
+            publication_id="publication_1",
             attempt_id="attempt_1",
             selection_id="selection_1",
-            execution_task_id="task_1",
-            items=_finalization_items()[:-1],
+            execution_fencing_token=1,
+            producer_adoption_ids_by_role={
+                role: f"adoption_{index}"
+                for index, role in enumerate(
+                    aox_finalization.FIXED_DELIVERABLE_ROLES[:-1]
+                )
+            },
             calculation_receipts=[
                 candidate.calculation_receipt(),
                 aox_finalization.finalization_calculation_receipt(),
             ],
         )
 
-    assert error.value.error_code == "aox_finalization_deliverable_set_invalid"
+    assert error.value.error_code == "aox_finalization_adoption_set_invalid"
 
 
 def test_exact_calculation_manifest_enumerates_finalization_surface() -> None:

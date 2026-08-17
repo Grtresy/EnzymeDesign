@@ -227,8 +227,6 @@ class CanonicalWakeFactsProjector:
             or wrapper_facts.get("schema_version") != "sandbox_run_failure@1"
             or wrapper_facts.get("sandbox_run_id") != run.sandbox_run_id
             or wrapper_facts.get("sandbox_workspace_id") != run.sandbox_workspace_id
-            or wrapper_facts.get("source_snapshot_artifact_id")
-            != run.source_snapshot_artifact_id
             or wrapper_facts.get("source_tree_digest") != run.source_tree_digest
             or wrapper_facts.get("local_cause_count") != 1
             or wrapper_facts.get("causal_error_code")
@@ -249,8 +247,6 @@ class CanonicalWakeFactsProjector:
             or cause_facts.get("error_code") != cause.error_code
             or cause_facts.get("sandbox_run_id") != run.sandbox_run_id
             or cause_facts.get("sandbox_workspace_id") != run.sandbox_workspace_id
-            or cause_facts.get("source_snapshot_artifact_id")
-            != run.source_snapshot_artifact_id
             or cause_facts.get("source_tree_digest") != run.source_tree_digest
             or cause_facts.get("operation_admitted") is not False
             or cause_facts.get("external_dispatch_started") is not False
@@ -278,7 +274,6 @@ class CanonicalWakeFactsProjector:
                 "sandbox_run_id": run.sandbox_run_id,
                 "sandbox_workspace_id": run.sandbox_workspace_id,
                 "attempt_id": wrapper_facts.get("attempt_id"),
-                "source_snapshot_artifact_id": (run.source_snapshot_artifact_id),
                 "source_tree_digest": run.source_tree_digest,
                 "wrapper_failure_id": wrapper.failure_id,
                 "wrapper_error_code": wrapper.error_code,

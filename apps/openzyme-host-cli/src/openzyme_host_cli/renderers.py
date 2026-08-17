@@ -19,11 +19,20 @@ def render_records(title: str, rows: list[dict[str, Any]], fields: tuple[str, ..
 
 
 def render_v3_workspace(workspace: dict[str, Any]) -> str:
+    if workspace.get("schema_version") != "file_workspace_public@1":
+        raise ValueError("unsupported workspace schema")
     session = workspace["session"]
     task_items = workspace.get("task_board", {}).get("items", [])
     lanes = workspace.get("lane_board", {}).get("lanes", [])
     approvals = workspace.get("pending_approvals", [])
     reports = workspace.get("reports", [])
+    statuses = workspace.get("workspace_status", [])
+    private_revisions = workspace.get("private_revisions", [])
+    publications = workspace.get("published_revisions", [])
+    scientific = workspace.get("scientific_deliverables", [])
+    jobs = workspace.get("external_jobs", [])
+    results = workspace.get("external_job_results", [])
+    leases = workspace.get("capability_leases", [])
     lines = [
         f"Session {session['session_id']}",
         f"Status: {session['status']}",
@@ -32,6 +41,12 @@ def render_v3_workspace(workspace: dict[str, Any]) -> str:
         f"Lanes: {len(lanes)}",
         f"Pending approvals: {len(approvals)}",
         f"Reports: {len(reports)}",
+        f"Workspace states: {len(statuses)}",
+        f"Private revisions: {len(private_revisions)}",
+        f"Publications: {len(publications)}",
+        f"Scientific deliverables: {len(scientific)}",
+        f"External jobs/results: {len(jobs)}/{len(results)}",
+        f"Capability leases: {len(leases)}",
     ]
     if task_items:
         lines.append("Task board")
@@ -45,6 +60,55 @@ def render_v3_workspace(workspace: dict[str, Any]) -> str:
         for item in lanes:
             lane = item["lane"]
             lines.append(f"- {lane['lane_id']}: {lane['name']} [{lane['status']}]")
+    if statuses:
+        lines.append("Workspace status")
+        for status in statuses:
+            lines.append(
+                f"- {status['workspace_id']} generation={status['workspace_generation']} "
+                f"dirty={status['dirty_state']} head={status.get('head_commit')}"
+            )
+            for path in status.get("changed_paths", []):
+                lines.append(f"  - {path}")
+    if publications:
+        lines.append("Immutable publications")
+        for publication in publications:
+            lines.append(
+                f"- {publication['publication_ref']} commit={publication['commit']} "
+                f"manifest={publication['manifest_digest']}"
+            )
+    if scientific:
+        lines.append("Scientific deliverables")
+        for deliverable in scientific:
+            lines.append(
+                f"- {deliverable['path']} role={deliverable['scientific_role']} "
+                f"digest={deliverable['content_digest']}"
+            )
+    if jobs or results:
+        lines.append("External execution")
+        for job in jobs:
+            lines.append(
+                f"- job {job['handle_id']} backend={job['backend']} "
+                f"source={job['source_commit']}"
+            )
+        for result in results:
+            lines.append(
+                f"- result {result['result_id']} state={result['terminal_state']} "
+                f"digest={result['result_digest']}"
+            )
+    if leases:
+        lines.append("Capability leases")
+        for lease in leases:
+            lines.append(
+                f"- {lease['lease_id']} owner={lease['agent_member_id']} "
+                f"status={lease['status']} fence={lease['state_version']}"
+            )
+    owner = workspace.get("executor_owner_workspace")
+    if owner:
+        lines.append("Owning executor workspace")
+        lines.append(
+            f"- {owner['login_alias']}:{owner['workspace_path']} "
+            f"generation={owner['workspace_generation']}"
+        )
     return "\n".join(lines)
 
 

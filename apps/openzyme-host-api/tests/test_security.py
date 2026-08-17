@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 
-from fastapi.testclient import TestClient
 import pytest
 
 from openzyme_core import RuntimeWriteFencingError
@@ -12,11 +11,11 @@ from openzyme_domain.control_plane import utc_now_iso
 from openzyme_host_api import HostApiDependencies
 from openzyme_host_api import HostPrincipal
 from openzyme_host_api import HostSecurityPolicy
-from openzyme_host_api import build_local_eval_foundation
-from openzyme_host_api import create_app
+from openzyme_host_api import build_configured_foundation
 from openzyme_host_api.app import _api_error_payload
 from openzyme_host_api.app import _as_http_error
 from openzyme_runtime import get_llm_debug_recorder
+from tests.agent_capability_test_support import public_test_client
 
 
 ALICE_TOKEN = "alice-token-0123456789abcdef01234567"
@@ -59,13 +58,29 @@ def _headers(token: str, *, key: str | None = None) -> dict[str, str]:
     return headers
 
 
+def test_agent_principal_identity_is_exact_and_owner_scoped() -> None:
+    principal = HostPrincipal(
+        principal_id="agent-member:member_1",
+        roles=frozenset({"agent"}),
+        project_ids=frozenset({"project_1"}),
+    )
+
+    assert principal.agent_member_id == "member_1"
+    with pytest.raises(ValueError, match="exactly the agent role"):
+        HostPrincipal(
+            principal_id="agent-member:member_1",
+            roles=frozenset({"agent", "admin"}),
+            project_ids=frozenset({"project_1"}),
+        )
+
+
 def test_shared_profile_authenticates_and_persists_session_ownership() -> None:
     dependencies = HostApiDependencies(
         v3_allow_unpinned_repository_sessions_for_tests=True,
-        foundation=build_local_eval_foundation(),
+        foundation=build_configured_foundation(),
         security_policy=_shared_policy(),
     )
-    with TestClient(create_app(dependencies)) as client:
+    with public_test_client(dependencies) as client:
         unauthenticated = client.get("/v3/projects/proj_shared/sessions")
         invalid = client.get(
             "/v3/projects/proj_shared/sessions",
@@ -161,10 +176,10 @@ def test_shared_profile_authenticates_and_persists_session_ownership() -> None:
 def test_shared_profile_derives_approval_actor_and_rejects_forged_actor() -> None:
     dependencies = HostApiDependencies(
         v3_allow_unpinned_repository_sessions_for_tests=True,
-        foundation=build_local_eval_foundation(),
+        foundation=build_configured_foundation(),
         security_policy=_shared_policy(),
     )
-    with TestClient(create_app(dependencies)) as client:
+    with public_test_client(dependencies) as client:
         created = client.post(
             "/v3/sessions",
             headers=_headers(ALICE_TOKEN, key="approval-session"),
@@ -203,23 +218,24 @@ def test_shared_profile_derives_approval_actor_and_rejects_forged_actor() -> Non
             headers=_headers(ALICE_TOKEN, key="valid-actor"),
             json={"decision": "approved"},
         )
-        events = client.get(
-            "/v3/sessions/sess_approval_actor/events?replay=1",
-            headers=_headers(ALICE_TOKEN),
-        )
-
         assert forged.status_code == 422
         assert resolved.status_code == 200
-        assert '"actor_ref":"user:alice"' in events.text
+        resolved_events = resolved.json()["events"]
+        assert any(
+            event["event_type"] == "approval.resolved"
+            and event["actor_ref"] == "user:alice"
+            and event["payload"]["actor_ref"] == "user:alice"
+            for event in resolved_events
+        )
 
 
 def test_shared_debug_surface_is_disabled_or_operator_only_and_sanitized() -> None:
     disabled_dependencies = HostApiDependencies(
         v3_allow_unpinned_repository_sessions_for_tests=True,
-        foundation=build_local_eval_foundation(),
+        foundation=build_configured_foundation(),
         security_policy=_shared_policy(debug_enabled=False),
     )
-    with TestClient(create_app(disabled_dependencies)) as disabled_client:
+    with public_test_client(disabled_dependencies) as disabled_client:
         disabled = disabled_client.get(
             "/debug/llm-calls",
             headers=_headers(OPERATOR_TOKEN),
@@ -243,10 +259,10 @@ def test_shared_debug_surface_is_disabled_or_operator_only_and_sanitized() -> No
 
     enabled_dependencies = HostApiDependencies(
         v3_allow_unpinned_repository_sessions_for_tests=True,
-        foundation=build_local_eval_foundation(),
+        foundation=build_configured_foundation(),
         security_policy=_shared_policy(debug_enabled=True),
     )
-    with TestClient(create_app(enabled_dependencies)) as client:
+    with public_test_client(enabled_dependencies) as client:
         regular = client.get(
             "/debug/llm-calls",
             headers=_headers(ALICE_TOKEN),

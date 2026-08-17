@@ -276,6 +276,22 @@ class ScientificDeliverableRepository:
             bundle_digest=row["bundle_digest"],
         )
 
+    def get_bundle_for_attempt(
+        self,
+        *,
+        attempt_id: str,
+        selection_id: str,
+        contract_id: str,
+    ) -> ScientificDeliverableBundle | None:
+        row = self.connection.execute(
+            """
+            SELECT bundle_id FROM scientific_deliverable_bundle_records
+            WHERE attempt_id = ? AND selection_id = ? AND contract_id = ?
+            """,
+            (attempt_id, selection_id, contract_id),
+        ).fetchone()
+        return None if row is None else self.get_bundle(row["bundle_id"])
+
     def add_receipt(
         self,
         record: ScientificDeliverableValidationReceipt,
@@ -348,6 +364,20 @@ class ScientificDeliverableRepository:
             created_at=row["created_at"],
             receipt_digest=row["receipt_digest"],
         )
+
+    def get_receipt_for_bundle(
+        self,
+        bundle_id: str,
+    ) -> ScientificDeliverableValidationReceipt | None:
+        row = self.connection.execute(
+            """
+            SELECT receipt_id
+            FROM scientific_deliverable_validation_receipt_records
+            WHERE bundle_id = ?
+            """,
+            (bundle_id,),
+        ).fetchone()
+        return None if row is None else self.get_receipt(row["receipt_id"])
 
     @staticmethod
     def _adoption(row: sqlite3.Row) -> ScientificFileEffectAdoption:

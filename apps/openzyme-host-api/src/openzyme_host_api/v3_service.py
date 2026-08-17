@@ -6,9 +6,7 @@ from dataclasses import replace
 from datetime import datetime
 from datetime import timedelta
 from contextlib import contextmanager
-import base64
 import json
-from pathlib import Path
 import threading
 from typing import Any
 from typing import Callable
@@ -19,11 +17,11 @@ from uuid import uuid4
 from openzyme_core import CoreRepositories
 from openzyme_core import ControlledOperationExecutionTransitionService
 from openzyme_core import build_controlled_operation_result_handle
-from openzyme_core import controlled_operation_artifact_set_digest
 from openzyme_core import current_mutation_write_authority
 from openzyme_core import DurableEventRecord
 from openzyme_core import EngineRegistry
 from openzyme_core import FileWorkspaceProjectionBuilder
+from openzyme_core import FileWorkspacePublicContractService
 from openzyme_core import HarnessEvent
 from openzyme_core import HarnessStatus
 from openzyme_core import file_workspace_candidate_catalog_digest
@@ -33,9 +31,7 @@ from openzyme_core import RestoreFocus
 from openzyme_core import CommandIdempotencyConflictError
 from openzyme_core import runtime_command_request_digest
 from openzyme_core import RuntimeWriteFencingError
-from openzyme_core import SandboxHostBinding
 from openzyme_core import SandboxMutationWriterScopeFactory
-from openzyme_core import SessionProjectionBuilder
 from openzyme_core import SessionRuntimeContext
 from openzyme_core import SessionRuntimeSnapshot
 from openzyme_core import TaskBoardService
@@ -49,7 +45,6 @@ from openzyme_core import AgentWorkspaceReadinessProvider
 from openzyme_core import AgentRuntimeService
 from openzyme_core import AgentRuntimeScheduler
 from openzyme_core import AgentRuntimeSettlementDisposition
-from openzyme_core import ArtifactBoundaryService
 from openzyme_core import canonical_digest
 from openzyme_core import persist_conversation_message
 from openzyme_core import ProjectRepositoryBindingService
@@ -102,10 +97,6 @@ from openzyme_domain.control_plane import utc_now_iso
 from openzyme_runtime import record_failure_observation
 from openzyme_runtime import sanitize_public_diagnostic_text
 
-from .aox_bundle_finalizer import validate_persisted_aox_finalization_receipt
-from .aox_fault_injection import inject_authority_bound_aox_reference_byte_flip
-from .aox_public_product_closure import AoxPublicProductClosureError
-from .aox_public_product_closure import build_aox_public_product_closure
 
 
 def _new_id(prefix: str) -> str:
@@ -117,6 +108,7 @@ def _event(event_type: str, session_id: str, payload: dict[str, Any]) -> dict[st
         "event_id": _new_id("evt"),
         "session_id": session_id,
         "event_type": event_type,
+        "schema_version": "file_workspace_public@1",
         "created_at": utc_now_iso(),
         "payload": payload,
     }
@@ -143,6 +135,7 @@ def _scientific_transition_event(
         "event_id": f"evt_scientific_transition_{identity_digest[:24]}",
         "session_id": session_id,
         "event_type": event_type,
+        "schema_version": "file_workspace_public@1",
         "created_at": created_at,
         "payload": {
             "record_id": record_id,
@@ -159,6 +152,105 @@ def _event_fingerprint(event: dict[str, Any]) -> tuple[str, str, str]:
         str(event["created_at"]),
         json.dumps(event.get("payload", {}), sort_keys=True, separators=(",", ":")),
     )
+
+
+_FILE_WORKSPACE_EVENT_PREFIXES = (
+    "conversation.",
+    "task.",
+    "lane.",
+    "agent.",
+    "protocol.",
+    "workspace.",
+    "publication.",
+    "report.",
+    "scientific.",
+    "external_job.",
+    "runtime.",
+    "failure.",
+)
+_FILE_WORKSPACE_EVENT_SAFE_KEYS = frozenset(
+    {
+        "session_id",
+        "project_id",
+        "task_id",
+        "lane_id",
+        "agent_id",
+        "agent_member_id",
+        "workspace_id",
+        "workspace_generation",
+        "publication_id",
+        "report_id",
+        "ref_id",
+        "attempt_id",
+        "selection_id",
+        "execution_id",
+        "operation_id",
+        "result_id",
+        "lease_id",
+        "request_id",
+        "command_id",
+        "correlation_id",
+        "status",
+        "state",
+        "kind",
+        "reason",
+        "reason_code",
+        "error_code",
+        "lifecycle_state",
+        "effect_certainty",
+        "retry_eligibility",
+        "state_version",
+        "fencing_token",
+        "commit",
+        "tree",
+        "created_at",
+        "updated_at",
+        "completed_at",
+        "pending_human_approval_created",
+    }
+)
+
+
+def _project_file_workspace_event(event: dict[str, Any]) -> dict[str, Any] | None:
+    event_type = str(event.get("event_type") or "")
+    if not event_type.startswith(_FILE_WORKSPACE_EVENT_PREFIXES):
+        return None
+    payload = event.get("payload")
+    if not isinstance(payload, dict):
+        payload = {}
+    safe_payload: dict[str, object] = {}
+    for key, value in payload.items():
+        normalized = str(key).lower()
+        if normalized not in _FILE_WORKSPACE_EVENT_SAFE_KEYS and not normalized.endswith(
+            "_digest"
+        ):
+            continue
+        if any(
+            fragment in normalized
+            for fragment in (
+                "credential",
+                "host_path",
+                "private_ref",
+                "raw_",
+                "remote_directory",
+                "runner_handle",
+                "slurm",
+                "storage_uri",
+                "token",
+            )
+        ):
+            continue
+        if value is None or isinstance(value, (bool, int, float, str)):
+            safe_payload[str(key)] = value
+    return {
+        "schema_version": "file_workspace_event@1",
+        "event_id": event["event_id"],
+        "session_id": event["session_id"],
+        "event_type": event_type,
+        "cursor": event["cursor"],
+        "payload": safe_payload,
+        "created_at": event["created_at"],
+    }
 
 
 @dataclass(slots=True)
@@ -227,7 +319,7 @@ class V3EventStore:
                                 event_type=str(event["event_type"]),
                                 schema_version=str(
                                     event.get("schema_version")
-                                    or "openzyme.v3.event.v1"
+                                    or "file_workspace_public@1"
                                 ),
                                 visibility=visibility,
                                 payload=payload,
@@ -373,9 +465,6 @@ class V3HostApiService:
     scientific_workflow_contract_registry: ScientificWorkflowContractRegistry | None = (
         None
     )
-    sandbox_workspace_root: Path | None = None
-    artifact_blob_root: Path | None = None
-    artifact_bundle_finalizer: Callable[..., dict[str, Any]] | None = None
     scheduler_limits: dict[str, int] = field(default_factory=dict)
     signal_notifier: Any | None = None
     durable_work_notifier: Any | None = None
@@ -393,13 +482,6 @@ class V3HostApiService:
         | None
     ) = None
     mutation_writer_scope_factory: SandboxMutationWriterScopeFactory | None = None
-    sandbox_host_binding_factory: (
-        Callable[
-            [EngineRegistry, SessionRuntimeLease | None],
-            SandboxHostBinding,
-        ]
-        | None
-    ) = None
     repository_binding_service: ProjectRepositoryBindingService | None = None
     agent_workspace_readiness_providers: Mapping[
         str, AgentWorkspaceReadinessProvider
@@ -407,6 +489,7 @@ class V3HostApiService:
     session_creation_readiness_provider_id: str | None = None
     delegation_readiness_provider_id: str | None = None
     agent_capsule_process_runner: Any | None = None
+    agent_capsule_control_handler_factory: Any | None = None
     agent_process_credential_router: Any | None = None
     executor_hpc_workspace_service: Any | None = None
     workspace_checkpoint_git_reader: Any | None = None
@@ -599,6 +682,9 @@ class V3HostApiService:
             else:
                 binding_service.create_pinned_session(session)
             self._create_master_agent_with_pending_lease(session.session_id)
+            FileWorkspacePublicContractService(
+                self.repositories
+            ).classify_new_session(session.session_id)
             stored_session = self.repositories.sessions.get(session.session_id)
             if stored_session is None:
                 raise RuntimeError("created session cannot be reread")
@@ -781,16 +867,13 @@ class V3HostApiService:
                 session_id,
                 prerequisite="session_restore",
             )
-            return (
-                SessionProjectionBuilder(
-                    self.repositories,
-                    scientific_workflow_contract_registry=(
-                        self.scientific_workflow_contract_registry
-                    ),
-                )
-                .build_session_workspace(session_id)
-                .to_dict()
-            )
+            return FileWorkspaceProjectionBuilder(
+                self.repositories,
+                tool_catalog_digest=file_workspace_candidate_catalog_digest(),
+            ).build(
+                session_id=session_id,
+                subject_agent_member_id=None,
+            ).to_dict()
 
     def file_workspace_candidate(
         self,
@@ -798,7 +881,7 @@ class V3HostApiService:
         *,
         subject_agent_member_id: str | None,
     ) -> dict[str, object]:
-        """Build the source-gated public candidate without activating its epoch."""
+        """Build the exact current projection, optionally with its owner-only view."""
 
         with self.operation_lock:
             self._require_session_repository_binding(
@@ -824,6 +907,27 @@ class V3HostApiService:
                 subject_agent_member_id=subject_agent_member_id,
             ).to_dict()
 
+    def workspace_changed_paths_page(
+        self,
+        *,
+        session_id: str,
+        workspace_id: str,
+        continuation: str,
+    ) -> dict[str, object]:
+        with self.operation_lock:
+            self._require_session_repository_binding(
+                session_id,
+                prerequisite="session_restore",
+            )
+            return FileWorkspaceProjectionBuilder(
+                self.repositories,
+                tool_catalog_digest=file_workspace_candidate_catalog_digest(),
+            ).build_changed_paths_page(
+                session_id=session_id,
+                workspace_id=workspace_id,
+                continuation=continuation,
+            )
+
     def _require_session_repository_binding(
         self,
         session_id: str,
@@ -846,141 +950,7 @@ class V3HostApiService:
         return ScientificAttemptService(
             self.repositories,
             workflow_contract_registry=(self.scientific_workflow_contract_registry),
-            artifact_boundary=ArtifactBoundaryService(
-                self.repositories,
-                workspace_root=self.sandbox_workspace_root,
-                blob_store_root=self.artifact_blob_root,
-            ),
         )
-
-    def export_closed_aox_attempt_evidence(
-        self,
-        *,
-        session_id: str,
-        attempt_id: str,
-        selection_id: str,
-    ) -> dict[str, Any]:
-        """Project the complete source-bound AOX closure through the Host API."""
-
-        control = self.scientific_attempt_control().export_closed_attempt_evidence(
-            attempt_id,
-            session_id=session_id,
-            selection_id=selection_id,
-        )
-        attempt = dict(control["attempt"])
-        events: list[dict[str, Any]] = []
-        after_cursor = 0
-        while True:
-            page = self.event_store.list(
-                session_id,
-                after_cursor=after_cursor,
-                limit=1_000,
-            )
-            events.extend(page)
-            if len(events) > 100_000:
-                raise ScientificAttemptError(
-                    "attempt_evidence_event_export_too_large",
-                    "closed AOX public event export exceeds its bounded limit",
-                )
-            if len(page) < 1_000:
-                break
-            after_cursor = int(page[-1]["cursor"])
-        try:
-            product_closure = build_aox_public_product_closure(
-                self.repositories,
-                session_id=session_id,
-                attempt_id=attempt_id,
-                attempt_kind=(
-                    "fault"
-                    if attempt.get("scope") == ScientificAttemptScope.FAULT.value
-                    else "positive"
-                ),
-                execution_task_id=str(attempt["task_id"]),
-                events=events,
-                latest_event_cursor=(0 if not events else int(events[-1]["cursor"])),
-            )
-        except AoxPublicProductClosureError as exc:
-            raise ScientificAttemptError(exc.error_code, str(exc)) from exc
-        finalization: dict[str, object] | None = None
-        deliverables: list[dict[str, object]] = []
-        if attempt.get("scope") == ScientificAttemptScope.FORMAL.value:
-            finalization = validate_persisted_aox_finalization_receipt(
-                self.repositories,
-                session_id=session_id,
-                execution_task_id=str(attempt["task_id"]),
-                attempt_id=attempt_id,
-                selection_id=selection_id,
-            )
-            boundary = ArtifactBoundaryService(
-                self.repositories,
-                workspace_root=self.sandbox_workspace_root,
-                blob_store_root=self.artifact_blob_root,
-            )
-            total_size = 0
-            for raw_ref in sorted(
-                finalization["artifacts"],
-                key=lambda item: str(item["relative_path"]),
-            ):
-                ref = dict(raw_ref)
-                content, content_digest = boundary.read_sealed_file(
-                    session_id=session_id,
-                    artifact_id=str(ref["artifact_id"]),
-                )
-                total_size += len(content)
-                if total_size > 256 * 1024 * 1024:
-                    raise ScientificAttemptError(
-                        "attempt_evidence_export_too_large",
-                        "closed AOX deliverables exceed the public export bound",
-                    )
-                if content_digest != ref.get("content_digest"):
-                    raise ScientificAttemptError(
-                        "attempt_evidence_artifact_digest_mismatch",
-                        "closed AOX artifact differs from its finalization receipt",
-                    )
-                deliverables.append(
-                    {
-                        "artifact_id": ref["artifact_id"],
-                        "relative_path": ref["relative_path"],
-                        "content_digest": content_digest,
-                        "content_base64": base64.b64encode(content).decode("ascii"),
-                    }
-                )
-        payload: dict[str, Any] = {
-            "schema_id": "aox_closed_attempt_evidence@2",
-            "session_id": session_id,
-            "attempt_id": attempt_id,
-            "selection_id": selection_id,
-            "scientific_attempt_control": control,
-            "finalization_receipt": finalization,
-            "deliverables": deliverables,
-            "product_closure": product_closure,
-        }
-        return {**payload, "export_digest": canonical_digest(payload)}
-
-    def inject_aox_reference_fault(
-        self,
-        *,
-        session_id: str,
-        attempt_id: str,
-        artifact_id: str,
-        actor_ref: str,
-        idempotency_key: str,
-    ) -> dict[str, Any]:
-        with self.operation_lock:
-            with MutationScopeService(self.repositories).writer_turn(
-                session_id=session_id,
-                owner_kind=MutationWriterKind.ARTIFACT_PUBLISHER,
-                owner_ref=f"aox-fault-capability:{attempt_id}",
-            ):
-                return inject_authority_bound_aox_reference_byte_flip(
-                    self.repositories,
-                    session_id=session_id,
-                    attempt_id=attempt_id,
-                    artifact_id=artifact_id,
-                    actor_ref=actor_ref,
-                    idempotency_key=idempotency_key,
-                    blob_root=self.artifact_blob_root,
-                )
 
     def grant_scientific_attempt_authorization(
         self,
@@ -1115,7 +1085,7 @@ class V3HostApiService:
                 existing_event.session_id != session_id
                 or existing_event.event_type != event_type
                 or existing_event.payload != expected_event["payload"]
-                or existing_event.schema_version != "openzyme.v3.event.v1"
+                or existing_event.schema_version != "file_workspace_public@1"
                 or existing_event.visibility != "public"
                 or (
                     deterministic_event is not None
@@ -1389,15 +1359,22 @@ class V3HostApiService:
         with self.operation_lock:
             if self.repositories.sessions.get(session_id) is None:
                 raise ValueError(f"session {session_id!r} does not exist")
-            return list(
-                SessionProjectionBuilder(self.repositories).build_pending_approvals(
-                    session_id
-                )
-            )
+            projection = FileWorkspaceProjectionBuilder(
+                self.repositories,
+                tool_catalog_digest=file_workspace_candidate_catalog_digest(),
+            ).build(session_id=session_id, subject_agent_member_id=None)
+            return list(projection.pending_approvals)
 
     def list_sessions(self, project_id: str) -> list[dict[str, Any]]:
         summaries: list[dict[str, Any]] = []
+        current_session_ids = set(
+            FileWorkspacePublicContractService(
+                self.repositories
+            ).current_session_ids()
+        )
         for session in self.repositories.sessions.list_by_project(project_id):
+            if session.session_id not in current_session_ids:
+                continue
             messages = self.repositories.inbox.list_by_session(session.session_id)
             approvals = self.repositories.approvals.list_by_session(session.session_id)
             latest_preview = ""
@@ -1443,11 +1420,15 @@ class V3HostApiService:
         after_cursor: int = 0,
         limit: int = 1_000,
     ) -> list[dict[str, Any]]:
-        return self.event_store.list(
-            session_id,
-            after_cursor=after_cursor,
-            limit=limit,
+        projected = (
+            _project_file_workspace_event(event)
+            for event in self.event_store.list(
+                session_id,
+                after_cursor=after_cursor,
+                limit=limit,
+            )
         )
+        return [event for event in projected if event is not None]
 
     def _touch_session(self, session_id: str) -> None:
         session = self.repositories.sessions.get(session_id)
@@ -1472,29 +1453,11 @@ class V3HostApiService:
     def _extend_with_activity_events(
         self, session_id: str, events: list[dict[str, Any]]
     ) -> None:
-        existing = {
-            _event_fingerprint(event) for event in self.events(session_id, limit=10_000)
-        }
-        current = {_event_fingerprint(event) for event in events}
-        # Activity-event backfill needs only the activity projection.  Building
-        # the composite workspace here used to project the complete artifact
-        # catalog while a mutation still owned its SQLite write transaction.
-        # That coupled approval latency to unrelated scientific metadata size.
-        for item in SessionProjectionBuilder(
-            self.repositories
-        ).build_public_activity_feed(session_id):
-            event = {
-                "event_id": _new_id("evt"),
-                "session_id": session_id,
-                "event_type": item["event_type"],
-                "created_at": item["created_at"],
-                "payload": item["payload"],
-            }
-            fingerprint = _event_fingerprint(event)
-            if fingerprint in existing or fingerprint in current:
-                continue
-            events.append(event)
-            current.add(fingerprint)
+        # ``activity_feed`` is a read-only projection of durable events.  It
+        # must never be reflected back into storage as a second, payload-free
+        # event.  Keep this hook as an explicit compatibility no-op while the
+        # call sites settle their already-formed typed events.
+        del session_id, events
 
     def _extend_with_trace_events(
         self, session_id: str, events: list[dict[str, Any]]
@@ -1549,9 +1512,6 @@ class V3HostApiService:
             scientific_workflow_contract_registry=(
                 self.scientific_workflow_contract_registry
             ),
-            sandbox_workspace_root=self.sandbox_workspace_root,
-            artifact_blob_root=self.artifact_blob_root,
-            artifact_bundle_finalizer=self.artifact_bundle_finalizer,
             signal_notifier=self.signal_notifier,
             reliability_shadow_observer=self.reliability_shadow_observer,
             reliability_settings=self.reliability_settings,
@@ -1563,6 +1523,9 @@ class V3HostApiService:
             ),
             delegation_readiness_provider_id=self.delegation_readiness_provider_id,
             agent_capsule_process_runner=self.agent_capsule_process_runner,
+            agent_capsule_control_handler_factory=(
+                self.agent_capsule_control_handler_factory
+            ),
             agent_process_credential_router=self.agent_process_credential_router,
             executor_hpc_workspace_service=self.executor_hpc_workspace_service,
             workspace_checkpoint_git_reader=self.workspace_checkpoint_git_reader,
@@ -1570,7 +1533,6 @@ class V3HostApiService:
                 self.agent_git_workspace_recovery_service
             ),
             mutation_writer_scope_factory=self.mutation_writer_scope_factory,
-            sandbox_host_binding_factory=self.sandbox_host_binding_factory,
         )
 
     async def run_background_runtime_once(
@@ -2334,9 +2296,7 @@ class V3HostApiService:
                     "status": "cancelled",
                     "error_code": "approval_rejected",
                     "safe_error_summary": ("User rejected supervised SDK operation."),
-                    "output_artifact_ids": [],
                 },
-                artifact_set_digest=controlled_operation_artifact_set_digest(()),
                 origin="host_approval_gate",
                 created_at=now,
             )
@@ -2344,7 +2304,6 @@ class V3HostApiService:
                 updated,
                 result_handle_ref=result_handle.result_handle_id,
                 result_digest=result_handle.result_digest,
-                artifact_set_digest=result_handle.artifact_set_digest,
             )
         ControlledOperationExecutionTransitionService(self.repositories).transition(
             execution=updated,
