@@ -3,11 +3,16 @@ from .models import SourceRefKind
 from .models import utc_now_iso
 from .failures import AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE
 from .failures import FAILURE_OBSERVATION_SCHEMA_VERSION
+from .failures import LEGACY_FAILURE_OBSERVATION_SCHEMA_VERSION
+from .failures import PRIVATE_DIAGNOSTIC_SCHEMA_VERSION
 from .failures import FailureActorKind
 from .failures import FailureClass
 from .failures import FailureObservation
 from .failures import FailureRecoverability
+from .failures import LegacyFailureObservationV1
+from .failures import PrivateDiagnosticRecord
 from .failures import likely_causes_for_error_code
+from .failures import parse_failure_observation
 from .file_workspace_public import FILE_WORKSPACE_PUBLIC_SCHEMA_VERSION
 from .file_workspace_public import FILE_WORKSPACE_PUBLIC_CONTRACT_ID
 from .file_workspace_public import ExecutorOwnerWorkspaceView
@@ -210,6 +215,16 @@ from .workspace_revision_executions import WorkspaceRevisionExecutionRequest
 from .workspace_revision_executions import WorkspaceRevisionScientificBasis
 from .workspace_revision_executions import WorkspaceRevisionSourceClass
 from .workspace_revision_executions import canonical_workspace_job_digest
+from .workspace_job_wire import WorkspaceJobWireContractError
+from .workspace_job_wire import canonical_workspace_job_json
+from .workspace_job_wire import canonical_workspace_job_wire_digest
+from .workspace_job_wire import parse_external_job_handle
+from .workspace_job_wire import parse_external_job_observation
+from .workspace_job_wire import parse_workspace_job_cancellation_intent
+from .workspace_job_wire import parse_workspace_job_cancellation_receipt
+from .workspace_job_wire import parse_workspace_job_reconciliation
+from .workspace_job_wire import parse_workspace_job_runner_handle
+from .workspace_job_wire import serialize_workspace_job_cancellation_receipt
 from .agent_capability_leases import AGENT_CAPABILITY_LEASE_EVENT_SCHEMA_VERSION
 from .agent_capability_leases import AGENT_CAPABILITY_LEASE_SCHEMA_VERSION
 from .agent_capability_leases import (
@@ -382,10 +397,14 @@ __all__ = [
     "EngineInvocationStatus",
     "EXECUTOR_AGENT_CAPABILITIES",
     "FAILURE_OBSERVATION_SCHEMA_VERSION",
+    "LEGACY_FAILURE_OBSERVATION_SCHEMA_VERSION",
+    "PRIVATE_DIAGNOSTIC_SCHEMA_VERSION",
     "FailureActorKind",
     "FailureClass",
     "FailureObservation",
     "FailureRecoverability",
+    "LegacyFailureObservationV1",
+    "PrivateDiagnosticRecord",
     "FILE_WORKSPACE_PUBLIC_SCHEMA_VERSION",
     "FILE_WORKSPACE_PUBLIC_CONTRACT_ID",
     "ExecutorOwnerWorkspaceView",
@@ -555,11 +574,22 @@ __all__ = [
     "canonical_handoff_digest",
     "canonical_executor_hpc_digest",
     "canonical_workspace_job_digest",
+    "canonical_workspace_job_json",
+    "canonical_workspace_job_wire_digest",
+    "parse_external_job_handle",
+    "parse_external_job_observation",
+    "parse_workspace_job_cancellation_intent",
+    "parse_workspace_job_cancellation_receipt",
+    "parse_workspace_job_reconciliation",
+    "parse_workspace_job_runner_handle",
+    "serialize_workspace_job_cancellation_receipt",
+    "WorkspaceJobWireContractError",
     "capabilities_for_profile",
     "capability_set_digest",
     "canonical_workspace_digest",
     "compare_agent_git_workspace_identity",
     "likely_causes_for_error_code",
+    "parse_failure_observation",
     "require_repository_path",
     "target_scope_digest",
 ]

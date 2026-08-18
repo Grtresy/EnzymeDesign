@@ -45,6 +45,9 @@ class AgentGitWorkspaceBlockerCode(StrEnum):
     CLONE_FAILED = "clone_failed"
     PERSISTENCE_FAILED = "persistence_failed"
     IDENTITY_DRIFT = "identity_drift"
+    INFRASTRUCTURE_UNAVAILABLE = "infrastructure_unavailable"
+    PERMISSION_OR_CONFIGURATION_FAILURE = "permission_or_configuration_failure"
+    INTERNAL_INVARIANT_FAILURE = "internal_invariant_failure"
 
 
 class AgentGitDirectoryKind(StrEnum):

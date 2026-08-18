@@ -92,6 +92,11 @@ from .migration_assets import MIGRATION_IDS
 from .migration_assets import SQLiteSchemaMismatchError
 from .migration_assets import apply_sqlite_migrations
 from .migration_assets import get_migration_sql
+from .deployment_schema_proofs import DeploymentSchemaProofError
+from .deployment_schema_proofs import FreshInstallBootstrapReceipt
+from .deployment_schema_proofs import build_fresh_install_bootstrap_receipt
+from .deployment_schema_proofs import verify_fresh_install_bootstrap
+from .deployment_schema_proofs import verify_offline_removal_ledger
 from .lane_manager import LaneManager
 from .lane_manager import LaneProjection
 from .lane_manager import LaneProjectionItem
@@ -232,8 +237,13 @@ from .agent_git_workspace_service import AgentGitWorkspaceLifecycleService
 from .agent_git_workspace_service import AgentGitWorkspaceTransitionError
 from .agent_git_workspace_recovery import AgentGitWorkspaceGenerationService
 from .agent_git_workspace_recovery import AgentGitWorkspaceObservationProvider
+from .agent_git_workspace_recovery import AgentGitWorkspaceBaseCommitDriftError
+from .agent_git_workspace_recovery import AgentGitWorkspaceCorruptionError
 from .agent_git_workspace_recovery import AgentGitWorkspaceRecoveryError
 from .agent_git_workspace_recovery import AgentGitWorkspaceRecoveryService
+from .agent_git_workspace_recovery import AgentGitWorkspaceInfrastructureError
+from .agent_git_workspace_recovery import AgentGitWorkspaceInvariantError
+from .agent_git_workspace_recovery import AgentGitWorkspacePermissionError
 from .agent_git_workspace_recovery import (
     PodmanAgentGitWorkspaceObservationProvider,
 )
@@ -352,6 +362,7 @@ from .native_revision_path_fetch import NativeRevisionPathFetchError
 from .native_revision_path_fetch import NativeRevisionPathFetchResult
 from .native_revision_path_fetch import NativeRevisionPathFetchService
 from .workspace_file_handoffs import WORKSPACE_FILE_WRITE_MAX_BYTES
+from .workspace_file_handoffs import WorkspaceFileCleanupResult
 from .workspace_file_handoffs import WorkspaceFileHandoffError
 from .workspace_file_handoffs import WorkspaceFileWriteResult
 from .workspace_file_handoffs import write_bytes_to_current_agent_workspace
@@ -516,6 +527,8 @@ from .reliability_repositories import ReliabilityRepositoryError
 from .reliability_repositories import is_transient_sqlite_contention
 from .failure_repositories import FailureObservationConflictError
 from .failure_repositories import FailureObservationRepository
+from .failure_repositories import PrivateDiagnosticConflictError
+from .failure_repositories import PrivateDiagnosticRepository
 from .failure_tools import register_failure_tools
 from .file_workspace_contract import FILE_WORKSPACE_SANDBOX_CONTRACT_ID
 from .file_workspace_contract import FILE_WORKSPACE_UNSUPPORTED_ERROR_SCHEMA
@@ -692,8 +705,13 @@ __all__ = [
     "AgentGitWorkspaceProvisioner",
     "AgentGitWorkspaceProvisioningError",
     "AgentGitWorkspaceReadinessCandidate",
+    "AgentGitWorkspaceBaseCommitDriftError",
+    "AgentGitWorkspaceCorruptionError",
     "AgentGitWorkspaceRecoveryError",
     "AgentGitWorkspaceRecoveryService",
+    "AgentGitWorkspaceInfrastructureError",
+    "AgentGitWorkspaceInvariantError",
+    "AgentGitWorkspacePermissionError",
     "AgentGitWorkspaceRepository",
     "AgentGitWorkspaceRepositoryError",
     "AgentGitWorkspaceTransitionError",
@@ -802,6 +820,7 @@ __all__ = [
     "scientific_deliverable_evidence_ref",
     "WORKSPACE_FILE_WRITE_MAX_BYTES",
     "WorkspaceFileHandoffError",
+    "WorkspaceFileCleanupResult",
     "WorkspaceFileWriteResult",
     "write_bytes_to_current_agent_workspace",
     "write_json_to_current_agent_workspace",
@@ -928,6 +947,8 @@ __all__ = [
     "EngineRegistry",
     "FailureObservationConflictError",
     "FailureObservationRepository",
+    "PrivateDiagnosticConflictError",
+    "PrivateDiagnosticRepository",
     "EngineInvocationRepository",
     "DurableEventConflictError",
     "DurableEventRecord",
@@ -1111,6 +1132,11 @@ __all__ = [
     "SessionAccessRecord",
     "SessionAccessRepository",
     "SQLiteSchemaMismatchError",
+    "DeploymentSchemaProofError",
+    "FreshInstallBootstrapReceipt",
+    "build_fresh_install_bootstrap_receipt",
+    "verify_fresh_install_bootstrap",
+    "verify_offline_removal_ledger",
     "RestoreFocus",
     "ResumeDecision",
     "ResumeEnvelope",

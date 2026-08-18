@@ -10,18 +10,123 @@ from openzyme_domain import FailureActorKind
 from openzyme_domain import FailureClass
 from openzyme_domain import FailureObservation
 from openzyme_domain import FailureRecoverability
+from openzyme_domain import PrivateDiagnosticRecord
 from openzyme_domain import RetryEligibility
 
 from .repositories import _commit
 from .repositories import _json_dumps
 from .repositories import _json_loads_list
 from .repositories import _json_loads_object
+from .repositories import _json_loads_object_tuple
 from .repositories import _require_enum_member
 from .repositories import _require_session_exists
 
 
 class FailureObservationConflictError(RuntimeError):
     """The same source version was already observed with different facts."""
+
+
+class PrivateDiagnosticConflictError(RuntimeError):
+    """The immutable diagnostic identity already has different evidence."""
+
+
+@dataclass(slots=True)
+class PrivateDiagnosticRepository:
+    connection: sqlite3.Connection
+
+    def add(self, record: PrivateDiagnosticRecord) -> PrivateDiagnosticRecord:
+        try:
+            self.connection.execute(
+                """
+                INSERT INTO private_diagnostic_records (
+                    diagnostic_id, schema_version, failure_id, session_id,
+                    component, operation, phase, exception_type,
+                    exception_message, traceback_text, cause_chain_json,
+                    errno, return_code, bounded_stdout, bounded_stderr,
+                    private_context_json, source_kind, source_ref,
+                    source_version, correlation_id, created_at, record_digest
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
+                """,
+                (
+                    record.diagnostic_id,
+                    record.schema_version,
+                    record.failure_id,
+                    record.session_id,
+                    record.component,
+                    record.operation,
+                    record.phase,
+                    record.exception_type,
+                    record.exception_message,
+                    record.traceback_text,
+                    _json_dumps(list(record.cause_chain)),
+                    record.errno,
+                    record.return_code,
+                    record.bounded_stdout,
+                    record.bounded_stderr,
+                    _json_dumps(record.private_context),
+                    record.source_kind,
+                    record.source_ref,
+                    record.source_version,
+                    record.correlation_id,
+                    record.created_at,
+                    record.record_digest,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            existing = self._get(record.diagnostic_id)
+            if existing == record:
+                _commit(self.connection)
+                return existing
+            _commit(self.connection)
+            raise PrivateDiagnosticConflictError(
+                "private diagnostic identity already has different immutable evidence"
+            ) from exc
+        _commit(self.connection)
+        return record
+
+    def get_for_operator(
+        self,
+        diagnostic_id: str,
+        *,
+        operator_authorized: bool,
+    ) -> PrivateDiagnosticRecord | None:
+        if not operator_authorized:
+            raise PermissionError("private diagnostic lookup requires operator authority")
+        return self._get(diagnostic_id)
+
+    def _get(self, diagnostic_id: str) -> PrivateDiagnosticRecord | None:
+        row = self.connection.execute(
+            "SELECT * FROM private_diagnostic_records WHERE diagnostic_id = ?",
+            (diagnostic_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return PrivateDiagnosticRecord(
+            diagnostic_id=row["diagnostic_id"],
+            failure_id=row["failure_id"],
+            session_id=row["session_id"],
+            component=row["component"],
+            operation=row["operation"],
+            phase=row["phase"],
+            exception_type=row["exception_type"],
+            exception_message=row["exception_message"],
+            traceback_text=row["traceback_text"],
+            cause_chain=_json_loads_object_tuple(row["cause_chain_json"]),
+            errno=row["errno"],
+            return_code=row["return_code"],
+            bounded_stdout=row["bounded_stdout"],
+            bounded_stderr=row["bounded_stderr"],
+            private_context=_json_loads_object(row["private_context_json"]) or {},
+            source_kind=row["source_kind"],
+            source_ref=row["source_ref"],
+            source_version=row["source_version"],
+            correlation_id=row["correlation_id"],
+            created_at=row["created_at"],
+            record_digest=row["record_digest"],
+            schema_version=row["schema_version"],
+        )
 
 
 @dataclass(slots=True)
@@ -56,10 +161,18 @@ class FailureObservationRepository:
                     likely_causes_json,
                     evidence_refs_json,
                     private_diagnostic_digest,
+                    component,
+                    operation,
+                    identities_json,
+                    mutation_applied,
+                    fallback_performed,
+                    cause_chain_json,
+                    diagnostic_id,
+                    next_action,
                     created_at
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
                 self._record_values(record),
@@ -234,6 +347,14 @@ class FailureObservationRepository:
             _json_dumps(list(record.likely_causes)),
             _json_dumps(list(record.evidence_refs)),
             record.private_diagnostic_digest,
+            record.component,
+            record.operation,
+            _json_dumps(record.identities or {}),
+            int(record.mutation_applied),
+            int(record.fallback_performed),
+            _json_dumps(list(record.cause_chain)),
+            record.diagnostic_id,
+            record.next_action,
             record.created_at,
         )
 
@@ -261,6 +382,14 @@ class FailureObservationRepository:
             likely_causes=_json_loads_list(row["likely_causes_json"]),
             evidence_refs=_json_loads_list(row["evidence_refs_json"]),
             private_diagnostic_digest=row["private_diagnostic_digest"],
+            component=row["component"],
+            operation=row["operation"],
+            identities=_json_loads_object(row["identities_json"]) or {},
+            mutation_applied=bool(row["mutation_applied"]),
+            fallback_performed=bool(row["fallback_performed"]),
+            cause_chain=_json_loads_object_tuple(row["cause_chain_json"]),
+            diagnostic_id=row["diagnostic_id"],
+            next_action=row["next_action"],
             created_at=row["created_at"],
         )
 
@@ -268,4 +397,6 @@ class FailureObservationRepository:
 __all__ = [
     "FailureObservationConflictError",
     "FailureObservationRepository",
+    "PrivateDiagnosticConflictError",
+    "PrivateDiagnosticRepository",
 ]

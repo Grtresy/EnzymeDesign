@@ -78,10 +78,19 @@ schema 和 tool catalog digest。restore 只重建 typed refs。旧 schema/catal
 
 ## Error semantics
 
-- validation/authorization：请求未被接受，无 effect；
-- `no_effect`：可证明外部请求未发生；
-- `dispatch_in_doubt`：可能发生，只能 reconcile；
-- stale lease/fence/generation：迟到 writer 无 canonical write authority；
-- old/incomplete database：mutation 前 `legacy_schema_unsupported` 或 `legacy_removal_incomplete`。
+当前公开错误对象是 `failure_observation@2`，至少包含：稳定 `error_code`、component、operation、
+phase、typed identities、effect certainty、retry/reconcile policy、`mutation_applied`、
+`fallback_performed`、安全 cause chain、`diagnostic_id` 和 next action。API、tool result、event、workspace
+与 world projection 使用同一字段语义；UI/CLI 不自行推断 retryability。
 
-error envelope 不将 unknown 伪装成 not-found 或 retryable。
+- validation/authorization：请求未被接受，`mutation_applied=false`，外部 effect 为 `no_effect`；
+- `no_effect`：有证据证明外部请求未发生，可否重试仍由显式 policy 决定；
+- `dispatch_in_doubt`：请求可能发生，只能按同一 intent/handle reconcile；
+- stale lease/fence/generation：迟到 writer 无 canonical write authority，不自动换 owner 或重放；
+- cleanup failure：保留 primary failure，同时显式记录 cleanup outcome 和 residual identity；
+- old/incomplete database：mutation 前返回带 expected/observed proof 的
+  `legacy_schema_unsupported` 或 `legacy_removal_incomplete`。
+
+完整 traceback、异常链、私有路径/handle、return code 和 bounded stdout/stderr 只存在 Host-private
+immutable diagnostic record 中。公开 sanitizer 仅允许 safe type/code/digest/count/phase，确定性标记
+secret/path/handle redaction；error envelope 不将 unknown 伪装成 not-found、corruption 或 retryable。

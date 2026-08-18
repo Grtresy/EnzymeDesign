@@ -59,3 +59,7 @@ contract、public API、machine authority 和 source-bound evidence 重新建立
 以下情况保持 blocked：unknown effect、unsettled occurrence、selection universe drift、producer/result mismatch、
 publication/path/LFS drift、format failure、missing adoption、stale authority、quiescence mismatch 或 historical ref。
 不存在 automatic negative、best-effort close、manual override 或 hidden fallback。
+
+行为验收必须 fresh-read publication bytes，覆盖 unknown publication、path/blob/LFS drift、role/adoption
+mismatch、bundle tamper 和 artifact-era request field rejection。AOX finalizer 测试只能证明 file-native
+finalization composition；non-live fixture 不证明真实 provider/HPC 可用，也不授权新 campaign。

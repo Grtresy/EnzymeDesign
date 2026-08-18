@@ -3,6 +3,7 @@ import {
   buildSessionSummaryFromWorkspace,
   eventRequiresWorkspaceRefresh,
   reduceWorkspaceWithEvent,
+  mergeWorkspaceChangedPathsPage,
   upsertSessionSummary,
 } from "./state.js";
 
@@ -536,5 +537,66 @@ export class WorkspaceController {
       }
     }
     return false;
+  }
+
+  async loadMoreChangedPaths(workspaceId) {
+    if (
+      !this.state.currentSessionId
+      || !this.state.workspace?.session
+      || this.state.pendingWorkspacePathId
+    ) {
+      return false;
+    }
+    const status = (this.state.workspace.workspace_status ?? []).find(
+      (item) => item.workspace_id === workspaceId,
+    );
+    if (!status?.changed_paths_continuation) {
+      return false;
+    }
+    const sessionId = this.state.currentSessionId;
+    const generation = status.workspace_generation;
+    const continuation = status.changed_paths_continuation;
+    this.state.pendingWorkspacePathId = workspaceId;
+    const errors = { ...(this.state.errors.changedPaths ?? {}) };
+    delete errors[workspaceId];
+    this.state.errors.changedPaths = errors;
+    this._emit();
+    try {
+      const page = await this.client.getV3WorkspaceChangedPathsPage(
+        sessionId,
+        workspaceId,
+        generation,
+        continuation,
+      );
+      const currentStatus = (this.state.workspace?.workspace_status ?? []).find(
+        (item) => item.workspace_id === workspaceId,
+      );
+      if (
+        this.state.currentSessionId !== sessionId
+        || currentStatus?.workspace_generation !== generation
+        || currentStatus?.changed_paths_continuation !== continuation
+      ) {
+        return false;
+      }
+      this.state.workspace = mergeWorkspaceChangedPathsPage(
+        this.state.workspace,
+        workspaceId,
+        page,
+      );
+      return true;
+    } catch (error) {
+      if (this.state.currentSessionId === sessionId) {
+        this.state.errors.changedPaths = {
+          ...(this.state.errors.changedPaths ?? {}),
+          [workspaceId]: error.message,
+        };
+      }
+      return false;
+    } finally {
+      if (this.state.pendingWorkspacePathId === workspaceId) {
+        this.state.pendingWorkspacePathId = "";
+        this._emit();
+      }
+    }
   }
 }

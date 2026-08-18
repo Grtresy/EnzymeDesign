@@ -32,6 +32,10 @@ from openzyme_domain import WorkspaceJobDispatchIntent
 from openzyme_domain import WorkspaceJobExecutionMode
 from openzyme_domain import WorkspaceJobObservationState
 from openzyme_domain import WorkspaceRevisionExecutionRequest
+from openzyme_domain import parse_external_job_observation
+from openzyme_domain import parse_workspace_job_cancellation_receipt
+from openzyme_domain import parse_workspace_job_reconciliation
+from openzyme_domain import parse_workspace_job_runner_handle
 from openzyme_execution import WorkspaceRevisionRunnerAdapter
 
 
@@ -461,7 +465,10 @@ class HostWorkspaceJobBackend(WorkspaceJobBackend):
                 disposition=disposition,
                 safe_error_code=error_code,
             )
-        return self._dispatch_response(response)
+        return self._dispatch_response(
+            response,
+            expected_handle=self._expected_runner_handle_from_runspec(runspec),
+        )
 
     def reconcile(
         self,
@@ -471,7 +478,23 @@ class HostWorkspaceJobBackend(WorkspaceJobBackend):
         intent: WorkspaceJobDispatchIntent,
     ) -> WorkspaceJobDispatchResponse:
         return self._dispatch_response(
-            self.runner.reconcile(intent.runner_run_id)
+            self.runner.reconcile(intent.runner_run_id),
+            expected_handle={
+                "execution_id": intent.execution_id,
+                "operation_id": intent.operation_id,
+                "dispatch_id": intent.dispatch_id,
+                "runner_run_id": intent.runner_run_id,
+                "target_profile_digest": intent.target_profile_digest,
+                "workspace_id": intent.workspace_id,
+                "remote_workspace_generation": intent.remote_workspace_generation,
+                "source_commit": request.source_commit,
+                "source_manifest_digest": intent.source_manifest_digest,
+                "backend": (
+                    "slurm"
+                    if intent.selected_mode is WorkspaceJobExecutionMode.SBATCH
+                    else "direct"
+                ),
+            },
         )
 
     def observe(
@@ -485,6 +508,15 @@ class HostWorkspaceJobBackend(WorkspaceJobBackend):
         response = self.runner.observe(
             handle.runner_run_id,
             observation_index=observation_index,
+        )
+        response = parse_external_job_observation(
+            response,
+            expected={
+                "handle_id": handle.handle_id,
+                "execution_id": intent.execution_id,
+                "dispatch_id": intent.dispatch_id,
+                "observation_index": observation_index,
+            },
         )
         return WorkspaceJobObservationReceipt(
             observation_id=response["observation_id"],
@@ -509,6 +541,13 @@ class HostWorkspaceJobBackend(WorkspaceJobBackend):
         response = self.runner.cancel(
             handle.runner_run_id,
             cancellation=cancellation.payload,
+        )
+        response = parse_workspace_job_cancellation_receipt(
+            response,
+            expected={
+                "cancellation_id": cancellation.cancellation_id,
+                "handle_id": handle.handle_id,
+            },
         )
         return WorkspaceJobCancellationReceipt(
             receipt_id=response["receipt_id"],
@@ -585,16 +624,25 @@ class HostWorkspaceJobBackend(WorkspaceJobBackend):
         }
 
     @staticmethod
-    def _dispatch_response(response: dict[str, Any]) -> WorkspaceJobDispatchResponse:
-        disposition = WorkspaceDispatchDisposition(response["disposition"])
-        if disposition is not WorkspaceDispatchDisposition.ACCEPTED:
+    def _dispatch_response(
+        response: dict[str, Any],
+        *,
+        expected_handle: dict[str, object],
+    ) -> WorkspaceJobDispatchResponse:
+        if response.get("disposition") != WorkspaceDispatchDisposition.ACCEPTED.value:
+            response = parse_workspace_job_reconciliation(response)
+            disposition = WorkspaceDispatchDisposition(response["disposition"])
             return WorkspaceJobDispatchResponse(
                 disposition=disposition,
                 safe_error_code=response.get("safe_error_code"),
                 safe_receipt_digest=response.get("reconciliation_receipt_digest"),
             )
+        response = parse_workspace_job_runner_handle(
+            response,
+            expected=expected_handle,
+        )
         return WorkspaceJobDispatchResponse(
-            disposition=disposition,
+            disposition=WorkspaceDispatchDisposition.ACCEPTED,
             backend=WorkspaceExternalBackend(response["backend"]),
             raw_handle_ciphertext=response["raw_handle_ciphertext"],
             acceptance_receipt_digest=response["acceptance_receipt_digest"],
@@ -605,6 +653,25 @@ class HostWorkspaceJobBackend(WorkspaceJobBackend):
                 "credential_consumption_receipt_digest"
             ],
         )
+
+    @staticmethod
+    def _expected_runner_handle_from_runspec(
+        runspec: dict[str, Any],
+    ) -> dict[str, object]:
+        return {
+            "execution_id": runspec["execution_id"],
+            "operation_id": runspec["operation_id"],
+            "dispatch_id": runspec["dispatch_id"],
+            "runner_run_id": runspec["runner_run_id"],
+            "target_profile_digest": runspec["target_profile_digest"],
+            "workspace_id": runspec["executor_hpc_workspace_id"],
+            "remote_workspace_generation": runspec[
+                "executor_hpc_workspace_generation"
+            ],
+            "source_commit": runspec["source_commit"],
+            "source_manifest_digest": runspec["source_manifest_digest"],
+            "backend": "slurm" if runspec["selected_mode"] == "sbatch" else "direct",
+        }
 
 
 __all__ = [

@@ -301,6 +301,43 @@ def test_public_api_error_payload_sanitizes_private_diagnostics() -> None:
     assert "access_token" not in serialized
 
 
+def test_public_api_error_payload_exposes_only_structured_safe_diagnostic_fields() -> None:
+    payload = _api_error_payload(
+        code="publication_response_lost",
+        message="publication dispatch response was unavailable",
+        diagnostic={
+            "diagnostic_id": "diagnostic_1",
+            "component": "workspace_publications",
+            "phase": "remote_dispatch",
+            "identities": {
+                "publication_id": "publication_1",
+                "raw_handle": "ssh://private-host/opaque-token",
+            },
+            "effect_certainty": "dispatch_in_doubt",
+            "retry_eligibility": "reconcile_required",
+            "mutation_applied": True,
+            "fallback_performed": False,
+            "cause_chain": [
+                {
+                    "type": "RuntimeError",
+                    "code": "response_lost",
+                    "message_digest": "sha256:" + "a" * 64,
+                }
+            ],
+            "next_action": "reconcile_exact_ref",
+            "traceback_text": "/home/operator/private traceback",
+        },
+    )
+
+    error = payload["error"]
+    assert error["diagnostic_id"] == "diagnostic_1"
+    assert error["identities"] == {"publication_id": "publication_1"}
+    assert error["effect_certainty"] == "dispatch_in_doubt"
+    assert error["fallback_performed"] is False
+    assert "traceback_text" not in error
+    assert "private-host" not in str(error)
+
+
 def test_public_api_runtime_write_fence_is_typed_and_fail_closed() -> None:
     error = _as_http_error(
         RuntimeWriteFencingError(

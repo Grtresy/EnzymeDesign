@@ -71,8 +71,9 @@ V3 默认产品语义是 `session + task board + lane/workspace + approval + res
 - `auto_enqueue_ready_tasks` 默认关闭，仅用于显式 operator/debug/recovery
 - task 业务终态必须由 agent 显式 `task.finish` 或已文档化机械迁移写入；`task.update` 只编辑普通字段和非终态，runtime idle、max steps、tool result 或 protocol message 不自动代表 task completed
 - 不新增隐藏 fallback：provider/runtime 异常显式失败，tool 参数错误返回 LLM 可读 tool error，不能静默改写用户意图、重开 blocked action 或默认选择“能跑”的替代 plan
+- 跨进程、Git、runner、provider、SQLite 与外部 effect 的异常必须形成可诊断且脱敏的结构化记录：至少包含稳定 error code、component、phase、关联 identity、effect certainty、mutation/fallback 事实、retry/reconcile policy、cause chain 与 `diagnostic_id`；私有记录保留完整 traceback、return code、bounded stdout/stderr 和上下文，包装异常使用 `raise ... from exc`
 - execution teammate 不直接调用 runner、SSH、Slurm 或 runner config；它提交 `execution.pipeline.*`，通过受控 sandbox 内 `openzyme_pipeline` SDK 间接请求 Host supervisor
-- runner/HPC 不得使用 Host 本地 artifact path；输入必须经 artifact catalog 授权并 staging，输出必须来自 declared `expected_outputs`
+- runner/HPC 不得使用 Host 本地路径、通用 catalog 或隐式 staging；输入必须绑定 exact workspace revision、commit/tree、Git LFS closure、clean observation 与受控 Gitless compute tree，输出由同一 opaque handle 的 observation、terminal receipt 和 owner workspace result 表达，不要求或补造 `expected_outputs`
 - reporter/report 验收要检查 task board、delegation、inbox、runtime drain、workspace `report_drafts` / `reports` 和 events，不能只看 tool 注册
 
 ## 协作与表述规范

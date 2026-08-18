@@ -1,0 +1,130 @@
+{
+  "schema_id": "file_workspace_final_evidence_manifest@1",
+  "closure_change": "close-file-workspace-cutover-verification-gaps",
+  "excluded_active_changes": [
+    "establish-v3-executable-architecture-qualification",
+    "harden-compaction-authority-and-runtime-recovery"
+  ],
+  "common_documentation": [
+    "AGENTS.md",
+    "docs/OpenZyme架构设计.md",
+    "docs/v3/README.md",
+    "docs/v3/file-workspace-migration.md",
+    "docs/v3/architecture-qualification/README.md"
+  ],
+  "changes": [
+    {
+      "change_id": "supersede-aox-hmm-artifact-cutover",
+      "receipt_schema_id": "aox_artifact_cutover_supersession_acceptance@1",
+      "code": ["packages/openzyme-core/src/openzyme_core/bio_research_tools.py", "packages/openzyme-pipeline/src/openzyme_pipeline/aox_finalization.py"],
+      "tests": ["packages/openzyme-pipeline/tests/test_aox_exact_finalization.py", "apps/openzyme-host-api/tests/test_aox_file_bundle_finalizer.py"],
+      "documentation": ["docs/v3/08-failure-recovery-and-scientific-attempts.md"]
+    },
+    {
+      "change_id": "provision-independent-agent-git-workspaces",
+      "receipt_schema_id": "agent_git_workspace_acceptance@1",
+      "code": ["packages/openzyme-core/src/openzyme_core/agent_git_workspace_recovery.py", "packages/openzyme-domain/src/openzyme_domain/agent_git_workspaces.py"],
+      "tests": ["packages/openzyme-core/tests/test_agent_git_workspaces.py", "packages/openzyme-domain/tests/test_agent_git_workspaces.py"],
+      "documentation": ["docs/v3/02-control-plane.md"]
+    },
+    {
+      "change_id": "publish-and-sync-workspace-revisions",
+      "receipt_schema_id": "workspace_publication_acceptance@1",
+      "code": ["packages/openzyme-core/src/openzyme_core/workspace_publications.py"],
+      "tests": ["packages/openzyme-core/tests/test_agent_git_workspaces.py", "packages/openzyme-domain/tests/test_workspace_publications.py"],
+      "documentation": ["docs/v3/04-public-interfaces.md"]
+    },
+    {
+      "change_id": "support-git-lfs-work-products",
+      "receipt_schema_id": "git_lfs_work_product_acceptance@1",
+      "code": ["packages/openzyme-core/src/openzyme_core/repositories.py", "packages/openzyme-core/src/openzyme_core/file_workspace_projection.py"],
+      "tests": ["packages/openzyme-core/tests/test_git_lfs_client_qualification.py", "packages/openzyme-core/tests/test_git_lfs_publication_policy.py", "packages/openzyme-domain/tests/test_git_lfs_work_products.py"],
+      "documentation": ["docs/v3/file-workspace-migration.md"]
+    },
+    {
+      "change_id": "migrate-research-report-and-task-handoffs-to-files",
+      "receipt_schema_id": "revision_path_handoff_acceptance@1",
+      "code": ["packages/openzyme-core/src/openzyme_core/workspace_file_handoffs.py", "packages/openzyme-core/src/openzyme_core/bio_research_tools.py"],
+      "tests": ["packages/openzyme-core/tests/test_bio_research_tools.py", "packages/openzyme-domain/tests/test_revision_path_handoffs.py"],
+      "documentation": ["docs/v3/04-public-interfaces.md"]
+    },
+    {
+      "change_id": "provision-isolated-executor-hpc-workspaces",
+      "receipt_schema_id": "executor_hpc_workspace_acceptance@1",
+      "code": ["apps/openzyme-host-api/src/openzyme_host_api/workspace_revision_execution.py", "packages/openzyme-execution/src/openzyme_execution/workspace_revision.py"],
+      "tests": ["apps/mcp-hpc-runner/tests/test_executor_workspace_contract.py", "apps/openzyme-host-api/tests/test_executor_hpc_workspace_boundary.py", "packages/openzyme-core/tests/test_executor_hpc_workspace_schema.py"],
+      "documentation": ["docs/v3/07-runtime-hpc-reliability.md"]
+    },
+    {
+      "change_id": "execute-hpc-jobs-from-workspace-revisions",
+      "receipt_schema_id": "workspace_revision_execution_acceptance@1",
+      "code": ["packages/openzyme-domain/src/openzyme_domain/workspace_job_wire.py", "apps/mcp-hpc-runner/src/mcp_hpc_runner/workspace_revision_jobs.py", "apps/openzyme-host-api/src/openzyme_host_api/workspace_revision_execution.py"],
+      "tests": ["packages/openzyme-domain/tests/test_workspace_job_wire.py", "apps/mcp-hpc-runner/tests/test_workspace_revision_job_wire.py", "apps/openzyme-host-api/tests/test_workspace_revision_execution_boundary.py", "packages/openzyme-core/tests/test_workspace_revision_execution_authority.py", "packages/openzyme-execution/tests/test_workspace_revision_adapter.py"],
+      "documentation": ["docs/v3/07-runtime-hpc-reliability.md", "docs/v3/runtime-hpc-reliability-operations.md"]
+    },
+    {
+      "change_id": "migrate-scientific-deliverables-to-files",
+      "receipt_schema_id": "scientific_deliverable_file_acceptance@1",
+      "code": ["packages/openzyme-core/src/openzyme_core/bio_research_tools.py", "packages/openzyme-pipeline/src/openzyme_pipeline/aox_finalization.py"],
+      "tests": ["packages/openzyme-core/tests/test_scientific_file_deliverables.py", "apps/openzyme-host-api/tests/test_aox_file_bundle_finalizer.py", "packages/openzyme-pipeline/tests/test_aox_exact_finalization.py"],
+      "documentation": ["docs/v3/08-failure-recovery-and-scientific-attempts.md"]
+    },
+    {
+      "change_id": "replace-sandbox-artifact-boundaries-with-files",
+      "receipt_schema_id": "file_workspace_internal_acceptance@1",
+      "code": ["packages/openzyme-runtime/src/openzyme_runtime/tooling.py", "packages/openzyme-core/src/openzyme_core/file_workspace_projection.py"],
+      "tests": ["apps/openzyme-host-api/tests/test_security.py", "packages/openzyme-core/tests/test_workspace_revision_execution_authority.py"],
+      "documentation": ["docs/v3/03-capability-engines.md"]
+    },
+    {
+      "change_id": "establish-project-repository-bindings",
+      "receipt_schema_id": "project_repository_binding_acceptance@1",
+      "code": ["packages/openzyme-core/src/openzyme_core/repositories.py"],
+      "tests": ["packages/openzyme-core/tests/test_repository_binding_service.py", "packages/openzyme-core/tests/test_repository_binding_repositories.py", "apps/openzyme-host-api/tests/test_repository_operations.py"],
+      "documentation": ["docs/v3/02-control-plane.md"]
+    },
+    {
+      "change_id": "establish-agent-capability-leases",
+      "receipt_schema_id": "agent_capability_lease_acceptance@1",
+      "code": ["packages/openzyme-core/src/openzyme_core/mutation_authority.py", "packages/openzyme-core/src/openzyme_core/repositories.py"],
+      "tests": ["packages/openzyme-domain/tests/test_agent_capability_leases.py", "packages/openzyme-core/tests/test_workspace_revision_execution_authority.py"],
+      "documentation": ["docs/v3/02-control-plane.md"]
+    },
+    {
+      "change_id": "cut-over-workspace-public-interfaces",
+      "receipt_schema_id": "file_workspace_public_acceptance@1",
+      "code": ["apps/openzyme-host-api/src/openzyme_host_api/v3_service.py", "apps/openzyme-web-ui/src/file_workspace_state.js", "apps/openzyme-web-ui/src/controller.js", "apps/openzyme-web-ui/src/view.js"],
+      "tests": ["apps/openzyme-web-ui/tests/file_workspace.test.js", "apps/openzyme-web-ui/tests/client.test.js", "apps/openzyme-web-ui/tests/state.test.js", "apps/openzyme-web-ui/tests/controller.test.js", "apps/openzyme-web-ui/tests/view.test.js"],
+      "documentation": ["docs/v3/04-public-interfaces.md"]
+    },
+    {
+      "change_id": "migrate-historical-artifacts-to-git-lfs",
+      "receipt_schema_id": "historical_artifact_migration_change_completion@1",
+      "code": ["packages/openzyme-core/src/openzyme_core/migration_assets.py", "packages/openzyme-core/src/openzyme_core/repositories.py"],
+      "tests": ["packages/openzyme-core/tests/test_offline_historical_migration_fixture.py", "packages/openzyme-core/tests/test_migrations.py"],
+      "documentation": ["docs/v3/file-workspace-migration.md"]
+    },
+    {
+      "change_id": "remove-artifact-control-plane-and-storage",
+      "receipt_schema_id": "artifact_subsystem_removal_acceptance@1",
+      "code": ["packages/openzyme-core/src/openzyme_core/deployment_schema_proofs.py", "packages/openzyme-core/src/openzyme_core/migration_assets.py", "packages/openzyme-core/src/openzyme_core/migrations/001_file_workspace_final.sql", "packages/openzyme-core/src/openzyme_core/device_fresh_reset.py"],
+      "tests": ["packages/openzyme-core/tests/test_migrations.py", "packages/openzyme-core/tests/test_offline_removal_fixture.py", "packages/openzyme-core/tests/test_device_fresh_reset.py"],
+      "documentation": ["docs/v3/file-workspace-migration.md"]
+    },
+    {
+      "change_id": "close-file-workspace-cutover-verification-gaps",
+      "receipt_schema_id": "file_workspace_cutover_closure_acceptance@1",
+      "code": ["packages/openzyme-runtime/src/openzyme_runtime/failure_observations.py", "packages/openzyme-runtime/src/openzyme_runtime/public_diagnostics.py", "packages/openzyme-core/src/openzyme_core/device_fresh_reset.py"],
+      "tests": ["packages/openzyme-core/tests/test_failure_diagnostics.py", "packages/openzyme-core/tests/test_production_exception_audit.py", "apps/openzyme-host-api/tests/architecture_qualification/scenarios/test_cutover_production_composition.py"],
+      "documentation": ["openspec/changes/close-file-workspace-cutover-verification-gaps/evidence/final-acceptance-policy.md", "openspec/changes/close-file-workspace-cutover-verification-gaps/evidence/device-fresh-reset-evidence.md"]
+    }
+  ],
+  "authority_limits": {
+    "live_provider_executed": false,
+    "real_hpc_executed": false,
+    "external_effect_authority_granted": false,
+    "scientific_acceptance_granted": false,
+    "product_activation_granted": false,
+    "push_or_pr_performed": false
+  }
+}

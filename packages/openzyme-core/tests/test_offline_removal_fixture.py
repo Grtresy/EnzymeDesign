@@ -148,7 +148,7 @@ def _seed_incomplete_removal_ledger(
             already_absent_set_digest, root_identity_set_digest,
             error_object_set_digest, expected_byte_total, removed_byte_total,
             state, created_at, completed_at, receipt_digest
-        ) VALUES (?, 'openzyme_file_workspace_final@1', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'incomplete', ?, NULL, ?)
+        ) VALUES (?, 'openzyme_file_workspace_final@2', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'incomplete', ?, NULL, ?)
         """,
         (
             receipt_id,
@@ -747,11 +747,9 @@ def test_partial_storage_removal_resumes_only_the_same_ledger(
         roots={"fixture-root": root},
     )
     assert result["removed_object_set_digest"] == canonical_digest(
-        ["legacy-storage-second"]
+        ["legacy-storage-first", "legacy-storage-second"]
     )
-    assert result["already_absent_set_digest"] == canonical_digest(
-        ["legacy-storage-first"]
-    )
+    assert result["already_absent_set_digest"] == canonical_digest([])
     assert result["error_object_set_digest"] == canonical_digest([])
 
 

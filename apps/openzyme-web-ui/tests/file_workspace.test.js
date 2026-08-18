@@ -53,6 +53,7 @@ function workspace() {
     external_jobs: [],
     external_job_results: [],
     capability_leases: [],
+    failure_observations: [],
   };
 }
 

@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openzyme.local/schemas/file-workspace-evidence-gap-registry-v1.json",
+  "title": "File workspace cutover evidence gap registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "generated_at",
+    "baseline_digest",
+    "target_changes",
+    "excluded_active_changes",
+    "change_audits",
+    "gaps"
+  ],
+  "properties": {
+    "schema_id": {"const": "file_workspace_evidence_gap_registry@1"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "baseline_digest": {"$ref": "#/$defs/digest"},
+    "target_changes": {
+      "type": "array",
+      "minItems": 14,
+      "maxItems": 14,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/changeId"}
+    },
+    "excluded_active_changes": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/changeId"}
+    },
+    "change_audits": {
+      "type": "array",
+      "minItems": 14,
+      "maxItems": 14,
+      "items": {"$ref": "#/$defs/changeAudit"}
+    },
+    "gaps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/gap"}
+    }
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "changeId": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+    "taskId": {"type": "string", "pattern": "^[0-9]+(?:\\.[0-9]+)+$"},
+    "changeAudit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["change_id", "initial_tasks_digest", "initial_completed_tasks", "total_tasks", "audit_disposition", "gap_ids"],
+      "properties": {
+        "change_id": {"$ref": "#/$defs/changeId"},
+        "initial_tasks_digest": {"$ref": "#/$defs/digest"},
+        "initial_completed_tasks": {"type": "integer", "minimum": 0},
+        "total_tasks": {"type": "integer", "minimum": 1},
+        "audit_disposition": {"enum": ["confirmed_gaps_reopened", "no_nonreceipt_gap_confirmed"]},
+        "gap_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^GAP-[A-Z0-9-]+$"}}
+      }
+    },
+    "counterevidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["location", "fact"],
+      "properties": {
+        "location": {"type": "string", "minLength": 1},
+        "fact": {"type": "string", "minLength": 1}
+      }
+    },
+    "gap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gap_id",
+        "category",
+        "severity",
+        "owning_change",
+        "owning_tasks",
+        "counterevidence",
+        "repair_tasks",
+        "required_evidence",
+        "disposition",
+        "final_evidence_digest"
+      ],
+      "properties": {
+        "gap_id": {"type": "string", "pattern": "^GAP-[A-Z0-9-]+$"},
+        "category": {"enum": ["agent_git_recovery", "workspace_publication", "handoff_cleanup", "hpc_cancellation", "scientific_finalizer_coverage", "ui_coverage", "stale_receipts", "startup_proof", "architecture_qualification"]},
+        "severity": {"enum": ["critical", "high", "medium"]},
+        "owning_change": {"$ref": "#/$defs/changeId"},
+        "owning_tasks": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/taskId"}},
+        "counterevidence": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/counterevidence"}},
+        "repair_tasks": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "required_evidence": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "disposition": {"enum": ["open", "resolved", "waived"]},
+        "final_evidence_digest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]}
+      }
+    }
+  }
+}

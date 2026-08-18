@@ -126,6 +126,7 @@ if TYPE_CHECKING:
         AgentWorkspaceGenerationReservationRepository,
     )
     from .failure_repositories import FailureObservationRepository
+    from .failure_repositories import PrivateDiagnosticRepository
     from .durable_coordination_repositories import ContinuationDeliveryRepository
     from .durable_coordination_repositories import MutationScopeRepository
     from .durable_coordination_repositories import MutationWriterRepository
@@ -6924,6 +6925,7 @@ class CoreRepositories:
     quiescence_receipts: "QuiescenceReceiptRepository"
     quiescence_snapshots: "QuiescenceSnapshotRepository"
     failure_observations: "FailureObservationRepository"
+    private_diagnostics: "PrivateDiagnosticRepository"
     scientific_attempt_authorizations: "ScientificAttemptAuthorizationRepository"
     scientific_attempt_admission_requests: "ScientificAttemptAdmissionRequestRepository"
     scientific_attempts: "ScientificAttemptRepository"
@@ -7236,6 +7238,7 @@ class CoreRepositories:
         )
         from .reliability_repositories import ControlledOperationResultHandleRepository
         from .failure_repositories import FailureObservationRepository
+        from .failure_repositories import PrivateDiagnosticRepository
         from .scientific_attempt_repositories import (
             ScientificAttemptAuthorizationRepository,
         )
@@ -7343,6 +7346,7 @@ class CoreRepositories:
             quiescence_receipts=QuiescenceReceiptRepository(connection),
             quiescence_snapshots=QuiescenceSnapshotRepository(connection),
             failure_observations=FailureObservationRepository(connection),
+            private_diagnostics=PrivateDiagnosticRepository(connection),
             scientific_attempt_authorizations=(
                 ScientificAttemptAuthorizationRepository(connection)
             ),

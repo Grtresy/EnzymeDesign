@@ -19,7 +19,7 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
 评审或修改 V3 时，使用以下规则：
 
 - Harness 应提供世界，而不是编码业务判断。
-- Control-plane 对象应保持稳定名词：`session`、`task`、`lane`、`approval`、`artifact`、`run`、`report`、`inbox`、`memory` 和 `workspace_projection`。
+- Control-plane 对象应保持稳定名词：`session`、`task`、`lane`、`approval`、`agent_workspace`、`published_revision`、`external_job`、`workspace_job_result`、`scientific_deliverable`、`report`、`inbox`、`failure_observation` 和 `workspace_projection`。
 - large file 不再引入一个 model-visible CAS/tool family。agent 只看 native Git/LFS 能力、binding policy、quota 与 publication/GC 的 typed facts；stable closure、fresh verification、workspace object links 和 physical object storage 都留在 Host repository boundary。这样保持 dispatch 能力而不增加并列文件真相或把 storage locator 暴露给模型。
 - Tool 应保持原子、可组合；避免把多步策略隐藏在 tool handler 里。
 - Scheduler / runtime 可以唤醒 agent 并执行边界约束，但不应决定业务完成状态或修复策略。
@@ -560,6 +560,20 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
 - [x] private/published sync只投影exact ref/commit/tree/LFS identity，Git策略保留给agent；C9前payload与scheduler admission硬关闭，不保留artifact-stage/fetch fallback。
 
 这些勾选只表示C8源码边界；真实target native positive/negative qualification、focused/mainline与strict OpenSpec结果仍由连续changes结束后的统一验证给出，不能从`executor_hpc_workspace_source_only_dependency_gate@1`推断production acceptance。
+
+### 3.3 File/revision closure 的当前纠偏
+
+- [ ] cancellation receipt、Host adapter 与 domain 必须消费同一个 `receipt_id`-inclusive executable
+  wire contract；任何 persisted handle/receipt replay 在返回前重新绑定当前 request/intent identity。
+- [ ] publication、agent Git recovery 与 workspace handoff cleanup 必须输出同一 diagnostic identity 关联的
+ 公开安全观察和私有完整 cause chain；不得 broad-catch 后误标 corruption、丢失 cause 或静默 cleanup。
+- [ ] fresh install bootstrap receipt 与 offline removal ledger 保持两种显式 proof kind，startup 对 digest、
+  generation、manifest 和 ledger exact closure fail closed，且在任何失败上证明 mutation 为零。
+- [ ] architecture qualification 使用 production composition、真实 repository 和 fault injection 验证 authority、
+  fencing、restart、reconciliation 与 unknown external effect；空 boundary/port registry 不能构成 acceptance。
+
+这些项由 `close-file-workspace-cutover-verification-gaps` 统一关闭。在新 source-bound receipt、clean-head
+mainline、fresh-install reset 与零残留证明完成前，十四个 predecessor change 继续保持 active。
 
 每次后续简化时：
 

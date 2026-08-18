@@ -1,4 +1,7 @@
-import { requireFileWorkspaceProjection } from "./file_workspace_state.js";
+import {
+  requireFileWorkspaceProjection,
+  requireWorkspaceChangedPathsPage,
+} from "./file_workspace_state.js";
 import { FILE_WORKSPACE_RELEASE } from "./file_workspace_release.js";
 
 const jsonHeaders = {
@@ -78,6 +81,25 @@ export class HostApiClient {
   getV3Session(sessionId, options = {}) {
     return requestJson(this.baseUrl, `/v3/sessions/${sessionId}`, options)
       .then((response) => this._requireWorkspaceResponse(response));
+  }
+
+  getV3WorkspaceChangedPathsPage(
+    sessionId,
+    workspaceId,
+    workspaceGeneration,
+    continuation,
+  ) {
+    const query = new URLSearchParams({
+      workspace_id: workspaceId,
+      continuation,
+    });
+    return requestJson(
+      this.baseUrl,
+      `/v3/sessions/${sessionId}/workspace/changed-paths?${query.toString()}`,
+    ).then((response) => requireWorkspaceChangedPathsPage(response, {
+      workspaceId,
+      workspaceGeneration,
+    }));
   }
 
   postV3Message(sessionId, payload) {

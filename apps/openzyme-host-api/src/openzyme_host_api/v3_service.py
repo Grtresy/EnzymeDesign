@@ -1311,10 +1311,7 @@ class V3HostApiService:
                     evidence_refs=(
                         f"scientific_{transition_kind}_request:{request_id}",
                     ),
-                    private_diagnostic={
-                        "failure_type": type(exc).__name__,
-                        "error_code": exc.error_code,
-                    },
+                    private_diagnostic=exc,
                 )
                 failure_events.append(
                     _event(

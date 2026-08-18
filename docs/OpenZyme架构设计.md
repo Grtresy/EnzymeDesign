@@ -73,6 +73,20 @@ workspace checkpoint 是私有可变事实。`workspace.publish` 是唯一将 ex
 - protocol handoff、task finish evidence 和 report content ref 必须引用已验证的发布路径；
 - 后续私有 workspace 变脏不影响已经发布的不可变引用。
 
+### 3.4 产品真值的 owner 与生命周期
+
+| 产品真值 | canonical owner | 生命周期与持久化 | 禁止的推断或替代 |
+| --- | --- | --- | --- |
+| agent workspace | `AgentGitWorkspace` 与 generation owner | SQLite 保存身份、状态、租约关联和安全投影；文件与完整 Git 状态位于 owner volume | lane cwd、Host checkout、另一个 agent workspace 或临时目录不能替代 |
+| published revision | `WorkspacePublicationIntent`、`ControlledOperationExecution` 与 append-only `PublishedRevision` | intent、dispatch fence、remote receipt、publication ref 和 manifest 持久化；只允许 create-once/supersedes | private ref、mutable branch、相同 bytes 或 remote scan 不能自动成为 shared truth |
+| external job/result | revision-bound execution owner、runner ledger 与 opaque handle | request、dispatch intent、handle、observation、cancel receipt、terminal result 和 deadline 持久化 | timeout、lease expiry、SSH 断开、文件存在或新 submit 不能冒充 settlement |
+| scientific deliverable | scientific attempt/selection authority 与 finalization transaction | adopted producer effect、published path、actual-byte validation、bundle 和 receipt 原子持久化 | 文件存在、digest 相同、历史 import、job success 或 report claim不能自动 adopt/close |
+| task terminal | task owner 通过显式 `task.finish` | terminal decision 与 closed typed evidence 在同一事务写入 | runtime idle、protocol delivery、publication、job/scientific terminal 不能机械完成 task |
+
+这些对象可以互相引用，但任何一个对象的成功、失败、过期或不可见都不能替另一个 owner
+做生命周期决策。projection、prompt、UI state、runner response 和离线 receipt 都只是各自权限内的
+事实载体，不是第二套 canonical state。
+
 ## 4. Runtime 与协作语义
 
 `POST /v3/sessions/{session_id}/messages` 只写入用户消息并排队 durable signal，不隐式
@@ -106,6 +120,14 @@ version 或诊断变化不能冒充业务进展。未知 effect、缺失 handle 
 provider dispatch/observation receipt、opaque backend handle、absolute deadline、result
 digest 和 fencing token 必须持久化。timeout 只说明观察窗口结束，不能推断 effect settled。
 
+所有失败必须同时形成同一 `diagnostic_id` 关联的两层证据：公开
+`failure_observation@2` 只包含稳定 `error_code`、component、operation、phase、typed identities、
+effect certainty、retry/reconcile policy、`mutation_applied`、`fallback_performed`、安全 cause chain
+和 next action；Host 私有 immutable diagnostic 保留完整 traceback、异常 `__cause__`/`__context__`、
+errno/return code、bounded stdout/stderr、私有路径/handle 和相关 source identity。跨边界包装必须
+使用 `raise ... from exc`。公开层按 allowlist 脱敏，但不得把未知原因改写为 not-found、corruption
+或 retryable，也不得吞掉 cleanup、reconcile 或 diagnostic persistence failure。
+
 ## 6. Revision-bound HPC
 
 executor 的登录数据面是 owner-scoped `ExecutorHpcWorkspace`。它可在自己的 generation
@@ -122,7 +144,10 @@ submit 权限。
 
 runner 从修订准备计算源，计算 payload 不携带 `.git`、Git/LFS credential、LFS endpoint、
 Host path 或 storage locator。公开生命周期只使用 opaque run handle。无 expected output 的
-成功仍由 terminal observation 和 result receipt 表达；不能补造空文件。
+成功仍由 terminal observation 和 result receipt 表达；不能补造空文件。cancel 必须绑定同一
+RunSpec、dispatch intent 和 opaque handle，并返回包含 `receipt_id` 的 canonical cancellation
+receipt；cancel request 与 receipt 都不能冒充 backend terminal settlement。dispatch、observe、cancel
+和 reconcile replay 在返回任何已存 handle/receipt 前都重新执行相同 identity/digest 校验。
 
 ## 7. Scientific file contract
 
@@ -158,8 +183,11 @@ executor 的专用 view 可以返回经裁剪的 workspace locator。
 
 fresh install 只加载 `001_file_workspace_final.sql`。当前 schema generation 是
 `openzyme_file_workspace_final@1`，manifest digest 由 `migration_assets.py` 固定并在启动时
-重算。空库直接初始化 final baseline；非空未知库、旧 generation、legacy structure、
-incomplete removal ledger 或 manifest drift 都在 mutation 前拒绝。
+重算。fresh install 必须生成 deterministic typed bootstrap receipt；offline removal 必须保留独立的
+完整 ledger/receipt。普通启动按 proof kind 重验 generation、manifest、receipt digest 与 fresh/offline
+closure。非空未知库、旧 generation、legacy structure、missing/tampered receipt、空缺或不完整 offline
+ledger、以及 manifest drift 都在 mutation 前拒绝，并报告 expected/observed digest 且
+`mutation_applied=false`。
 
 SQLite connection 是 thread-affine 的。request、worker 和 bounded turn 在实际线程内创建
 并关闭自己的 connection；短 canonical mutation 使用 `BEGIN IMMEDIATE`，任何 LLM、provider、

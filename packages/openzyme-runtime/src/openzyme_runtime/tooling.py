@@ -46,6 +46,9 @@ class ToolResult:
     failure_observation: dict[str, Any] | None = None
     terminal_action: str | None = None
     terminates_turn: bool = False
+    # Process-local only. This is intentionally excluded from every public envelope
+    # and exists solely so the semantic boundary can persist private diagnostics.
+    private_diagnostic: object | None = None
 
     def envelope(self) -> dict[str, Any]:
         details = dict(self.details or {})
@@ -834,10 +837,7 @@ class ToolRouter:
                 "exception_type": exc.__class__.__name__,
                 "public_error": sanitize_public_diagnostic_text(str(exc)),
             },
-            private_diagnostic={
-                "exception_type": exc.__class__.__name__,
-                "message": str(exc),
-            },
+            private_diagnostic=exc,
         )
 
     def _attach_failure_observation(

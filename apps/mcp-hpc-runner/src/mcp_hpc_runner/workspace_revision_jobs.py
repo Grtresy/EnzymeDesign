@@ -13,6 +13,16 @@ import threading
 from typing import Any
 from typing import Protocol
 
+from openzyme_domain.workspace_job_wire import parse_external_job_observation
+from openzyme_domain.workspace_job_wire import (
+    parse_workspace_job_cancellation_intent,
+)
+from openzyme_domain.workspace_job_wire import (
+    parse_workspace_job_cancellation_receipt,
+)
+from openzyme_domain.workspace_job_wire import parse_workspace_job_reconciliation
+from openzyme_domain.workspace_job_wire import parse_workspace_job_runner_handle
+
 from .config import RunnerConfig
 from .models import ExecutorWorkspaceRunSpec
 from .transport import SshTransportError
@@ -596,10 +606,20 @@ class WorkspaceRevisionJobService:
                 self._record_path("runspecs", spec.runner_run_id),
                 spec.to_dict(),
             )
-            self._write_once(intent_path, intent)
+            prior_intent = self._read_optional(intent_path)
+            if prior_intent is not None and prior_intent != intent:
+                raise WorkspaceRevisionJobError(
+                    "dispatch replay conflicts with its frozen intent"
+                )
             existing = self._read_optional(handle_path)
             if existing is not None:
-                return existing
+                return self._validate_handle_response(spec, existing)
+            if prior_intent is not None:
+                raise WorkspaceRevisionJobInDoubt(
+                    "dispatch intent is durable without a canonical handle; "
+                    "the exact dispatch must be reconciled before any replacement submit"
+                )
+            self._write_once(intent_path, intent)
         body: dict[str, object] = {
             "schema_version": "workspace_job_dispatch_private_envelope@1",
             "runspec": spec.to_dict(),
@@ -649,35 +669,27 @@ class WorkspaceRevisionJobService:
             toolchain_digest=spec.toolchain_digest,
         )
         self._require_dispatch_intent(spec)
+        handle_path = self._record_path("handles", spec.dispatch_id)
+        with self._lock:
+            existing_handle = self._read_optional(handle_path)
+            if existing_handle is not None:
+                return self._validate_handle_response(spec, existing_handle)
         response = self._invoke_wrapper(
             qualification,
             "reconcile",
             {"runspec": spec.to_dict()},
             stage="workspace_job_reconcile",
         )
-        disposition = response.get("disposition")
-        if disposition == "accepted":
-            handle = self._validate_handle_response(spec, response)
+        validated = parse_workspace_job_reconciliation(
+            response,
+            expected_handle=self._expected_handle_identity(spec),
+        )
+        if validated["disposition"] == "accepted":
+            handle = validated
             with self._lock:
                 self._write_once(self._record_path("handles", spec.dispatch_id), handle)
             return handle
-        fields = {
-            "schema_version",
-            "disposition",
-            "safe_error_code",
-            "reconciliation_receipt_digest",
-        }
-        if (
-            disposition not in {"unknown", "conflict"}
-            or set(response) != fields
-            or response["schema_version"] != "workspace_job_reconciliation@1"
-            or _DIGEST.fullmatch(
-                str(response["reconciliation_receipt_digest"])
-            )
-            is None
-        ):
-            raise WorkspaceRevisionJobError("reconcile disposition is invalid")
-        return response
+        return validated
 
     def reconcile_run(self, runner_run_id: str) -> dict[str, Any]:
         return self.reconcile(self._load_runspec(runner_run_id))
@@ -691,6 +703,19 @@ class WorkspaceRevisionJobService:
             toolchain_digest=spec.toolchain_digest,
         )
         handle = self._require_handle(spec)
+        observation_path = self._record_path(
+            "observations",
+            f"{spec.dispatch_id}-{index}",
+        )
+        with self._lock:
+            existing_observation = self._read_optional(observation_path)
+            if existing_observation is not None:
+                return self._validate_observation(
+                    spec,
+                    handle,
+                    index,
+                    existing_observation,
+                )
         response = self._invoke_wrapper(
             qualification,
             "observe",
@@ -699,10 +724,7 @@ class WorkspaceRevisionJobService:
         )
         observation = self._validate_observation(spec, handle, index, response)
         with self._lock:
-            self._write_once(
-                self._record_path("observations", f"{spec.dispatch_id}-{index}"),
-                observation,
-            )
+            self._write_once(observation_path, observation)
         return observation
 
     def observe_run(self, runner_run_id: str, *, index: int) -> dict[str, Any]:
@@ -765,41 +787,52 @@ class WorkspaceRevisionJobService:
             toolchain_digest=spec.toolchain_digest,
         )
         handle = self._require_handle(spec)
-        self._validate_cancellation(handle=handle, cancellation=cancellation)
+        cancellation = parse_workspace_job_cancellation_intent(
+            cancellation,
+            expected={
+                "execution_id": handle["execution_id"],
+                "handle_id": handle["handle_id"],
+            },
+        )
+        cancellation_id = str(cancellation["cancellation_id"])
+        intent_path = self._record_path("cancellation-intents", cancellation_id)
+        receipt_path = self._record_path("cancellations", cancellation_id)
+        with self._lock:
+            prior_intent = self._read_optional(intent_path)
+            if prior_intent is not None and prior_intent != cancellation:
+                raise WorkspaceRevisionJobError(
+                    "cancellation replay conflicts with its frozen intent"
+                )
+            existing = self._read_optional(receipt_path)
+            if existing is not None:
+                return parse_workspace_job_cancellation_receipt(
+                    existing,
+                    expected={
+                        "cancellation_id": cancellation_id,
+                        "handle_id": handle["handle_id"],
+                    },
+                )
+            if prior_intent is not None:
+                raise WorkspaceRevisionJobInDoubt(
+                    "cancellation intent is durable without a canonical receipt; "
+                    "the same handle must be reconciled before another cancel effect"
+                )
+            self._write_once(intent_path, cancellation)
         response = self._invoke_wrapper(
             qualification,
             "cancel",
             {"runspec": spec.to_dict(), "handle": handle, "cancellation": cancellation},
             stage="workspace_job_cancel",
         )
-        fields = frozenset(
-            {
-                "schema_version",
-                "cancellation_id",
-                "handle_id",
-                "cancellation_requested",
-                "terminal_settlement_proven",
-                "backend_receipt_digest",
-                "created_at",
-                "receipt_digest",
-            }
+        receipt = parse_workspace_job_cancellation_receipt(
+            response,
+            expected={
+                "cancellation_id": cancellation_id,
+                "handle_id": handle["handle_id"],
+            },
         )
-        receipt = _require_exact_object(response, fields=fields, label="cancel receipt")
-        if (
-            receipt["schema_version"] != "workspace_job_cancellation_receipt@1"
-            or receipt["cancellation_id"] != cancellation["cancellation_id"]
-            or receipt["handle_id"] != handle["handle_id"]
-            or receipt["cancellation_requested"] is not True
-            or receipt["terminal_settlement_proven"] is not False
-            or receipt["receipt_digest"]
-            != _digest({key: value for key, value in receipt.items() if key != "receipt_digest"})
-        ):
-            raise WorkspaceRevisionJobError("cancel receipt identity mismatch")
         with self._lock:
-            self._write_once(
-                self._record_path("cancellations", str(receipt["cancellation_id"])),
-                receipt,
-            )
+            self._write_once(receipt_path, receipt)
         return receipt
 
     def cancel_run(
@@ -822,39 +855,6 @@ class WorkspaceRevisionJobService:
             raise WorkspaceRevisionJobError("runner run id index crossed RunSpec identity")
         self._require_dispatch_intent(spec)
         return spec
-
-    @staticmethod
-    def _validate_cancellation(
-        *,
-        handle: dict[str, Any],
-        cancellation: dict[str, Any],
-    ) -> None:
-        fields = frozenset(
-            {
-                "schema_version",
-                "cancellation_id",
-                "execution_id",
-                "handle_id",
-                "execution_state_version",
-                "execution_fencing_token",
-                "idempotency_key",
-                "reason_digest",
-                "created_at",
-            }
-        )
-        value = _require_exact_object(
-            cancellation,
-            fields=fields,
-            label="cancellation intent",
-        )
-        if (
-            value["schema_version"] != "workspace_job_cancellation_intent@1"
-            or value["execution_id"] != handle["execution_id"]
-            or value["handle_id"] != handle["handle_id"]
-            or _IDENTIFIER.fullmatch(str(value["cancellation_id"])) is None
-            or _DIGEST.fullmatch(str(value["reason_digest"])) is None
-        ):
-            raise WorkspaceRevisionJobError("cancellation intent identity mismatch")
 
     @staticmethod
     def _require_before_deadline(absolute_deadline: str) -> None:
@@ -984,7 +984,14 @@ class WorkspaceRevisionJobService:
 
     def _require_handle(self, spec: ExecutorWorkspaceRunSpec) -> dict[str, Any]:
         self._require_dispatch_intent(spec)
-        handle = self._read_json(self._record_path("handles", spec.dispatch_id))
+        handle = self._read_optional(
+            self._record_path("handles", spec.dispatch_id)
+        )
+        if handle is None:
+            raise WorkspaceRevisionJobError(
+                "workspace job handle is not durable; observe and cancel are "
+                "forbidden until exact dispatch reconciliation succeeds"
+            )
         return self._validate_handle_response(spec, handle)
 
     @staticmethod
@@ -1043,58 +1050,27 @@ class WorkspaceRevisionJobService:
         spec: ExecutorWorkspaceRunSpec,
         response: dict[str, Any],
     ) -> dict[str, Any]:
-        fields = frozenset(
-            {
-                "schema_version",
-                "disposition",
-                "handle_id",
-                "execution_id",
-                "operation_id",
-                "dispatch_id",
-                "runner_run_id",
-                "job_root_token",
-                "target_profile_digest",
-                "workspace_id",
-                "remote_workspace_generation",
-                "source_commit",
-                "source_manifest_digest",
-                "backend",
-                "raw_handle_ciphertext",
-                "acceptance_receipt_digest",
-                "accepted_at",
-                "credential_consumed_at",
-                "credential_consumption_receipt_digest",
-                "handle_digest",
-            }
+        return parse_workspace_job_runner_handle(
+            response,
+            expected=WorkspaceRevisionJobService._expected_handle_identity(spec),
         )
-        handle = _require_exact_object(response, fields=fields, label="external handle")
-        if (
-            handle["schema_version"] != "workspace_job_runner_handle@1"
-            or handle["disposition"] != "accepted"
-            or handle["execution_id"] != spec.execution_id
-            or handle["operation_id"] != spec.operation_id
-            or handle["dispatch_id"] != spec.dispatch_id
-            or handle["runner_run_id"] != spec.runner_run_id
-            or handle["target_profile_digest"] != spec.target_profile_digest
-            or handle["workspace_id"] != spec.executor_hpc_workspace_id
-            or handle["remote_workspace_generation"]
-            != spec.executor_hpc_workspace_generation
-            or handle["source_commit"] != spec.source_commit
-            or handle["source_manifest_digest"] != spec.source_manifest_digest
-            or handle["backend"]
-            != ("slurm" if spec.selected_mode == "sbatch" else "direct")
-            or handle["handle_digest"]
-            != _digest({key: value for key, value in handle.items() if key != "handle_digest"})
-        ):
-            raise WorkspaceRevisionJobError("external handle identity mismatch")
-        if spec.selected_mode == "sbatch" and (
-            handle["credential_consumed_at"] is None
-            or handle["credential_consumption_receipt_digest"] is None
-        ):
-            raise WorkspaceRevisionJobError(
-                "Slurm handle lacks atomic credential consumption proof"
-            )
-        return handle
+
+    @staticmethod
+    def _expected_handle_identity(
+        spec: ExecutorWorkspaceRunSpec,
+    ) -> dict[str, object]:
+        return {
+            "execution_id": spec.execution_id,
+            "operation_id": spec.operation_id,
+            "dispatch_id": spec.dispatch_id,
+            "runner_run_id": spec.runner_run_id,
+            "target_profile_digest": spec.target_profile_digest,
+            "workspace_id": spec.executor_hpc_workspace_id,
+            "remote_workspace_generation": spec.executor_hpc_workspace_generation,
+            "source_commit": spec.source_commit,
+            "source_manifest_digest": spec.source_manifest_digest,
+            "backend": "slurm" if spec.selected_mode == "sbatch" else "direct",
+        }
 
     @staticmethod
     def _validate_observation(
@@ -1103,45 +1079,16 @@ class WorkspaceRevisionJobService:
         index: int,
         response: dict[str, Any],
     ) -> dict[str, Any]:
-        fields = frozenset(
-            {
-                "schema_version",
-                "observation_id",
-                "handle_id",
-                "execution_id",
-                "dispatch_id",
-                "observation_index",
-                "state",
-                "exit_code",
-                "terminal_receipt_digest",
-                "bounded_stdout",
-                "bounded_stderr",
-                "observed_at",
-                "observation_digest",
-            }
+        return parse_external_job_observation(
+            response,
+            expected={
+                "observation_id": f"job_observation_{handle['handle_id']}_{index}",
+                "handle_id": handle["handle_id"],
+                "execution_id": spec.execution_id,
+                "dispatch_id": spec.dispatch_id,
+                "observation_index": index,
+            },
         )
-        observation = _require_exact_object(response, fields=fields, label="job observation")
-        terminal = observation["state"] in {"succeeded", "failed", "cancelled"}
-        if (
-            observation["schema_version"] != "external_job_observation@1"
-            or observation["observation_id"]
-            != f"job_observation_{handle['handle_id']}_{index}"
-            or observation["handle_id"] != handle["handle_id"]
-            or observation["execution_id"] != spec.execution_id
-            or observation["dispatch_id"] != spec.dispatch_id
-            or observation["observation_index"] != index
-            or terminal != (observation["terminal_receipt_digest"] is not None)
-            or observation["observation_digest"]
-            != _digest(
-                {
-                    key: value
-                    for key, value in observation.items()
-                    if key != "observation_digest"
-                }
-            )
-        ):
-            raise WorkspaceRevisionJobError("external observation identity mismatch")
-        return observation
 
     @staticmethod
     def _parse_receipt(raw: str, *, label: str) -> dict[str, Any]:

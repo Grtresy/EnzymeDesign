@@ -44,9 +44,9 @@ The exact top-level fields are:
 | `required_scenario_ids` | Exact set of scenario records in this document. |
 | `implementation_files` | Readable, non-symlink, repository-relative files bound into implementation identity. |
 | `owner_constraint_registry` | Exact path/schema/id/content-digest binding for the closed owner/constraint registry. |
-| `external_ports` | Sorted closed port declarations. |
+| `external_ports` | Non-empty sorted closed port declarations. |
 | `p0_triggers` | Exact schema-v1 automatic P0 trigger declarations. |
-| `boundary_relations` | Symbolic owner and seam relations; never numeric duplicate truth. |
+| `boundary_relations` | Non-empty symbolic owner and seam relations; never numeric duplicate truth. |
 | `invariants` | Sorted closed invariant records. |
 | `scenarios` | Sorted closed scenario records. |
 
@@ -123,3 +123,16 @@ scenario; every scenario is referenced by at least one same-family invariant; ev
 referenced port, boundary, trigger, profile, contract, source, and implementation
 file exists in the same closed registry. Pytest collection closure adds the further
 requirement that every stable scenario id is collected and executed exactly once.
+
+The current cutover closure additionally requires these source-bound scenario ids;
+renaming or omitting one invalidates the registry before execution:
+
+- `reconciliation.workspace-job-response-loss`;
+- `world-fidelity.diagnostic-publication-cleanup`;
+- `evidence-projection.fresh-offline-deployment-proof`;
+- `identity-semantics.scientific-file-finalization`;
+- `operator-retirement.web-ui-file-workspace`.
+
+An empty external-port or boundary-relation set is not a valid declaration of
+absence. The profile must state the process seam and the scale relationships it
+actually exercises so that a missing declaration cannot silently widen a claim.

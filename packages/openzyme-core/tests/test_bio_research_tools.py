@@ -5,6 +5,8 @@ import hashlib
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from openzyme_core import AgentCapsuleProcessResult
 from openzyme_core import CoreRepositories
 from openzyme_core import MemoryEventBus
@@ -13,6 +15,7 @@ from openzyme_core import SessionRuntimeContext
 from openzyme_core import SessionRuntimeSnapshot
 from openzyme_core import ToolInvocation
 from openzyme_core import ToolRegistry
+from openzyme_core import WorkspaceFileHandoffError
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
 from openzyme_core import register_bio_research_tools
@@ -77,7 +80,11 @@ class _WorkspaceProcessRunner:
             )
         if "rm -f" in script:
             self.temporary.pop(argv[-1], None)
-            return AgentCapsuleProcessResult(0, "", "")
+            return AgentCapsuleProcessResult(
+                0,
+                f"OPENZYME_CLEANUP_PATH={argv[-1]}\n",
+                "",
+            )
         raise AssertionError("unexpected capsule writer command")
 
 
@@ -87,6 +94,55 @@ class _FailingWorkspaceProcessRunner(_WorkspaceProcessRunner):
         if "encoded_chunk" in argv[4]:
             raise RuntimeError("injected capsule failure")
         return super().run(**kwargs)
+
+
+class _ScriptedWorkspaceProcessRunner(_WorkspaceProcessRunner):
+    def __init__(
+        self,
+        *,
+        primary_phase: str | None = None,
+        primary_kind: str = "exception",
+        cleanup_kind: str | None = None,
+        preserve_post_effect_residue: bool = False,
+    ) -> None:
+        super().__init__()
+        self.primary_phase = primary_phase
+        self.primary_kind = primary_kind
+        self.cleanup_kind = cleanup_kind
+        self.preserve_post_effect_residue = preserve_post_effect_residue
+
+    @staticmethod
+    def _phase(script: str) -> str:
+        if "noclobber" in script:
+            return "initialize"
+        if "encoded_chunk" in script:
+            return "append"
+        if "OPENZYME_PATH" in script:
+            return "finalize"
+        if "rm -f" in script:
+            return "cleanup"
+        raise AssertionError("unexpected capsule writer command")
+
+    def run(self, **kwargs) -> AgentCapsuleProcessResult:
+        argv = kwargs["argv"]
+        phase = self._phase(argv[4])
+        if phase == self.primary_phase:
+            if self.primary_kind == "exception":
+                raise RuntimeError(f"injected {phase} exception")
+            return AgentCapsuleProcessResult(
+                73,
+                f"{phase}-stdout",
+                f"{phase}-stderr",
+            )
+        if phase == "cleanup" and self.cleanup_kind is not None:
+            if self.cleanup_kind == "exception":
+                raise OSError("injected cleanup exception")
+            return AgentCapsuleProcessResult(74, "cleanup-stdout", "cleanup-stderr")
+        result = super().run(**kwargs)
+        if phase == "finalize" and self.preserve_post_effect_residue:
+            temporary_path = argv[-2]
+            self.temporary[temporary_path] = bytearray(b"residue")
+        return result
 
 
 def _build_repositories() -> CoreRepositories:
@@ -287,6 +343,11 @@ def test_workspace_file_writer_chunks_large_content_and_publishes_no_alias() -> 
     )
     assert written.commit_performed is False
     assert written.publication_performed is False
+    assert written.cleanup_result is not None
+    assert written.cleanup_result.completed is True
+    assert written.cleanup_result.temporary_path.startswith(
+        "research/large/.openzyme-write-"
+    )
 
 
 def test_workspace_write_failure_cleans_temporary_and_fails_invocation() -> None:
@@ -311,7 +372,139 @@ def test_workspace_write_failure_cleans_temporary_and_fails_invocation() -> None
     )[0]
     assert result.ok is False
     assert result.error_code == "workspace_file_handoff_failed"
+    assert result.failure_observation is not None
+    assert result.failure_observation["component"] == (
+        "openzyme_core.workspace_file_handoffs"
+    )
+    assert result.failure_observation["operation"] == "append"
+    assert result.failure_observation["effect_certainty"] == "no_effect"
+    assert result.failure_observation["mutation_applied"] is False
+    assert result.failure_observation["fallback_performed"] is False
+    assert result.failure_observation["cause_chain"][0]["type"] == (
+        "WorkspaceFileHandoffError"
+    )
+    private = repositories.private_diagnostics.get_for_operator(
+        result.failure_observation["diagnostic_id"],
+        operator_authorized=True,
+    )
+    assert private is not None
+    assert private.private_context["phase"] == "append"
+    assert private.private_context["cleanup"]["completed"] is True
+    assert [
+        item["role"] for item in private.private_context["ordered_failures"]
+    ] == ["primary"]
     assert invocation.status is EngineInvocationStatus.FAILED
     assert invocation.output_ref is None
     assert runner.temporary == {}
     assert runner.files == {}
+
+
+@pytest.mark.parametrize("phase", ["initialize", "append", "finalize"])
+@pytest.mark.parametrize("failure_kind", ["exception", "nonzero"])
+def test_workspace_write_phase_failure_has_diagnostic_cleanup_result(
+    phase: str,
+    failure_kind: str,
+) -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    context, _ = _context(repositories, session)
+    runner = _ScriptedWorkspaceProcessRunner(
+        primary_phase=phase,
+        primary_kind=failure_kind,
+    )
+    context.agent_capsule_process_runner = runner
+
+    with pytest.raises(WorkspaceFileHandoffError) as caught:
+        write_bytes_to_current_agent_workspace(
+            context,
+            repository_path="research/result.bin",
+            content=b"bounded-result",
+        )
+
+    error = caught.value
+    assert error.phase == phase
+    assert error.error_code == "workspace_file_handoff_failed"
+    assert error.mutation_applied is False
+    assert error.fallback_performed is False
+    assert error.cleanup_result is not None
+    assert error.cleanup_result.completed is True
+    assert error.temporary_path == error.cleanup_result.temporary_path
+    assert error.diagnostic_context["ordered_failures"] == [
+        {
+            "order": 1,
+            "role": "primary",
+            "type": error.primary_failure.__class__.__qualname__,
+            "message": str(error.primary_failure),
+            "error_code": getattr(error.primary_failure, "error_code", None),
+        }
+    ]
+    assert caught.value.__cause__ is error.primary_failure
+    assert runner.temporary == {}
+    assert runner.files == {}
+
+
+@pytest.mark.parametrize("cleanup_kind", ["exception", "nonzero"])
+def test_workspace_write_orders_primary_then_cleanup_failure(
+    cleanup_kind: str,
+) -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    context, _ = _context(repositories, session)
+    runner = _ScriptedWorkspaceProcessRunner(
+        primary_phase="append",
+        primary_kind="exception",
+        cleanup_kind=cleanup_kind,
+    )
+    context.agent_capsule_process_runner = runner
+
+    with pytest.raises(WorkspaceFileHandoffError) as caught:
+        write_bytes_to_current_agent_workspace(
+            context,
+            repository_path="research/result.bin",
+            content=b"bounded-result",
+        )
+
+    error = caught.value
+    assert error.error_code == "workspace_file_cleanup_incomplete"
+    assert error.cleanup_result is not None
+    assert error.cleanup_result.completed is False
+    assert error.cleanup_result.failure_kind == (
+        "exception" if cleanup_kind == "exception" else "nonzero_exit"
+    )
+    ordered = error.diagnostic_context["ordered_failures"]
+    assert [item["role"] for item in ordered] == ["primary", "cleanup"]
+    assert [item["order"] for item in ordered] == [1, 2]
+    assert error.temporary_path in runner.temporary
+    assert error.temporary_path in str(error)
+
+
+@pytest.mark.parametrize("cleanup_kind", ["exception", "nonzero"])
+def test_workspace_write_reports_successful_effect_with_cleanup_residue(
+    cleanup_kind: str,
+) -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    context, _ = _context(repositories, session)
+    runner = _ScriptedWorkspaceProcessRunner(
+        cleanup_kind=cleanup_kind,
+        preserve_post_effect_residue=True,
+    )
+    context.agent_capsule_process_runner = runner
+
+    with pytest.raises(WorkspaceFileHandoffError) as caught:
+        write_bytes_to_current_agent_workspace(
+            context,
+            repository_path="research/result.bin",
+            content=b"bounded-result",
+        )
+
+    error = caught.value
+    assert error.error_code == "workspace_file_cleanup_incomplete"
+    assert error.phase == "post_effect_cleanup"
+    assert error.mutation_applied is True
+    assert error.fallback_performed is False
+    assert error.cleanup_result is not None
+    assert error.cleanup_result.completed is False
+    assert error.temporary_path == error.cleanup_result.temporary_path
+    assert runner.files["research/result.bin"] == b"bounded-result"
+    assert runner.temporary[error.temporary_path] == bytearray(b"residue")

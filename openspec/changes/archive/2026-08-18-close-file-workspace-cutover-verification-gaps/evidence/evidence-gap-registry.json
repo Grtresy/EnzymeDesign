@@ -1,0 +1,181 @@
+{
+  "schema_id": "file_workspace_evidence_gap_registry@1",
+  "generated_at": "2026-08-18T10:31:13+08:00",
+  "baseline_digest": "sha256:4fb55c322e0faa6f65b38fce1400116695c4ebac70814727d964b7c1c656e98e",
+  "target_changes": [
+    "supersede-aox-hmm-artifact-cutover",
+    "provision-independent-agent-git-workspaces",
+    "publish-and-sync-workspace-revisions",
+    "support-git-lfs-work-products",
+    "migrate-research-report-and-task-handoffs-to-files",
+    "provision-isolated-executor-hpc-workspaces",
+    "execute-hpc-jobs-from-workspace-revisions",
+    "migrate-scientific-deliverables-to-files",
+    "replace-sandbox-artifact-boundaries-with-files",
+    "establish-project-repository-bindings",
+    "establish-agent-capability-leases",
+    "cut-over-workspace-public-interfaces",
+    "migrate-historical-artifacts-to-git-lfs",
+    "remove-artifact-control-plane-and-storage"
+  ],
+  "excluded_active_changes": [
+    "establish-v3-executable-architecture-qualification",
+    "harden-compaction-authority-and-runtime-recovery"
+  ],
+  "change_audits": [
+    {"change_id": "supersede-aox-hmm-artifact-cutover", "initial_tasks_digest": "sha256:d26def5f37d2cdc535519abc62e9b83547056a8f4ddd0845208c83e3858794e3", "initial_completed_tasks": 21, "total_tasks": 21, "audit_disposition": "no_nonreceipt_gap_confirmed", "gap_ids": ["GAP-RECEIPT-001"]},
+    {"change_id": "provision-independent-agent-git-workspaces", "initial_tasks_digest": "sha256:33140f23e9bc0f72c1e8a118263f342985fcb05edee9a52a6c2f722c7aff8eb9", "initial_completed_tasks": 45, "total_tasks": 45, "audit_disposition": "confirmed_gaps_reopened", "gap_ids": ["GAP-AGW-001", "GAP-RECEIPT-001"]},
+    {"change_id": "publish-and-sync-workspace-revisions", "initial_tasks_digest": "sha256:68c58550a5e2135fe2b3f563b58cd7d33191a47c82c398dd7a33e62683e60741", "initial_completed_tasks": 42, "total_tasks": 42, "audit_disposition": "confirmed_gaps_reopened", "gap_ids": ["GAP-PUB-001", "GAP-RECEIPT-001"]},
+    {"change_id": "support-git-lfs-work-products", "initial_tasks_digest": "sha256:f723511f40226beeab942a30ec3c78ae4bce61472227c56fe579fc93790e8793", "initial_completed_tasks": 27, "total_tasks": 27, "audit_disposition": "no_nonreceipt_gap_confirmed", "gap_ids": ["GAP-RECEIPT-001"]},
+    {"change_id": "migrate-research-report-and-task-handoffs-to-files", "initial_tasks_digest": "sha256:30f25f10864d6f6af39e49eec5d701536e83fb21a4e285761268849060b2698a", "initial_completed_tasks": 29, "total_tasks": 29, "audit_disposition": "confirmed_gaps_reopened", "gap_ids": ["GAP-HANDOFF-001", "GAP-RECEIPT-001"]},
+    {"change_id": "provision-isolated-executor-hpc-workspaces", "initial_tasks_digest": "sha256:502c5ff56835f332fa051791f0dfcf5a1728ae59c0a41f26aa8747e4033efd83", "initial_completed_tasks": 34, "total_tasks": 34, "audit_disposition": "no_nonreceipt_gap_confirmed", "gap_ids": ["GAP-RECEIPT-001"]},
+    {"change_id": "execute-hpc-jobs-from-workspace-revisions", "initial_tasks_digest": "sha256:852729fefe4b817cc7a7d605d022d7ad328ac305b9e52b90731f8c3b68dd70d8", "initial_completed_tasks": 45, "total_tasks": 45, "audit_disposition": "confirmed_gaps_reopened", "gap_ids": ["GAP-HPC-001", "GAP-RECEIPT-001"]},
+    {"change_id": "migrate-scientific-deliverables-to-files", "initial_tasks_digest": "sha256:c5e4e71d96bfc1c19a4755eb111a86639c7b68de6bb86cc8d2bbfa62b0a7e607", "initial_completed_tasks": 37, "total_tasks": 37, "audit_disposition": "confirmed_gaps_reopened", "gap_ids": ["GAP-SCI-001", "GAP-RECEIPT-001"]},
+    {"change_id": "replace-sandbox-artifact-boundaries-with-files", "initial_tasks_digest": "sha256:950bd2ec0b9dcc04a48f703f9c307379c33e6e3da7444d664a822a1aba29be7a", "initial_completed_tasks": 37, "total_tasks": 37, "audit_disposition": "no_nonreceipt_gap_confirmed", "gap_ids": ["GAP-RECEIPT-001"]},
+    {"change_id": "establish-project-repository-bindings", "initial_tasks_digest": "sha256:b98eb3350625fd05e78771fa8a93ca9d49ba0531a9b2747b5ff3242d96919d21", "initial_completed_tasks": 40, "total_tasks": 40, "audit_disposition": "no_nonreceipt_gap_confirmed", "gap_ids": ["GAP-RECEIPT-001"]},
+    {"change_id": "establish-agent-capability-leases", "initial_tasks_digest": "sha256:e4ebf06f1aa6cbf40c649273e09be02f757f3486aa92f11dd15374c984b650d1", "initial_completed_tasks": 37, "total_tasks": 37, "audit_disposition": "no_nonreceipt_gap_confirmed", "gap_ids": ["GAP-RECEIPT-001"]},
+    {"change_id": "cut-over-workspace-public-interfaces", "initial_tasks_digest": "sha256:4b7a406296593206edd2822b443099fb0ba9048c24db1157fc0d2f761706bd57", "initial_completed_tasks": 42, "total_tasks": 42, "audit_disposition": "confirmed_gaps_reopened", "gap_ids": ["GAP-UI-001", "GAP-RECEIPT-001"]},
+    {"change_id": "migrate-historical-artifacts-to-git-lfs", "initial_tasks_digest": "sha256:808b051aeb8ebd8edb23b32297fc1511441b75bc1ecf097c0031f3a337ad7c70", "initial_completed_tasks": 42, "total_tasks": 42, "audit_disposition": "no_nonreceipt_gap_confirmed", "gap_ids": ["GAP-RECEIPT-001"]},
+    {"change_id": "remove-artifact-control-plane-and-storage", "initial_tasks_digest": "sha256:c3c6e0ba6cc038ec56eeb98c8e558782f66ad9628fd1a3fc94fc81a2b5f49956", "initial_completed_tasks": 51, "total_tasks": 51, "audit_disposition": "confirmed_gaps_reopened", "gap_ids": ["GAP-STARTUP-001", "GAP-UI-001", "GAP-SCI-001", "GAP-RECEIPT-001"]}
+  ],
+  "gaps": [
+    {
+      "gap_id": "GAP-AGW-001",
+      "category": "agent_git_recovery",
+      "severity": "high",
+      "owning_change": "provision-independent-agent-git-workspaces",
+      "owning_tasks": ["6.1", "6.4", "7.6"],
+      "counterevidence": [
+        {"location": "packages/openzyme-core/src/openzyme_core/agent_git_workspace_recovery.py:149-156", "fact": "Any observation-provider exception is caught broadly and relabeled as CORRUPT_GIT_DIRECTORY, even when corruption was not observed; the original cause is reduced to str(exc)."}
+      ],
+      "repair_tasks": ["5.1", "5.2", "5.5"],
+      "required_evidence": ["Typed observation failure distinct from verified Git corruption", "Private cause chain and public diagnostic_id", "Regression tests for provider failure, unreadable HEAD, corrupt Git directory, and mutation_applied=false"],
+      "disposition": "open",
+      "final_evidence_digest": null
+    },
+    {
+      "gap_id": "GAP-PUB-001",
+      "category": "workspace_publication",
+      "severity": "high",
+      "owning_change": "publish-and-sync-workspace-revisions",
+      "owning_tasks": ["4.5", "4.8", "7.6"],
+      "counterevidence": [
+        {"location": "packages/openzyme-core/src/openzyme_core/workspace_publications.py:459-477", "fact": "Reconciliation catches every read failure without recording the cause and converts it to generic reconcile-required state."},
+        {"location": "packages/openzyme-core/src/openzyme_core/workspace_publications.py:620-628", "fact": "Dispatch catches every remote route exception without preserving the causal chain or distinguishing deterministic local errors from uncertain remote effects."}
+      ],
+      "repair_tasks": ["5.3", "5.4", "5.5"],
+      "required_evidence": ["Typed pre-effect versus possible-effect failure mapping", "Same diagnostic identity across durable state and raised boundary error", "Response-loss and hostile-exception regression tests with no replacement dispatch"],
+      "disposition": "open",
+      "final_evidence_digest": null
+    },
+    {
+      "gap_id": "GAP-HANDOFF-001",
+      "category": "handoff_cleanup",
+      "severity": "high",
+      "owning_change": "migrate-research-report-and-task-handoffs-to-files",
+      "owning_tasks": ["7.1", "7.4"],
+      "counterevidence": [
+        {"location": "packages/openzyme-core/src/openzyme_core/workspace_file_handoffs.py:175-192", "fact": "Temporary-file cleanup catches every exception and returns silently; it also ignores a nonzero cleanup return code."}
+      ],
+      "repair_tasks": ["5.6", "5.7", "5.8"],
+      "required_evidence": ["Cleanup outcome is recorded and linked to the primary failure", "Cleanup failure never masks the primary exception", "Exception and nonzero-return cleanup tests with residual-path diagnosis"],
+      "disposition": "open",
+      "final_evidence_digest": null
+    },
+    {
+      "gap_id": "GAP-HPC-001",
+      "category": "hpc_cancellation",
+      "severity": "critical",
+      "owning_change": "execute-hpc-jobs-from-workspace-revisions",
+      "owning_tasks": ["4.5", "6.6", "8.1", "8.4"],
+      "counterevidence": [
+        {"location": "apps/mcp-hpc-runner/src/mcp_hpc_runner/workspace_revision_jobs.py:775-797", "fact": "Runner cancellation accepts an exact field set that omits receipt_id and hashes that reduced object."},
+        {"location": "apps/openzyme-host-api/src/openzyme_host_api/workspace_revision_execution.py:501-522", "fact": "Host construction requires response.receipt_id."},
+        {"location": "packages/openzyme-domain/src/openzyme_domain/workspace_revision_executions.py:1047-1068", "fact": "Domain cancellation receipt requires receipt_id and includes it in identity validation."},
+        {"location": "apps/mcp-hpc-runner/src/mcp_hpc_runner/workspace_revision_jobs.py:594-602", "fact": "Dispatch replay returns a stored handle without revalidating it against the current RunSpec and dispatch intent."},
+        {"location": "apps/mcp-hpc-runner/tests and apps/openzyme-host-api/tests", "fact": "No direct workspace revision job cancellation contract test covers receipt_id, digest, replay, restart, or tamper."}
+      ],
+      "repair_tasks": ["3.1", "3.2", "3.3", "3.5", "3.6", "3.7", "3.8", "6.1", "6.2", "6.3", "6.4", "6.5"],
+      "required_evidence": ["One canonical cancellation receipt parser/serializer shared by runner, Host, and domain", "Exact receipt_id-inclusive digest round trip", "Dispatch/observe/cancel/reconcile replay validation before backend action", "Tamper, restart, response-loss, and cross-run identity tests"],
+      "disposition": "open",
+      "final_evidence_digest": null
+    },
+    {
+      "gap_id": "GAP-SCI-001",
+      "category": "scientific_finalizer_coverage",
+      "severity": "high",
+      "owning_change": "migrate-scientific-deliverables-to-files",
+      "owning_tasks": ["7.4", "8.1", "8.2", "8.5"],
+      "counterevidence": [
+        {"location": "packages/openzyme-core/tests, apps/openzyme-host-api/tests, packages/openzyme-pipeline/tests", "fact": "No current test directly imports or exercises ScientificFileEffectAdoptionService, ScientificDeliverableFinalizationService, or AoxFileBundleFinalizer."},
+        {"location": "openspec/changes/migrate-scientific-deliverables-to-files/tasks.md:59-60", "fact": "The checked task names test_scientific_attempts.py and three AOX Host test files that do not exist at current HEAD."}
+      ],
+      "repair_tasks": ["7.1", "7.2", "7.3", "7.4", "7.5"],
+      "required_evidence": ["Direct adoption and finalization service tests", "Exact 17-role AOX finalizer tests", "Fence, authority, replay, drift, rollback, task non-terminality, and historical non-adoption negatives"],
+      "disposition": "open",
+      "final_evidence_digest": null
+    },
+    {
+      "gap_id": "GAP-UI-001",
+      "category": "ui_coverage",
+      "severity": "high",
+      "owning_change": "cut-over-workspace-public-interfaces",
+      "owning_tasks": ["8.1", "8.3", "8.6"],
+      "counterevidence": [
+        {"location": "apps/openzyme-web-ui/tests", "fact": "Only client.test.js and file_workspace.test.js exist; the checked state.test.js, view.test.js, and controller.test.js suites are absent."},
+        {"location": "packages/openzyme-core/tests", "fact": "The checked packages/openzyme-core/tests/test_projections.py suite is absent."}
+      ],
+      "repair_tasks": ["7.6", "7.7", "7.8", "7.9"],
+      "required_evidence": ["Real state, view, client, and controller tests", "Schema mismatch blocking, owner-only locator visibility, redaction, unknown-effect rendering, and no fallback", "UI build on final source"],
+      "disposition": "open",
+      "final_evidence_digest": null
+    },
+    {
+      "gap_id": "GAP-RECEIPT-001",
+      "category": "stale_receipts",
+      "severity": "critical",
+      "owning_change": "close-file-workspace-cutover-verification-gaps",
+      "owning_tasks": ["1.4", "10.1", "10.2", "10.3", "10.4", "10.5"],
+      "counterevidence": [
+        {"location": "/home/grtresy/.local/state/openzyme/backups/file-workspace-cutover-20260817T154103Z/release-bundle-c13.json", "fact": "The 13-change bundle binds source_revision 64df75fddf2746d0442697f6f5903defbfdcf87c and source_identity_digest sha256:3f1755..., not current HEAD b841ba01eaa0cd2dc32f8a54dc0adbaae25cdfdf and not the future remediated clean source."},
+        {"location": "/home/grtresy/.local/state/openzyme/backups/file-workspace-cutover-20260817T154103Z/release-receipts-c13", "fact": "All 13 per-change receipts are transitively bound into the old bundle and cannot prove the remediated implementation."},
+        {"location": "/home/grtresy/.local/state/openzyme/backups/file-workspace-cutover-20260817T154103Z/legacy-subsystem-removal-receipt.json", "fact": "The old removal receipt proves an earlier device operation only and cannot serve as the deterministic fresh-install bootstrap receipt requested for the rebuilt device."}
+      ],
+      "repair_tasks": ["10.1", "10.2", "10.3", "10.4", "10.5"],
+      "required_evidence": ["Final clean source identity", "Fresh source-bound per-change evidence map", "New release bundle and final closure receipt", "Old receipt tree marked superseded without overwrite or forgery"],
+      "disposition": "open",
+      "final_evidence_digest": null
+    },
+    {
+      "gap_id": "GAP-STARTUP-001",
+      "category": "startup_proof",
+      "severity": "critical",
+      "owning_change": "remove-artifact-control-plane-and-storage",
+      "owning_tasks": ["7.1", "7.2", "8.1", "8.3", "9.1", "9.2", "9.5"],
+      "counterevidence": [
+        {"location": "packages/openzyme-core/src/openzyme_core/migration_assets.py:85-130", "fact": "Startup verifies schema generation, state, and manifest only; it does not verify deployment_schema_state.removal_receipt_digest or close the legacy_removal_ledger."},
+        {"location": "packages/openzyme-core/src/openzyme_core/migrations/001_file_workspace_final.sql:3305-3311", "fact": "The final schema stores removal_receipt_digest and a detailed legacy removal ledger, but current startup does not consume either proof."},
+        {"location": "openspec/changes/remove-artifact-control-plane-and-storage/tasks.md:76-77", "fact": "Checked acceptance tasks reference deleted test_projections.py and four UI suites although only two current UI suites exist."}
+      ],
+      "repair_tasks": ["9.1", "9.2", "9.3", "9.4", "9.5", "9.6", "9.7", "9.8"],
+      "required_evidence": ["Typed fresh bootstrap receipt verification", "Exact offline ledger closure verification", "Tampered receipt digest and empty/incomplete ledger rejection before mutation", "Restart and old-generation failure diagnostics with mutation_applied=false"],
+      "disposition": "open",
+      "final_evidence_digest": null
+    },
+    {
+      "gap_id": "GAP-ARCHQUAL-001",
+      "category": "architecture_qualification",
+      "severity": "high",
+      "owning_change": "close-file-workspace-cutover-verification-gaps",
+      "owning_tasks": ["8.1", "8.2", "8.3", "8.4", "8.5", "8.6", "8.7", "8.8"],
+      "counterevidence": [
+        {"location": "docs/v3/architecture-qualification/invariant-registry.json", "fact": "The current registry has empty boundary_relations and external_ports, so it does not machine-bind the claimed production composition and external-effect boundaries."},
+        {"location": "packages/openzyme-core/tests/test_architecture_qualification.py", "fact": "The current architecture qualification is a shallow scenario set and does not prove production composition, authority, fencing, restart, reconciliation, or uncertain external effects end to end."}
+      ],
+      "repair_tasks": ["8.1", "8.2", "8.3", "8.4", "8.5", "8.6", "8.7", "8.8"],
+      "required_evidence": ["Nonempty source-linked boundary relations and external ports", "Production composition scenarios with real repositories and fault injection", "Authority, fencing, restart, reconciliation, uncertain-effect, and zero-fallback proof"],
+      "disposition": "open",
+      "final_evidence_digest": null
+    }
+  ]
+}

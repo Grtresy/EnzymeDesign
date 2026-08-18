@@ -23,6 +23,9 @@ from openzyme_core import CapsuleCommandResult
 from openzyme_core import AgentGitWorkspaceProvisioner
 from openzyme_core import AgentGitWorkspaceProvisioningError
 from openzyme_core import AgentGitWorkspaceGenerationService
+from openzyme_core import AgentGitWorkspaceCorruptionError
+from openzyme_core import AgentGitWorkspaceInfrastructureError
+from openzyme_core import AgentGitWorkspacePermissionError
 from openzyme_core import AgentGitWorkspaceRecoveryError
 from openzyme_core import AgentGitWorkspaceRecoveryService
 from openzyme_core import AgentWorkspaceCloneResult
@@ -1113,10 +1116,14 @@ class _CheckpointGitReader:
         self.dispatch_count = 0
         self.dispatch_error: Exception | None = None
         self.create_before_error = False
+        self.read_error: Exception | None = None
+        self.dispatch_observed_commit: str | None = None
 
     def read_exact_ref(self, binding, *, ref_name):
         assert binding == self.binding
         self.read_count += 1
+        if self.read_error is not None:
+            raise self.read_error
         return self.refs.get(ref_name)
 
     def list_refs(self, binding, *, prefix):
@@ -1178,6 +1185,8 @@ class _CheckpointGitReader:
             self.refs[ref_name] = commit
         if self.dispatch_error is not None:
             raise self.dispatch_error
+        if self.dispatch_observed_commit is not None:
+            return self.dispatch_observed_commit
         if ref_name in self.refs:
             raise RuntimeError("create-only publication ref already exists")
         self.refs[ref_name] = commit
@@ -1560,6 +1569,22 @@ def test_publication_response_loss_reconciles_same_ref_without_redispatch(
     assert recovered.revision is not None
     assert recovered.revision.publication_id == uncertain.intent.publication_id
     assert route.dispatch_count == 1
+    failures = repositories.failure_observations.list_by_source(
+        session_id=workspace.session_id,
+        source_kind="workspace_publication",
+        source_ref=uncertain.intent.intent_id,
+    )
+    assert len(failures) == 1
+    assert failures[0].phase == "remote_dispatch"
+    assert failures[0].effect_certainty is ExternalEffectCertainty.DISPATCH_IN_DOUBT
+    assert failures[0].mutation_applied is True
+    assert failures[0].fallback_performed is False
+    private = repositories.private_diagnostics.get_for_operator(
+        failures[0].diagnostic_id,
+        operator_authorized=True,
+    )
+    assert private is not None
+    assert private.exception_message == "response lost"
 
 
 def test_unproven_publication_effect_stays_in_doubt_and_never_retries(
@@ -1585,6 +1610,75 @@ def test_unproven_publication_effect_stays_in_doubt_and_never_retries(
         ExternalEffectCertainty.DISPATCH_IN_DOUBT
     )
     assert route.dispatch_count == 1
+
+
+def test_publication_reconcile_read_failure_preserves_prior_effect_and_new_cause(
+    tmp_path,
+) -> None:
+    repositories, workspace, route, command = _publication_environment(tmp_path)
+    route.dispatch_error = RuntimeError("dispatch response unavailable")
+    service = WorkspacePublicationService(repositories, route, route)
+    first = service.publish(
+        session_id=workspace.session_id,
+        agent_id=workspace.agent_id,
+        command=command,
+    )
+    route.read_error = PermissionError("repository read denied")
+
+    second = service.reconcile(intent_id=first.intent.intent_id)
+
+    assert second.execution.effect_certainty is ExternalEffectCertainty.DISPATCH_IN_DOUBT
+    assert route.dispatch_count == 1
+    failures = repositories.failure_observations.list_by_source(
+        session_id=workspace.session_id,
+        source_kind="workspace_publication",
+        source_ref=first.intent.intent_id,
+    )
+    assert {failure.phase for failure in failures} == {
+        "remote_dispatch",
+        "reconcile_read",
+    }
+    read_failure = next(
+        failure for failure in failures if failure.phase == "reconcile_read"
+    )
+    assert read_failure.effect_certainty is ExternalEffectCertainty.DISPATCH_IN_DOUBT
+    assert read_failure.mutation_applied is False
+    private = repositories.private_diagnostics.get_for_operator(
+        read_failure.diagnostic_id,
+        operator_authorized=True,
+    )
+    assert private is not None
+    assert private.exception_type == "PermissionError"
+
+
+def test_publication_dispatch_response_identity_drift_never_pushes_replacement(
+    tmp_path,
+) -> None:
+    repositories, workspace, route, command = _publication_environment(tmp_path)
+    route.dispatch_observed_commit = "8" * 40
+    service = WorkspacePublicationService(repositories, route, route)
+
+    first = service.publish(
+        session_id=workspace.session_id,
+        agent_id=workspace.agent_id,
+        command=command,
+    )
+    second = service.publish(
+        session_id=workspace.session_id,
+        agent_id=workspace.agent_id,
+        command=command,
+    )
+
+    assert first.execution.effect_certainty is ExternalEffectCertainty.DISPATCH_IN_DOUBT
+    assert second.execution.effect_certainty is ExternalEffectCertainty.DISPATCH_IN_DOUBT
+    assert route.dispatch_count == 1
+    failures = repositories.failure_observations.list_by_source(
+        session_id=workspace.session_id,
+        source_kind="workspace_publication",
+        source_ref=first.intent.intent_id,
+    )
+    assert failures[0].phase == "dispatch_response_validation"
+    assert failures[0].error_code == "workspace_publication_identity_conflict"
 
 
 def test_publication_different_ref_target_is_terminal_integrity_conflict(
@@ -2058,6 +2152,16 @@ def test_lease_revoke_before_dispatch_closes_no_effect_without_git_io(
     )
     assert closed.execution.effect_certainty is ExternalEffectCertainty.NO_EFFECT
     assert route.dispatch_count == 0
+    failures = repositories.failure_observations.list_by_source(
+        session_id=workspace.session_id,
+        source_kind="workspace_publication",
+        source_ref=closed.intent.intent_id,
+    )
+    assert len(failures) == 1
+    assert failures[0].phase == "pre_dispatch_authority"
+    assert failures[0].effect_certainty is ExternalEffectCertainty.NO_EFFECT
+    assert failures[0].mutation_applied is False
+    assert failures[0].fallback_performed is False
 
 
 def test_lease_revoke_after_possible_effect_still_reconciles_original_ref(
@@ -2196,6 +2300,18 @@ def test_restore_reuses_intact_volume_and_accepts_new_readable_local_head(
         ("unreadable_head", AgentGitWorkspaceBlockerCode.UNREADABLE_HEAD),
         ("remote_drift", AgentGitWorkspaceBlockerCode.REMOTE_IDENTITY_DRIFT),
         ("generation_drift", AgentGitWorkspaceBlockerCode.GENERATION_DRIFT),
+        (
+            "infrastructure_unavailable",
+            AgentGitWorkspaceBlockerCode.INFRASTRUCTURE_UNAVAILABLE,
+        ),
+        (
+            "permission_failure",
+            AgentGitWorkspaceBlockerCode.PERMISSION_OR_CONFIGURATION_FAILURE,
+        ),
+        (
+            "unknown_invariant",
+            AgentGitWorkspaceBlockerCode.INTERNAL_INVARIANT_FAILURE,
+        ),
     ],
 )
 def test_restore_blocks_missing_corrupt_or_drifted_workspace_without_reclone(
@@ -2209,7 +2325,19 @@ def test_restore_blocks_missing_corrupt_or_drifted_workspace_without_reclone(
         observer = _RecoveryObservationProvider()
     elif mode == "corrupt_git":
         observer = _RecoveryObservationProvider(
-            error=AgentGitWorkspaceRecoveryError("corrupt .git")
+            error=AgentGitWorkspaceCorruptionError("corrupt .git")
+        )
+    elif mode == "infrastructure_unavailable":
+        observer = _RecoveryObservationProvider(
+            error=AgentGitWorkspaceInfrastructureError("podman unavailable")
+        )
+    elif mode == "permission_failure":
+        observer = _RecoveryObservationProvider(
+            error=AgentGitWorkspacePermissionError("permission denied")
+        )
+    elif mode == "unknown_invariant":
+        observer = _RecoveryObservationProvider(
+            error=RuntimeError("unexpected probe shape")
         )
     elif mode == "unreadable_head":
         observer = _RecoveryObservationProvider(
@@ -2249,6 +2377,25 @@ def test_restore_blocks_missing_corrupt_or_drifted_workspace_without_reclone(
     )
     if mode == "missing_volume":
         assert observer.calls == 0
+    if mode in {
+        "corrupt_git",
+        "infrastructure_unavailable",
+        "permission_failure",
+        "unknown_invariant",
+    }:
+        failures = repositories.failure_observations.list_by_source(
+            session_id=workspace.session_id,
+            source_kind="agent_git_workspace_recovery",
+            source_ref=workspace.workspace_id,
+        )
+        assert len(failures) == 1
+        assert failures[0].effect_certainty is ExternalEffectCertainty.NO_EFFECT
+        assert failures[0].mutation_applied is False
+        assert failures[0].fallback_performed is False
+        assert blocked.blocker_detail_digest is not None
+        assert repositories.agents.get_by_member_id("member_1").runtime_state == (
+            expected_blocker.value
+        )
 
 
 def test_restore_blocks_when_active_lease_no_longer_matches_workspace(
@@ -2270,6 +2417,38 @@ def test_restore_blocks_when_active_lease_no_longer_matches_workspace(
     assert blocked.blocker_code is (
         AgentGitWorkspaceBlockerCode.LEASE_INTENT_MISMATCH
     )
+
+
+def test_restore_restart_preserves_typed_blocker_without_implicit_replacement(
+    tmp_path,
+) -> None:
+    repositories, workspace, volumes, _ = _recovery_environment(tmp_path)
+    first_service = AgentGitWorkspaceRecoveryService(
+        repositories,
+        volumes,
+        _RecoveryObservationProvider(
+            error=AgentGitWorkspaceInfrastructureError("podman unavailable")
+        ),
+    )
+
+    blocked = first_service.restore(workspace.workspace_id)
+    restarted = AgentGitWorkspaceRecoveryService(
+        repositories,
+        volumes,
+        _RecoveryObservationProvider(),
+    )
+
+    with pytest.raises(AgentGitWorkspaceRecoveryError, match="exact ready workspace"):
+        restarted.restore(workspace.workspace_id)
+
+    assert blocked.blocker_code is AgentGitWorkspaceBlockerCode.INFRASTRUCTURE_UNAVAILABLE
+    assert volumes.create_count == 1
+    failures = repositories.failure_observations.list_by_source(
+        session_id=workspace.session_id,
+        source_kind="agent_git_workspace_recovery",
+        source_ref=workspace.workspace_id,
+    )
+    assert len(failures) == 1
 
 
 def test_explicit_replacement_preserves_old_volume_and_revokes_old_lease(

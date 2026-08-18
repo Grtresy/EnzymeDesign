@@ -14,7 +14,13 @@ from openzyme_domain import AgentGitWorkspaceStatus
 from openzyme_domain import AgentMemberStatus
 from openzyme_domain import AgentWorkspaceGenerationStatus
 from openzyme_domain import GitObjectFormat
+from openzyme_domain import ExternalEffectCertainty
+from openzyme_domain import FailureActorKind
+from openzyme_domain import FailureClass
+from openzyme_domain import FailureRecoverability
+from openzyme_domain import RetryEligibility
 from openzyme_domain import SandboxWorkspaceStatus
+from openzyme_runtime import record_failure_observation
 
 from .agent_capability_service import ActiveAgentCapabilityLeaseValidator
 from .agent_capability_service import AgentCapabilityError
@@ -32,12 +38,12 @@ from .repositories import CoreRepositories
 
 _RESTORE_OBSERVATION_SCRIPT = r"""
 set -eu
-remote=$(git remote get-url origin)
-object_format=$(git rev-parse --show-object-format)
-head_commit=$(git rev-parse --verify HEAD)
-head_tree=$(git rev-parse --verify 'HEAD^{tree}')
-git cat-file -e "${1}^{commit}"
-git_dir=$(git rev-parse --git-dir)
+remote=$(git remote get-url origin) || exit 41
+object_format=$(git rev-parse --show-object-format) || exit 42
+head_commit=$(git rev-parse --verify HEAD) || exit 43
+head_tree=$(git rev-parse --verify 'HEAD^{tree}') || exit 44
+git cat-file -e "${1}^{commit}" || exit 45
+git_dir=$(git rev-parse --git-dir) || exit 46
 git_kind=corrupt
 if [ "$git_dir" = ".git" ] && [ -d .git ]; then
   git_kind=independent
@@ -60,6 +66,26 @@ class AgentGitWorkspaceRecoveryError(RuntimeError):
     error_code = "agent_git_workspace_recovery_rejected"
 
 
+class AgentGitWorkspaceCorruptionError(AgentGitWorkspaceRecoveryError):
+    error_code = "agent_git_workspace_corruption_proven"
+
+
+class AgentGitWorkspaceBaseCommitDriftError(AgentGitWorkspaceRecoveryError):
+    error_code = "agent_git_workspace_identity_drift"
+
+
+class AgentGitWorkspaceInfrastructureError(AgentGitWorkspaceRecoveryError):
+    error_code = "agent_git_workspace_infrastructure_unavailable"
+
+
+class AgentGitWorkspacePermissionError(AgentGitWorkspaceRecoveryError):
+    error_code = "agent_git_workspace_permission_or_configuration_failure"
+
+
+class AgentGitWorkspaceInvariantError(AgentGitWorkspaceRecoveryError):
+    error_code = "agent_git_workspace_internal_invariant_failure"
+
+
 class AgentGitWorkspaceObservationProvider(Protocol):
     def observe(
         self,
@@ -72,23 +98,43 @@ class PodmanAgentGitWorkspaceObservationProvider:
     process_runner: AgentCapsuleProcessRunner
 
     def observe(self, workspace: AgentGitWorkspace) -> AgentGitWorkspaceObservation:
-        result = self.process_runner.run(
-            workspace=workspace,
-            argv=(
-                "/bin/sh",
-                "-c",
-                _RESTORE_OBSERVATION_SCRIPT,
-                "openzyme-workspace-restore",
-                workspace.base_commit,
-            ),
-            credential_environment=(),
-            timeout_seconds=120,
-        )
-        if result.returncode != 0:
-            raise AgentGitWorkspaceRecoveryError(
-                result.stderr.strip()
-                or f"workspace restore probe exited {result.returncode}"
+        try:
+            result = self.process_runner.run(
+                workspace=workspace,
+                argv=(
+                    "/bin/sh",
+                    "-c",
+                    _RESTORE_OBSERVATION_SCRIPT,
+                    "openzyme-workspace-restore",
+                    workspace.base_commit,
+                ),
+                credential_environment=(),
+                timeout_seconds=120,
             )
+        except PermissionError as exc:
+            raise AgentGitWorkspacePermissionError(
+                "workspace observation process was denied"
+            ) from exc
+        except OSError as exc:
+            raise AgentGitWorkspaceInfrastructureError(
+                "workspace observation process was unavailable"
+            ) from exc
+        if result.returncode != 0:
+            error_type: type[AgentGitWorkspaceRecoveryError]
+            if result.returncode == 41:
+                error_type = AgentGitWorkspacePermissionError
+            elif result.returncode in {42, 43, 44, 46}:
+                error_type = AgentGitWorkspaceCorruptionError
+            elif result.returncode == 45:
+                error_type = AgentGitWorkspaceBaseCommitDriftError
+            else:
+                error_type = AgentGitWorkspaceInvariantError
+            error = error_type(
+                f"workspace restore probe exited at typed stage {result.returncode}"
+            )
+            error.returncode = result.returncode  # type: ignore[attr-defined]
+            error.stderr = result.stderr  # type: ignore[attr-defined]
+            raise error
         facts = _parse_restore_facts(result.stdout)
         return AgentGitWorkspaceObservation(
             workspace_id=workspace.workspace_id,
@@ -148,11 +194,35 @@ class AgentGitWorkspaceRecoveryService:
             )
         try:
             observation = self.observation_provider.observe(workspace)
-        except Exception as exc:
-            return self._block(
+        except AgentGitWorkspaceCorruptionError as exc:
+            return self._block_observation_failure(
                 workspace,
-                blocker_code=AgentGitWorkspaceBlockerCode.CORRUPT_GIT_DIRECTORY,
-                detail={"diagnostic": str(exc)},
+                exc,
+                AgentGitWorkspaceBlockerCode.CORRUPT_GIT_DIRECTORY,
+            )
+        except AgentGitWorkspaceBaseCommitDriftError as exc:
+            return self._block_observation_failure(
+                workspace,
+                exc,
+                AgentGitWorkspaceBlockerCode.BASE_COMMIT_DRIFT,
+            )
+        except AgentGitWorkspaceInfrastructureError as exc:
+            return self._block_observation_failure(
+                workspace,
+                exc,
+                AgentGitWorkspaceBlockerCode.INFRASTRUCTURE_UNAVAILABLE,
+            )
+        except AgentGitWorkspacePermissionError as exc:
+            return self._block_observation_failure(
+                workspace,
+                exc,
+                AgentGitWorkspaceBlockerCode.PERMISSION_OR_CONFIGURATION_FAILURE,
+            )
+        except Exception as exc:
+            return self._block_observation_failure(
+                workspace,
+                exc,
+                AgentGitWorkspaceBlockerCode.INTERNAL_INVARIANT_FAILURE,
             )
         lifecycle = AgentGitWorkspaceLifecycleService(self.repositories)
         comparison = lifecycle.compare_restore(
@@ -197,6 +267,58 @@ class AgentGitWorkspaceRecoveryService:
                 detail={"diagnostic": str(exc)},
             )
         return workspace
+
+    def _block_observation_failure(
+        self,
+        workspace: AgentGitWorkspace,
+        error: Exception,
+        blocker_code: AgentGitWorkspaceBlockerCode,
+    ) -> AgentGitWorkspace:
+        observation = record_failure_observation(
+            self.repositories,
+            session_id=workspace.session_id,
+            agent_id=workspace.agent_id,
+            source_kind="agent_git_workspace_recovery",
+            source_ref=workspace.workspace_id,
+            source_version=f"generation:{workspace.workspace_generation}:restore_probe",
+            component="openzyme_core.agent_git_workspace_recovery",
+            operation="observe_existing_workspace",
+            phase="restore_observation",
+            failure_class=FailureClass.SYSTEM,
+            recoverability=FailureRecoverability.AUTHORIZATION_REQUIRED,
+            effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+            retry_eligibility=RetryEligibility.TERMINAL,
+            actor_kind=FailureActorKind.SYSTEM,
+            error_code=str(
+                getattr(error, "error_code", "agent_git_workspace_internal_invariant_failure")
+            ),
+            safe_summary=(
+                "The existing Git workspace could not be safely classified for restore."
+            ),
+            safe_hint=(
+                "Inspect the private diagnostic; replacement requires explicit authority."
+            ),
+            identities={
+                "workspace_id": workspace.workspace_id,
+                "agent_id": workspace.agent_id,
+                "volume_id": workspace.volume_id,
+            },
+            mutation_applied=False,
+            fallback_performed=False,
+            next_action="operator_classify_or_replace",
+            private_diagnostic=error,
+        )
+        return self._block(
+            workspace,
+            blocker_code=blocker_code,
+            detail={
+                "diagnostic_id": observation.diagnostic_id,
+                "error_code": observation.error_code,
+                "mutation_applied": False,
+                "fallback_performed": False,
+                "replacement_authorized": False,
+            },
+        )
 
     def _block(
         self,

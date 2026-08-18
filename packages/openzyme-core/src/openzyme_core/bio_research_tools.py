@@ -334,6 +334,7 @@ class BioResearchToolRegistrar:
             summary: str | None = None,
             error_code: str | None = None,
             details: dict[str, object] | None = None,
+            private_diagnostic: object | None = None,
         ) -> ToolResult:
             return ToolResult(
                 call_id=invocation.call_id,
@@ -346,6 +347,7 @@ class BioResearchToolRegistrar:
                 summary=summary,
                 error_code=error_code,
                 details=details,
+                private_diagnostic=private_diagnostic,
             )
 
         def _observation_result(
@@ -376,6 +378,8 @@ class BioResearchToolRegistrar:
                     status=exc.error_code,
                     summary="research observation could not be written",
                     error_code=exc.error_code,
+                    details=exc.to_public_details(),
+                    private_diagnostic=exc,
                 )
             return _payload_result(invocation, payload)
 
@@ -389,6 +393,8 @@ class BioResearchToolRegistrar:
             summary: str,
             raw_ref: dict[str, object],
             exception_type: str | None = None,
+            diagnostic_details: dict[str, object] | None = None,
+            private_diagnostic: object | None = None,
             workspace_files: tuple[dict[str, object], ...] = (),
         ) -> ToolResult:
             observation = ResearchObservation(
@@ -417,6 +423,8 @@ class BioResearchToolRegistrar:
                 error_code = write_exc.error_code
                 summary = "research failure observation could not be written"
                 exception_type = write_exc.__class__.__name__
+                diagnostic_details = write_exc.to_public_details()
+                private_diagnostic = write_exc
             return _payload_result(
                 invocation,
                 payload,
@@ -424,11 +432,15 @@ class BioResearchToolRegistrar:
                 status=error_code,
                 summary=summary,
                 error_code=error_code,
-                details=(
-                    None
-                    if exception_type is None
-                    else {"exception_type": exception_type}
-                ),
+                details={
+                    **(diagnostic_details or {}),
+                    **(
+                        {}
+                        if exception_type is None
+                        else {"exception_type": exception_type}
+                    ),
+                },
+                private_diagnostic=private_diagnostic,
             )
 
         def _literature_result(
@@ -471,6 +483,8 @@ class BioResearchToolRegistrar:
                             "evidence_file_written": False,
                         },
                         exception_type=write_exc.__class__.__name__,
+                        diagnostic_details=write_exc.to_public_details(),
+                        private_diagnostic=write_exc,
                     )
                 return _failed_provider_result(
                     context,
@@ -503,6 +517,7 @@ class BioResearchToolRegistrar:
                         "typed_provider_outcome": False,
                     },
                     exception_type=exc.__class__.__name__,
+                    private_diagnostic=exc,
                 )
 
             if isinstance(provider_result, ProviderCallResult):
@@ -546,6 +561,8 @@ class BioResearchToolRegistrar:
                             "evidence_file_written": False,
                         },
                         exception_type=exc.__class__.__name__,
+                        diagnostic_details=exc.to_public_details(),
+                        private_diagnostic=exc,
                     )
                 evidence_files = (evidence_file,)
             else:
@@ -692,6 +709,8 @@ class BioResearchToolRegistrar:
                         "workspace_file_written": False,
                     },
                     exception_type=exc.__class__.__name__,
+                    diagnostic_details=exc.to_public_details(),
+                    private_diagnostic=exc,
                 )
             except Exception as exc:
                 return _failed_provider_result(
@@ -708,6 +727,7 @@ class BioResearchToolRegistrar:
                         "typed_provider_outcome": False,
                     },
                     exception_type=exc.__class__.__name__,
+                    private_diagnostic=exc,
                 )
             return _observation_result(
                 context,

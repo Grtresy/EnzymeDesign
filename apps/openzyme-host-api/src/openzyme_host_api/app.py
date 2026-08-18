@@ -246,10 +246,22 @@ class GrantScientificAttemptAuthorizationRequest(BaseModel):
 
 
 class ApiErrorDetail(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     code: str
     message: str
     hint: str | None = None
     details: Any | None = None
+    diagnostic_id: str | None = None
+    component: str | None = None
+    phase: str | None = None
+    identities: dict[str, str] | None = None
+    effect_certainty: str | None = None
+    retry_eligibility: str | None = None
+    mutation_applied: bool | None = None
+    fallback_performed: bool | None = None
+    cause_chain: list[dict[str, str]] | None = None
+    next_action: str | None = None
 
 
 class ApiErrorResponse(BaseModel):
@@ -927,6 +939,7 @@ def _api_error_payload(
     message: str,
     hint: str | None = None,
     details: Any | None = None,
+    diagnostic: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     safe_details = sanitize_public_diagnostic_payload(details)
     safe_code = (
@@ -936,12 +949,32 @@ def _api_error_payload(
         )
         or "internal_error"
     )
+    safe_diagnostic = sanitize_public_diagnostic_payload(diagnostic or {})
+    if not isinstance(safe_diagnostic, dict):
+        safe_diagnostic = {}
+    diagnostic_fields = {
+        key: safe_diagnostic[key]
+        for key in (
+            "diagnostic_id",
+            "component",
+            "phase",
+            "identities",
+            "effect_certainty",
+            "retry_eligibility",
+            "mutation_applied",
+            "fallback_performed",
+            "cause_chain",
+            "next_action",
+        )
+        if key in safe_diagnostic
+    }
     return ApiErrorResponse(
         error=ApiErrorDetail(
             code=safe_code,
             message=sanitize_public_diagnostic_text(message),
             hint=None if hint is None else sanitize_public_diagnostic_text(hint),
             details=safe_details,
+            **diagnostic_fields,
         )
     ).model_dump(mode="json", exclude_none=True)
 

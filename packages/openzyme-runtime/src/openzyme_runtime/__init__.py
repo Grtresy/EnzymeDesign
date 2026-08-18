@@ -139,6 +139,9 @@ from .test_gates import live_llm_skip_reason
 from .test_gates import live_tavily_skip_reason
 from .test_gates import load_current_settings
 from .test_gates import quality_eval_skip_reason
+from .failure_observations import DiagnosticBoundaryError
+from .failure_observations import FailureDiagnosticPair
+from .failure_observations import build_private_diagnostic_record
 from .failure_observations import record_failure_observation
 from .tooling import AgentStepContext
 from .tooling import LegacyFunctionToolRuntime
@@ -170,11 +173,13 @@ __all__ = [
     "DesignToolCallResult",
     "DesignToolContext",
     "DesignBriefDraft",
+    "DiagnosticBoundaryError",
     "EngineDescriptor",
     "EngineDocumentRecord",
     "EngineRegistry",
     "EvidenceSynthesis",
     "EvidenceSynthesisItem",
+    "FailureDiagnosticPair",
     "ResearchDossier",
     "ResearchSourceItem",
     "ExecutionSettings",
@@ -233,6 +238,7 @@ __all__ = [
     "sanitize_tool_result_diagnostics",
     "CompositeResearchToolProvider",
     "build_bio_research_tools",
+    "build_private_diagnostic_record",
     "classify_llm_provider_error",
     "extract_llm_usage",
     "is_micu_provider_url",

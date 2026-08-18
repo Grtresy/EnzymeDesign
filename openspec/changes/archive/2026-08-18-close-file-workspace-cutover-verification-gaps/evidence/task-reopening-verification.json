@@ -1,0 +1,45 @@
+{
+  "schema_id": "file_workspace_task_reopening_verification@1",
+  "verified_at": "2026-08-18T10:39:32+08:00",
+  "baseline_digest": "sha256:4fb55c322e0faa6f65b38fce1400116695c4ebac70814727d964b7c1c656e98e",
+  "target_change_count": 14,
+  "initial_task_count": 529,
+  "reopened_task_count": 33,
+  "remaining_completed_task_count": 496,
+  "target_statuses": [
+    {"change_id": "supersede-aox-hmm-artifact-cutover", "completed_tasks": 20, "total_tasks": 21, "status": "in-progress"},
+    {"change_id": "provision-independent-agent-git-workspaces", "completed_tasks": 42, "total_tasks": 45, "status": "in-progress"},
+    {"change_id": "publish-and-sync-workspace-revisions", "completed_tasks": 39, "total_tasks": 42, "status": "in-progress"},
+    {"change_id": "support-git-lfs-work-products", "completed_tasks": 26, "total_tasks": 27, "status": "in-progress"},
+    {"change_id": "migrate-research-report-and-task-handoffs-to-files", "completed_tasks": 27, "total_tasks": 29, "status": "in-progress"},
+    {"change_id": "provision-isolated-executor-hpc-workspaces", "completed_tasks": 33, "total_tasks": 34, "status": "in-progress"},
+    {"change_id": "execute-hpc-jobs-from-workspace-revisions", "completed_tasks": 41, "total_tasks": 45, "status": "in-progress"},
+    {"change_id": "migrate-scientific-deliverables-to-files", "completed_tasks": 33, "total_tasks": 37, "status": "in-progress"},
+    {"change_id": "replace-sandbox-artifact-boundaries-with-files", "completed_tasks": 36, "total_tasks": 37, "status": "in-progress"},
+    {"change_id": "establish-project-repository-bindings", "completed_tasks": 39, "total_tasks": 40, "status": "in-progress"},
+    {"change_id": "establish-agent-capability-leases", "completed_tasks": 36, "total_tasks": 37, "status": "in-progress"},
+    {"change_id": "cut-over-workspace-public-interfaces", "completed_tasks": 39, "total_tasks": 42, "status": "in-progress"},
+    {"change_id": "migrate-historical-artifacts-to-git-lfs", "completed_tasks": 41, "total_tasks": 42, "status": "in-progress"},
+    {"change_id": "remove-artifact-control-plane-and-storage", "completed_tasks": 44, "total_tasks": 51, "status": "in-progress"}
+  ],
+  "excluded_active_changes": [
+    {"change_id": "establish-v3-executable-architecture-qualification", "completed_tasks": 94, "total_tasks": 94, "status": "complete", "modified_by_reopening": false},
+    {"change_id": "harden-compaction-authority-and-runtime-recovery", "completed_tasks": 18, "total_tasks": 18, "status": "complete", "modified_by_reopening": false}
+  ],
+  "verification": {
+    "task_reopening_validator": "pass",
+    "evidence_gap_registry_validator": "pass",
+    "git_diff_check": "pass",
+    "closure_and_target_strict_validation": {"passed": 15, "failed": 0},
+    "repository_wide_strict_validation": {
+      "passed": 25,
+      "failed": 1,
+      "out_of_target_failure": {
+        "item": "spec/mcp-enzyme-design-knowledge",
+        "reason": "missing required Purpose and Requirements sections",
+        "introduced_by_reopening": false,
+        "must_be_closed_before_final_acceptance": true
+      }
+    }
+  }
+}

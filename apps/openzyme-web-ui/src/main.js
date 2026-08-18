@@ -233,6 +233,11 @@ async function onClick(event) {
     controller.selectTeammate(teammateSelect.dataset.agentId);
     return;
   }
+  const changedPathsButton = target.closest("[data-action='load-more-changed-paths']");
+  if (changedPathsButton instanceof HTMLElement) {
+    await controller.loadMoreChangedPaths(changedPathsButton.dataset.workspaceId);
+    return;
+  }
   const approvalButton = target.closest("[data-v3-approval-decision]");
   if (approvalButton instanceof HTMLElement) {
     await controller.resolveApproval(approvalButton.dataset.approvalId, approvalButton.dataset.v3ApprovalDecision);

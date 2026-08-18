@@ -551,6 +551,15 @@ class ToolRegistry:
         private_diagnostic: object | None = None,
     ) -> ToolResult:
         step_context = context.current_step_context
+        diagnostic_details = result.details or {}
+        observed_effect_certainty = diagnostic_details.get("effect_certainty")
+        if observed_effect_certainty is not None:
+            effect_certainty = ExternalEffectCertainty(
+                str(observed_effect_certainty)
+            )
+        observed_retry_eligibility = diagnostic_details.get("retry_eligibility")
+        if observed_retry_eligibility is not None:
+            retry_eligibility = RetryEligibility(str(observed_retry_eligibility))
         observation = record_failure_observation(
             context.repositories,
             session_id=context.snapshot.session.session_id,
@@ -580,7 +589,17 @@ class ToolRegistry:
                 "tool_name": invocation.tool_name,
                 "legacy_dispatch": True,
             },
-            private_diagnostic=private_diagnostic,
+            private_diagnostic=(
+                private_diagnostic
+                if private_diagnostic is not None
+                else result.private_diagnostic
+            ),
+            component=diagnostic_details.get("component"),
+            operation=diagnostic_details.get("operation"),
+            identities=diagnostic_details.get("identities"),
+            mutation_applied=diagnostic_details.get("mutation_applied") is True,
+            fallback_performed=diagnostic_details.get("fallback_performed") is True,
+            next_action=diagnostic_details.get("next_action"),
         )
         return sanitize_tool_result_diagnostics(
             replace(result, failure_observation=observation.to_dict())
@@ -940,16 +959,7 @@ def _restore_context_public_payload(context: SessionRuntimeContext) -> dict[str,
             )
         ],
         "failure_observations": [
-            {
-                "failure_id": observation.failure_id,
-                "source_kind": observation.source_kind,
-                "source_ref": observation.source_ref,
-                "source_version": observation.source_version,
-                "error_code": observation.error_code,
-                "recoverability": observation.recoverability.value,
-                "effect_certainty": observation.effect_certainty.value,
-                "retry_eligibility": observation.retry_eligibility.value,
-            }
+            observation.to_dict()
             for observation in sorted(
                 snapshot.failure_observations,
                 key=lambda item: (item.created_at, item.failure_id),
@@ -1545,6 +1555,8 @@ def _persist_tool_result_observation_file_scoped(
             status=exc.error_code,
             summary=str(exc),
             error_code=exc.error_code,
+            details=exc.to_public_details(),
+            private_diagnostic=exc,
         )
     context.emit(
         "tool_result.workspace_file_written",
@@ -1669,13 +1681,9 @@ def _record_system_runtime_failure(
     error_code: str,
     facts: dict[str, Any] | None = None,
 ):
-    classification = None
-    try:
-        from openzyme_runtime import classify_llm_provider_error
+    from openzyme_runtime import classify_llm_provider_error
 
-        classification = classify_llm_provider_error(exc)
-    except Exception:
-        classification = None
+    classification = classify_llm_provider_error(exc)
     resolved_error_code = error_code
     safe_hint = (
         "Inspect the system diagnostic and explicitly resume the runtime after "
@@ -1742,10 +1750,7 @@ def _record_system_runtime_failure(
             "public_error": sanitize_public_diagnostic_text(str(exc)),
             **(facts or {}),
         },
-        private_diagnostic={
-            "exception_type": exc.__class__.__name__,
-            "message": str(exc),
-        },
+        private_diagnostic=exc,
     )
     context.emit(
         "runtime.system_diagnostic",

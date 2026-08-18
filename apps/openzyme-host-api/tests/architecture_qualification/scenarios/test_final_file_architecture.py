@@ -4,7 +4,6 @@ import asyncio
 from dataclasses import dataclass
 import hashlib
 import inspect
-from types import SimpleNamespace
 
 import pytest
 
@@ -17,6 +16,7 @@ from openzyme_core import FileWorkspaceHostRequest
 from openzyme_core import file_workspace_candidate_catalog_digest
 from openzyme_core import file_workspace_public_schema_bundle_digest
 from openzyme_domain import MutationWriterKind
+from openzyme_domain import canonical_workspace_job_wire_digest
 from openzyme_execution import WorkspaceRevisionRunnerAdapter
 from openzyme_host_api.app import DrainV3RuntimeRequest
 from openzyme_host_api.background_runtime import RuntimeSignalNotifier
@@ -166,7 +166,23 @@ class _Runner:
 
     def call_tool(self, tool_name: str, payload: dict[str, object]) -> dict[str, object]:
         self.calls.append((tool_name, payload))
-        return {"run_id": payload["run_id"], "state": "succeeded"}
+        response = {
+            "schema_version": "workspace_job_reconciliation@1",
+            "disposition": "unknown",
+            "safe_error_code": "exact_run_not_observed",
+        }
+        return {
+            **response,
+            "reconciliation_receipt_digest": canonical_workspace_job_wire_digest(
+                response
+            ),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class _WorkerOutcome:
+    action: str
+    semantic_progress: bool
 
 
 @pytest.mark.architecture_qualification_scenario(
@@ -177,7 +193,8 @@ class _Runner:
 def test_revision_run_reconciliation_preserves_exact_identity() -> None:
     runner = _Runner(calls=[])
     result = WorkspaceRevisionRunnerAdapter(runner).reconcile("run-1")
-    assert result == {"run_id": "run-1", "state": "succeeded"}
+    assert result["disposition"] == "unknown"
+    assert result["safe_error_code"] == "exact_run_not_observed"
     assert runner.calls == [("job.reconcile", {"run_id": "run-1"})]
     _record_satisfied("reconciliation.revision-run-exact-once", result)
 
@@ -231,7 +248,7 @@ def test_durable_supervisor_keeps_closed_p0_idle_without_self_wake() -> None:
 
     class _IdleWorker:
         def run_once(self) -> object:
-            return SimpleNamespace(action="idle", semantic_progress=False)
+            return _WorkerOutcome(action="idle", semantic_progress=False)
 
     supervisor = V3DurableWorkSupervisor(
         worker_factory=lambda _worker_id: _IdleWorker(),
@@ -284,13 +301,26 @@ def test_retired_storage_field_is_rejected_without_inferred_replacement() -> Non
             session_id="session-1",
             body={field: "local://opaque"},
         )
-    assert captured.value.details == {
+    expected = {
         "field_or_operation": f"request.{field}",
         "mutation_applied": False,
         "replacement_inferred": False,
         "schema_id": "unsupported_current_file_workspace_contract@1",
     }
+    _require_no_replacement(captured.value.details, expected=expected)
     _record_satisfied(
         "world-fidelity.retired-field-rejected",
         captured.value.details,
     )
+
+
+def _require_no_replacement(
+    details: dict[str, object],
+    *,
+    expected: dict[str, object],
+) -> None:
+    if details != expected or details.get("replacement_inferred") is not False:
+        raise AssertionError(
+            "current file contract rejection inferred a replacement or lost "
+            f"closed facts: expected={expected!r} observed={details!r}"
+        )

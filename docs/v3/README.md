@@ -1,7 +1,7 @@
 # OpenZyme V3 稳定文档索引
 
 当前权威入口是 [OpenZyme架构设计.md](../OpenZyme架构设计.md)。本目录描述
-`file_workspace_public@1` 与 `openzyme_file_workspace_final@1` 的稳定实现；旧 artifact-era
+`file_workspace_public@1` 与 `openzyme_file_workspace_final@2` 的稳定实现；旧 artifact-era
 说明、冻结 campaign 和归档 OpenSpec 只具有历史解释力。
 
 建议阅读顺序：
@@ -28,8 +28,12 @@
   mutation writer 是不同 authority。
 - 文件通过 Git revision、published path ref 和 Git LFS closure 共享；不存在第二套通用
   catalog 或自动 staging。
-- HPC 输入来自 exact revision，结果由 external-job/result lifecycle 表达；无输出成功不补文件。
+- HPC 输入来自 exact revision、LFS closure 和 Gitless compute tree；结果由同一 opaque handle 的
+  observation/terminal receipt 与 owner workspace result 表达，不声明 `expected_outputs`，无输出成功不补文件。
+- 公开 `failure_observation@2` 与 Host 私有 diagnostic 共用 `diagnostic_id`；异常保留 cause chain，
+  不静默吞掉、误分类、自动重试或隐藏 fallback。
 - 历史导入 ref 永远 `historical_import_non_adoptable`。
-- old/incomplete database 在 mutation 前拒绝；普通 startup 不执行 legacy upgrade。
+- fresh bootstrap receipt 与 offline removal ledger 分开验证；old/incomplete/tampered database 在 mutation
+  前拒绝，普通 startup 不执行 legacy upgrade。
 - focused test 不能替代 architecture qualification 和 `./scripts/check-mainline.sh`。
 - live/provider/HPC 行为需要单独 opt-in，不能从非 live gate 推断。

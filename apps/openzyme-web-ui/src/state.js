@@ -1,6 +1,7 @@
 import {
   FILE_WORKSPACE_PUBLIC_SCHEMA,
   reduceFileWorkspaceEvent,
+  requireWorkspaceChangedPathsPage,
 } from "./file_workspace_state.js";
 
 function ensureWorkspace(workspace) {
@@ -38,6 +39,26 @@ export function reduceWorkspaceWithEvent(workspace, event) {
     refresh_required: true,
     last_event_id: reduced.last_event_id,
   };
+}
+
+export function mergeWorkspaceChangedPathsPage(workspace, workspaceId, payload) {
+  ensureWorkspace(workspace);
+  const status = (workspace.workspace_status ?? []).find(
+    (item) => item.workspace_id === workspaceId,
+  );
+  if (!status) {
+    throw new Error("changed-paths page workspace is not present in current projection");
+  }
+  const page = requireWorkspaceChangedPathsPage(payload, {
+    workspaceId,
+    workspaceGeneration: status.workspace_generation,
+  });
+  const next = structuredClone(workspace);
+  const nextStatus = next.workspace_status.find((item) => item.workspace_id === workspaceId);
+  nextStatus.changed_paths = [...(nextStatus.changed_paths ?? []), ...page.paths];
+  nextStatus.changed_paths_continuation = page.continuation;
+  nextStatus.changed_paths_truncated = page.continuation !== null || page.source_truncated;
+  return next;
 }
 
 export function buildSessionSummaryFromWorkspace(workspace) {
@@ -96,6 +117,7 @@ export function buildInitialViewState() {
     refreshingWorkspace: false,
     createSessionBusy: false,
     pendingApprovalId: "",
+    pendingWorkspacePathId: "",
     errors: {
       sidebar: "",
       createSession: "",
@@ -103,6 +125,7 @@ export function buildInitialViewState() {
       message: "",
       runtimeHealth: "",
       approvals: {},
+      changedPaths: {},
     },
   };
 }

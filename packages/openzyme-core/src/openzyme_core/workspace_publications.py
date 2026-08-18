@@ -16,6 +16,9 @@ from openzyme_domain import ControlledOperationExecutionPhase
 from openzyme_domain import ControlledOperationExecutionTerminalOutcome
 from openzyme_domain import ControlledOperationOwnerMode
 from openzyme_domain import ExternalEffectCertainty
+from openzyme_domain import FailureActorKind
+from openzyme_domain import FailureClass
+from openzyme_domain import FailureRecoverability
 from openzyme_domain import ProjectRepositoryBinding
 from openzyme_domain import PublicationFetchIdentity
 from openzyme_domain import PublishedRevision
@@ -27,6 +30,7 @@ from openzyme_domain import WorkspacePublicationManifest
 from openzyme_domain import WorkspacePublicationRemoteReceipt
 from openzyme_domain import WorkspaceFormalBoundary
 from openzyme_domain import canonical_publication_digest
+from openzyme_runtime import record_failure_observation
 
 from .agent_capability_service import ActiveAgentCapabilityLeaseValidator
 from .agent_capability_service import AgentCapabilityError
@@ -473,18 +477,66 @@ class WorkspacePublicationService:
                 binding,
                 ref_name=intent.publication_ref,
             )
-        except Exception:
-            return self._ensure_reconcile_required(intent, state.execution)
+        except Exception as exc:
+            return self._ensure_reconcile_required(
+                intent,
+                state.execution,
+                cause=exc,
+                operation="read_exact_ref",
+                phase="reconcile_read",
+                mutation_applied=False,
+            )
         if observed is None:
             return self._ensure_reconcile_required(intent, state.execution)
         if observed != intent.expected_head_commit:
+            conflict = WorkspacePublicationIdentityError(
+                "exact publication ref resolves to a conflicting commit"
+            )
+            observation = record_failure_observation(
+                self.repositories,
+                session_id=intent.session_id,
+                agent_id=intent.agent_id,
+                source_kind="workspace_publication",
+                source_ref=intent.intent_id,
+                source_version=(
+                    f"dispatch:{state.execution.dispatch_generation}:"
+                    f"state:{state.execution.state_version}:ref_conflict"
+                ),
+                component="openzyme_core.workspace_publications",
+                operation="validate_exact_publication_ref",
+                phase="reconcile_identity",
+                failure_class=FailureClass.CONTROLLED_EFFECT,
+                recoverability=FailureRecoverability.TERMINAL,
+                effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+                retry_eligibility=RetryEligibility.TERMINAL,
+                actor_kind=FailureActorKind.SYSTEM,
+                error_code="publication_ref_integrity_conflict",
+                safe_summary="Publication ref exists at a conflicting commit.",
+                facts={
+                    "publication_ref": intent.publication_ref,
+                    "expected_commit": intent.expected_head_commit,
+                    "observed_commit": observed,
+                },
+                identities={
+                    "intent_id": intent.intent_id,
+                    "publication_id": intent.publication_id,
+                    "execution_id": state.execution.execution_id,
+                },
+                mutation_applied=False,
+                fallback_performed=False,
+                next_action="operator_review_conflict",
+                private_diagnostic=conflict,
+            )
             failed = self._terminal_execution(
                 intent,
                 state.execution,
                 outcome=ControlledOperationExecutionTerminalOutcome.FAILED,
                 effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
                 error_code="publication_ref_integrity_conflict",
-                summary="publication ref exists at another commit",
+                summary=(
+                    "publication ref exists at another commit; "
+                    f"diagnostic_id={observation.diagnostic_id}"
+                ),
             )
             return WorkspacePublicationState(intent, failed, None)
         return self._confirm_and_materialize(
@@ -605,14 +657,44 @@ class WorkspacePublicationService:
                 required_capabilities=(AgentCapability.GIT,),
                 target_id="repository:session-pinned",
             )
-        except AgentCapabilityError:
+        except AgentCapabilityError as exc:
+            observation = record_failure_observation(
+                self.repositories,
+                session_id=intent.session_id,
+                agent_id=intent.agent_id,
+                source_kind="workspace_publication",
+                source_ref=intent.intent_id,
+                source_version=f"state:{execution.state_version}:pre_dispatch_authority",
+                component="openzyme_core.workspace_publications",
+                operation="validate_publication_authority",
+                phase="pre_dispatch_authority",
+                failure_class=FailureClass.VALIDATION,
+                recoverability=FailureRecoverability.AUTHORIZATION_REQUIRED,
+                effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+                retry_eligibility=RetryEligibility.TERMINAL,
+                actor_kind=FailureActorKind.SYSTEM,
+                error_code="publication_capability_inactive_before_dispatch",
+                safe_summary="Publication authority became inactive before dispatch.",
+                identities={
+                    "intent_id": intent.intent_id,
+                    "publication_id": intent.publication_id,
+                    "execution_id": execution.execution_id,
+                },
+                mutation_applied=False,
+                fallback_performed=False,
+                next_action="obtain_new_authority",
+                private_diagnostic=exc,
+            )
             terminal = self._terminal_execution(
                 intent,
                 execution,
                 outcome=ControlledOperationExecutionTerminalOutcome.FAILED,
                 effect_certainty=ExternalEffectCertainty.NO_EFFECT,
                 error_code="publication_capability_inactive_before_dispatch",
-                summary="publication lease became inactive before dispatch",
+                summary=(
+                    "publication lease became inactive before dispatch; "
+                    f"diagnostic_id={observation.diagnostic_id}"
+                ),
             )
             return WorkspacePublicationState(intent, terminal, None)
         dispatching = self._claim_and_begin_dispatch(intent, execution)
@@ -624,10 +706,26 @@ class WorkspacePublicationService:
                 ref_name=intent.publication_ref,
                 commit=intent.expected_head_commit,
             )
-        except Exception:
-            return self._ensure_reconcile_required(intent, dispatching)
+        except Exception as exc:
+            return self._ensure_reconcile_required(
+                intent,
+                dispatching,
+                cause=exc,
+                operation="create_publication_ref_if_absent",
+                phase="remote_dispatch",
+                mutation_applied=True,
+            )
         if observed != intent.expected_head_commit:
-            return self._ensure_reconcile_required(intent, dispatching)
+            return self._ensure_reconcile_required(
+                intent,
+                dispatching,
+                cause=WorkspacePublicationIdentityError(
+                    "remote dispatch response did not bind the exact publication commit"
+                ),
+                operation="validate_dispatch_response",
+                phase="dispatch_response_validation",
+                mutation_applied=True,
+            )
         return self._confirm_and_materialize(
             intent,
             dispatching,
@@ -685,25 +783,93 @@ class WorkspacePublicationService:
         self,
         intent: WorkspacePublicationIntent,
         execution: ControlledOperationExecution,
+        *,
+        cause: Exception | None = None,
+        operation: str = "reconcile_exact_ref",
+        phase: str = "reconcile",
+        mutation_applied: bool = False,
     ) -> WorkspacePublicationState:
         if (
             execution.lifecycle_state
             is ControlledOperationExecutionLifecycle.RECONCILE_REQUIRED
+            and cause is None
         ):
             return WorkspacePublicationState(intent, execution, None)
+        observation = None
+        if cause is not None:
+            observation = record_failure_observation(
+                self.repositories,
+                session_id=intent.session_id,
+                task_id=None,
+                lane_id=None,
+                agent_id=intent.agent_id,
+                source_kind="workspace_publication",
+                source_ref=intent.intent_id,
+                source_version=(
+                    f"dispatch:{execution.dispatch_generation}:"
+                    f"state:{execution.state_version}:phase:{phase}"
+                ),
+                component="openzyme_core.workspace_publications",
+                operation=operation,
+                phase=phase,
+                failure_class=FailureClass.CONTROLLED_EFFECT,
+                recoverability=FailureRecoverability.RECONCILIATION_REQUIRED,
+                effect_certainty=execution.effect_certainty,
+                retry_eligibility=RetryEligibility.RECONCILE_REQUIRED,
+                actor_kind=FailureActorKind.SYSTEM,
+                error_code=str(
+                    getattr(cause, "error_code", f"publication_{phase}_failed")
+                ),
+                safe_summary=(
+                    "Publication outcome remains uncertain at the exact-ref boundary."
+                ),
+                safe_hint=(
+                    "Reconcile only the frozen publication ref; do not issue a replacement push."
+                ),
+                facts={
+                    "dispatch_generation": execution.dispatch_generation,
+                    "publication_ref": intent.publication_ref,
+                    "expected_commit": intent.expected_head_commit,
+                },
+                identities={
+                    "intent_id": intent.intent_id,
+                    "publication_id": intent.publication_id,
+                    "execution_id": execution.execution_id,
+                },
+                mutation_applied=mutation_applied,
+                fallback_performed=False,
+                next_action="reconcile_exact_ref",
+                private_diagnostic=cause,
+            )
+        summary = "publication outcome requires exact-ref reconciliation"
+        if observation is not None:
+            summary = (
+                f"{summary}; diagnostic_id={observation.diagnostic_id} "
+                f"phase={observation.phase}"
+            )
         updated = replace(
             execution,
             lifecycle_state=ControlledOperationExecutionLifecycle.RECONCILE_REQUIRED,
             effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
             retry_eligibility=RetryEligibility.RECONCILE_REQUIRED,
             state_version=execution.state_version + 1,
+            error_code=(
+                execution.error_code
+                if observation is None
+                else observation.error_code
+            ),
+            safe_error_summary=(
+                execution.safe_error_summary
+                if observation is None
+                else observation.safe_summary
+            ),
             updated_at=_utc_now_iso(),
         )
         self._persist_transition(
             execution,
             updated,
             phase=ControlledOperationExecutionPhase.RECONCILE,
-            summary="publication outcome requires exact-ref reconciliation",
+            summary=summary,
         )
         return WorkspacePublicationState(intent, updated, None)
 

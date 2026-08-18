@@ -314,7 +314,10 @@ CREATE TABLE agent_git_workspace_records (
             'image_unqualified',
             'clone_failed',
             'persistence_failed',
-            'identity_drift'
+            'identity_drift',
+            'infrastructure_unavailable',
+            'permission_or_configuration_failure',
+            'internal_invariant_failure'
         )
     ),
     blocker_detail_digest TEXT CHECK (
@@ -1302,8 +1305,8 @@ CREATE TABLE failure_hypothesis_records (
 
 CREATE TABLE failure_observation_records (
     failure_id TEXT PRIMARY KEY,
-    schema_version TEXT NOT NULL DEFAULT 'failure_observation@1'
-        CHECK (schema_version = 'failure_observation@1'),
+    schema_version TEXT NOT NULL DEFAULT 'failure_observation@2'
+        CHECK (schema_version = 'failure_observation@2'),
     session_id TEXT NOT NULL
         REFERENCES sessions(session_id) ON DELETE RESTRICT,
     task_id TEXT REFERENCES tasks(task_id) ON DELETE RESTRICT,
@@ -1363,6 +1366,14 @@ CREATE TABLE failure_observation_records (
     agent_hypothesis_confidence TEXT,
     agent_hypothesis_evidence_refs_json TEXT NOT NULL DEFAULT '[]',
     private_diagnostic_digest TEXT,
+    component TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    identities_json TEXT NOT NULL,
+    mutation_applied INTEGER NOT NULL CHECK (mutation_applied IN (0, 1)),
+    fallback_performed INTEGER NOT NULL CHECK (fallback_performed IN (0, 1)),
+    cause_chain_json TEXT NOT NULL,
+    diagnostic_id TEXT NOT NULL UNIQUE,
+    next_action TEXT NOT NULL,
     created_at TEXT NOT NULL,
     UNIQUE (
         session_id,
@@ -1372,6 +1383,34 @@ CREATE TABLE failure_observation_records (
         phase,
         error_code
     )
+);
+
+CREATE TABLE private_diagnostic_records (
+    diagnostic_id TEXT PRIMARY KEY,
+    schema_version TEXT NOT NULL DEFAULT 'private_diagnostic_record@1'
+        CHECK (schema_version = 'private_diagnostic_record@1'),
+    failure_id TEXT NOT NULL UNIQUE
+        REFERENCES failure_observation_records(failure_id) ON DELETE RESTRICT,
+    session_id TEXT NOT NULL
+        REFERENCES sessions(session_id) ON DELETE RESTRICT,
+    component TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    exception_type TEXT NOT NULL,
+    exception_message TEXT NOT NULL,
+    traceback_text TEXT NOT NULL,
+    cause_chain_json TEXT NOT NULL,
+    errno INTEGER,
+    return_code INTEGER,
+    bounded_stdout TEXT,
+    bounded_stderr TEXT,
+    private_context_json TEXT NOT NULL,
+    source_kind TEXT NOT NULL,
+    source_ref TEXT NOT NULL,
+    source_version TEXT NOT NULL,
+    correlation_id TEXT,
+    created_at TEXT NOT NULL,
+    record_digest TEXT NOT NULL UNIQUE
 );
 
 CREATE TABLE failure_recovery_disposition_records (
@@ -3302,13 +3341,13 @@ CREATE TABLE workspace_revision_clean_observations (
 
 CREATE TABLE "workspace_revision_execution_requests" ("request_id" TEXT PRIMARY KEY, "execution_id" TEXT NOT NULL, "operation_id" TEXT NOT NULL, "operation_digest" TEXT NOT NULL, "session_id" TEXT NOT NULL, "executor_agent_member_id" TEXT NOT NULL, "capability_lease_id" TEXT NOT NULL, "capability_lease_version" INTEGER NOT NULL, "remote_workspace_generation" INTEGER NOT NULL, "repository_binding_id" TEXT NOT NULL, "repository_binding_version" INTEGER NOT NULL, "source_class" TEXT NOT NULL, "source_revision_id" TEXT NOT NULL, "source_ref" TEXT NOT NULL, "source_commit" TEXT NOT NULL, "source_tree" TEXT NOT NULL, "lfs_closure_manifest_digest" TEXT NOT NULL, "clean_observation_digest" TEXT NOT NULL, "cwd" TEXT NOT NULL, "command_json" TEXT NOT NULL, "command_digest" TEXT NOT NULL, "environment_policy_digest" TEXT NOT NULL, "resources_json" TEXT NOT NULL, "resource_digest" TEXT NOT NULL, "requested_mode" TEXT NOT NULL, "target_profile_id" TEXT NOT NULL, "target_profile_digest" TEXT NOT NULL, "runner_policy_digest" TEXT NOT NULL, "runtime_identity_digest" TEXT NOT NULL, "scientific_attempt_id" TEXT, "scientific_attempt_state_version" INTEGER, "scientific_admission_request_id" TEXT, "scientific_admission_request_digest" TEXT, "scientific_source_envelope_id" TEXT, "scientific_workflow_contract_digest" TEXT, "scientific_scope_digest" TEXT, "scientific_effect_class_digest" TEXT, "scientific_hpc_target_digest" TEXT, "operation_approval_digest" TEXT, "absolute_deadline" TEXT NOT NULL, "created_at" TEXT NOT NULL, "request_digest" TEXT NOT NULL, "schema_version" TEXT NOT NULL DEFAULT 'workspace_revision_execution_request@1');
 
-CREATE TABLE deployment_schema_state (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), schema_generation TEXT NOT NULL CHECK (schema_generation = 'openzyme_file_workspace_final@1'), removal_state TEXT NOT NULL CHECK (removal_state IN ('fresh_install_complete', 'offline_removal_complete', 'offline_removal_incomplete')), removal_receipt_digest TEXT NOT NULL, manifest_digest TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE deployment_schema_state (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), schema_generation TEXT NOT NULL CHECK (schema_generation = 'openzyme_file_workspace_final@2'), removal_state TEXT NOT NULL CHECK (removal_state IN ('fresh_install_complete', 'offline_removal_complete', 'offline_removal_incomplete')), removal_receipt_digest TEXT NOT NULL, manifest_digest TEXT NOT NULL, updated_at TEXT NOT NULL);
 
-INSERT INTO deployment_schema_state (singleton, schema_generation, removal_state, removal_receipt_digest, manifest_digest, updated_at) VALUES (1, 'openzyme_file_workspace_final@1', 'fresh_install_complete', 'sha256:4d73367a30f66b42d88d28ca93181ce3fd32b83272edac543ef9fb596d22ee45', 'sha256:9970db97ee72a1b74136a14b2014eccdeccaad8771378e8407967ce4036ea56c', '1970-01-01T00:00:00+00:00');
+INSERT INTO deployment_schema_state (singleton, schema_generation, removal_state, removal_receipt_digest, manifest_digest, updated_at) VALUES (1, 'openzyme_file_workspace_final@2', 'fresh_install_complete', 'sha256:467279b20fe91d405a5e23497f29a18e63114f817e2b9675c9e35b916c673e9a', 'sha256:107b9a5eabdf72f9855b06a8a2b3864f6d5b70332b07d8484ffee0c7d8be6eb5', '1970-01-01T00:00:00+00:00');
 
-CREATE TABLE legacy_removal_ledger (receipt_id TEXT PRIMARY KEY, schema_generation TEXT NOT NULL CHECK (schema_generation = 'openzyme_file_workspace_final@1'), manifest_digest TEXT NOT NULL, historical_receipt_digest TEXT NOT NULL, database_backup_digest TEXT NOT NULL, storage_backup_digest TEXT NOT NULL, quiescence_receipt_digest TEXT NOT NULL, expected_object_set_digest TEXT NOT NULL, removed_object_set_digest TEXT NOT NULL, already_absent_set_digest TEXT NOT NULL, root_identity_set_digest TEXT NOT NULL, error_object_set_digest TEXT NOT NULL, expected_byte_total INTEGER NOT NULL CHECK (expected_byte_total >= 0), removed_byte_total INTEGER NOT NULL CHECK (removed_byte_total >= 0), state TEXT NOT NULL CHECK (state IN ('incomplete','complete')), created_at TEXT NOT NULL, completed_at TEXT, receipt_digest TEXT NOT NULL UNIQUE);
+CREATE TABLE legacy_removal_ledger (receipt_id TEXT PRIMARY KEY, schema_generation TEXT NOT NULL CHECK (schema_generation = 'openzyme_file_workspace_final@2'), manifest_digest TEXT NOT NULL, historical_receipt_digest TEXT NOT NULL, database_backup_digest TEXT NOT NULL, storage_backup_digest TEXT NOT NULL, quiescence_receipt_digest TEXT NOT NULL, expected_object_set_digest TEXT NOT NULL, removed_object_set_digest TEXT NOT NULL, already_absent_set_digest TEXT NOT NULL, root_identity_set_digest TEXT NOT NULL, error_object_set_digest TEXT NOT NULL, expected_byte_total INTEGER NOT NULL CHECK (expected_byte_total >= 0), removed_byte_total INTEGER NOT NULL CHECK (removed_byte_total >= 0), state TEXT NOT NULL CHECK (state IN ('incomplete','complete')), created_at TEXT NOT NULL, completed_at TEXT, receipt_digest TEXT NOT NULL UNIQUE);
 
-CREATE TABLE legacy_removal_items (receipt_id TEXT NOT NULL REFERENCES legacy_removal_ledger(receipt_id) ON DELETE RESTRICT, object_identity TEXT NOT NULL, root_identity TEXT NOT NULL, root_path_digest TEXT NOT NULL, relative_path TEXT NOT NULL, content_digest TEXT NOT NULL, size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0), state TEXT NOT NULL CHECK (state IN ('expected','deleted','error')), error_digest TEXT, updated_at TEXT NOT NULL, PRIMARY KEY (receipt_id, object_identity));
+CREATE TABLE legacy_removal_items (receipt_id TEXT NOT NULL REFERENCES legacy_removal_ledger(receipt_id) ON DELETE RESTRICT, object_identity TEXT NOT NULL, root_identity TEXT NOT NULL, root_path_digest TEXT NOT NULL, relative_path TEXT NOT NULL, content_digest TEXT NOT NULL, size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0), state TEXT NOT NULL CHECK (state IN ('expected','removed','already_absent','error')), error_digest TEXT, updated_at TEXT NOT NULL, PRIMARY KEY (receipt_id, object_identity));
 
 -- Retained current control-plane indexes and triggers.
 
@@ -7152,6 +7191,44 @@ END;
 
 CREATE TRIGGER mutation_guard_failure_observation_records_update
 BEFORE UPDATE ON failure_observation_records
+WHEN (CASE WHEN EXISTS (
+        SELECT 1 FROM mutation_scope_records WHERE session_id = OLD.session_id
+    ) THEN openzyme_mutation_write_allowed(
+        OLD.session_id, 'canonical_sqlite'
+    ) <> 1 ELSE 0 END)
+ OR (CASE WHEN EXISTS (
+        SELECT 1 FROM mutation_scope_records WHERE session_id = NEW.session_id
+    ) THEN openzyme_mutation_write_allowed(
+        NEW.session_id, 'canonical_sqlite'
+    ) <> 1 ELSE 0 END)
+BEGIN
+    SELECT RAISE(ABORT, 'mutation write authority rejected');
+END;
+
+CREATE TRIGGER mutation_guard_private_diagnostic_records_delete
+BEFORE DELETE ON private_diagnostic_records
+WHEN (CASE WHEN EXISTS (
+        SELECT 1 FROM mutation_scope_records WHERE session_id = OLD.session_id
+    ) THEN openzyme_mutation_write_allowed(
+        OLD.session_id, 'canonical_sqlite'
+    ) <> 1 ELSE 0 END)
+BEGIN
+    SELECT RAISE(ABORT, 'mutation write authority rejected');
+END;
+
+CREATE TRIGGER mutation_guard_private_diagnostic_records_insert
+BEFORE INSERT ON private_diagnostic_records
+WHEN (CASE WHEN EXISTS (
+        SELECT 1 FROM mutation_scope_records WHERE session_id = NEW.session_id
+    ) THEN openzyme_mutation_write_allowed(
+        NEW.session_id, 'canonical_sqlite'
+    ) <> 1 ELSE 0 END)
+BEGIN
+    SELECT RAISE(ABORT, 'mutation write authority rejected');
+END;
+
+CREATE TRIGGER mutation_guard_private_diagnostic_records_update
+BEFORE UPDATE ON private_diagnostic_records
 WHEN (CASE WHEN EXISTS (
         SELECT 1 FROM mutation_scope_records WHERE session_id = OLD.session_id
     ) THEN openzyme_mutation_write_allowed(
@@ -11442,4 +11519,4 @@ BEGIN
     SELECT RAISE(ABORT, 'workspace revision scientific basis mismatch');
 END;
 
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;

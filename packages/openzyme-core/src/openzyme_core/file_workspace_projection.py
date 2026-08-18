@@ -262,14 +262,7 @@ class FileWorkspaceProjectionBuilder:
             if item.event_type.startswith(allowed_event_prefixes)
         )
         failure_observations = tuple(
-            {
-                "failure_id": item.failure_id,
-                "failure_class": item.failure_class.value,
-                "recoverability": item.recoverability.value,
-                "effect_certainty": item.effect_certainty.value,
-                "safe_summary": item.safe_summary,
-                "created_at": item.created_at,
-            }
+            item.to_dict()
             for item in self.repositories.failure_observations.list_by_session(session_id)
         )
         return FileWorkspacePublicProjection(

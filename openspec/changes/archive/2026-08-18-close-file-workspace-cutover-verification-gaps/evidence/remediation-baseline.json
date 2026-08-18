@@ -1,0 +1,94 @@
+{
+  "schema_id": "file_workspace_remediation_baseline@1",
+  "captured_at": "2026-08-18T10:31:13+08:00",
+  "repository_root": "/home/grtresy/VSCodeRepo/EnzymeDesign",
+  "head_revision": "b841ba01eaa0cd2dc32f8a54dc0adbaae25cdfdf",
+  "worktree_state": {
+    "clean": false,
+    "status_entries": [
+      "?? openspec/changes/close-file-workspace-cutover-verification-gaps/"
+    ],
+    "unrelated_user_changes_observed": false
+  },
+  "active_changes": [
+    {"change_id": "close-file-workspace-cutover-verification-gaps", "completed_tasks": 0, "total_tasks": 87, "status": "in-progress", "scope": "closure"},
+    {"change_id": "remove-artifact-control-plane-and-storage", "completed_tasks": 51, "total_tasks": 51, "status": "complete", "scope": "target"},
+    {"change_id": "migrate-historical-artifacts-to-git-lfs", "completed_tasks": 42, "total_tasks": 42, "status": "complete", "scope": "target"},
+    {"change_id": "cut-over-workspace-public-interfaces", "completed_tasks": 42, "total_tasks": 42, "status": "complete", "scope": "target"},
+    {"change_id": "establish-agent-capability-leases", "completed_tasks": 37, "total_tasks": 37, "status": "complete", "scope": "target"},
+    {"change_id": "establish-project-repository-bindings", "completed_tasks": 40, "total_tasks": 40, "status": "complete", "scope": "target"},
+    {"change_id": "replace-sandbox-artifact-boundaries-with-files", "completed_tasks": 37, "total_tasks": 37, "status": "complete", "scope": "target"},
+    {"change_id": "migrate-scientific-deliverables-to-files", "completed_tasks": 37, "total_tasks": 37, "status": "complete", "scope": "target"},
+    {"change_id": "execute-hpc-jobs-from-workspace-revisions", "completed_tasks": 45, "total_tasks": 45, "status": "complete", "scope": "target"},
+    {"change_id": "provision-isolated-executor-hpc-workspaces", "completed_tasks": 34, "total_tasks": 34, "status": "complete", "scope": "target"},
+    {"change_id": "migrate-research-report-and-task-handoffs-to-files", "completed_tasks": 29, "total_tasks": 29, "status": "complete", "scope": "target"},
+    {"change_id": "support-git-lfs-work-products", "completed_tasks": 27, "total_tasks": 27, "status": "complete", "scope": "target"},
+    {"change_id": "publish-and-sync-workspace-revisions", "completed_tasks": 42, "total_tasks": 42, "status": "complete", "scope": "target"},
+    {"change_id": "provision-independent-agent-git-workspaces", "completed_tasks": 45, "total_tasks": 45, "status": "complete", "scope": "target"},
+    {"change_id": "supersede-aox-hmm-artifact-cutover", "completed_tasks": 21, "total_tasks": 21, "status": "complete", "scope": "target"},
+    {"change_id": "establish-v3-executable-architecture-qualification", "completed_tasks": 94, "total_tasks": 94, "status": "complete", "scope": "excluded-active"},
+    {"change_id": "harden-compaction-authority-and-runtime-recovery", "completed_tasks": 18, "total_tasks": 18, "status": "complete", "scope": "excluded-active"}
+  ],
+  "target_change_order": [
+    "supersede-aox-hmm-artifact-cutover",
+    "provision-independent-agent-git-workspaces",
+    "publish-and-sync-workspace-revisions",
+    "support-git-lfs-work-products",
+    "migrate-research-report-and-task-handoffs-to-files",
+    "provision-isolated-executor-hpc-workspaces",
+    "execute-hpc-jobs-from-workspace-revisions",
+    "migrate-scientific-deliverables-to-files",
+    "replace-sandbox-artifact-boundaries-with-files",
+    "establish-project-repository-bindings",
+    "establish-agent-capability-leases",
+    "cut-over-workspace-public-interfaces",
+    "migrate-historical-artifacts-to-git-lfs",
+    "remove-artifact-control-plane-and-storage"
+  ],
+  "excluded_active_changes": [
+    "establish-v3-executable-architecture-qualification",
+    "harden-compaction-authority-and-runtime-recovery"
+  ],
+  "old_release_evidence": {
+    "root": "/home/grtresy/.local/state/openzyme/backups/file-workspace-cutover-20260817T154103Z",
+    "release_bundle": {
+      "path": "/home/grtresy/.local/state/openzyme/backups/file-workspace-cutover-20260817T154103Z/release-bundle-c13.json",
+      "file_sha256": "2b1ca3ce8d079d3445dac676208ef5d8939170c685f82396f504c02050881e65",
+      "schema_id": "file_workspace_release_receipt_bundle@1",
+      "source_revision": "64df75fddf2746d0442697f6f5903defbfdcf87c",
+      "source_identity_digest": "sha256:3f1755fc8649b48b0e819b13c6fa778e36725c82e35584231cd05e8f090a3e64",
+      "bundle_digest": "sha256:9a108a9138d7fdfe3544fed8a02a651a74afd234c67113bf51a1ad1fcd7fc11b"
+    },
+    "historical_migration_receipt": {
+      "path": "/home/grtresy/.local/state/openzyme/backups/file-workspace-cutover-20260817T154103Z/historical-migration-receipt.json",
+      "file_sha256": "7da50c6edd9eb032105b7517e1690299f70fef30307c870c44fc298bf5c08a9d"
+    },
+    "legacy_subsystem_removal_receipt": {
+      "path": "/home/grtresy/.local/state/openzyme/backups/file-workspace-cutover-20260817T154103Z/legacy-subsystem-removal-receipt.json",
+      "file_sha256": "a337ed9c09ebabc4a11d318ce7fcbb392f615315593ddeaf793fe363c811ff02",
+      "receipt_id": "legacy_removal_00291924c268c775ebbdcb368be6f0da",
+      "receipt_digest": "sha256:2a39be53e87abf74b001cb5c5cfbe0f8b4ba8ad742c12976664b74a75c469fc6",
+      "state": "complete"
+    },
+    "release_activation_evidence": {
+      "path": "/home/grtresy/.local/state/openzyme/backups/file-workspace-cutover-20260817T154103Z/release-activation-evidence.json",
+      "file_sha256": "742dad3b7610fa9fc6c24c150e573b5e91803fdfab1a5ea46196e35723be71b9"
+    },
+    "disposition": "superseded_candidate_pending_final_source_bound_receipts"
+  },
+  "prior_clean_head_mainline": {
+    "head_revision": "b841ba01eaa0cd2dc32f8a54dc0adbaae25cdfdf",
+    "evidence_root": "/tmp/openzyme-mainline-authoritative.Gr3yyi/evidence",
+    "plan_digest": "sha256:75752d34764f67a7dbb1d767c1f995ff6b4cf7449d2778e8691c5189767bf835",
+    "receipt_digest": "sha256:46cce213565fca6698c7226383b709131f1d34c32d08d723aada68f5741558fb",
+    "source_identity_digest": "sha256:ba50f86c9b07a486477ce8f0e950bfdedb985f5398333745343f6595797f4a44",
+    "qualification_scope": "pre-remediation baseline only"
+  },
+  "authority": {
+    "live_provider_authorized": false,
+    "real_hpc_authorized": false,
+    "external_message_authorized": false,
+    "push_or_pr_authorized": false,
+    "device_reset_authorized_after_inventory_and_quiescence": true
+  }
+}

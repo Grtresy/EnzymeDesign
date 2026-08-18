@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Local MCP server for SSH and Slurm-backed HPC execution"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+  "openzyme-domain",
+]
 
 [project.optional-dependencies]
 dev = [

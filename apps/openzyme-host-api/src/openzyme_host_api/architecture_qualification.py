@@ -51,6 +51,15 @@ REQUIRED_FAMILIES = (
     "wire-contract",
     "world-fidelity",
 )
+REQUIRED_CUTOVER_SCENARIO_IDS = frozenset(
+    {
+        "evidence-projection.fresh-offline-deployment-proof",
+        "identity-semantics.scientific-file-finalization",
+        "operator-retirement.web-ui-file-workspace",
+        "reconciliation.workspace-job-response-loss",
+        "world-fidelity.diagnostic-publication-cleanup",
+    }
+)
 
 REQUIRED_P0_TRIGGERS = (
     "admission-bypass",
@@ -862,10 +871,18 @@ def validate_invariant_registry_bytes(
         allow_empty=False,
     )
     external_ports = _validate_external_ports(registry["external_ports"])
+    if not external_ports:
+        raise ArchitectureQualificationRegistryError(
+            "current qualification registry must declare its external ports"
+        )
     p0_triggers = _validate_p0_triggers(registry["p0_triggers"])
     boundaries = _validate_boundary_relations(
         registry["boundary_relations"], repo_root=root
     )
+    if not boundaries:
+        raise ArchitectureQualificationRegistryError(
+            "current qualification registry must declare resolved boundary relations"
+        )
     invariants = _validate_invariants(
         registry["invariants"],
         repo_root=root,
@@ -891,6 +908,12 @@ def validate_invariant_registry_bytes(
     if required_scenario_ids != tuple(scenarios):
         raise ArchitectureQualificationRegistryError(
             "required_scenario_ids must equal the exact registered scenario set"
+        )
+    missing_cutover = sorted(REQUIRED_CUTOVER_SCENARIO_IDS - set(scenarios))
+    if missing_cutover:
+        raise ArchitectureQualificationRegistryError(
+            "required cutover production scenarios are missing: "
+            f"{missing_cutover}"
         )
     _validate_invariant_scenario_closure(invariants, scenarios)
     digest = f"sha256:{hashlib.sha256(content).hexdigest()}"

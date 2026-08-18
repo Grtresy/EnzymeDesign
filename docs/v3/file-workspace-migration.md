@@ -2,12 +2,17 @@
 
 ## 当前状态
 
-当前源码已经实现最终文件/修订架构、final-only fresh-install baseline、离线历史 Git/LFS
-迁移器、独立 verifier、receipt-gated schema rebuild 和旧字节删除器。它们仍需完成统一
-focused、strict OpenSpec、静态扫描和 mainline 验收后，才能形成仓库层 completion evidence。
+当前源码已经实现文件/修订架构、final-only schema、离线历史 Git/LFS 迁移器、独立 verifier、
+receipt-gated schema rebuild 和旧字节删除器。2026-08-17 曾对本机一个明确解析的 local deployment
+执行零历史对象的离线迁移/删除，并生成 `LegacySubsystemRemovalReceipt`。该证据树绑定旧源码
+`64df75fddf2746d0442697f6f5903defbfdcf87c` 与
+`sha256:3f1755fc8649b48b0e819b13c6fa778e36725c82e35584231cd05e8f090a3e64`，不能证明当前
+`b841ba01eaa0cd2dc32f8a54dc0adbaae25cdfdf` 或整改后的最终源码。
 
-没有对任何真实部署运行历史迁移或物理删除，也没有生产 `LegacySubsystemRemovalReceipt`。
-源码可用不等于某个部署已完成切换，更不授权对未指定数据库或 storage 执行命令。
+本次 closure 已把旧 release/per-change/removal receipts 登记为待 supersede，并重开十四个 change 的
+最终收据任务。本设备随后只允许按已授权的 fresh-install reset 清单删除精确归属 OpenZyme 的旧数据库、
+runtime records、旧 storage、收据、缓存和备份；源码、Git/OpenSpec 历史、当前仓库 Git LFS 与任何
+未解析或非 OpenZyme 路径不在删除范围。旧证据在删除前只用于审计，不再充当最终 acceptance。
 
 ## 公开切换
 
@@ -24,8 +29,9 @@ focused、strict OpenSpec、静态扫描和 mainline 验收后，才能形成仓
 ## Fresh install 与普通启动
 
 fresh empty SQLite 只执行 `001_file_workspace_final.sql`，写入
-`openzyme_file_workspace_final@1` 和 exact schema manifest digest。重启时必须重算并匹配
-同一 manifest。
+`openzyme_file_workspace_final@2`、exact schema manifest digest 和 deterministic typed
+`FreshInstallBootstrapReceipt`。重启时必须重算并匹配同一 manifest 与 bootstrap receipt digest。
+fresh proof 不伪造 offline removal ledger；offline proof 继续要求完整且逐项闭合的独立 ledger。
 
 以下输入在任何 mutation 前拒绝：
 
@@ -33,9 +39,12 @@ fresh empty SQLite 只执行 `001_file_workspace_final.sql`，写入
 - legacy table/column/trigger/index 或未知 `user_version`；
 - final schema manifest drift；
 - `offline_removal_incomplete`；
-- removal receipt 与 deployment state 不一致。
+- fresh bootstrap receipt 或 offline removal receipt 与 deployment state 不一致；
+- offline state 缺少 ledger、ledger 不完整，或 expected/deleted/already-absent/error set 不闭合。
 
 普通 Host 不加载旧 repository/storage adapter，也不运行离线 operator。
+startup failure 必须报告 proof kind、expected/observed generation/manifest/receipt digest、ledger closure、
+`mutation_applied=false` 与 `diagnostic_id`，不得静默初始化、补空 ledger 或选择另一条迁移路径。
 
 ## 阶段一：冻结历史迁移
 
@@ -95,9 +104,10 @@ set，只能处理同一 receipt 的剩余 identity，不重新比较旧库或�
 
 ## 恢复
 
-备份只能恢复到隔离的 legacy environment，用于审计、重跑 inventory 或恢复失败的离线
-操作。不得将旧 schema、storage、tool 或 API 重新接入 current runtime。最终 removal receipt
-完成后，current product 只保留 historical Git/LFS refs、mapping/receipt 和 standalone verifier。
+在本次 fresh-install reset 执行前，旧备份只能恢复到隔离 legacy environment，用于审计或核对
+删除清单；不得将旧 schema、storage、tool 或 API 重新接入 current runtime。用户已明确要求本机
+旧记录与备份一并删除，因此 reset 完成后这些本机副本不可恢复；可保留的历史只限源码仓库中的
+Git/OpenSpec 历史和不属于删除目标的当前 repository-service Git/LFS。任何目标归属不确定时停止该项。
 
 ## 验收
 
@@ -110,5 +120,13 @@ set，只能处理同一 receipt 的剩余 identity，不重新比较旧库或�
 - core/Host/CLI/SDK/runner/UI focused tests；
 - 14 个 change 的 strict OpenSpec validation；
 - architecture qualification 与 `./scripts/check-mainline.sh`。
+
+Web UI 验收必须同时运行 file-workspace contract、client、state、controller 和 view 五层测试，并
+执行 production build。changed-path 分页必须绑定 exact workspace/generation/continuation；stale async
+response 详细失败，不能覆盖当前 state 或静默改用全量列表。
+
+所有上述验收均为 non-live。它们不访问 provider、真实 SSH/Slurm/HPC 或浏览器外部服务，也不授权
+设备删除；设备 reset 必须另行完成精确 inventory、quiescence、逐项删除、零残留扫描和
+`DeviceFreshInstallResetReceipt`。
 
 隔离 fixture 回执只是测试证据，不能冒充真实部署 receipt。

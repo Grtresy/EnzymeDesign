@@ -7,6 +7,9 @@ from pathlib import Path
 _FORBIDDEN_SCENARIO_NAMES = frozenset(
     {
         "CoreRepositories",
+        "MagicMock",
+        "Mock",
+        "SimpleNamespace",
         "SQLiteRepositoryProvider",
         "build_local_eval_foundation",
         "v3_legacy_repositories_for_tests",
@@ -17,6 +20,12 @@ _FORBIDDEN_SCENARIO_MODULES = frozenset(
         "openzyme_host_api.foundation",
         "openzyme_core.repositories",
         "sqlite3",
+        "httpx",
+        "paramiko",
+        "requests",
+        "socket",
+        "subprocess",
+        "urllib.request",
     }
 )
 

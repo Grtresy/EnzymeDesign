@@ -1,0 +1,50 @@
+{
+  "schema_id": "file_workspace_current_surface_audit@1",
+  "captured_at": "2026-08-18T10:45:00+08:00",
+  "scope": {
+    "included": [
+      "AGENTS.md",
+      "apps/*/src",
+      "packages/*/src",
+      "app/package pyproject entrypoints",
+      "workflow manifests",
+      "final SQLite baseline",
+      "current app config and README files",
+      "docs/OpenZyme架构设计.md",
+      "docs/v3 stable documents"
+    ],
+    "excluded_as_read_only_history": [
+      "openspec/changes except the active closure audit itself",
+      "openspec/changes/archive",
+      "docs/v3/architecture-proposals",
+      "docs/v3/sessions",
+      "frozen AOX campaign and R-series records",
+      "tests whose only purpose is stale-contract rejection"
+    ]
+  },
+  "automated_retired_surface_scan": {
+    "schema": "openzyme.v3.retired-surface-audit.v2",
+    "inventory_count": 237,
+    "inventory_digest": "recorded inside report digest",
+    "violation_count": 0,
+    "scan_error_count": 0,
+    "report_digest": "sha256:548ab38116242592d55e8fcf2a7729c731c605f451f8df87d43c90769baf18fd"
+  },
+  "remaining_current_pattern_hits": [
+    {"location": "AGENTS.md:76", "classification": "negative_current_rule", "violation": false, "reason": "Explicitly forbids Host paths, generic catalog, implicit staging, and expected-output synthesis."},
+    {"location": "docs/OpenZyme架构设计.md:146", "classification": "negative_current_rule", "violation": false, "reason": "Defines no-output success without synthetic files."},
+    {"location": "docs/v3/README.md:30-34", "classification": "negative_current_rule", "violation": false, "reason": "Stable index rejects catalog/staging and expected-output contracts."},
+    {"location": "docs/v3/00-harness-doctrine.md:57", "classification": "negative_current_rule", "violation": false, "reason": "Forbids hidden copies, automatic staging, and generic catalog identity."},
+    {"location": "docs/v3/03-capability-engines.md:35-40", "classification": "negative_current_rule", "violation": false, "reason": "Defines revision-to-Gitless-compute and rejects expected-output scanning."},
+    {"location": "docs/v3/07-runtime-hpc-reliability.md:41-47", "classification": "negative_current_rule", "violation": false, "reason": "Defines owner-workspace results and explicitly rejects declared-output enumeration."},
+    {"location": "docs/v3/execution-pipeline-docs/README.md:3-6", "classification": "negative_current_rule", "violation": false, "reason": "Executor-facing documentation rejects the retired catalog/stage/fetch model."},
+    {"location": "packages/openzyme-core/src/openzyme_core/file_workspace_contract.py:47-61", "classification": "closed_rejection_sentinel", "violation": false, "reason": "Current boundary rejects retired request keys before mutation."},
+    {"location": "apps/mcp-hpc-runner/src/mcp_hpc_runner/models.py:9-26", "classification": "closed_rejection_sentinel", "violation": false, "reason": "Runner RunSpec parser rejects retired fields as unknown/stale contract."},
+    {"location": "apps/mcp-hpc-runner/config/hpc_runner.example.toml:61-65", "classification": "negative_config_comment", "violation": false, "reason": "Comment documents that the current RunSpec rejects retired inputs."},
+    {"location": "apps/mcp-hpc-runner/README.md:20-25", "classification": "negative_current_rule", "violation": false, "reason": "Runner public documentation rejects declared output lists and old staging references."},
+    {"location": "apps/mcp-hpc-runner/设计说明书.md:15", "classification": "negative_current_rule", "violation": false, "reason": "Design document lists retired input forms as rejected."},
+    {"location": "apps/mcp-hpc-runner/docs/opaque-run-id-caller-audit.md:44", "classification": "historical_audit_statement", "violation": false, "reason": "Describes removal of an old storage map; it is not a callable or normative current contract."}
+  ],
+  "current_violation_count": 0,
+  "conclusion": "Current source, config, prompt/reflection-bearing source, SDK, UI, runner, and stable documents expose no generic artifact catalog, implicit staging/fetch, HpcStageRef, or declared expected-output product contract. Remaining terms are closed rejection sentinels or explicit negative documentation."
+}

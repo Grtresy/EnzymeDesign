@@ -4,11 +4,15 @@ from dataclasses import asdict
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-import hashlib
-import json
 from pathlib import PurePosixPath
 import re
 from typing import Any
+
+from .workspace_job_wire import canonical_workspace_job_wire_digest
+from .workspace_job_wire import parse_external_job_handle
+from .workspace_job_wire import parse_external_job_observation
+from .workspace_job_wire import parse_workspace_job_cancellation_intent
+from .workspace_job_wire import parse_workspace_job_cancellation_receipt
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}")
@@ -17,14 +21,7 @@ _OID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 
 
 def canonical_workspace_job_digest(value: object) -> str:
-    encoded = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+    return canonical_workspace_job_wire_digest(value)
 
 
 def _serialize(value: object) -> object:
@@ -869,34 +866,7 @@ class ExternalJobHandle:
     schema_version: str = "external_job_handle@1"
 
     def __post_init__(self) -> None:
-        for name in (
-            "handle_id",
-            "execution_id",
-            "operation_id",
-            "dispatch_id",
-            "runner_run_id",
-            "job_root_token",
-            "workspace_id",
-        ):
-            _require_identifier(name, getattr(self, name))
-        if (
-            not isinstance(self.remote_workspace_generation, int)
-            or isinstance(self.remote_workspace_generation, bool)
-            or self.remote_workspace_generation < 1
-        ):
-            raise ValueError("remote_workspace_generation must be positive")
-        _require_oid("source_commit", self.source_commit)
-        for name in (
-            "target_profile_digest",
-            "source_manifest_digest",
-            "acceptance_receipt_digest",
-        ):
-            _require_digest(name, getattr(self, name))
-        if not isinstance(self.raw_handle_ciphertext, str) or not self.raw_handle_ciphertext:
-            raise ValueError("raw_handle_ciphertext is required")
-        _require_aware_timestamp("accepted_at", self.accepted_at)
-        if self.handle_digest != canonical_workspace_job_digest(self.payload):
-            raise ValueError("external job handle digest mismatch")
+        parse_external_job_handle(_record(self, self.schema_version))
 
     @property
     def payload(self) -> dict[str, object]:
@@ -950,29 +920,7 @@ class ExternalJobObservation:
     schema_version: str = "external_job_observation@1"
 
     def __post_init__(self) -> None:
-        for name in ("observation_id", "handle_id", "execution_id", "dispatch_id"):
-            _require_identifier(name, getattr(self, name))
-        if (
-            not isinstance(self.observation_index, int)
-            or isinstance(self.observation_index, bool)
-            or self.observation_index < 1
-        ):
-            raise ValueError("observation_index must be positive")
-        if self.exit_code is not None and (
-            not isinstance(self.exit_code, int) or isinstance(self.exit_code, bool)
-        ):
-            raise ValueError("exit_code must be an integer")
-        if self.state.is_terminal != (self.terminal_receipt_digest is not None):
-            raise ValueError("terminal observation receipt presence is inconsistent")
-        if self.terminal_receipt_digest is not None:
-            _require_digest("terminal_receipt_digest", self.terminal_receipt_digest)
-        for name in ("bounded_stdout", "bounded_stderr"):
-            value = getattr(self, name)
-            if value is not None and (not isinstance(value, str) or len(value) > 8192):
-                raise ValueError(f"{name} exceeds its bounded diagnostic contract")
-        _require_aware_timestamp("observed_at", self.observed_at)
-        if self.observation_digest != canonical_workspace_job_digest(self.payload):
-            raise ValueError("external job observation digest mismatch")
+        parse_external_job_observation(_record(self, self.schema_version))
 
     @property
     def payload(self) -> dict[str, object]:
@@ -1006,22 +954,7 @@ class WorkspaceJobCancellationIntent:
     schema_version: str = "workspace_job_cancellation_intent@1"
 
     def __post_init__(self) -> None:
-        for name in ("cancellation_id", "execution_id", "handle_id", "idempotency_key"):
-            _require_identifier(name, getattr(self, name))
-        if (
-            not isinstance(self.execution_state_version, int)
-            or isinstance(self.execution_state_version, bool)
-            or self.execution_state_version < 1
-        ):
-            raise ValueError("execution_state_version must be positive")
-        if (
-            not isinstance(self.execution_fencing_token, int)
-            or isinstance(self.execution_fencing_token, bool)
-            or self.execution_fencing_token < 0
-        ):
-            raise ValueError("execution_fencing_token is invalid")
-        _require_digest("reason_digest", self.reason_digest)
-        _require_aware_timestamp("created_at", self.created_at)
+        parse_workspace_job_cancellation_intent(self.payload)
         if self.intent_digest != canonical_workspace_job_digest(self.payload):
             raise ValueError("workspace job cancellation intent digest mismatch")
 
@@ -1056,16 +989,7 @@ class WorkspaceJobCancellationReceipt:
     schema_version: str = "workspace_job_cancellation_receipt@1"
 
     def __post_init__(self) -> None:
-        for name in ("receipt_id", "cancellation_id", "handle_id"):
-            _require_identifier(name, getattr(self, name))
-        if self.cancellation_requested is not True:
-            raise ValueError("cancellation receipt must prove request delivery")
-        if self.terminal_settlement_proven is not False:
-            raise ValueError("cancellation receipt cannot prove terminal settlement")
-        _require_digest("backend_receipt_digest", self.backend_receipt_digest)
-        _require_aware_timestamp("created_at", self.created_at)
-        if self.receipt_digest != canonical_workspace_job_digest(self.payload):
-            raise ValueError("workspace job cancellation receipt digest mismatch")
+        parse_workspace_job_cancellation_receipt(_record(self, self.schema_version))
 
     @property
     def payload(self) -> dict[str, object]:

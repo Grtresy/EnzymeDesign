@@ -14,10 +14,10 @@ live scientific workload，也不会把 non-scientific transport soak 变成 `rx
    升级并通过 schema/trigger verification。不要把未知旧库交给启动时猜测修复。
 2. 运行 change 的 migration、repository、fault、security 与 non-live gates。
 3. 保持 `rxx` frozen；runner 仅允许 fake/local soak，real SSH 需单独显式批准。
-4. 保存当前 effective config digest、deployment id、runner artifact root 与 SQLite backup
+4. 保存当前 effective config digest、deployment id、runner control/job ledger、workspace/result roots 与 SQLite backup
    identity。不要在文档或 public log 中记录 credential、target、Host path 或 ControlPath。
 5. 确认 Host 与 runner 均为单 active deployment owner；不要让两个进程共享同一 runner
-   artifact root 或 SQLite writer role。
+   control/job ledger、workspace/result root 或 SQLite writer role。
 
 ## 3. 推荐启用顺序
 
@@ -153,7 +153,7 @@ unclosed owned master、direct ambiguity 或 dispatch count 大于一都是 NO-G
 3. 调用旧 server bounded close。只清理 proven-owned master；保留 attempt journal、RunSpec、
    manifest、handle、output evidence 与 quarantine records。
 4. 只有 active attempt audit 为零后，才以 `ssh_transport.mode="disabled"` 启动新 deployment。
-5. 不得让 disabled deployment 打开仍由旧 process 拥有的 artifact root，也不得用 legacy
+5. 不得让 disabled deployment 打开仍由旧 process 拥有的 control/job ledger、workspace/result root，也不得用 legacy
    one-shot SSH 接管 in-flight attempt。
 
 ### 6.2 Durable operation admission

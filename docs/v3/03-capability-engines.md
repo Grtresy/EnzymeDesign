@@ -32,6 +32,12 @@ transcript 或 engine document 不是 file publication，也不自动成为 scie
 executor 先在 native workspace 写源文件、形成 clean checkpoint/publication，再用 exact revision
 request 提交 job。SDK 不提供通用 register/materialize/stage/fetch catalog。
 
+job request 必须携带 exact workspace generation、source ref、commit/tree、Git LFS closure、clean
+observation、cwd/command/resources/target policy、execution identity 和 absolute deadline。Host supervisor
+将修订准备为 Gitless compute tree；runner 只拥有 ledger、opaque handle、observation/cancel/terminal
+receipt，不读取 Host checkout，也不扫描或声明 `expected_outputs`。结果文件留在 owner workspace，
+由 agent 显式检查、提交和选择是否发布。
+
 `scientific.deliverables.finalize` 只接收 published revision path、producer adoption 和 format contract，
 Host fresh-read immutable bytes 后形成 validation receipt。
 
@@ -46,6 +52,11 @@ Podman/agent capsule 或局部 sandbox 是 process isolation 实现，不是共�
 通用 provider effect 由 `ControlledOperationExecution` 监督；HPC 由 revision-bound job lifecycle 监督。
 引擎只提交 typed request 并观察 durable outcome。`dispatch_in_doubt` 只允许 reconcile；deadline 到期
 不允许换 request identity 或重复 submit。
+
+engine boundary 必须把原始异常保留为 Host 私有 diagnostic，并公开同一 `diagnostic_id` 的安全结构化
+failure observation。任何 broad catch 都必须位于明确的 semantic boundary，区分确定的 pre-effect
+failure 与 possible-effect failure，并以 `raise ... from exc` 保留 cause；不得静默 return、默认重试、
+改选 provider/endpoint/mode 或把观察失败标成业务失败。
 
 ## Domain specialization
 

@@ -21,9 +21,75 @@ function workspaceResponse() {
       external_jobs: [],
       external_job_results: [],
       capability_leases: [],
+      failure_observations: [],
     },
   };
 }
+
+test("changed-path pagination binds the current workspace generation", async () => {
+  const originalFetch = globalThis.fetch;
+  let request = null;
+  globalThis.fetch = async (url, options = {}) => {
+    request = { url, options };
+    return {
+      ok: true,
+      async json() {
+        return {
+          schema_version: "workspace_changed_paths_page@1",
+          workspace_id: "workspace-1",
+          workspace_generation: 7,
+          paths: ["scientific/result.json"],
+          continuation: null,
+          source_truncated: false,
+        };
+      },
+    };
+  };
+  try {
+    const page = await new HostApiClient().getV3WorkspaceChangedPathsPage(
+      "sess_001",
+      "workspace-1",
+      7,
+      "observation-1:100",
+    );
+    assert.match(
+      request.url,
+      /^\/v3\/sessions\/sess_001\/workspace\/changed-paths\?workspace_id=workspace-1&continuation=observation-1%3A100$/,
+    );
+    assert.deepEqual(page.paths, ["scientific/result.json"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("changed-path pagination rejects stale workspace identity", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        schema_version: "workspace_changed_paths_page@1",
+        workspace_id: "workspace-1",
+        workspace_generation: 6,
+        paths: [],
+        continuation: null,
+      };
+    },
+  });
+  try {
+    await assert.rejects(
+      new HostApiClient().getV3WorkspaceChangedPathsPage(
+        "sess_001",
+        "workspace-1",
+        7,
+        "observation-1:100",
+      ),
+      /workspace identity is stale/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 test("buildHostPaths exposes the v3 session workspace surface", () => {
   assert.deepEqual(buildHostPaths("proj_001", "sess_001"), {

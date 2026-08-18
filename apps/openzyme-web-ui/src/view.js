@@ -124,7 +124,7 @@ export function renderTeammateTrace(workspace, agentId) {
   return `<div class="readonly-banner"><strong>${escapeHtml(agent.name ?? agent.agent_id)}</strong><span>${escapeHtml(agent.role)} · ${escapeHtml(agent.status)} · read-only member state</span></div>`;
 }
 
-function renderChangedPaths(workspace) {
+function renderChangedPaths(workspace, viewState = {}) {
   const statuses = workspace.workspace_status ?? [];
   return statuses.map((status) => `
     <section>
@@ -141,16 +141,18 @@ function renderChangedPaths(workspace) {
         "No changed paths in the bounded status page.",
       )}
       ${status.changed_paths_truncated ? `<p class="status-line">More paths exist; request the next bounded page for this generation.</p>` : ""}
+      ${status.changed_paths_continuation ? `<button type="button" class="button-secondary" data-action="load-more-changed-paths" data-workspace-id="${escapeHtml(status.workspace_id)}" ${viewState.pendingWorkspacePathId === status.workspace_id ? "disabled" : ""}>Load more changed paths</button>` : ""}
+      ${(viewState.errors?.changedPaths ?? {})[status.workspace_id] ? `<p class="error-copy" role="alert">${escapeHtml(viewState.errors.changedPaths[status.workspace_id])}</p>` : ""}
     </section>`).join("");
 }
 
-export function renderV3Outputs(workspace) {
+export function renderV3Outputs(workspace, viewState = {}) {
   const privateRevisions = workspace.private_revisions ?? [];
   const publications = workspace.published_revisions ?? [];
   const reports = workspace.reports ?? [];
   const owner = workspace.executor_owner_workspace;
   return `<div class="stack">
-    ${renderChangedPaths(workspace) || `<p class="empty-copy">No agent workspace status yet.</p>`}
+    ${renderChangedPaths(workspace, viewState) || `<p class="empty-copy">No agent workspace status yet.</p>`}
     <section><h3>Private revisions</h3>${renderRecordList(privateRevisions, (revision) => `<li><strong>${escapeHtml(digestPrefix(revision.commit))}</strong><span>${escapeHtml(revision.workspace_id)} · generation ${escapeHtml(revision.workspace_generation)} · private</span><small>tree ${escapeHtml(digestPrefix(revision.tree))}</small></li>`, "No private committed revision yet.")}</section>
     <section><h3>Immutable publications</h3>${renderRecordList(publications, (publication) => `<li><strong>${escapeHtml(publication.publication_ref)}</strong><span>${escapeHtml(digestPrefix(publication.commit))} · ${escapeHtml(publication.publisher_agent_member_id)}</span><small>manifest ${escapeHtml(digestPrefix(publication.manifest_digest))}</small></li>`, "No immutable publication yet.")}</section>
     <section><h3>Reports</h3>${renderRecordList(reports, (report) => `<li><strong>${escapeHtml(report.title ?? report.report_id)}</strong><span>${escapeHtml(report.status)} · version ${escapeHtml(report.report_version)}</span><small>${escapeHtml(report.content_ref_id ?? "no source ref")}</small></li>`, "No report yet.")}</section>
@@ -215,7 +217,7 @@ export function renderInspectorContent(viewState) {
     team: renderV3Delegation,
     tasks: renderV3TaskBoard,
     lanes: renderV3Lanes,
-    outputs: renderV3Outputs,
+    outputs: (currentWorkspace) => renderV3Outputs(currentWorkspace, viewState),
     evidence: renderV3ScientificEvidence,
     attempts: renderV3ScientificAttempts,
     capabilities: renderV3Capabilities,

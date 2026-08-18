@@ -31,13 +31,18 @@ payload 不携带 `.git`、repository credential、LFS endpoint、object-store l
 `dispatch_in_doubt`，只能 query/reconcile exact occurrence。
 
 observe、logs、cancel 都必须匹配 occurrence credential 和 opaque handle。cancel intent 不等于 backend 已
-取消；只有 receipt/observation 可更新 effect certainty。
+取消；cancellation receipt 使用唯一 canonical wire contract，必须包含 `receipt_id`、cancellation/handle
+identity、requested/settlement facts、backend receipt digest、时间与完整 receipt digest。只有经过 exact
+parser/serializer 校验的 receipt/observation 可更新 effect certainty。dispatch、observe、cancel 与
+reconcile replay 在返回持久化对象前重新比对当前 RunSpec、dispatch intent、handle 和 digest；不匹配时
+在 backend action 前失败。
 
 ## Results
 
-terminal success 形成 `WorkspaceJobResult`，可选择绑定 result revision。expected outputs 必须由 declared
-contract 与 exact result revision 验证。no-expected-output job 可在没有文件时成功，但仍需要 terminal
-observation、result digest 和 lifecycle receipt；不得创建占位文件。
+terminal success 形成 `WorkspaceJobResult`，可选择绑定 result revision。runner 不声明、枚举或验证
+`expected_outputs`；结果文件留在 owner executor workspace，由 agent 通过原生 SSH/rsync/scp 检查并
+显式形成新的 clean result revision。job 可以在没有结果文件时成功，但仍需要 terminal observation、
+result digest 和 lifecycle receipt；不得创建占位文件、自动 fetch/commit/publish 或从文件存在推断成功。
 
 ## Restart
 
@@ -53,5 +58,10 @@ quiescence receipt。空队列、runtime idle、HTTP 返回和 timeout 都不是
 ## 验证
 
 non-live tests 应覆盖 duplicate dispatch、pre-effect failure、dispatch-in-doubt、restart fencing、deadline、
-cancel ambiguity、no-output success、cross-owner/generation denial 和 locator redaction。real SSH/HPC 只在独立
-opt-in 与明确授权下执行。
+cancel ambiguity、receipt-id/digest tamper、replay handle drift、no-output success、cross-owner/generation denial
+和 locator redaction。每个失败同时断言稳定公开诊断、私有 cause chain、mutation/fallback facts 与零
+replacement dispatch。real SSH/HPC 只在独立 opt-in 与明确授权下执行。
+
+运维验收还必须检查 explicit cleanup：主操作和 cleanup 同时失败时按顺序保留两个 cause；effect 已成功
+但临时路径残留时记录 `cleanup_incomplete`、exact temporary identity 与 `mutation_applied=true`，不得
+静默删除诊断或回退成 `no_effect`。
