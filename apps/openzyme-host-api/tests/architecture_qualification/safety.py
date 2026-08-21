@@ -53,7 +53,10 @@ def validate_qualification_scenario_sources(
         for node in ast.walk(tree):
             if isinstance(node, ast.Name) and node.id in _FORBIDDEN_SCENARIO_NAMES:
                 violations.append(f"{relative}:{node.lineno}:name:{node.id}")
-            elif isinstance(node, ast.Attribute) and node.attr in _FORBIDDEN_SCENARIO_NAMES:
+            elif (
+                isinstance(node, ast.Attribute)
+                and node.attr in _FORBIDDEN_SCENARIO_NAMES
+            ):
                 violations.append(f"{relative}:{node.lineno}:attribute:{node.attr}")
             elif isinstance(node, ast.Import):
                 for alias in node.names:

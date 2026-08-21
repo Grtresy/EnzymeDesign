@@ -7,21 +7,30 @@ The repository now uses a V3-only OpenZyme mainline.
 
 ## Mainline
 
-Current root workspace members:
+The root Python workspace remains restricted to `apps/` and `packages/`. The exact current member list, component
+kind, namespace, dependencies, composition owner, import graph, and migration state are source-bound by
+[`docs/v3/architecture/source-bound-baseline.json`](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/architecture/source-bound-baseline.json)
+and checked from the live `pyproject.toml` files. `distributions/` contains versioned composition configuration; it is
+not a Python workspace root.
 
-- `apps/mcp-hpc-runner`
-- `apps/openzyme-host-api`
-- `apps/openzyme-host-cli`
-- `packages/openzyme-domain`
-- `packages/openzyme-execution`
-- `packages/openzyme-research`
-- `packages/openzyme-runtime`
-- `packages/openzyme-tools`
+The former mixed `openzyme-domain`/`openzyme-core`/`openzyme-runtime` authority packages have been retired. The
+active workspace is organized as:
+
+- `openzyme-contracts`, `openzyme-extension-spi`, and `openzyme-kernel` for implementation-free contracts and the
+  collaboration/composition kernel;
+- `openzyme-store-*`, `openzyme-workspace-*`, `openzyme-runtime-*`, and `openzyme-process-*` Adapters;
+- `openzyme-research`, `openzyme-reporting`, `openzyme-science`, `openzyme-compute`, and `openzyme-hpc` Plugins;
+- `enzymedesign-*` Product Plugins;
+- `openzyme-standard` and EnzymeDesign Distribution manifests.
+
+An installed wheel never becomes an ambient capability. Only the exact, versioned Distribution manifest and a
+verified deployment epoch activate selected Adapters and Plugins for new Sessions.
 
 Mainline reference documents:
 
 - [docs/OpenZyme架构设计.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/OpenZyme架构设计.md)
 - [docs/v3/README.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/README.md)
+- [ADR-0001: What is OpenZyme?](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/adr/0001-what-is-openzyme.md)
 
 Current retained assets:
 
@@ -51,6 +60,7 @@ Run V1 commands from `legacy/v1`, not from the repository root.
 
 ```bash
 uv sync
+uv run python scripts/check-openzyme-architecture.py
 ./scripts/check-mainline.sh
 uv run python -m openzyme_host_api.evals
 cd apps/openzyme-web-ui && npm test && npm run build
@@ -84,7 +94,7 @@ Intended use:
 - `OPENZYME_LLM_MAX_RETRIES=N` means one initial provider call plus at most `N` runtime-managed retries; provider-client internal retries stay disabled. `OPENZYME_LLM_MAX_TOKENS` and `OPENZYME_LLM_<PURPOSE>_*` can override output budget, timeout, retries, and structured-output policy for `intake`, `research`, `design`, `report_review`, `v3_harness_loop`, and deep-research calls.
 - `OPENZYME_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS` and its per-purpose/live-test variants have been removed; use the corresponding `MAX_RETRIES` setting. The legacy-named `STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS` currently controls the shared runtime retry backoff for both structured and tool-calling requests.
 - `OPENZYME_TEST_LIVE_LLM_*` lets live LLM smoke tests use a different timeout/retry budget from the main app runtime.
-- Explicit live-test and diagnostic calls to MICU share a persistent SQLite token ledger at `OPENZYME_TEST_LIVE_LLM_TOKEN_LEDGER_PATH`. Its 500,000,000-token ceiling is compiled in and cannot be raised by environment configuration; this limits OpenZyme test calls to MICU and is unrelated to Codex usage. Existing 100M ledgers remain at 100M until an operator explicitly runs `uv run python -m openzyme_runtime.live_token_ledger_cli --migrate-legacy-fixed-policy`; that exact, transactional migration preserves all attempts and charged usage, while noncanonical lower limits fail closed. Every provider attempt reserves a conservative input upper bound (serialized full-request UTF-8 byte length plus fixed overhead, counted one byte per token) plus configured output tokens before the call, then reconciles only when provider input/output usage is available. Missing usage, provider failures, and structured responses without usage retain the conservative estimate. Any provider-reported overage is recorded explicitly and leaves subsequent calls fail-closed. Prompts and credentials are never stored. Inspect totals grouped by scenario/model with `uv run python -m openzyme_runtime.live_token_ledger_cli`; add `--attempts 20` for recent attempt metadata.
+- Explicit live-test and diagnostic calls to MICU share a persistent SQLite token ledger at `OPENZYME_TEST_LIVE_LLM_TOKEN_LEDGER_PATH`. Its 500,000,000-token ceiling is compiled in and cannot be raised by environment configuration; this limits OpenZyme test calls to MICU and is unrelated to Codex usage. Existing 100M ledgers remain at 100M until an operator explicitly runs `uv run python -m openzyme_runtime_llm.live_token_ledger --migrate-legacy-fixed-policy`; that exact, transactional migration preserves all attempts and charged usage, while noncanonical lower limits fail closed. Every provider attempt reserves a conservative input upper bound (serialized full-request UTF-8 byte length plus fixed overhead, counted one byte per token) plus configured output tokens before the call, then reconciles only when provider input/output usage is available. Missing usage, provider failures, and structured responses without usage retain the conservative estimate. Any provider-reported overage is recorded explicitly and leaves subsequent calls fail-closed. Prompts and credentials are never stored. Inspect totals grouped by scenario/model with `uv run python -m openzyme_runtime_llm.live_token_ledger`; add `--attempts 20` for recent attempt metadata.
 
 The HPC runner keeps its own independent TOML config under `apps/mcp-hpc-runner/config/` and is not folded into the main OpenZyme `.env` settings.
 
@@ -97,6 +107,21 @@ Use the repository-level verification script as the default mainline gate:
 ```
 
 It runs Python lint, Python non-integration tests, and the `openzyme-web-ui` Node test/build steps.
+
+The architecture baseline gate is separate and read-only:
+
+```bash
+uv run python scripts/check-openzyme-architecture.py
+```
+
+该 gate 同时执行
+[`component-boundary-policy.json`](docs/v3/architecture/component-boundary-policy.json)，检查 component kind、
+目标依赖方向、forbidden dependency/vocabulary、Distribution selection、临时重导出账本和
+`legacy/`、`old/`、归档 OpenSpec 的 active path 隔离。
+
+It recomputes component metadata, Python import edges, Distribution scaffold policy, SQLite object ownership, and
+source-to-document traceability. A green result is a migration consistency check, not an `@2` deployment cutover or
+live-provider/HPC proof.
 
 ## Live Test Commands
 

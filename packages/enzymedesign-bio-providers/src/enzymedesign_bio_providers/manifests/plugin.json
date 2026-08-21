@@ -1,0 +1,77 @@
+{
+  "configuration_schema_digest": null,
+  "finish_validators": [],
+  "http_routes": [],
+  "identity": {
+    "build_digest": "sha256:47e23435bc7114af6f6ad65a5530f831db8e05986919dcb4c0d58bd92d314b76",
+    "component_id": "enzymedesign.bio-providers",
+    "component_kind": "plugin",
+    "component_version": "0.1.0",
+    "contract_digest": "sha256:9449fde0cb567bd2fea6ce694f7161f12ff2b7c1e081c4ba9287bc175879e761",
+    "distribution_name": "enzymedesign-bio-providers",
+    "distribution_version": "0.1.0"
+  },
+  "migration_bundle_digest": null,
+  "migrations": [],
+  "projections": [],
+  "provides": [
+    {
+      "capability_id": "enzymedesign.provider.interpro",
+      "cardinality": "single",
+      "contract_version": "1",
+      "operations": ["query", "reconcile"]
+    },
+    {
+      "capability_id": "enzymedesign.provider.rcsb",
+      "cardinality": "single",
+      "contract_version": "1",
+      "operations": ["download", "reconcile", "search"]
+    },
+    {
+      "capability_id": "enzymedesign.provider.uniprot",
+      "cardinality": "single",
+      "contract_version": "1",
+      "operations": ["download", "lookup", "reconcile"]
+    }
+  ],
+  "qualification_specs": [],
+  "required_extension_spi_contract": "openzyme.extension-spi@1",
+  "required_kernel_contract": "openzyme.kernel@1",
+  "requires": [],
+  "routes": [
+    {
+      "capability_ids": ["enzymedesign.provider.interpro"],
+      "driver_id": null,
+      "owner_component_id": "enzymedesign.bio-providers",
+      "route_contract_digest": "sha256:ebb95efa9216a403d5ea939654ff57586dcce16ef2b4a9900971b9949d6388f1",
+      "route_id": "enzymedesign.interpro.http@1",
+      "route_kind": "http_provider",
+      "target_id": null
+    },
+    {
+      "capability_ids": ["enzymedesign.provider.rcsb"],
+      "driver_id": null,
+      "owner_component_id": "enzymedesign.bio-providers",
+      "route_contract_digest": "sha256:ebb95efa9216a403d5ea939654ff57586dcce16ef2b4a9900971b9949d6388f1",
+      "route_id": "enzymedesign.rcsb.http@1",
+      "route_kind": "http_provider",
+      "target_id": null
+    },
+    {
+      "capability_ids": ["enzymedesign.provider.uniprot"],
+      "driver_id": null,
+      "owner_component_id": "enzymedesign.bio-providers",
+      "route_contract_digest": "sha256:ebb95efa9216a403d5ea939654ff57586dcce16ef2b4a9900971b9949d6388f1",
+      "route_id": "enzymedesign.uniprot.http@1",
+      "route_kind": "http_provider",
+      "target_id": null
+    }
+  ],
+  "schema_version": "openzyme_plugin_manifest@1",
+  "schemas": [],
+  "state_namespace": null,
+  "tools": [],
+  "transaction_participants": [],
+  "ui_renderers": [],
+  "workers": []
+}

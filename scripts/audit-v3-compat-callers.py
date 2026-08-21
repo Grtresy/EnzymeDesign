@@ -41,9 +41,6 @@ RETIRED_PATHS = (
     "packages/openzyme-runtime/src/openzyme_runtime/" + RETIRED_NOUN + "_boundary.py",
     "packages/openzyme-runtime/src/openzyme_runtime/" + RETIRED_NOUN + "_projection.py",
     "packages/openzyme-pipeline/src/openzyme_pipeline/" + RETIRED_NOUN + "s.py",
-    "packages/openzyme-tools/src/openzyme_tools/catalog.py",
-    "packages/openzyme-tools/src/openzyme_tools/contracts.py",
-    "packages/openzyme-tools/src/openzyme_tools/execution.py",
     "packages/openzyme-runtime/src/openzyme_runtime/hpc_catalog.py",
     "apps/mcp-hpc-runner/src/mcp_hpc_runner/contracts/hpc_tool_contracts.json",
 )
@@ -78,7 +75,7 @@ def _candidate_files(root: Path) -> tuple[Path, ...]:
     candidates.update(root.glob("docs/v3/workflow-packs/*.workflow.json"))
     candidates.add(
         root
-        / "packages/openzyme-core/src/openzyme_core/migrations"
+        / "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/migrations"
         / "001_file_workspace_final.sql"
     )
     return tuple(sorted(path for path in candidates if path.is_file()))

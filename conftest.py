@@ -54,32 +54,56 @@ def _load_env_files() -> None:
 _load_env_files()
 
 
-def _get_settings():
-    from openzyme_runtime import load_current_settings
-
-    return load_current_settings()
-
-
 def _skip_if_needed(reason: str | None) -> None:
     if reason is not None:
         pytest.skip(reason)
 
 
-def pytest_runtest_setup(item: pytest.Item) -> None:
-    from openzyme_runtime import live_e2e_skip_reason
-    from openzyme_runtime import live_hpc_skip_reason
-    from openzyme_runtime import live_llm_skip_reason
-    from openzyme_runtime import live_tavily_skip_reason
-    from openzyme_runtime import quality_eval_skip_reason
+def _enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().casefold() in {"1", "true", "yes", "on"}
 
-    settings = _get_settings()
-    if item.get_closest_marker("live_llm"):
-        _skip_if_needed(live_llm_skip_reason(settings))
-    if item.get_closest_marker("live_tavily"):
-        _skip_if_needed(live_tavily_skip_reason(settings))
-    if item.get_closest_marker("live_hpc"):
-        _skip_if_needed(live_hpc_skip_reason(settings))
-    if item.get_closest_marker("live_e2e"):
-        _skip_if_needed(live_e2e_skip_reason(settings))
-    if item.get_closest_marker("quality_eval"):
-        _skip_if_needed(quality_eval_skip_reason(settings))
+
+def _live_opt_in(marker: str) -> bool:
+    return _enabled(f"OPENZYME_TEST_ENABLE_{marker.upper()}") or (
+        marker != "quality_eval" and _enabled("OPENZYME_TEST_ENABLE_LIVE_E2E")
+    )
+
+
+def _live_skip_reason(marker: str) -> str | None:
+    if not _live_opt_in(marker):
+        return (
+            f"{marker} tests are disabled; set "
+            f"OPENZYME_TEST_ENABLE_{marker.upper()}=true explicitly."
+        )
+    if marker == "live_llm" and not os.environ.get("OPENZYME_LLM_API_KEY"):
+        return "live_llm tests require OPENZYME_LLM_API_KEY."
+    if marker == "live_tavily" and not os.environ.get("TAVILY_API_KEY"):
+        return "live_tavily tests require TAVILY_API_KEY."
+    if marker == "live_hpc":
+        if os.environ.get("OPENZYME_EXECUTION_BACKEND") != "hpc":
+            return "live_hpc tests require OPENZYME_EXECUTION_BACKEND=hpc."
+        config_value = os.environ.get("OPENZYME_HPC_RUNNER_CONFIG") or os.environ.get(
+            "HPC_RUNNER_CONFIG"
+        )
+        if not config_value:
+            return "live_hpc tests require an explicit HPC runner config path."
+        if not Path(config_value).expanduser().is_file():
+            return "live_hpc runner config path does not exist."
+    if marker == "live_e2e":
+        for prerequisite in ("live_llm", "live_tavily", "live_hpc"):
+            reason = _live_skip_reason(prerequisite)
+            if reason is not None:
+                return f"live_e2e prerequisite missing: {reason}"
+    return None
+
+
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    for marker in (
+        "live_llm",
+        "live_tavily",
+        "live_hpc",
+        "live_e2e",
+        "quality_eval",
+    ):
+        if item.get_closest_marker(marker):
+            _skip_if_needed(_live_skip_reason(marker))

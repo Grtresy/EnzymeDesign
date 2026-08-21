@@ -1,0 +1,35 @@
+[project]
+name = "enzymedesign-bio-provider-adapters"
+version = "0.1.0"
+description = "UniProt、RCSB 与 InterPro HTTP Provider Adapter"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "enzymedesign-core",
+  "openzyme-contracts",
+  "openzyme-extension-spi",
+]
+
+[project.entry-points."openzyme.extensions"]
+"enzymedesign.bio-provider-http" = "enzymedesign_bio_provider_adapters.manifest_locator:locate_component_manifest"
+
+[project.optional-dependencies]
+dev = ["pytest>=9.0.0"]
+
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/enzymedesign_bio_provider_adapters"]
+
+[tool.openzyme.component]
+component_id = "enzymedesign.bio-provider-http"
+component_kind = "adapter"
+migration_state = "target_implemented_not_cutover"
+current_composition_owner = "uncomposed"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"

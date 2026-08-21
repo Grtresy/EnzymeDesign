@@ -17,9 +17,9 @@ _SAFE_CONFIG_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _SAFE_SSH_HOST = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$")
 _SAFE_SSH_USER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 SSH_TRANSPORT_POLICY_SCHEMA_VERSION = "ssh_transport_policy@1"
-RUNNER_EFFECTIVE_CONFIG_SCHEMA_VERSION = "runner_effective_config@1"
+RUNNER_EFFECTIVE_CONFIG_SCHEMA_VERSION = "runner_effective_config@2"
 EXECUTOR_WORKSPACE_TARGET_CONFIG_SCHEMA_VERSION = (
-    "executor_workspace_target_config@1"
+    "executor_workspace_target_config@2"
 )
 
 
@@ -40,7 +40,8 @@ class ExecutorWorkspaceTargetConfig:
     credential_provider_id: str = "unconfigured"
     authenticator_id: str = "unconfigured"
     login_alias: str = "unconfigured"
-    toolchain_digest: str | None = None
+    inventory_generation: int | None = None
+    inventory_digest: str | None = None
     native_positive_proof_digest: str | None = None
     native_negative_proof_digest: str | None = None
 
@@ -77,7 +78,7 @@ class ExecutorWorkspaceTargetConfig:
             )
         digests = (
             self.root_policy_digest,
-            self.toolchain_digest,
+            self.inventory_digest,
             self.native_positive_proof_digest,
             self.native_negative_proof_digest,
         )
@@ -85,6 +86,20 @@ class ExecutorWorkspaceTargetConfig:
             raise ValueError(
                 "activated executor workspace target requires native positive and negative proofs"
             )
+        if self.activated and (
+            not isinstance(self.inventory_generation, int)
+            or isinstance(self.inventory_generation, bool)
+            or self.inventory_generation < 1
+        ):
+            raise ValueError(
+                "activated executor workspace target requires a positive inventory generation"
+            )
+        if self.inventory_generation is not None and (
+            not isinstance(self.inventory_generation, int)
+            or isinstance(self.inventory_generation, bool)
+            or self.inventory_generation < 1
+        ):
+            raise ValueError("executor workspace inventory generation must be positive")
         for value in digests:
             if value is not None and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None:
                 raise ValueError(
@@ -118,7 +133,8 @@ class ExecutorWorkspaceTargetConfig:
             "credential_provider_id": self.credential_provider_id,
             "authenticator_id": self.authenticator_id,
             "login_alias": self.login_alias,
-            "toolchain_digest": self.toolchain_digest,
+            "inventory_generation": self.inventory_generation,
+            "inventory_digest": self.inventory_digest,
             "native_positive_proof_digest": self.native_positive_proof_digest,
             "native_negative_proof_digest": self.native_negative_proof_digest,
             "scheduler_submit_enabled": False,
@@ -377,26 +393,12 @@ class ResourceLimitsConfig:
 
 
 @dataclass(slots=True)
-class AdapterConfig:
-    mode: str = "sif"
-    partition: str | None = None
-    gpus: int | None = None
-
-    def __post_init__(self) -> None:
-        self.partition = _validated_partition(
-            self.partition,
-            field_name="adapters.*.partition",
-        )
-
-
-@dataclass(slots=True)
 class RunnerConfig:
     cluster: ClusterConfig = field(default_factory=ClusterConfig)
     slurm: SlurmConfig = field(default_factory=SlurmConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     limits: ResourceLimitsConfig = field(default_factory=ResourceLimitsConfig)
-    adapters: dict[str, AdapterConfig] = field(default_factory=dict)
     ssh_transport: SshTransportPolicy = field(default_factory=SshTransportPolicy)
     executor_workspace: ExecutorWorkspaceTargetConfig = field(
         default_factory=ExecutorWorkspaceTargetConfig
@@ -415,7 +417,6 @@ class RunnerConfig:
             for partition in (
                 self.slurm.default_partition,
                 self.slurm.gpu_partition,
-                *(adapter.partition for adapter in self.adapters.values()),
             )
             if partition is not None
         )
@@ -427,14 +428,6 @@ class RunnerConfig:
 
     @property
     def effective_config_digest(self) -> str:
-        adapters = {
-            key: {
-                "mode": value.mode,
-                "partition": value.partition,
-                "gpus": value.gpus,
-            }
-            for key, value in sorted(self.adapters.items())
-        }
         return _json_digest(
             {
                 "schema_version": RUNNER_EFFECTIVE_CONFIG_SCHEMA_VERSION,
@@ -479,13 +472,28 @@ class RunnerConfig:
                     "inline_log_limit": self.logging.inline_log_limit,
                     "redact_patterns": list(self.logging.redact_patterns),
                 },
-                "adapters": adapters,
             }
         )
 
 
 def _merge_defaults(data: dict[str, Any] | None) -> RunnerConfig:
     data = data or {}
+    allowed_sections = {
+        "runner",
+        "cluster",
+        "ssh_transport",
+        "executor_workspace",
+        "slurm",
+        "execution",
+        "limits",
+        "logging",
+    }
+    unexpected_sections = sorted(set(data) - allowed_sections)
+    if unexpected_sections:
+        raise ValueError(
+            "runner configuration contains unsupported top-level sections: "
+            + ", ".join(unexpected_sections)
+        )
     cluster_raw = data.get("cluster", {})
     slurm_raw = data.get("slurm", {})
     execution_raw = data.get("execution", {})
@@ -546,7 +554,8 @@ def _merge_defaults(data: dict[str, Any] | None) -> RunnerConfig:
         "credential_provider_id",
         "authenticator_id",
         "login_alias",
-        "toolchain_digest",
+        "inventory_generation",
+        "inventory_digest",
         "native_positive_proof_digest",
         "native_negative_proof_digest",
     }
@@ -557,15 +566,6 @@ def _merge_defaults(data: dict[str, Any] | None) -> RunnerConfig:
         raise ValueError(
             "executor_workspace contains unsupported fields: "
             + ", ".join(unexpected_executor_workspace)
-        )
-
-    adapters: dict[str, AdapterConfig] = {}
-    for adapter_id, section in data.get("adapters", {}).items():
-        gpus_raw = section.get("gpus")
-        adapters[adapter_id] = AdapterConfig(
-            mode=str(section.get("mode", "sif")),
-            partition=str(section["partition"]) if section.get("partition") else None,
-            gpus=int(gpus_raw) if gpus_raw is not None else None,
         )
 
     return RunnerConfig(
@@ -621,7 +621,6 @@ def _merge_defaults(data: dict[str, Any] | None) -> RunnerConfig:
             max_time_minutes=int(limits_raw.get("max_time_minutes", 7 * 24 * 60)),
             max_tail_lines=int(limits_raw.get("max_tail_lines", 5000)),
         ),
-        adapters=adapters,
         ssh_transport=SshTransportPolicy(
             mode=SshTransportMode(
                 str(transport_raw.get("mode", SshTransportMode.DISABLED.value))
@@ -701,10 +700,15 @@ def _merge_defaults(data: dict[str, Any] | None) -> RunnerConfig:
             login_alias=str(
                 executor_workspace_raw.get("login_alias", "unconfigured")
             ),
-            toolchain_digest=(
+            inventory_generation=(
                 None
-                if executor_workspace_raw.get("toolchain_digest") is None
-                else str(executor_workspace_raw["toolchain_digest"])
+                if executor_workspace_raw.get("inventory_generation") is None
+                else int(executor_workspace_raw["inventory_generation"])
+            ),
+            inventory_digest=(
+                None
+                if executor_workspace_raw.get("inventory_digest") is None
+                else str(executor_workspace_raw["inventory_digest"])
             ),
             native_positive_proof_digest=(
                 None

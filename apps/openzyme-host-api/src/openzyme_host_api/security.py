@@ -3,8 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import hmac
-
-from openzyme_runtime import HostApiSettings
+from typing import Protocol
 
 
 class HostAuthenticationError(ValueError):
@@ -22,9 +21,7 @@ class HostPrincipal:
             self.principal_id
         ) > len("agent-member:")
         if agent_principal != (self.roles == frozenset({"agent"})):
-            raise ValueError(
-                "agent-member principals must have exactly the agent role"
-            )
+            raise ValueError("agent-member principals must have exactly the agent role")
         if not agent_principal and (
             not self.principal_id.startswith("user:")
             or len(self.principal_id) <= len("user:")
@@ -47,6 +44,23 @@ class HostPrincipal:
         return None
 
 
+class HostApiPrincipalSettingsView(Protocol):
+    """Narrow delivery-configuration view consumed by the Host security policy."""
+
+    principal_id: str
+    token_sha256: str
+    roles: frozenset[str]
+    project_ids: frozenset[str]
+
+
+class HostApiSettingsView(Protocol):
+    """Avoid coupling the delivery Adapter to a concrete runtime package."""
+
+    deployment_profile: str
+    principals: tuple[HostApiPrincipalSettingsView, ...]
+    debug_enabled: bool
+
+
 @dataclass(frozen=True, slots=True)
 class HostSecurityPolicy:
     deployment_profile: str
@@ -60,22 +74,27 @@ class HostSecurityPolicy:
             raise ValueError("shared Host security policy requires principals")
 
     @classmethod
-    def from_settings(cls, settings: HostApiSettings | None) -> "HostSecurityPolicy":
-        resolved = settings or HostApiSettings(
-            bind_host="127.0.0.1",
-            bind_port=8000,
-        )
+    def from_settings(
+        cls,
+        settings: HostApiSettingsView | None,
+    ) -> "HostSecurityPolicy":
+        if settings is None:
+            return cls(
+                deployment_profile="local-dev",
+                principals_by_digest={},
+                debug_enabled=False,
+            )
         return cls(
-            deployment_profile=resolved.deployment_profile,
+            deployment_profile=settings.deployment_profile,
             principals_by_digest={
                 item.token_sha256: HostPrincipal(
                     principal_id=item.principal_id,
                     roles=item.roles,
                     project_ids=item.project_ids,
                 )
-                for item in resolved.principals
+                for item in settings.principals
             },
-            debug_enabled=resolved.debug_enabled,
+            debug_enabled=settings.debug_enabled,
         )
 
     @property
@@ -105,6 +124,8 @@ class HostSecurityPolicy:
 
 __all__ = [
     "HostAuthenticationError",
+    "HostApiPrincipalSettingsView",
+    "HostApiSettingsView",
     "HostPrincipal",
     "HostSecurityPolicy",
 ]

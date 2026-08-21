@@ -1,0 +1,86 @@
+{
+  "configuration_schema_digest": null,
+  "finish_validators": [],
+  "http_routes": [],
+  "identity": {
+    "build_digest": "sha256:6756ce31504a90b19ef76873c3e130e559bcfda58ae179b7ab302de69e7f9283",
+    "component_id": "enzymedesign.aox",
+    "component_kind": "plugin",
+    "component_version": "0.1.0",
+    "contract_digest": "sha256:e3e046bad420c5969802acd7af44d908ec7d9c588eb7c55823aa2f2b9c94b5c0",
+    "distribution_name": "enzymedesign-aox",
+    "distribution_version": "0.1.0"
+  },
+  "migration_bundle_digest": null,
+  "migrations": [],
+  "projections": [],
+  "provides": [
+    {
+      "capability_id": "enzymedesign.aox.workflow",
+      "cardinality": "single",
+      "contract_version": "1",
+      "operations": [
+        "inspect",
+        "validate"
+      ]
+    }
+  ],
+  "qualification_specs": [],
+  "required_extension_spi_contract": "openzyme.extension-spi@1",
+  "required_kernel_contract": "openzyme.kernel@1",
+  "requires": [
+    {
+      "capability_id": "enzymedesign.hmmer",
+      "contract_spec": "@1",
+      "kind": "extension",
+      "operations": [
+        "build",
+        "search"
+      ],
+      "same_target_as": null,
+      "version_spec": null
+    },
+    {
+      "capability_id": "enzymedesign.sequence.toolpack",
+      "contract_spec": "@1",
+      "kind": "extension",
+      "operations": [
+        "parse",
+        "uniprot"
+      ],
+      "same_target_as": null,
+      "version_spec": null
+    },
+    {
+      "capability_id": "openzyme.science",
+      "contract_spec": "@1",
+      "kind": "extension",
+      "operations": [
+        "adopt",
+        "inspect",
+        "select",
+        "validate"
+      ],
+      "same_target_as": null,
+      "version_spec": null
+    }
+  ],
+  "routes": [
+    {
+      "capability_ids": ["enzymedesign.aox.workflow"],
+      "driver_id": "enzymedesign.aox.executor",
+      "owner_component_id": "enzymedesign.aox",
+      "route_contract_digest": "sha256:bad93f8c60eba52e1b4c8a989d4083fe156748268428bd010ede0b98033faab1",
+      "route_id": "enzymedesign.aox.sandbox@1",
+      "route_kind": "sandbox",
+      "target_id": "local:podman"
+    }
+  ],
+  "schema_version": "openzyme_plugin_manifest@1",
+  "schemas": [],
+  "state_namespace": null,
+  "tools": [],
+  "transaction_participants": [],
+  "ui_renderers": [],
+  "workers": []
+}

@@ -1,0 +1,654 @@
+{
+  "configuration_schema_digest": null,
+  "finish_validators": [],
+  "http_routes": [],
+  "identity": {
+    "build_digest": "sha256:11d9c83411b9c37c428a7bb8c4b0ceb560e9c2bf4cb1895c63ddb714896a750c",
+    "component_id": "enzymedesign.sequence.toolpack",
+    "component_kind": "plugin",
+    "component_version": "0.1.0",
+    "contract_digest": "sha256:576287e8e6336c0e60a65857d3365526be0605a877ba50b3b053e3611cfdba44",
+    "distribution_name": "enzymedesign-sequence-toolpack",
+    "distribution_version": "0.1.0"
+  },
+  "migration_bundle_digest": null,
+  "migrations": [],
+  "projections": [],
+  "provides": [
+    {
+      "capability_id": "enzymedesign.sequence.toolpack",
+      "cardinality": "single",
+      "contract_version": "1",
+      "operations": [
+        "interpro",
+        "parse",
+        "rcsb",
+        "uniprot"
+      ]
+    }
+  ],
+  "qualification_specs": [],
+  "required_extension_spi_contract": "openzyme.extension-spi@1",
+  "required_kernel_contract": "openzyme.kernel@1",
+  "requires": [
+    {
+      "capability_id": "enzymedesign.provider.interpro",
+      "contract_spec": "@1",
+      "kind": "extension",
+      "operations": [
+        "query",
+        "reconcile"
+      ],
+      "same_target_as": null,
+      "version_spec": null
+    },
+    {
+      "capability_id": "enzymedesign.provider.rcsb",
+      "contract_spec": "@1",
+      "kind": "extension",
+      "operations": [
+        "download",
+        "reconcile",
+        "search"
+      ],
+      "same_target_as": null,
+      "version_spec": null
+    },
+    {
+      "capability_id": "enzymedesign.provider.uniprot",
+      "contract_spec": "@1",
+      "kind": "extension",
+      "operations": [
+        "download",
+        "lookup",
+        "reconcile"
+      ],
+      "same_target_as": null,
+      "version_spec": null
+    }
+  ],
+  "routes": [],
+  "schema_version": "openzyme_plugin_manifest@1",
+  "schemas": [],
+  "state_namespace": null,
+  "tools": [
+    {
+      "contract": {
+        "approval_policy_id": null,
+        "description": "Query annotations through the exact selected InterPro provider route.",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "accession": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "idempotency_key": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "limit": {
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "route_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "accession",
+            "idempotency_key",
+            "route_id"
+          ],
+          "type": "object"
+        },
+        "output_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "fallback_performed": {
+              "const": false
+            },
+            "item_count": {
+              "maximum": 100,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "operation": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "provider": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "record_count": {
+              "maximum": 10000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "records": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "description": {
+                    "type": "string"
+                  },
+                  "length": {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "record_id": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "sequence": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "sequence_digest": {
+                    "pattern": "^sha256:[0-9a-f]{64}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "record_id",
+                  "description",
+                  "sequence",
+                  "length",
+                  "sequence_digest"
+                ],
+                "type": "object"
+              },
+              "maxItems": 10000,
+              "type": "array"
+            },
+            "result_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "state": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "task_finished": {
+              "const": false
+            },
+            "workspace_relative_path": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "fallback_performed",
+            "task_finished"
+          ],
+          "type": "object"
+        },
+        "required_authorities": [
+          "ordinary_network"
+        ],
+        "schema_version": "openzyme_tool_spec@1",
+        "tool_name": "enzymedesign.interpro.query"
+      },
+      "owner_plugin_id": "enzymedesign.sequence.toolpack",
+      "requirements": [
+        {
+          "capability_id": "enzymedesign.provider.interpro",
+          "contract_spec": "@1",
+          "kind": "extension",
+          "operations": [
+            "query",
+            "reconcile"
+          ],
+          "same_target_as": null,
+          "version_spec": null
+        }
+      ],
+      "requires_explicit_route": true,
+      "requires_workspace": true,
+      "runtime_id": "enzymedesign.sequence.toolpack.interpro-query@1"
+    },
+    {
+      "contract": {
+        "approval_policy_id": null,
+        "description": "Search metadata or fetch one structure through the exact selected RCSB provider route.",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "file_format": {
+              "enum": [
+                "pdb",
+                "cif"
+              ]
+            },
+            "idempotency_key": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "limit": {
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "operation": {
+              "enum": [
+                "search",
+                "download_structure"
+              ]
+            },
+            "output_path": {
+              "minLength": 1,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pdb_id": {
+              "minLength": 1,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "query": {
+              "minLength": 1,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "route_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation",
+            "idempotency_key",
+            "route_id"
+          ],
+          "type": "object"
+        },
+        "output_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "fallback_performed": {
+              "const": false
+            },
+            "item_count": {
+              "maximum": 100,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "operation": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "provider": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "record_count": {
+              "maximum": 10000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "records": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "description": {
+                    "type": "string"
+                  },
+                  "length": {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "record_id": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "sequence": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "sequence_digest": {
+                    "pattern": "^sha256:[0-9a-f]{64}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "record_id",
+                  "description",
+                  "sequence",
+                  "length",
+                  "sequence_digest"
+                ],
+                "type": "object"
+              },
+              "maxItems": 10000,
+              "type": "array"
+            },
+            "result_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "state": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "task_finished": {
+              "const": false
+            },
+            "workspace_relative_path": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "fallback_performed",
+            "task_finished"
+          ],
+          "type": "object"
+        },
+        "required_authorities": [
+          "ordinary_network"
+        ],
+        "schema_version": "openzyme_tool_spec@1",
+        "tool_name": "enzymedesign.rcsb.query"
+      },
+      "owner_plugin_id": "enzymedesign.sequence.toolpack",
+      "requirements": [
+        {
+          "capability_id": "enzymedesign.provider.rcsb",
+          "contract_spec": "@1",
+          "kind": "extension",
+          "operations": [
+            "download",
+            "reconcile",
+            "search"
+          ],
+          "same_target_as": null,
+          "version_spec": null
+        }
+      ],
+      "requires_explicit_route": true,
+      "requires_workspace": true,
+      "runtime_id": "enzymedesign.sequence.toolpack.rcsb-query@1"
+    },
+    {
+      "contract": {
+        "approval_policy_id": null,
+        "description": "Parse bounded FASTA or plain sequence text without external I/O.",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "format": {
+              "enum": [
+                "fasta",
+                "plain"
+              ]
+            },
+            "sequence_text": {
+              "maxLength": 12000000,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "format",
+            "sequence_text"
+          ],
+          "type": "object"
+        },
+        "output_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "fallback_performed": {
+              "const": false
+            },
+            "item_count": {
+              "maximum": 100,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "operation": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "provider": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "record_count": {
+              "maximum": 10000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "records": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "description": {
+                    "type": "string"
+                  },
+                  "length": {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "record_id": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "sequence": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "sequence_digest": {
+                    "pattern": "^sha256:[0-9a-f]{64}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "record_id",
+                  "description",
+                  "sequence",
+                  "length",
+                  "sequence_digest"
+                ],
+                "type": "object"
+              },
+              "maxItems": 10000,
+              "type": "array"
+            },
+            "result_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "state": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "task_finished": {
+              "const": false
+            },
+            "workspace_relative_path": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "fallback_performed",
+            "task_finished"
+          ],
+          "type": "object"
+        },
+        "required_authorities": [],
+        "schema_version": "openzyme_tool_spec@1",
+        "tool_name": "enzymedesign.sequence.parse"
+      },
+      "owner_plugin_id": "enzymedesign.sequence.toolpack",
+      "requirements": [],
+      "requires_explicit_route": false,
+      "requires_workspace": false,
+      "runtime_id": "enzymedesign.sequence.toolpack.sequence-parse@1"
+    },
+    {
+      "contract": {
+        "approval_policy_id": null,
+        "description": "Lookup metadata or fetch FASTA through the exact selected UniProt provider route.",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "accession": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "idempotency_key": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "operation": {
+              "enum": [
+                "lookup",
+                "download_fasta"
+              ]
+            },
+            "output_path": {
+              "minLength": 1,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "route_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation",
+            "accession",
+            "idempotency_key",
+            "route_id"
+          ],
+          "type": "object"
+        },
+        "output_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "fallback_performed": {
+              "const": false
+            },
+            "item_count": {
+              "maximum": 100,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "operation": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "provider": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "record_count": {
+              "maximum": 10000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "records": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "description": {
+                    "type": "string"
+                  },
+                  "length": {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "record_id": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "sequence": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "sequence_digest": {
+                    "pattern": "^sha256:[0-9a-f]{64}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "record_id",
+                  "description",
+                  "sequence",
+                  "length",
+                  "sequence_digest"
+                ],
+                "type": "object"
+              },
+              "maxItems": 10000,
+              "type": "array"
+            },
+            "result_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "state": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "task_finished": {
+              "const": false
+            },
+            "workspace_relative_path": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "fallback_performed",
+            "task_finished"
+          ],
+          "type": "object"
+        },
+        "required_authorities": [
+          "ordinary_network"
+        ],
+        "schema_version": "openzyme_tool_spec@1",
+        "tool_name": "enzymedesign.uniprot.fetch"
+      },
+      "owner_plugin_id": "enzymedesign.sequence.toolpack",
+      "requirements": [
+        {
+          "capability_id": "enzymedesign.provider.uniprot",
+          "contract_spec": "@1",
+          "kind": "extension",
+          "operations": [
+            "download",
+            "lookup",
+            "reconcile"
+          ],
+          "same_target_as": null,
+          "version_spec": null
+        }
+      ],
+      "requires_explicit_route": true,
+      "requires_workspace": true,
+      "runtime_id": "enzymedesign.sequence.toolpack.uniprot-fetch@1"
+    }
+  ],
+  "transaction_participants": [],
+  "ui_renderers": [],
+  "workers": []
+}

@@ -59,7 +59,8 @@ def _source_prepare_request(
         source_tree=TREE,
         source_ref="refs/heads/main",
         lfs_closure_manifest_digest=DIGEST,
-        toolchain_digest=DIGEST,
+        target_inventory_generation=1,
+        target_inventory_digest=DIGEST,
         owner_identity_digest=DIGEST,
         absolute_deadline="2027-08-17T01:05:00+00:00",
         request_digest=DIGEST,
@@ -72,7 +73,7 @@ def _source_manifest(
     path: str = "src/main.py",
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "schema_version": "compute_source_manifest@1",
+        "schema_version": "compute_source_manifest@2",
         "manifest_id": f"manifest_{request.request_id}",
         "request_id": request.request_id,
         "workspace_id": request.workspace_id,
@@ -81,7 +82,8 @@ def _source_manifest(
         "lfs_closure_manifest_digest": request.lfs_closure_manifest_digest,
         "binding_digest": request.repository_binding_digest,
         "repository_policy_digest": request.repository_policy_digest,
-        "toolchain_digest": request.toolchain_digest,
+        "target_inventory_generation": request.target_inventory_generation,
+        "target_inventory_digest": request.target_inventory_digest,
         "owner_identity_digest": request.owner_identity_digest,
         "entries": [
             {
@@ -145,7 +147,8 @@ def test_activated_target_requires_native_isolation_and_proof_contract() -> None
         credential_provider_id="credential-provider-v1",
         authenticator_id="target-authenticator-v1",
         login_alias="openzyme-target",
-        toolchain_digest=DIGEST,
+        inventory_generation=1,
+        inventory_digest=DIGEST,
         native_positive_proof_digest=DIGEST,
         native_negative_proof_digest=DIGEST,
     )
@@ -271,7 +274,7 @@ def test_runner_surface_contains_only_workspace_revision_tools(
         ("source_commit", "4" * 40),
         ("source_tree", "5" * 40),
         ("lfs_closure_manifest_digest", "sha256:" + "c" * 64),
-        ("toolchain_digest", "sha256:" + "d" * 64),
+        ("target_inventory_digest", "sha256:" + "d" * 64),
         ("owner_identity_digest", "sha256:" + "e" * 64),
         ("target_profile_digest", "sha256:" + "f" * 64),
     ),
@@ -387,4 +390,17 @@ def test_removed_runner_execution_config_fails_closed(
     )
 
     with pytest.raises(ValueError, match="execution contains unsupported fields"):
+        load_config(config_path)
+
+
+def test_runner_rejects_domain_adapter_catalog_as_top_level_configuration(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "runner.toml"
+    config_path.write_text(
+        "[adapters.vina]\nmode = \"sif\"\npartition = \"gpu\"\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unsupported top-level sections: adapters"):
         load_config(config_path)

@@ -206,7 +206,7 @@ changed path。该仓库同步最终 planner/map，并将每个 probe 前一状�
 最终验证：
 
 - `uv run ruff check ...`：通过
-- `uv run pytest packages/openzyme-core/tests/test_test_gate_*.py -q`：
+- `uv run pytest packages/openzyme-kernel/tests/test_test_gate_*.py -q`：
   `86 passed`
 - `uv run pytest packages/openzyme-core/tests/test_compat_caller_audit.py -q`：
   `16 passed`

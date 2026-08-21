@@ -1,0 +1,104 @@
+{
+  "schema_id": "openzyme_capability_workspace_baseline@1",
+  "capability_fact_classes": [
+    {
+      "fact_class": "extension",
+      "current_writer": "Explicit Distribution manifest plus Kernel ExtensionBundleRegistry",
+      "change_frequency": "process startup/release",
+      "persistence": "versioned Extension bundle and declared-tool catalog digests pinned per Session",
+      "known_conflation": "none; discovery and activation are separate fail-closed operations",
+      "target_owner": "openzyme.kernel",
+      "source_refs": [
+        "packages/openzyme-extension-spi/src/openzyme_extension_spi/manifests.py",
+        "packages/openzyme-kernel/src/openzyme_kernel/registry.py"
+      ]
+    },
+    {
+      "fact_class": "resource",
+      "current_writer": "HPC target qualification plus EnzymeDesign Product Plugin manifests",
+      "change_frequency": "target qualification/deployment",
+      "persistence": "structured target inventory plus Plugin requirement and qualification catalogs",
+      "known_conflation": "legacy HPC rows still retain an opaque aggregate digest until inventory cutover",
+      "target_owner": "openzyme.hpc",
+      "source_refs": [
+        "packages/openzyme-hpc/src/openzyme_hpc/inventory.py",
+        "packages/enzymedesign-hmmer/src/enzymedesign_hmmer/manifests/plugin.json",
+        "packages/enzymedesign-structure/src/enzymedesign_structure/manifests/plugin.json",
+        "packages/enzymedesign-vina/src/enzymedesign_vina/manifests/plugin.json",
+        "packages/enzymedesign-alphafold/src/enzymedesign_alphafold/manifests/plugin.json"
+      ]
+    },
+    {
+      "fact_class": "authority",
+      "current_writer": "Kernel Authority application service through the selected Control Store Adapter",
+      "change_frequency": "lease/generation/fence lifecycle",
+      "persistence": "agent_capability_lease_* physical tables",
+      "known_conflation": "none in admission; profile templates may group grants but each operation checks an exact authority",
+      "target_owner": "openzyme.kernel",
+      "source_refs": [
+        "packages/openzyme-contracts/src/openzyme_contracts/authority.py",
+        "packages/openzyme-kernel/src/openzyme_kernel/authority_application.py",
+        "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/authority_mapping.py"
+      ]
+    },
+    {
+      "fact_class": "tool_affordance",
+      "current_writer": "Kernel ToolAffordanceResolver over exact Session and turn facts",
+      "change_frequency": "Agent turn",
+      "persistence": "declared catalog, Session capability binding and per-turn affordance snapshot have distinct digests",
+      "known_conflation": "none; blocked states preserve typed blockers while HIDDEN remains information-isolated",
+      "target_owner": "openzyme.kernel",
+      "source_refs": [
+        "packages/openzyme-contracts/src/openzyme_contracts/tool_runtime.py",
+        "packages/openzyme-kernel/src/openzyme_kernel/affordance.py",
+        "packages/openzyme-kernel/src/openzyme_kernel/catalog.py"
+      ]
+    }
+  ],
+  "workspace_runtime_flows": [
+    {
+      "flow_id": "local-workspace-identity-and-publication",
+      "current_owner": "openzyme.kernel semantics plus openzyme.workspace.git.lfs mechanism",
+      "target_owner": "openzyme.kernel",
+      "effect_model": "Kernel controlled publication state machine with an injected Git/LFS revision backend and immutable PublishedRevision read model",
+      "source_refs": [
+        "packages/openzyme-kernel/src/openzyme_kernel/workspace_identity_application.py",
+        "packages/openzyme-kernel/src/openzyme_kernel/publication_coordination.py",
+        "packages/openzyme-workspace-git-lfs/src/openzyme_workspace_git_lfs/revision_backend.py"
+      ]
+    },
+    {
+      "flow_id": "local-process-exec",
+      "current_owner": "openzyme.kernel operation semantics plus openzyme.process.podman mechanism",
+      "target_owner": "openzyme.process.podman",
+      "effect_model": "bounded argv process request, exact workspace generation and typed receipt through WorkspaceProcessPort",
+      "source_refs": [
+        "packages/openzyme-kernel/src/openzyme_kernel/workspace_operations.py",
+        "packages/openzyme-process-podman/src/openzyme_process_podman/process.py"
+      ]
+    },
+    {
+      "flow_id": "remote-hpc-workspace",
+      "current_owner": "openzyme.hpc Plugin mounted by the explicit EnzymeDesign Distribution",
+      "target_owner": "openzyme.hpc",
+      "effect_model": "Plugin-owned lifecycle/repository and structured tools use narrow Kernel application services plus injected Workspace Runtime Ports; the generic Host has no HPC import and production activation remains explicit",
+      "source_refs": [
+        "packages/openzyme-hpc/src/openzyme_hpc/workspace_application.py",
+        "packages/openzyme-hpc/src/openzyme_hpc/sqlite_workspace_repository.py",
+        "packages/enzymedesign-distribution/src/enzymedesign_distribution/composition.py",
+        "apps/mcp-hpc-runner/src/mcp_hpc_runner"
+      ]
+    },
+    {
+      "flow_id": "formal-revision-execution",
+      "current_owner": "openzyme.compute Plugin plus narrow runner wire contract and selected scheduler Adapter",
+      "target_owner": "openzyme.compute",
+      "effect_model": "revision-bound formal job lifecycle remains separate from login Shell and preserves dispatch-in-doubt reconciliation",
+      "source_refs": [
+        "packages/openzyme-compute/src/openzyme_compute/workspace_revision_executions.py",
+        "packages/openzyme-execution-contracts/src/openzyme_execution_contracts/workspace_job_wire.py",
+        "apps/mcp-hpc-runner/src/mcp_hpc_runner/workspace_revision_jobs.py"
+      ]
+    }
+  ]
+}

@@ -6,7 +6,8 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
   "httpx>=0.28,<1.0",
-  "openzyme-runtime",
+  "openzyme-client",
+  "openzyme-contracts",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +24,12 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/openzyme_host_cli"]
+
+[tool.openzyme.component]
+component_id = "openzyme.host.cli"
+component_kind = "delivery_adapter"
+migration_state = "target_implemented_not_cutover"
+current_composition_owner = "self"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

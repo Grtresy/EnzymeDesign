@@ -65,7 +65,8 @@ class MCPHpcServer:
                 "source_manifest_created_at",
                 "target_profile_digest",
                 "runner_policy_digest",
-                "toolchain_digest",
+                "target_inventory_generation",
+                "target_inventory_digest",
                 "cwd",
                 "command",
                 "command_digest",
@@ -138,7 +139,11 @@ class MCPHpcServer:
                 "source_manifest_created_at": {"type": "string"},
                 "target_profile_digest": {"type": "string"},
                 "runner_policy_digest": {"type": "string"},
-                "toolchain_digest": {"type": "string"},
+                "target_inventory_generation": {
+                    "type": "integer",
+                    "minimum": 1,
+                },
+                "target_inventory_digest": {"type": "string"},
                 "cwd": {"type": "string"},
                 "command": {
                     "type": "array",

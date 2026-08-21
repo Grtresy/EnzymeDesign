@@ -1,0 +1,117 @@
+{
+  "schema_version": "openzyme_plugin_manifest@1",
+  "identity": {
+    "component_id": "openzyme.compute",
+    "component_kind": "plugin",
+    "component_version": "0.1.0",
+    "contract_digest": "sha256:7b30349a552529914cafcee17ae6a87485efcf17dbf7e4604f72982c47680563",
+    "build_digest": "sha256:27c1ec0c470a7074fd7e7424d727122385f81c71cb77acc82122be4f2701797f",
+    "distribution_name": "openzyme-compute",
+    "distribution_version": "0.1.0"
+  },
+  "required_kernel_contract": "openzyme.kernel@1",
+  "required_extension_spi_contract": "openzyme.extension-spi@1",
+  "state_namespace": "openzyme_compute",
+  "configuration_schema_digest": "sha256:f4bb09727cc5e22210aac6c25d84c6ce54e01fb214bf92ec70c10d007e154b5c",
+  "migration_bundle_digest": "sha256:70347bc6f2f8069ca085ca3af332181fc40a420c428b2b8c8a4aef1ef804a5d9",
+  "provides": [
+    {
+      "capability_id": "openzyme.execution.revision-job",
+      "contract_version": "1",
+      "operations": ["cancel", "observe", "reconcile", "submit"],
+      "cardinality": "multi_route"
+    }
+  ],
+  "requires": [],
+  "tools": [
+    {
+      "owner_plugin_id": "openzyme.compute",
+      "runtime_id": "openzyme.compute.workspace_revision_job-submit@1",
+      "contract": {
+        "schema_version": "openzyme_tool_spec@1",
+        "tool_name": "workspace_revision_job.submit",
+        "description": "Submit one prevalidated, immutable-revision Compute request through the explicit selected route. No staging, publication, route fallback or Task completion is performed.",
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["compute_request_id", "request_digest", "route_id", "affordance_snapshot_digest"],
+          "properties": {
+            "compute_request_id": {"type": "string", "minLength": 1},
+            "request_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+            "route_id": {"type": "string", "minLength": 1},
+            "affordance_snapshot_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+          }
+        },
+        "output_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["execution_id", "operation_id", "state", "fallback_performed", "publication_created", "scientific_evidence_created", "task_finished"],
+          "properties": {
+            "execution_id": {"type": "string", "minLength": 1},
+            "operation_id": {"type": "string", "minLength": 1},
+            "state": {"type": "string", "minLength": 1},
+            "fallback_performed": {"type": "boolean"},
+            "publication_created": {"type": "boolean"},
+            "scientific_evidence_created": {"type": "boolean"},
+            "task_finished": {"type": "boolean"}
+          }
+        },
+        "required_authorities": ["external_compute"],
+        "approval_policy_id": null
+      },
+      "requirements": [{"capability_id": "openzyme.execution.revision-job", "contract_spec": "@1", "kind": "extension", "operations": ["submit"], "version_spec": null, "same_target_as": null}],
+      "requires_workspace": true,
+      "requires_explicit_route": true
+    },
+    {
+      "owner_plugin_id": "openzyme.compute",
+      "runtime_id": "openzyme.compute.workspace_revision_job-observe@1",
+      "contract": {
+        "schema_version": "openzyme_tool_spec@1",
+        "tool_name": "workspace_revision_job.observe",
+        "description": "Observe or reconcile the original opaque Compute occurrence without redispatch or route replacement.",
+        "input_schema": {"type": "object", "additionalProperties": false, "required": ["execution_id", "operation_id"], "properties": {"execution_id": {"type": "string", "minLength": 1}, "operation_id": {"type": "string", "minLength": 1}}},
+        "output_schema": {
+          "type": "object", "additionalProperties": false,
+          "required": ["execution_id", "operation_id", "state", "fallback_performed", "publication_created", "scientific_evidence_created", "task_finished"],
+          "properties": {"execution_id": {"type": "string", "minLength": 1}, "operation_id": {"type": "string", "minLength": 1}, "state": {"type": "string", "minLength": 1}, "fallback_performed": {"type": "boolean"}, "publication_created": {"type": "boolean"}, "scientific_evidence_created": {"type": "boolean"}, "task_finished": {"type": "boolean"}}
+        },
+        "required_authorities": ["external_compute"],
+        "approval_policy_id": null
+      },
+      "requirements": [{"capability_id": "openzyme.execution.revision-job", "contract_spec": "@1", "kind": "extension", "operations": ["observe", "reconcile"], "version_spec": null, "same_target_as": null}],
+      "requires_workspace": false,
+      "requires_explicit_route": true
+    },
+    {
+      "owner_plugin_id": "openzyme.compute",
+      "runtime_id": "openzyme.compute.workspace_revision_job-cancel@1",
+      "contract": {
+        "schema_version": "openzyme_tool_spec@1",
+        "tool_name": "workspace_revision_job.cancel",
+        "description": "Record one durable cancellation intent for the original Compute occurrence. Lost responses are reconciled and never cause duplicate cancellation.",
+        "input_schema": {"type": "object", "additionalProperties": false, "required": ["execution_id", "operation_id", "idempotency_key"], "properties": {"execution_id": {"type": "string", "minLength": 1}, "operation_id": {"type": "string", "minLength": 1}, "idempotency_key": {"type": "string", "minLength": 1}}},
+        "output_schema": {
+          "type": "object", "additionalProperties": false,
+          "required": ["execution_id", "operation_id", "state", "fallback_performed", "publication_created", "scientific_evidence_created", "task_finished"],
+          "properties": {"execution_id": {"type": "string", "minLength": 1}, "operation_id": {"type": "string", "minLength": 1}, "state": {"type": "string", "minLength": 1}, "fallback_performed": {"type": "boolean"}, "publication_created": {"type": "boolean"}, "scientific_evidence_created": {"type": "boolean"}, "task_finished": {"type": "boolean"}}
+        },
+        "required_authorities": ["external_compute"],
+        "approval_policy_id": null
+      },
+      "requirements": [{"capability_id": "openzyme.execution.revision-job", "contract_spec": "@1", "kind": "extension", "operations": ["cancel"], "version_spec": null, "same_target_as": null}],
+      "requires_workspace": false,
+      "requires_explicit_route": true
+    }
+  ],
+  "routes": [],
+  "http_routes": [],
+  "projections": [{"contribution_id": "openzyme.compute@1", "contract_digest": "sha256:b9f795759362db5677f0391035cc3c08bf046794239fbb4e3e892c567015c4f5"}],
+  "ui_renderers": [{"contribution_id": "openzyme.compute.renderer@1", "contract_digest": "sha256:3c83f9ab6a8bd79081a7e89764c7269b2d22e89e288e95f90b4049db14e87268"}],
+  "workers": [{"contribution_id": "openzyme.compute.worker@1", "contract_digest": "sha256:8844bec0108b1221162fe03e9850958c91be24e2cb86cfe5ac78d3c94f119b0b"}],
+  "finish_validators": [],
+  "schemas": [{"contribution_id": "openzyme.compute.state@1", "contract_digest": "sha256:e08df4875099c9cdd4bfca44c542f304335489932457a254905508c70948654a"}],
+  "migrations": [{"contribution_id": "openzyme.compute.migration.001@1", "contract_digest": "sha256:cd2c52e2b9d30534061878ee896134262726904e5a6c2f042b058b782d81fc02"}],
+  "transaction_participants": [{"contribution_id": "openzyme.compute.transaction@1", "contract_digest": "sha256:6623ce38240908c2d4846414d8c9be8f43df3b80691b22e7552571d828f48564"}],
+  "qualification_specs": []
+}

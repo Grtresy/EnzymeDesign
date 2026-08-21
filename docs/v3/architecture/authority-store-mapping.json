@@ -1,0 +1,112 @@
+{
+  "schema_id": "openzyme_authority_store_mapping_manifest@1",
+  "public_contract": {
+    "owner": "openzyme.contracts",
+    "schema_version": "agent_authority_lease@1",
+    "symbol": "AgentAuthorityLease",
+    "legacy_public_alias_in_at2": false
+  },
+  "physical_storage": {
+    "store_adapter": "openzyme.store.sqlite",
+    "semantic_owner": "openzyme.kernel",
+    "table_name": "agent_capability_lease_records",
+    "legacy_schema_version": "agent_capability_lease@1",
+    "rename_policy": "retain_physical_name_in_this_change",
+    "writer_cutover_state": "legacy_writer_active"
+  },
+  "identity_mapping": {
+    "lease_id": "lease_id",
+    "session_id": "session_id",
+    "agent_member_id": "agent_member_id",
+    "agent_id": "agent_id",
+    "generation": "workspace_generation",
+    "workspace_generation": "workspace_generation",
+    "fence": "state_version",
+    "parent_lease_id": "parent_lease_id",
+    "policy_digest": "policy_digest",
+    "idempotency_key": "idempotency_key",
+    "issued_at": "issued_at",
+    "updated_at": "updated_at",
+    "expires_at": null
+  },
+  "state_mapping": {
+    "pending_workspace": "pending",
+    "active": "active",
+    "revoked": "revoked"
+  },
+  "profile_templates": {
+    "general": [
+      "filesystem_read",
+      "filesystem_write",
+      "shell_process",
+      "git",
+      "git_lfs",
+      "ordinary_network",
+      "upload",
+      "download"
+    ],
+    "executor": [
+      "filesystem_read",
+      "filesystem_write",
+      "shell_process",
+      "git",
+      "git_lfs",
+      "ordinary_network",
+      "upload",
+      "download",
+      "ssh",
+      "rsync_scp",
+      "hpc_login_workspace_crud",
+      "slurm_operations"
+    ]
+  },
+  "operation_mapping": {
+    "filesystem_read": ["workspace.fs.read"],
+    "filesystem_write": ["workspace.fs.write"],
+    "shell_process": ["workspace.process.exec"],
+    "git": ["workspace.git.read", "workspace.git.write"],
+    "git_lfs": ["workspace.git.lfs.read", "workspace.git.lfs.write"],
+    "ordinary_network": ["workspace.network.outbound"],
+    "upload": ["workspace.transfer.write"],
+    "download": ["workspace.transfer.read"],
+    "ssh": ["hpc.workspace.process.exec"],
+    "rsync_scp": [
+      "hpc.workspace.transfer.read",
+      "hpc.workspace.transfer.write"
+    ],
+    "hpc_login_workspace_crud": [
+      "hpc.workspace.inspect",
+      "hpc.workspace.fs.read",
+      "hpc.workspace.fs.write"
+    ],
+    "slurm_operations": [
+      "hpc.scheduler.submit",
+      "hpc.scheduler.observe",
+      "hpc.scheduler.cancel"
+    ]
+  },
+  "scope_mapping": {
+    "workspace_local": "workspace:{session_id}:{agent_member_id}:{workspace_generation}",
+    "git_and_lfs": "each repository:* target from the physical row",
+    "ordinary_network": "each network:* target from the physical row",
+    "hpc_workspace_and_scheduler": "each hpc:* target from the physical row"
+  },
+  "fail_closed_rules": [
+    "exact physical row shape and legacy schema version are required",
+    "legacy profile tuple, target ordering, lifecycle facts and both legacy digests must verify",
+    "a capability requiring repository, network or hpc scope must have a matching target",
+    "legacy profile is issuance provenance only and cannot expand a mapped lease",
+    "resource or extension capability facts are never synthesized from authority",
+    "the mapping performs no database write, no table rename and no public alias creation"
+  ],
+  "source_refs": [
+    "packages/openzyme-contracts/src/openzyme_contracts/authority.py",
+    "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/authority_mapping.py",
+    "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/migrations/001_file_workspace_final.sql",
+    "docs/v3/architecture/table-owner-manifest.json"
+  ],
+  "test_refs": [
+    "packages/openzyme-store-sqlite/tests/test_authority_mapping.py",
+    "packages/openzyme-contracts/tests/test_contracts.py"
+  ]
+}

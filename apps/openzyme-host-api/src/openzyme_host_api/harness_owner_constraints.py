@@ -9,9 +9,7 @@ import re
 from typing import Mapping
 
 
-OWNER_CONSTRAINT_REGISTRY_SCHEMA_ID = (
-    "openzyme_v3_harness_owner_constraint_registry@1"
-)
+OWNER_CONSTRAINT_REGISTRY_SCHEMA_ID = "openzyme_v3_harness_owner_constraint_registry@1"
 OWNER_CONSTRAINT_REGISTRY_ID = "openzyme_v3_harness_owner_constraints"
 OWNER_CONSTRAINT_REGISTRY_RELATIVE_PATH = Path(
     "docs/v3/architecture-qualification/owner-constraint-registry.json"
@@ -136,9 +134,7 @@ def _sorted_texts(
     if not allow_empty and not items:
         raise HarnessOwnerConstraintRegistryError(f"{label} must not be empty")
     if items != tuple(sorted(set(items))):
-        raise HarnessOwnerConstraintRegistryError(
-            f"{label} must be sorted and unique"
-        )
+        raise HarnessOwnerConstraintRegistryError(f"{label} must be sorted and unique")
     return items
 
 
@@ -181,12 +177,16 @@ def validate_harness_owner_constraint_registry_bytes(
             "owner registry bytes are not canonical JSON plus one LF"
         )
     if payload["schema_id"] != OWNER_CONSTRAINT_REGISTRY_SCHEMA_ID:
-        raise HarnessOwnerConstraintRegistryError("owner registry schema is unsupported")
+        raise HarnessOwnerConstraintRegistryError(
+            "owner registry schema is unsupported"
+        )
     if payload["registry_id"] != OWNER_CONSTRAINT_REGISTRY_ID:
         raise HarnessOwnerConstraintRegistryError("owner registry id is unsupported")
     raw_constraints = payload["constraints"]
     if not isinstance(raw_constraints, list) or not raw_constraints:
-        raise HarnessOwnerConstraintRegistryError("constraints must be a non-empty array")
+        raise HarnessOwnerConstraintRegistryError(
+            "constraints must be a non-empty array"
+        )
 
     ids: list[str] = []
     owners: dict[str, str] = {}
@@ -202,9 +202,7 @@ def validate_harness_owner_constraint_registry_bytes(
             label=f"{label}.constraint_id",
             stable=True,
         )
-        owner = _text(
-            constraint["owner"], label=f"{label}.owner", stable=True
-        )
+        owner = _text(constraint["owner"], label=f"{label}.owner", stable=True)
         source = _source_path(
             constraint["owner_source"], repo_root=root, label=f"{label}.owner_source"
         )

@@ -1,0 +1,184 @@
+{
+  "configuration_schema_digest": "sha256:6a03002a40f10ce4c82f29c425d729c478501ee5f48fc03cf19efc6ac428bd1b",
+  "finish_validators": [],
+  "http_routes": [],
+  "identity": {
+    "build_digest": "sha256:b80c5c2cddd2a80ba5268e9ab45522e4affeb0000a343505c4cb5ecb140a54f3",
+    "component_id": "openzyme.hpc",
+    "component_kind": "plugin",
+    "component_version": "0.1.0",
+    "contract_digest": "sha256:152d640ed7612afeafc050f293792ff810a7ca890b77b26dbc378ce8c17f2d1c",
+    "distribution_name": "openzyme-hpc",
+    "distribution_version": "0.1.0"
+  },
+  "migration_bundle_digest": "sha256:f7a0b5e1acf17c53518a5ea492bd0059a8a89a4065a9146af5e902ab84c9958a",
+  "migrations": [
+    {
+      "contract_digest": "sha256:e34057a6ec592bb888ad468f827b82b0071b68d636710a22a2b591e796a979fe",
+      "contribution_id": "openzyme.hpc.migration.001@1"
+    }
+  ],
+  "projections": [{"contribution_id":"openzyme.hpc@1","contract_digest":"sha256:2efdfc470f2b3f402e8b82e89e52d2964e1ebba1195317c1d5b54424f26d092e"}],
+  "ui_renderers": [{"contribution_id":"openzyme.hpc.renderer@1","contract_digest":"sha256:e4ce5602f45cfb14e8711aa90790f9a1d707756f316409fcbd3891683650d2de"}],
+  "provides": [
+    {
+      "capability_id": "openzyme.hpc.compute-route",
+      "cardinality": "multi_route",
+      "contract_version": "1",
+      "operations": [
+        "cancel",
+        "observe",
+        "reconcile",
+        "submit"
+      ]
+    },
+    {
+      "capability_id": "openzyme.hpc.target-inventory",
+      "cardinality": "multi_route",
+      "contract_version": "1",
+      "operations": [
+        "adopt",
+        "inspect",
+        "publish",
+        "qualify",
+        "revoke"
+      ]
+    },
+    {
+      "capability_id": "openzyme.hpc.workspace",
+      "cardinality": "multi_route",
+      "contract_version": "1",
+      "operations": [
+        "cleanup",
+        "exec",
+        "fs-list",
+        "fs-mutate",
+        "fs-read",
+        "inspect",
+        "request",
+        "sync-source",
+        "verify"
+      ]
+    }
+  ],
+  "qualification_specs": [],
+  "required_extension_spi_contract": "openzyme.extension-spi@1",
+  "required_kernel_contract": "openzyme.kernel@1",
+  "requires": [
+    {
+      "capability_id": "openzyme.execution.revision-job",
+      "contract_spec": "@1",
+      "kind": "extension",
+      "operations": [
+        "cancel",
+        "observe",
+        "reconcile",
+        "submit"
+      ],
+      "same_target_as": null,
+      "version_spec": null
+    }
+  ],
+  "routes": [
+    {
+      "capability_ids": [
+        "openzyme.execution.revision-job",
+        "openzyme.hpc.compute-route"
+      ],
+      "driver_id": null,
+      "owner_component_id": "openzyme.hpc",
+      "route_contract_digest": "sha256:405edb809c7a5e684aa6348d33912c8c0a8c8a287997a98dff5b1390a579ec0b",
+      "route_id": "hpc-primary.revision-job",
+      "route_kind": "hpc_scheduler",
+      "target_id": "hpc-primary"
+    },
+    {
+      "capability_ids": [
+        "openzyme.hpc.target-inventory",
+        "openzyme.hpc.workspace"
+      ],
+      "driver_id": null,
+      "owner_component_id": "openzyme.hpc",
+      "route_contract_digest": "sha256:85bcc56f0795ca1a1b8cc27335eef21abc5f71dcdd948dd7bc35aea56d78c6cb",
+      "route_id": "hpc-primary.workspace-runtime",
+      "route_kind": "remote_workspace",
+      "target_id": "hpc-primary"
+    }
+  ],
+  "schema_version": "openzyme_plugin_manifest@1",
+  "schemas": [
+    {
+      "contract_digest": "sha256:37602929d7faee180add9fd13a9d8598ec5c93f1b81327e7896090d5908d0978",
+      "contribution_id": "openzyme.hpc.state@1"
+    }
+  ],
+  "state_namespace": "openzyme_hpc",
+  "tools": [
+    {
+      "owner_plugin_id": "openzyme.hpc",
+      "runtime_id": "openzyme.hpc.workspace-request@1",
+      "contract": {"schema_version":"openzyme_tool_spec@1","tool_name":"hpc.workspace.request","description":"Request one exact owner-scoped remote HPC workspace generation. This does not submit a scheduler job, publish files, create evidence or finish a Task.","input_schema":{"additionalProperties":false,"properties":{"absolute_deadline":{"minLength":1,"type":"string"},"idempotency_key":{"minLength":1,"type":"string"},"remote_workspace_generation":{"minimum":1,"type":"integer"},"target_id":{"minLength":1,"type":"string"}},"required":["target_id","remote_workspace_generation","idempotency_key","absolute_deadline"],"type":"object"},"output_schema":{"required":["workspace_id","fallback_performed","publication_created","scientific_evidence_created","task_finished"],"type":"object"},"required_authorities":["hpc.workspace.provision"],"approval_policy_id":null},
+      "requirements": [{"capability_id":"openzyme.hpc.workspace","contract_spec":"@1","kind":"extension","operations":["request"],"version_spec":null,"same_target_as":null}],
+      "requires_workspace": false,
+      "requires_explicit_route": true
+    },
+    {
+      "owner_plugin_id": "openzyme.hpc",
+      "runtime_id": "openzyme.hpc.workspace-inspect@1",
+      "contract": {"schema_version":"openzyme_tool_spec@1","tool_name":"hpc.workspace.inspect","description":"Inspect the redacted owner view of one opaque HPC workspace.","input_schema":{"additionalProperties":false,"properties":{"workspace_id":{"maxLength":256,"minLength":1,"type":"string"}},"required":["workspace_id"],"type":"object"},"output_schema":{"required":["workspace_id","fallback_performed","publication_created","scientific_evidence_created","task_finished"],"type":"object"},"required_authorities":["hpc.workspace.inspect"],"approval_policy_id":null},
+      "requirements": [{"capability_id":"openzyme.hpc.workspace","contract_spec":"@1","kind":"extension","operations":["inspect"],"version_spec":null,"same_target_as":null}],
+      "requires_workspace": false,
+      "requires_explicit_route": true
+    },
+    {
+      "owner_plugin_id": "openzyme.hpc",
+      "runtime_id": "openzyme.hpc.workspace-verify@1",
+      "contract": {"schema_version":"openzyme_tool_spec@1","tool_name":"hpc.workspace.verify","description":"Verify exact remote root, generation, target qualification and clone identity.","input_schema":{"additionalProperties":false,"properties":{"workspace_id":{"maxLength":256,"minLength":1,"type":"string"}},"required":["workspace_id"],"type":"object"},"output_schema":{"required":["workspace_id","fallback_performed","publication_created","scientific_evidence_created","task_finished"],"type":"object"},"required_authorities":["hpc.workspace.inspect"],"approval_policy_id":null},
+      "requirements": [{"capability_id":"openzyme.hpc.workspace","contract_spec":"@1","kind":"extension","operations":["verify"],"version_spec":null,"same_target_as":null}],
+      "requires_workspace": false,
+      "requires_explicit_route": true
+    },
+    {
+      "owner_plugin_id": "openzyme.hpc",
+      "runtime_id": "openzyme.hpc.workspace-sync_source@1",
+      "contract": {"schema_version":"openzyme_tool_spec@1","tool_name":"hpc.workspace.sync_source","description":"Resolve one exact private checkpoint or immutable publication for an owner workspace. The receipt does not itself mutate, publish or adopt files.","input_schema":{"additionalProperties":false,"oneOf":[{"not":{"required":["publication_id"]},"required":["checkpoint_id"]},{"not":{"required":["checkpoint_id"]},"required":["publication_id"]}],"properties":{"checkpoint_id":{"minLength":1,"type":"string"},"publication_id":{"minLength":1,"type":"string"},"workspace_id":{"maxLength":256,"minLength":1,"type":"string"}},"required":["workspace_id"],"type":"object"},"output_schema":{"required":["workspace_id","fallback_performed","publication_created","scientific_evidence_created","task_finished"],"type":"object"},"required_authorities":["hpc.workspace.transfer.write"],"approval_policy_id":null},
+      "requirements": [{"capability_id":"openzyme.hpc.workspace","contract_spec":"@1","kind":"extension","operations":["sync-source"],"version_spec":null,"same_target_as":null}],
+      "requires_workspace": false,
+      "requires_explicit_route": true
+    },
+    {
+      "owner_plugin_id": "openzyme.hpc",
+      "runtime_id": "openzyme.hpc.workspace-fs-read@1",
+      "contract": {"schema_version":"openzyme_tool_spec@1","tool_name":"hpc.workspace.fs.read","description":"Read one bounded root-relative file from an exact owner HPC workspace.","input_schema":{"additionalProperties":false,"properties":{"max_bytes":{"maximum":1048576,"minimum":1,"type":"integer"},"path":{"description":"Canonical remote-workspace-root-relative path; no absolute path, parent traversal or glob.","maxLength":2048,"minLength":1,"type":"string"},"workspace_id":{"maxLength":256,"minLength":1,"type":"string"}},"required":["workspace_id","path"],"type":"object"},"output_schema":{"required":["workspace_id","fallback_performed","publication_created","scientific_evidence_created","task_finished"],"type":"object"},"required_authorities":["hpc.workspace.fs.read"],"approval_policy_id":null},
+      "requirements": [{"capability_id":"openzyme.hpc.workspace","contract_spec":"@1","kind":"extension","operations":["fs-read"],"version_spec":null,"same_target_as":null}],
+      "requires_workspace": false,
+      "requires_explicit_route": true
+    },
+    {
+      "owner_plugin_id": "openzyme.hpc",
+      "runtime_id": "openzyme.hpc.workspace-fs-list@1",
+      "contract": {"schema_version":"openzyme_tool_spec@1","tool_name":"hpc.workspace.fs.list","description":"List one bounded root-relative directory in an exact owner HPC workspace.","input_schema":{"additionalProperties":false,"properties":{"path":{"description":"Canonical remote-workspace-root-relative path; no absolute path, parent traversal or glob.","maxLength":2048,"minLength":1,"type":"string"},"workspace_id":{"maxLength":256,"minLength":1,"type":"string"}},"required":["workspace_id","path"],"type":"object"},"output_schema":{"required":["workspace_id","fallback_performed","publication_created","scientific_evidence_created","task_finished"],"type":"object"},"required_authorities":["hpc.workspace.fs.read"],"approval_policy_id":null},
+      "requirements": [{"capability_id":"openzyme.hpc.workspace","contract_spec":"@1","kind":"extension","operations":["fs-list"],"version_spec":null,"same_target_as":null}],
+      "requires_workspace": false,
+      "requires_explicit_route": true
+    },
+    {
+      "owner_plugin_id": "openzyme.hpc",
+      "runtime_id": "openzyme.hpc.workspace-fs-mutate@1",
+      "contract": {"schema_version":"openzyme_tool_spec@1","tool_name":"hpc.workspace.fs.mutate","description":"Apply one structured write, mkdir, move or remove operation under the exact owner root. Success is private mutation only, never publication or Task evidence.","input_schema":{"additionalProperties":false,"properties":{"content":{"maxLength":1048576,"type":"string"},"destination":{"description":"Canonical remote-workspace-root-relative path; no absolute path, parent traversal or glob.","maxLength":2048,"minLength":1,"type":"string"},"expected_content_digest":{"pattern":"^sha256:[0-9a-f]{64}$","type":"string"},"idempotency_key":{"minLength":1,"type":"string"},"operation":{"enum":["write","mkdir","move","remove"],"type":"string"},"path":{"description":"Canonical remote-workspace-root-relative path; no absolute path, parent traversal or glob.","maxLength":2048,"minLength":1,"type":"string"},"recursive":{"type":"boolean"},"workspace_id":{"maxLength":256,"minLength":1,"type":"string"}},"required":["workspace_id","operation","path","idempotency_key"],"type":"object"},"output_schema":{"required":["workspace_id","fallback_performed","publication_created","scientific_evidence_created","task_finished"],"type":"object"},"required_authorities":["hpc.workspace.fs.write"],"approval_policy_id":null},
+      "requirements": [{"capability_id":"openzyme.hpc.workspace","contract_spec":"@1","kind":"extension","operations":["fs-mutate"],"version_spec":null,"same_target_as":null}],
+      "requires_workspace": false,
+      "requires_explicit_route": true
+    },
+    {
+      "owner_plugin_id": "openzyme.hpc",
+      "runtime_id": "openzyme.hpc.workspace-exec@1",
+      "contract": {"schema_version":"openzyme_tool_spec@1","tool_name":"hpc.workspace.exec","description":"Execute one bounded foreground argv in an exact owner HPC workspace. Scheduler commands are excluded; response loss is reconciled without redispatch.","input_schema":{"additionalProperties":false,"properties":{"argv":{"items":{"maxLength":4096,"minLength":1,"type":"string"},"maxItems":256,"minItems":1,"type":"array"},"cwd":{"description":"Canonical remote-workspace-root-relative path; no absolute path, parent traversal or glob.","maxLength":2048,"minLength":1,"type":"string"},"idempotency_key":{"minLength":1,"type":"string"},"stdin":{"maxLength":1048576,"type":"string"},"timeout_seconds":{"maximum":3600,"minimum":1,"type":"integer"},"workspace_id":{"maxLength":256,"minLength":1,"type":"string"}},"required":["workspace_id","argv","cwd","timeout_seconds","idempotency_key"],"type":"object"},"output_schema":{"required":["workspace_id","fallback_performed","publication_created","scientific_evidence_created","task_finished"],"type":"object"},"required_authorities":["hpc.workspace.process.exec"],"approval_policy_id":null},
+      "requirements": [{"capability_id":"openzyme.hpc.workspace","contract_spec":"@1","kind":"extension","operations":["exec"],"version_spec":null,"same_target_as":null}],
+      "requires_workspace": false,
+      "requires_explicit_route": true
+    }
+  ],
+  "transaction_participants": [],
+  "workers": [{"contribution_id":"openzyme.hpc.worker@1","contract_digest":"sha256:34880346f435470ab36f1836a12ad58c74ebe5191f3a01d8f813d6429013e5d3"}]
+}

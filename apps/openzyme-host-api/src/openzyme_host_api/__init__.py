@@ -1,23 +1,29 @@
-from .app import HostApiDependencies
-from .app import create_app
 from .security import HostPrincipal
 from .security import HostSecurityPolicy
-from .foundation import build_configured_foundation
-from .tracing import build_trace_metadata
-from .tracing import build_trace_tags
-from .tracing import tracing_enabled
-from .v3_service import V3EventStore
-from .v3_service import V3HostApiService
+from .file_workspace_v2 import FileWorkspaceV2HostContractError
+from .file_workspace_v2 import FileWorkspaceV2HostProjection
+from .file_workspace_v2 import FileWorkspaceV2HostSurface
+from .v2_app import HostV2Dependencies
+from .v2_app import HostV2CommandError
+from .v2_app import HostV2KernelCommandGateway
+from .v2_app import HostV2KernelMutationRoute
+from .v2_app import HostV2MutationInvocation
+from .v2_app import HostV2SessionBootstrapInvocation
+from .v2_app import KERNEL_V2_MUTATION_ROUTES
+from .v2_app import create_v2_app
 
 __all__ = [
-    "HostApiDependencies",
-    "V3EventStore",
-    "V3HostApiService",
-    "build_configured_foundation",
-    "build_trace_metadata",
-    "build_trace_tags",
-    "create_app",
+    "HostV2Dependencies",
+    "HostV2CommandError",
+    "HostV2KernelCommandGateway",
+    "HostV2KernelMutationRoute",
+    "HostV2MutationInvocation",
+    "HostV2SessionBootstrapInvocation",
+    "KERNEL_V2_MUTATION_ROUTES",
+    "FileWorkspaceV2HostContractError",
+    "FileWorkspaceV2HostProjection",
+    "FileWorkspaceV2HostSurface",
+    "create_v2_app",
     "HostPrincipal",
     "HostSecurityPolicy",
-    "tracing_enabled",
 ]

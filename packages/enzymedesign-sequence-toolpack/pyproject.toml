@@ -1,0 +1,37 @@
+[project]
+name = "enzymedesign-sequence-toolpack"
+version = "0.1.0"
+description = "序列分析工具包插件"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "enzymedesign-core",
+  "openzyme-contracts",
+  "openzyme-extension-spi",
+]
+
+[project.entry-points."openzyme.extensions"]
+"enzymedesign.sequence.toolpack" = "enzymedesign_sequence_toolpack.manifest_locator:locate_component_manifest"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=9.0.0",
+]
+
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/enzymedesign_sequence_toolpack"]
+
+[tool.openzyme.component]
+component_id = "enzymedesign.sequence.toolpack"
+component_kind = "product_plugin"
+migration_state = "target_implemented_not_cutover"
+current_composition_owner = "uncomposed"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"

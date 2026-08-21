@@ -1,0 +1,576 @@
+{
+  "configuration_schema_digest": "sha256:e85d5196c21dd8e5582bdd3abf83e40c512bc76a9ae6592dc46679ea2dbd71b2",
+  "finish_validators": [
+    {
+      "contract_digest": "sha256:087af56e857f749f61234aef8095f9ea5648ce3f66f7162bd0a04ba1f85ca3b3",
+      "contribution_id": "openzyme.science.finish-validator@1"
+    }
+  ],
+  "http_routes": [
+    {
+      "contract_digest": "sha256:94551a2a365fe91fc113cabb2304881cdd53db32ef24cab0d78ef2874bf3133e",
+      "method": "GET",
+      "owner_plugin_id": "openzyme.science",
+      "path": "/v3/extensions/openzyme.science/sessions/{session_id}",
+      "route_id": "openzyme.science.http.session-view@1"
+    }
+  ],
+  "identity": {
+    "build_digest": "sha256:b8ea917e42c9d37a0c6f2a6e4fe97900da0f09c3d1f0ff15e6de2fc1ec5beb93",
+    "component_id": "openzyme.science",
+    "component_kind": "plugin",
+    "component_version": "0.1.0",
+    "contract_digest": "sha256:f72fa55b34de186ed3c2a420ce8ea26ba068a8d25cfa983a67a4ef154a5de6a2",
+    "distribution_name": "openzyme-science",
+    "distribution_version": "0.1.0"
+  },
+  "migration_bundle_digest": "sha256:d581b17b6e317cd95b7fa7807665d67d72cffa872c72d963edd04e800a275555",
+  "migrations": [
+    {
+      "contract_digest": "sha256:a6e393a907d1933bdc410d161868340abc6aa0c7f6bd51cd5bf99194ed6944e9",
+      "contribution_id": "openzyme.science.migration.001@1"
+    }
+  ],
+  "projections": [
+    {
+      "contract_digest": "sha256:f17c0b67187d16f070033fb5a861914c3b37e5686d535404c2589b154cf7ce4e",
+      "contribution_id": "openzyme.science@1"
+    }
+  ],
+  "provides": [
+    {
+      "capability_id": "openzyme.science",
+      "cardinality": "single",
+      "contract_version": "1",
+      "operations": [
+        "adopt",
+        "close",
+        "dispose",
+        "inspect",
+        "select",
+        "validate"
+      ]
+    }
+  ],
+  "qualification_specs": [],
+  "required_extension_spi_contract": "openzyme.extension-spi@1",
+  "required_kernel_contract": "openzyme.kernel@1",
+  "requires": [],
+  "routes": [],
+  "schema_version": "openzyme_plugin_manifest@1",
+  "schemas": [
+    {
+      "contract_digest": "sha256:65ecc9390ec3b2b75c732eabfd6046cdbfc113d1455c56a519996b1900c889b0",
+      "contribution_id": "openzyme.science.state@1"
+    }
+  ],
+  "state_namespace": "openzyme_science",
+  "tools": [
+    {
+      "contract": {
+        "approval_policy_id": null,
+        "description": "Request explicit formal closure; closure never completes the owning Task.",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "attempt_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "idempotency_key": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "selection_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "attempt_id",
+            "selection_id",
+            "idempotency_key"
+          ],
+          "type": "object"
+        },
+        "output_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "fallback_performed": {
+              "const": false
+            },
+            "state": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "task_finished": {
+              "const": false
+            },
+            "entity_kind": {
+              "type": "string",
+              "minLength": 1
+            },
+            "entity_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "state_version": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "record_digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "state",
+            "fallback_performed",
+            "task_finished"
+          ],
+          "type": "object"
+        },
+        "required_authorities": [],
+        "schema_version": "openzyme_tool_spec@1",
+        "tool_name": "scientific.attempt.close"
+      },
+      "owner_plugin_id": "openzyme.science",
+      "requirements": [],
+      "requires_explicit_route": false,
+      "requires_workspace": false,
+      "runtime_id": "openzyme.science.scientific-attempt-close@1"
+    },
+    {
+      "contract": {
+        "approval_policy_id": null,
+        "description": "Read one bounded Science projection without changing scientific or Task state.",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "attempt_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "cursor": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "limit": {
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "selection_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "output_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "fallback_performed": {
+              "const": false
+            },
+            "state": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "task_finished": {
+              "const": false
+            },
+            "entity_kind": {
+              "type": "string",
+              "minLength": 1
+            },
+            "entity_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "state_version": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "record_digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "state",
+            "fallback_performed",
+            "task_finished"
+          ],
+          "type": "object"
+        },
+        "required_authorities": [],
+        "schema_version": "openzyme_tool_spec@1",
+        "tool_name": "scientific.attempt.inspect"
+      },
+      "owner_plugin_id": "openzyme.science",
+      "requirements": [],
+      "requires_explicit_route": false,
+      "requires_workspace": false,
+      "runtime_id": "openzyme.science.scientific-attempt-inspect@1"
+    },
+    {
+      "contract": {
+        "approval_policy_id": null,
+        "description": "Explicitly adopt one settled successful operation for one workflow role. You choose the operation, role, and reason; the harness never infers a latest or successful candidate.",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "idempotency_key": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "operation_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "reason_code": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "selection_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "workflow_role": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "selection_id",
+            "operation_id",
+            "workflow_role",
+            "reason_code",
+            "idempotency_key"
+          ],
+          "type": "object"
+        },
+        "output_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "fallback_performed": {
+              "const": false
+            },
+            "state": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "task_finished": {
+              "const": false
+            },
+            "entity_kind": {
+              "type": "string",
+              "minLength": 1
+            },
+            "entity_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "state_version": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "record_digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "state",
+            "fallback_performed",
+            "task_finished"
+          ],
+          "type": "object"
+        },
+        "required_authorities": [],
+        "schema_version": "openzyme_tool_spec@1",
+        "tool_name": "scientific.operation.adopt"
+      },
+      "owner_plugin_id": "openzyme.science",
+      "requirements": [],
+      "requires_explicit_route": false,
+      "requires_workspace": false,
+      "runtime_id": "openzyme.science.scientific-operation-adopt@1"
+    },
+    {
+      "contract": {
+        "approval_policy_id": null,
+        "description": "Record the Agent-selected disposition of one exact scientific occurrence.",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "idempotency_key": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "superseded",
+                "failed",
+                "abandoned"
+              ]
+            },
+            "operation_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "reason_code": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "replacement_operation_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "selection_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "workflow_role": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "selection_id",
+            "operation_id",
+            "kind",
+            "reason_code",
+            "idempotency_key"
+          ],
+          "type": "object"
+        },
+        "output_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "fallback_performed": {
+              "const": false
+            },
+            "state": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "task_finished": {
+              "const": false
+            },
+            "entity_kind": {
+              "type": "string",
+              "minLength": 1
+            },
+            "entity_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "state_version": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "record_digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "state",
+            "fallback_performed",
+            "task_finished"
+          ],
+          "type": "object"
+        },
+        "required_authorities": [],
+        "schema_version": "openzyme_tool_spec@1",
+        "tool_name": "scientific.operation.disposition"
+      },
+      "owner_plugin_id": "openzyme.science",
+      "requirements": [],
+      "requires_explicit_route": false,
+      "requires_workspace": false,
+      "runtime_id": "openzyme.science.scientific-operation-disposition@1"
+    },
+    {
+      "contract": {
+        "approval_policy_id": null,
+        "description": "Begin an explicit immutable selection revision within one admitted attempt.",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "attempt_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "expected_head_state_version": {
+              "minimum": 1,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "idempotency_key": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "parent_selection_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "attempt_id",
+            "idempotency_key"
+          ],
+          "type": "object"
+        },
+        "output_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "fallback_performed": {
+              "const": false
+            },
+            "state": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "task_finished": {
+              "const": false
+            },
+            "entity_kind": {
+              "type": "string",
+              "minLength": 1
+            },
+            "entity_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "state_version": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "record_digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "state",
+            "fallback_performed",
+            "task_finished"
+          ],
+          "type": "object"
+        },
+        "required_authorities": [],
+        "schema_version": "openzyme_tool_spec@1",
+        "tool_name": "scientific.selection.begin"
+      },
+      "owner_plugin_id": "openzyme.science",
+      "requirements": [],
+      "requires_explicit_route": false,
+      "requires_workspace": false,
+      "runtime_id": "openzyme.science.scientific-selection-begin@1"
+    },
+    {
+      "contract": {
+        "approval_policy_id": null,
+        "description": "Seal one exact selection only after all occurrence dispositions are explicit.",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "idempotency_key": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "expected_universe_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "selection_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "selection_id",
+            "expected_universe_digest",
+            "idempotency_key"
+          ],
+          "type": "object"
+        },
+        "output_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "fallback_performed": {
+              "const": false
+            },
+            "state": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "task_finished": {
+              "const": false
+            },
+            "entity_kind": {
+              "type": "string",
+              "minLength": 1
+            },
+            "entity_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "state_version": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "record_digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "state",
+            "fallback_performed",
+            "task_finished"
+          ],
+          "type": "object"
+        },
+        "required_authorities": [],
+        "schema_version": "openzyme_tool_spec@1",
+        "tool_name": "scientific.selection.seal"
+      },
+      "owner_plugin_id": "openzyme.science",
+      "requirements": [],
+      "requires_explicit_route": false,
+      "requires_workspace": false,
+      "runtime_id": "openzyme.science.scientific-selection-seal@1"
+    }
+  ],
+  "transaction_participants": [
+    {
+      "contract_digest": "sha256:6b0a8ef003fdd9671bf94c5bb9372bee4aee380d569e6c5756ce5818829d8f69",
+      "contribution_id": "openzyme.science.transaction@1"
+    }
+  ],
+  "ui_renderers": [
+    {
+      "contract_digest": "sha256:8c0a3cb20ca4b0acd8ee7124b6cf37517850663f37c8ea14764de2e9fbaea327",
+      "contribution_id": "openzyme.science.renderer@1"
+    }
+  ],
+  "workers": [
+    {
+      "contract_digest": "sha256:2d21948f189d240d7665beff61ea0630b5e3fcdb5acadb440ae9fddccd433ac2",
+      "contribution_id": "openzyme.science.worker@1"
+    }
+  ]
+}

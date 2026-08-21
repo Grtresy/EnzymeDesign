@@ -1,0 +1,13 @@
+{
+  "entries": [],
+  "external_consumer_policy": "no_out_of_repository_consumers",
+  "policy": "All in-repository callers were migrated to canonical owners. Retired namespaces, shims, package metadata and entry points are forbidden from current source and wheel profiles.",
+  "retirement_evidence_refs": [
+    "docs/v3/compatibility-sunset.md",
+    "packages/openzyme-kernel/tests/test_architecture_manifests.py",
+    "packages/openzyme-kernel/tests/test_compat_caller_audit.py",
+    "scripts/qualify-openzyme-contract-wheels.py"
+  ],
+  "retirement_status": "retired_in_18_1",
+  "schema_id": "openzyme_temporary_reexport_ledger@1"
+}

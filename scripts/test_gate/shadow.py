@@ -34,7 +34,7 @@ ARCHITECTURE_COLLECTION_SCHEMA_ID = (
     "openzyme_v3_architecture_pytest_collection@1"
 )
 ARCHITECTURE_REGISTRY_SCHEMA_ID = (
-    "openzyme_v3_architecture_invariant_registry@2"
+    "openzyme_v3_architecture_invariant_registry@3"
 )
 ARCHITECTURE_REGISTRY_PATH = (
     "docs/v3/architecture-qualification/invariant-registry.json"
@@ -380,7 +380,11 @@ def _reject_constant(value: str) -> None:
     raise ShadowCollectionError(f"non-finite JSON constant: {value}")
 
 
-def _load_existing_canonical_json(path: Path) -> dict[str, Any]:
+def _load_existing_canonical_json(
+    path: Path,
+    *,
+    ensure_ascii: bool = False,
+) -> dict[str, Any]:
     try:
         content = path.read_bytes()
         parsed = json.loads(
@@ -392,7 +396,14 @@ def _load_existing_canonical_json(path: Path) -> dict[str, Any]:
         raise ShadowCollectionError(f"invalid canonical JSON {path}: {exc}") from exc
     if not isinstance(parsed, dict):
         raise ShadowCollectionError(f"canonical JSON must be an object: {path}")
-    if content != canonical_json_bytes(parsed) + b"\n":
+    canonical = json.dumps(
+        parsed,
+        allow_nan=False,
+        ensure_ascii=ensure_ascii,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8") + b"\n"
+    if content != canonical:
         raise ShadowCollectionError(f"JSON is not canonical: {path}")
     return parsed
 
@@ -415,7 +426,10 @@ def load_qualification_scenario_collection(
     if not isinstance(raw_scenarios, list):
         raise ShadowCollectionError("qualification scenarios must be an array")
 
-    registry = _load_existing_canonical_json(registry_path)
+    # The architecture registry owns an explicit ensure_ascii=true byte
+    # contract.  Test-gate evidence uses UTF-8 literals, so the two canonical
+    # document families must not be silently conflated.
+    registry = _load_existing_canonical_json(registry_path, ensure_ascii=True)
     if registry.get("schema_id") != ARCHITECTURE_REGISTRY_SCHEMA_ID:
         raise ShadowCollectionError("qualification registry schema drifted")
     registry_scenarios = registry.get("scenarios")

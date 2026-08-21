@@ -1,12 +1,15 @@
-# Architecture invariant registry schema v2
+# Architecture invariant registry schema v3
 
 ## Identity and byte contract
 
 The only current registry path is
 `docs/v3/architecture-qualification/invariant-registry.json`. Its top-level
-`schema_id` is `openzyme_v3_architecture_invariant_registry@2`, its `registry_id`
-is `openzyme_v3_architecture_invariants`, and its only profile is
-`local_single_process_file_sqlite@1`.
+`schema_id` is `openzyme_v3_architecture_invariant_registry@3`, its `registry_id`
+is `openzyme_v3_architecture_invariants`, and its exact closed profiles are:
+
+- `kernel_fake_adapters@1`；
+- `openzyme_standard_local_file_sqlite_git@1`；
+- `enzymedesign_local_single_process_file_sqlite@1`。
 
 The file is strict UTF-8 JSON with:
 
@@ -39,8 +42,8 @@ The exact top-level fields are:
 | --- | --- |
 | `schema_id` | Exact schema identity above. |
 | `registry_id` | Exact registry identity above. |
-| `profile` | Exact-six-field local profile object. |
-| `required_families` | Exact twelve-family schema-v2 set. |
+| `profiles` | Exact three-profile records that bind both semantic ownership and deployment composition evidence. |
+| `required_families` | Exact twelve-family schema-v3 set. |
 | `required_scenario_ids` | Exact set of scenario records in this document. |
 | `implementation_files` | Readable, non-symlink, repository-relative files bound into implementation identity. |
 | `owner_constraint_registry` | Exact path/schema/id/content-digest binding for the closed owner/constraint registry. |
@@ -50,10 +53,17 @@ The exact top-level fields are:
 | `invariants` | Sorted closed invariant records. |
 | `scenarios` | Sorted closed scenario records. |
 
-The profile fields are exactly `profile_id`, `trust_boundary`, `database_mode`,
-`process_model`, `claims`, and `excludes`. Their v1 authority values are
-`trusted_host`, `file_sqlite`, and `single_process`; claims and exclusions must be
-explicit non-empty sorted sets.
+每个 profile 精确包含 `profile_id`、`trust_boundary`、`database_mode`、`process_model`、
+`distribution_id`、`claims`、`excludes`、`semantic_owner_ids`、`component_manifest_refs`、
+`import_root_refs`、`wheel_distribution_names`、`document_refs`、`allowed_external_port_ids` 和
+`layered_composition_digests`。最后一项必须闭合 Adapter bundle、Extension bundle、declared tool、route、
+projection、migration、workspace backend 与总 composition 八个 digest。owner/import 是语义所有权轴；
+manifest/wheel/document/digest 是部署组合轴，二者不能互相代替。
+
+Kernel fake profile 使用 `fake_port`/`in_process_fake`，不得允许 external port；Standard 和 EnzymeDesign
+profile 使用 `file_sqlite`/`single_process`。Standard 必须声明 Plugin-free；EnzymeDesign 可以选择 Plugins/
+Drivers，但 non-live profile 只允许已登记的 test-process port，并明确排除真实 Provider、SSH/Slurm/HPC、Chrome
+和 container effect。
 
 ## External ports and P0 triggers
 
@@ -88,7 +98,7 @@ inside the repository. Runtime qualification resolves the owner symbol and deriv
 An invariant record contains exactly:
 
 - `invariant_id`, `family`, `title`, and `owner_boundary`;
-- `contract_refs` and the exact local `profile_ids`;
+- `contract_refs` and a non-empty subset of the exact three `profile_ids`;
 - one `failure_class` from `boundary`, `integrity`, `liveness`, or `safety`;
 - non-empty `p0_trigger_ids` and `scenario_ids`.
 
@@ -110,7 +120,7 @@ reachability scenario cannot substitute for either family.
 
 A scenario record contains exactly:
 
-- `scenario_id`, `family`, `test_selector`, and `source_files`;
+- `scenario_id`, `family`, `test_selector`, `source_files`, and `profile_ids`;
 - `external_port_ids`, `fault_points`, `boundary_ids`, and `provenance_refs`;
 - `selections`, which must include `full` and may also include
   `premerge_subset`;
@@ -123,6 +133,9 @@ scenario; every scenario is referenced by at least one same-family invariant; ev
 referenced port, boundary, trigger, profile, contract, source, and implementation
 file exists in the same closed registry. Pytest collection closure adds the further
 requirement that every stable scenario id is collected and executed exactly once.
+
+每个 scenario 的 profile set 必须覆盖引用它的 invariant profile set。一个测试可以覆盖多个 profile，但报告必须
+保留该声明，不能把 EnzymeDesign 绿色结果提升为 Kernel-only 或 Standard-only 证明。
 
 The current cutover closure additionally requires these source-bound scenario ids;
 renaming or omitting one invalidates the registry before execution:

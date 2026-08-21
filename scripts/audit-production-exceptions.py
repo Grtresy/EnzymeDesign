@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Fail-closed AST audit for the file-workspace cutover production boundaries.
+"""Fail-closed AST audit for the current split-authority production boundaries.
 
-The audit is intentionally scoped to production modules owned or modified by the
-fourteen cutover changes and their closure change. It does not claim that unrelated
-legacy subsystems have no broad catches. Every broad catch in this scope must either
+The audit is intentionally scoped to current Kernel, Adapter, Plugin, Host and runner
+modules that own external or durable effects. Every broad catch in this scope must either
 re-raise the original exception, raise a typed successor with explicit chaining, or
 consume the bound exception in a structured diagnostic/failure projection. Silent
 pass/continue and unbound fallback returns are always violations.
@@ -25,82 +24,33 @@ CUTOVER_SOURCES: dict[str, tuple[str, ...]] = {
     "apps/mcp-hpc-runner/src/mcp_hpc_runner/workspace_revision_jobs.py": (
         "apps/mcp-hpc-runner/tests/test_workspace_revision_job_wire.py",
     ),
-    "apps/openzyme-host-api/src/openzyme_host_api/app.py": (
-        "apps/openzyme-host-api/tests/test_api.py",
-        "packages/openzyme-core/tests/test_failure_diagnostics.py",
+    "apps/openzyme-host-api/src/openzyme_host_api/file_workspace_v2.py": (
+        "apps/openzyme-host-api/tests/test_v2_app.py",
     ),
-    "apps/openzyme-host-api/src/openzyme_host_api/v3_service.py": (
-        "apps/openzyme-host-api/tests/test_runtime_commands.py",
+    "apps/openzyme-host-api/src/openzyme_host_api/v2_app.py": (
+        "apps/openzyme-host-api/tests/test_v2_app.py",
     ),
-    "apps/openzyme-host-api/src/openzyme_host_api/workspace_revision_execution.py": (
-        "apps/openzyme-host-api/tests/test_workspace_revision_execution_boundary.py",
+    "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/legacy_deployment_schema_proofs.py": (
+        "packages/openzyme-store-sqlite/tests/test_deployment_proof.py",
     ),
-    "packages/openzyme-core/src/openzyme_core/agent_git_workspace_recovery.py": (
-        "packages/openzyme-core/tests/test_agent_git_workspaces.py",
+    "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/legacy_migration_assets.py": (
+        "packages/openzyme-store-sqlite/tests/test_migration_and_startup.py",
     ),
-    "packages/openzyme-core/src/openzyme_core/bio_research_tools.py": (
-        "packages/openzyme-core/tests/test_bio_research_tools.py",
+    "packages/openzyme-contracts/src/openzyme_contracts/diagnostics.py": (
+        "packages/openzyme-kernel/tests/test_composition_diagnostics.py",
     ),
-    "packages/openzyme-core/src/openzyme_core/deployment_schema_proofs.py": (
-        "packages/openzyme-core/tests/test_migrations.py",
+    "packages/openzyme-kernel/src/openzyme_kernel/controlled_operation_application.py": (
+        "packages/openzyme-kernel/tests/test_controlled_operation_application.py",
     ),
-    "packages/openzyme-core/src/openzyme_core/device_fresh_reset.py": (
-        "packages/openzyme-core/tests/test_device_fresh_reset.py",
+    "packages/openzyme-kernel/src/openzyme_kernel/publication_application.py": (
+        "packages/openzyme-kernel/tests/test_publication_application.py",
     ),
-    "packages/openzyme-core/src/openzyme_core/failure_repositories.py": (
-        "packages/openzyme-core/tests/test_failure_diagnostics.py",
-    ),
-    "packages/openzyme-core/src/openzyme_core/file_workspace_projection.py": (
-        "packages/openzyme-core/tests/test_failure_diagnostics.py",
-    ),
-    "packages/openzyme-core/src/openzyme_core/harness.py": (
-        "packages/openzyme-core/tests/test_failure_diagnostics.py",
-        "packages/openzyme-core/tests/test_harness_strategy_properties.py",
-    ),
-    "packages/openzyme-core/src/openzyme_core/migration_assets.py": (
-        "packages/openzyme-core/tests/test_migrations.py",
-    ),
-    "packages/openzyme-core/src/openzyme_core/mutation_authority.py": (
-        "packages/openzyme-core/tests/test_mutation_quiescence.py",
-    ),
-    "packages/openzyme-core/src/openzyme_core/repositories.py": (
-        "packages/openzyme-core/tests/test_production_exception_audit.py",
-    ),
-    "packages/openzyme-core/src/openzyme_core/workspace_file_handoffs.py": (
-        "packages/openzyme-core/tests/test_bio_research_tools.py",
-    ),
-    "packages/openzyme-core/src/openzyme_core/workspace_publications.py": (
-        "packages/openzyme-core/tests/test_agent_git_workspaces.py",
-    ),
-    "packages/openzyme-domain/src/openzyme_domain/failures.py": (
-        "packages/openzyme-core/tests/test_failure_diagnostics.py",
-    ),
-    "packages/openzyme-domain/src/openzyme_domain/workspace_job_wire.py": (
-        "packages/openzyme-domain/tests/test_workspace_job_wire.py",
-    ),
-    "packages/openzyme-execution/src/openzyme_execution/workspace_revision.py": (
-        "packages/openzyme-execution/tests/test_workspace_revision_adapter.py",
-    ),
-    "packages/openzyme-runtime/src/openzyme_runtime/failure_observations.py": (
-        "packages/openzyme-core/tests/test_failure_diagnostics.py",
-    ),
-    "packages/openzyme-runtime/src/openzyme_runtime/public_diagnostics.py": (
-        "packages/openzyme-runtime/tests/test_public_diagnostics.py",
-    ),
-    "packages/openzyme-runtime/src/openzyme_runtime/tooling.py": (
-        "packages/openzyme-core/tests/test_failure_diagnostics.py",
+    "packages/openzyme-compute/src/openzyme_compute/workspace_revision_executions.py": (
+        "packages/openzyme-compute/tests/test_compute_lifecycle.py",
     ),
 }
 
-# SQLite invokes this callback from a trigger. It cannot safely emit another SQLite
-# diagnostic from inside the callback, so the only valid failure behavior is a
-# deterministic deny (0). The direct test injects a failing conversion and proves it.
-REVIEWED_UNBOUND_HANDLERS: dict[tuple[str, str], str] = {
-    (
-        "packages/openzyme-core/src/openzyme_core/repositories.py",
-        "_mutation_write_allowed",
-    ): "packages/openzyme-core/tests/test_production_exception_audit.py::test_sqlite_mutation_callback_fails_closed_without_raising",
-}
+REVIEWED_UNBOUND_HANDLERS: dict[tuple[str, str], str] = {}
 
 
 def _digest(value: object) -> str:

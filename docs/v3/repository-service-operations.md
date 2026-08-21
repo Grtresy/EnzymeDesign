@@ -7,6 +7,15 @@ revocation seam 的收口。它们是后续独立 agent Git workspace、发布/�
 upstream，也不实现真实 remote-HPC credential/workspace/job**。C2 中的 general/executor
 capability names 只是 policy declaration，不是这些后继产品能力已可用的证明。
 
+> 当前 `separate-openzyme-kernel-from-capability-extensions` 重构保留下文 Git-shaped
+> binding/commit/tree/ref/LFS 运维合同，但已经改变代码 owner：durable roots、bare ref/hook、LFS actual-byte
+> store、closed credential/provision claims、token/issuance ledger mechanism、ref ACL/owner writer、closure/
+> reachability/GC 与 native-client qualification 均由 `openzyme-workspace-git-lfs` Adapter 实现。旧 Core
+> brokers 仅暂存 canonical binding/pin/lease/private-namespace 或 pending-workspace admission，并通过
+> Store UoW 提交；FastAPI Git smart HTTP/LFS route mechanism 已迁入 Git/LFS Adapter，Host 只保留 authority
+> admission、preflight 和 Store scope 组合。Standard activation/composition 尚未迁完，因此下文 `openzyme-repository` 命令仍是
+> legacy Standard 运维入口，不能据此宣称 Adapter 已激活或完成生产 cutover。
+
 ## 1. 进程与 authority 边界
 
 repository transport 是与普通 V3 Host API 分离的 HTTPS FastAPI app：
@@ -162,11 +171,12 @@ migration historical writer 使用独立内部 owner，不复用 agent bearer；
 publication create 与 historical create/fast-forward，并通过 bare repository 原子 exact-old/new
 CAS 更新。C1 只提供该内部 primitive，不提供 C4 publication workflow 或历史迁移编排。
 
-C4 source implementation 现在消费该 primitive：Host 只对 frozen intent 预分配的 exact
-publication ref执行 create-if-absent，并在 I/O 前持久化 canonical execution dispatch intent。
-response loss只查询同一ref；confirmed/superseded publication ref没有delete或force-update route。
-read-only namespace audit只比较canonical `PublishedRevision` 与publication prefix，不扫描或提升
-private/historical refs。该源码仍受 `workspace_publication_source_only_dependency_gate@1` 限制，
+C4 compatibility application 现在消费 `WorkspaceRevisionBackendPort`：Kernel/Core 在 I/O 前持久化 canonical
+execution dispatch intent，Git/LFS Adapter 只对 frozen intent 的 exact publication ref 执行 create-only
+`update-ref`。response loss 以原 dispatch identity 调用 observe/reconcile，不再次 dispatch；
+confirmed/superseded publication ref 没有 delete 或 force-update route。read-only namespace audit只消费
+Adapter 返回的 publication-prefix digest observation，不扫描或提升 private/historical refs。该源码仍受
+`workspace_publication_source_only_dependency_gate@1` 限制，
 不改变 C1/C2 receipt 的历史范围，也不授权production remote I/O或live。
 
 C5 source implementation 在同一 endpoint/object root 上加入 immutable binding-scoped LFS policy、
@@ -190,7 +200,9 @@ upload/publication/GC authority，真实 native Podman/HPC-login、focused/mainl
 session/member/generation/service/target/protocol facts，broker 通过 canonical
 `ActiveAgentCapabilityLeaseValidator` 或等价 typed port 在同一 `BEGIN IMMEDIATE`
 transaction 中重读 active lease、immutable session pin、private namespace/hold，并写
-credential issuance record。任一 identity/profile/target/policy/retirement request/final record
+credential issuance record。当前实现中 broker 先完成上述 admission，再调用 Adapter-owned issuance store
+编码 token 并写 ledger；issuance store 不自行 commit，也不验证或授予 lease。任一
+identity/profile/target/policy/retirement request/final record
 漂移整体 rollback；
 只有 transaction commit 后才可把 bearer 返回调用进程。
 

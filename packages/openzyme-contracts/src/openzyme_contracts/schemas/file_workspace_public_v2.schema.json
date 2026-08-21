@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.openzyme.dev/file_workspace_public_v2.schema.json",
+  "title": "OpenZyme file_workspace_public@2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "release", "core", "extensions"],
+  "properties": {
+    "schema_version": {"const": "file_workspace_public@2"},
+    "release": {"$ref": "#/$defs/layered_release"},
+    "core": {"$ref": "#/$defs/core"},
+    "extensions": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/extension_section"}
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "layered_release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kernel_contract_digest",
+        "core_schema_digest",
+        "adapter_bundle_digest",
+        "extension_bundle_digest",
+        "declared_tool_catalog_digest",
+        "route_catalog_digest",
+        "projection_catalog_digest",
+        "migration_catalog_digest",
+        "workspace_backend_digest",
+        "host_build_digest",
+        "client_build_digest",
+        "release_digest",
+        "public_contract_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "openzyme_layered_release_identity@1"},
+        "kernel_contract_digest": {"$ref": "#/$defs/digest"},
+        "core_schema_digest": {"$ref": "#/$defs/digest"},
+        "adapter_bundle_digest": {"$ref": "#/$defs/digest"},
+        "extension_bundle_digest": {"$ref": "#/$defs/digest"},
+        "declared_tool_catalog_digest": {"$ref": "#/$defs/digest"},
+        "route_catalog_digest": {"$ref": "#/$defs/digest"},
+        "projection_catalog_digest": {"$ref": "#/$defs/digest"},
+        "migration_catalog_digest": {"$ref": "#/$defs/digest"},
+        "workspace_backend_digest": {"$ref": "#/$defs/digest"},
+        "host_build_digest": {"$ref": "#/$defs/digest"},
+        "client_build_digest": {"$ref": "#/$defs/digest"},
+        "release_digest": {"$ref": "#/$defs/digest"},
+        "public_contract_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "core": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "session",
+        "tasks",
+        "lanes",
+        "agents",
+        "protocol",
+        "conversation",
+        "approvals",
+        "authority_leases",
+        "capability_binding",
+        "runtime",
+        "workspace",
+        "publications",
+        "operations",
+        "failures",
+        "tool_reflection"
+      ],
+      "properties": {
+        "session": {"type": "object"},
+        "tasks": {"type": "array"},
+        "lanes": {"type": "array"},
+        "agents": {"type": "array"},
+        "protocol": {"type": "object"},
+        "conversation": {"type": "object"},
+        "approvals": {"type": "array"},
+        "authority_leases": {"type": "array"},
+        "capability_binding": {
+          "type": "object",
+          "required": ["binding_digest"],
+          "properties": {"binding_digest": {"$ref": "#/$defs/digest"}}
+        },
+        "runtime": {"type": "object"},
+        "workspace": {"type": "object"},
+        "publications": {"type": "array"},
+        "operations": {"type": "object"},
+        "failures": {"type": "object"},
+        "tool_reflection": {"$ref": "#/$defs/tool_reflection"}
+      }
+    },
+    "tool_reflection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "declared_tool_catalog_digest",
+        "affordance_snapshot_digest",
+        "capability_binding_digest",
+        "available_tool_names",
+        "affordances"
+      ],
+      "properties": {
+        "declared_tool_catalog_digest": {"$ref": "#/$defs/digest"},
+        "affordance_snapshot_digest": {"$ref": "#/$defs/digest"},
+        "capability_binding_digest": {"$ref": "#/$defs/digest"},
+        "available_tool_names": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "affordances": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/tool_affordance"}
+        }
+      }
+    },
+    "tool_affordance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tool_name",
+        "tool_contract_digest",
+        "state",
+        "required_authorities",
+        "route_ids",
+        "route_refs",
+        "blockers"
+      ],
+      "properties": {
+        "tool_name": {"type": "string", "minLength": 1},
+        "tool_contract_digest": {"$ref": "#/$defs/digest"},
+        "state": {
+          "enum": [
+            "available",
+            "available_with_approval",
+            "blocked_dependency",
+            "blocked_configuration",
+            "blocked_qualification",
+            "blocked_authority",
+            "blocked_provisioning",
+            "temporarily_unavailable"
+          ]
+        },
+        "required_authorities": {"type": "array", "items": {"type": "string"}},
+        "route_ids": {"type": "array", "items": {"type": "string"}},
+        "route_refs": {"type": "array", "items": {"type": "object"}},
+        "blockers": {"type": "array", "items": {"type": "object"}}
+      }
+    },
+    "extension_section": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "section_contract_digest",
+        "payload",
+        "next_cursor",
+        "projection_digest"
+      ],
+      "properties": {
+        "section_contract_digest": {"$ref": "#/$defs/digest"},
+        "payload": {"type": "object"},
+        "next_cursor": {"type": ["string", "null"]},
+        "projection_digest": {"$ref": "#/$defs/digest"}
+      }
+    }
+  }
+}

@@ -1,94 +1,136 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { WorkspaceController } from "../src/controller.js";
+import { WorkspaceControllerV2 } from "../src/controller.js";
+import { ExtensionRendererRegistry } from "../src/extension_renderer_loader.js";
 
-function workspace() {
+const digest = (character) => `sha256:${character.repeat(64)}`;
+
+function projection(extensions = {}) {
+  const release = {
+    schema_version: "openzyme_layered_release_identity@1",
+    kernel_contract_digest: digest("a"), core_schema_digest: digest("b"),
+    adapter_bundle_digest: digest("c"), extension_bundle_digest: digest("d"),
+    declared_tool_catalog_digest: digest("e"), route_catalog_digest: digest("f"),
+    projection_catalog_digest: digest("1"), migration_catalog_digest: digest("2"),
+    workspace_backend_digest: digest("3"), host_build_digest: digest("4"),
+    client_build_digest: digest("5"), release_digest: digest("6"),
+    public_contract_digest: digest("7"),
+  };
   return {
-    schema_version: "file_workspace_public@1",
-    session: { session_id: "session-1", project_id: "project-1" },
-    workspace_status: [{
-      workspace_id: "workspace-1",
-      workspace_generation: 2,
-      changed_paths: ["README.md"],
-      changed_paths_truncated: true,
-      changed_paths_continuation: "observation-1:100",
-    }],
+    schema_version: "file_workspace_public@2",
+    release,
+    core: {
+      agents: [], approvals: [], authority_leases: [],
+      capability_binding: { binding_digest: digest("8") },
+      conversation: { memories: [], messages: [] },
+      failures: { observations: [] }, lanes: [],
+      operations: {
+        command_receipts: [], continuations: [], controlled: [],
+        publication_intents: [], task_evidence: [],
+      },
+      protocol: { inbox: [], records: [] }, publications: [],
+      runtime: {
+        continuation_intents: [], outcome_consumptions: [], session_leases: [],
+        settlement_intents: [], signals: [], turn_commands: [],
+      },
+      session: { session_id: "session-1", objective: "Test UI controller" },
+      tasks: [],
+      tool_reflection: {
+        declared_tool_catalog_digest: release.declared_tool_catalog_digest,
+        affordance_snapshot_digest: digest("9"),
+        capability_binding_digest: digest("8"),
+        available_tool_names: [], affordances: [],
+      },
+      workspace: {
+        checkpoints: [], generations: [], repository_binding_pins: [],
+        revision_path_verifications: [], runtime_bindings: [],
+      },
+    },
+    extensions,
   };
 }
 
-function controllerWith(client) {
-  const controller = new WorkspaceController(client);
-  controller.state.currentSessionId = "session-1";
-  controller.state.workspace = workspace();
-  return controller;
+function controller(client, entries = []) {
+  return new WorkspaceControllerV2({
+    client,
+    rendererRegistry: new ExtensionRendererRegistry({
+      rendererCatalogDigest: digest("a"),
+      entries,
+    }),
+    expectedRendererCatalogDigest: digest("a"),
+    reconcileIntervalMs: 0,
+  });
 }
 
-test("controller consumes a bounded changed-path page without refreshing unrelated state", async () => {
+test("controller bootstraps a Plugin-free exact @2 Core shell", async () => {
   const calls = [];
-  const controller = controllerWith({
-    async getV3WorkspaceChangedPathsPage(...args) {
-      calls.push(args);
-      return {
-        schema_version: "workspace_changed_paths_page@1",
-        workspace_id: "workspace-1",
-        workspace_generation: 2,
-        paths: ["scientific/result.json"],
-        continuation: null,
-        source_truncated: false,
-      };
+  const subject = controller({
+    async inspectWorkspace(sessionId) {
+      calls.push(sessionId);
+      return { projection: projection() };
     },
   });
-  assert.equal(await controller.loadMoreChangedPaths("workspace-1"), true);
+
+  assert.equal(await subject.bootstrap("session-1"), true);
+  assert.deepEqual(calls, ["session-1"]);
+  assert.equal(subject.state.shell.core.session.session_id, "session-1");
+  assert.equal(subject.state.shell.mutationAllowed, true);
+  assert.deepEqual(subject.state.shell.extensionRendering.renderedSections, {});
+});
+
+test("controller sends one explicit gesture identity and adopts re-inspected state", async () => {
+  const next = projection();
+  next.core.conversation.messages.push({ message_id: "message-1", content: "done" });
+  const calls = [];
+  const subject = controller({
+    async inspectWorkspace() { return { projection: projection() }; },
+    async postMessage(...args) {
+      calls.push(args);
+      return { responseStatus: 200, projection: next };
+    },
+  });
+  await subject.bootstrap("session-1");
+
+  assert.equal(await subject.sendMessage("continue", "web-ui:message:1"), true);
   assert.deepEqual(calls, [[
     "session-1",
-    "workspace-1",
-    2,
-    "observation-1:100",
+    { message: "continue" },
+    "web-ui:message:1",
   ]]);
-  assert.deepEqual(
-    controller.state.workspace.workspace_status[0].changed_paths,
-    ["README.md", "scientific/result.json"],
-  );
-  assert.equal(controller.state.pendingWorkspacePathId, "");
+  assert.equal(subject.state.shell.core.conversation.messages[0].message_id, "message-1");
 });
 
-test("controller discards a late page after workspace generation changes", async () => {
-  let resolvePage;
-  const controller = controllerWith({
-    getV3WorkspaceChangedPathsPage() {
-      return new Promise((resolve) => {
-        resolvePage = resolve;
-      });
+test("missing extension renderer disables all mutation controls", async () => {
+  const science = projection({
+    "openzyme.science@1": {
+      section_contract_digest: digest("b"),
+      payload: { attempts: [] },
+      next_cursor: null,
+      projection_digest: digest("c"),
     },
   });
-  const pending = controller.loadMoreChangedPaths("workspace-1");
-  controller.state.workspace.workspace_status[0].workspace_generation = 3;
-  resolvePage({
-    schema_version: "workspace_changed_paths_page@1",
-    workspace_id: "workspace-1",
-    workspace_generation: 2,
-    paths: ["must-not-merge.txt"],
-    continuation: null,
-    source_truncated: false,
+  let mutationCalled = false;
+  const subject = controller({
+    async inspectWorkspace() { return { projection: science }; },
+    async postMessage() { mutationCalled = true; },
   });
-  assert.equal(await pending, false);
-  assert.deepEqual(controller.state.workspace.workspace_status[0].changed_paths, ["README.md"]);
+  await subject.bootstrap("session-1");
+
+  assert.equal(subject.state.shell.mutationAllowed, false);
+  assert.equal(await subject.sendMessage("continue", "web-ui:message:2"), false);
+  assert.equal(mutationCalled, false);
 });
 
-test("controller exposes pagination failure without fallback or inferred success", async () => {
-  const controller = controllerWith({
-    async getV3WorkspaceChangedPathsPage() {
-      throw new Error("changed_paths_identity_stale: expected generation 2, observed 3");
-    },
+test("artifact-era event makes the controller explicitly non-operational", async () => {
+  const subject = controller({
+    async inspectWorkspace() { return { projection: projection() }; },
   });
-  assert.equal(await controller.loadMoreChangedPaths("workspace-1"), false);
-  assert.match(
-    controller.state.errors.changedPaths["workspace-1"],
-    /expected generation 2, observed 3/,
-  );
-  assert.equal(
-    controller.state.workspace.workspace_status[0].changed_paths_continuation,
-    "observation-1:100",
-  );
+  await subject.bootstrap("session-1");
+
+  subject.acceptEvent({ schema_version: "file_workspace_public@1", event_id: "old" });
+
+  assert.equal(subject.state.shell.contractBlocked, true);
+  assert.equal(subject.state.shell.mutationAllowed, false);
+  assert.match(subject.state.shell.blockingError, /stale/);
 });

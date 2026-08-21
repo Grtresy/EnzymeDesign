@@ -1,0 +1,54 @@
+{
+  "schema_id": "openzyme_pre_split_deployment_state_inventory@1",
+  "authority": "read_only_engineering_evidence_only",
+  "classification": "fresh_empty_candidate",
+  "observation": {
+    "mode": "sqlite_mode_ro_query_only",
+    "locator_id": "default-local-control-plane",
+    "database_digest": "sha256:a7e48fb773729e21b649f141e3e175490a6b0d374f13ae08d954c212946a8cd8",
+    "database_size_bytes": 3170304,
+    "wal_present": false,
+    "wal_size_bytes": 0,
+    "sqlite_user_version": 2,
+    "quick_check": "ok",
+    "mutation_applied": false
+  },
+  "deployment_proof_rows": [
+    {
+      "schema_generation": "openzyme_file_workspace_final@2",
+      "manifest_digest": "sha256:107b9a5eabdf72f9855b06a8a2b3864f6d5b70332b07d8484ffee0c7d8be6eb5",
+      "removal_state": "fresh_install_complete",
+      "removal_receipt_digest": "sha256:467279b20fe91d405a5e23497f29a18e63114f817e2b9675c9e35b916c673e9a"
+    }
+  ],
+  "classification_inputs": {
+    "sessions_total": 0,
+    "sessions_non_terminal": 0,
+    "session_contract_pins": 0,
+    "continuations_total": 0,
+    "continuations_unsettled": 0,
+    "controlled_operations_total": 0,
+    "controlled_operations_unsettled": 0,
+    "workspace_backend_pins": 0,
+    "authority_leases_total": 0,
+    "authority_leases_active": 0,
+    "hpc_target_qualifications": 0,
+    "table_owner_aggregates": {
+      "openzyme.compute": {"tables": 11, "rows": 0},
+      "openzyme.hpc": {"tables": 9, "rows": 0},
+      "openzyme.kernel": {"tables": 54, "rows": 0},
+      "openzyme.process.podman": {"tables": 3, "rows": 0},
+      "openzyme.reporting": {"tables": 2, "rows": 0},
+      "openzyme.research": {"tables": 5, "rows": 0},
+      "openzyme.science": {"tables": 19, "rows": 0},
+      "openzyme.store.sqlite": {"tables": 3, "rows": 1},
+      "openzyme.workspace.git.lfs": {"tables": 32, "rows": 0}
+    }
+  },
+  "forbidden_inferences": [
+    "not_at2_cutover_authority",
+    "not_plugin_activation_authority",
+    "not_live_provider_or_hpc_readiness",
+    "not_session_task_or_scientific_terminal_authority"
+  ]
+}

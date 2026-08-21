@@ -8,7 +8,7 @@ import re
 from typing import Any, Literal
 
 SelectedMode = Literal["ssh", "sbatch"]
-WORKSPACE_RUNSPEC_SCHEMA_VERSION = "executor_workspace_runspec@2"
+WORKSPACE_RUNSPEC_SCHEMA_VERSION = "executor_workspace_runspec@3"
 _RETIRED_RUNSPEC_FIELDS = frozenset(
     {
         "inputs",
@@ -155,7 +155,8 @@ class ExecutorWorkspaceRunSpec:
     source_manifest_created_at: str
     target_profile_digest: str
     runner_policy_digest: str
-    toolchain_digest: str
+    target_inventory_generation: int
+    target_inventory_digest: str
     cwd: str
     command: tuple[str, ...]
     command_digest: str
@@ -174,6 +175,7 @@ class ExecutorWorkspaceRunSpec:
         for name in (
             "executor_hpc_workspace_generation",
             "repository_binding_version",
+            "target_inventory_generation",
         ):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
@@ -199,7 +201,7 @@ class ExecutorWorkspaceRunSpec:
             "source_owner_identity_digest",
             "target_profile_digest",
             "runner_policy_digest",
-            "toolchain_digest",
+            "target_inventory_digest",
             "command_digest",
             "environment_policy_digest",
             "resource_digest",
@@ -233,7 +235,7 @@ class ExecutorWorkspaceRunSpec:
         if self.resource_digest != _canonical_digest(self.resources.to_dict()):
             raise ValueError("workspace RunSpec resource digest mismatch")
         manifest_payload = {
-            "schema_version": "compute_source_manifest@1",
+            "schema_version": "compute_source_manifest@2",
             "manifest_id": self.source_manifest_id,
             "request_id": self.source_request_id,
             "workspace_id": self.executor_hpc_workspace_id,
@@ -242,7 +244,8 @@ class ExecutorWorkspaceRunSpec:
             "lfs_closure_manifest_digest": self.lfs_closure_manifest_digest,
             "binding_digest": self.repository_binding_digest,
             "repository_policy_digest": self.repository_policy_digest,
-            "toolchain_digest": self.toolchain_digest,
+            "target_inventory_generation": self.target_inventory_generation,
+            "target_inventory_digest": self.target_inventory_digest,
             "owner_identity_digest": self.source_owner_identity_digest,
             "entries": [entry.to_dict() for entry in self.source_manifest],
             "created_at": self.source_manifest_created_at,
@@ -294,7 +297,8 @@ class ExecutorWorkspaceRunSpec:
             "source_manifest_created_at",
             "target_profile_digest",
             "runner_policy_digest",
-            "toolchain_digest",
+            "target_inventory_generation",
+            "target_inventory_digest",
             "cwd",
             "command",
             "command_digest",
@@ -369,7 +373,7 @@ class ExecutorWorkspaceRunSpec:
             "source_manifest_created_at",
             "target_profile_digest",
             "runner_policy_digest",
-            "toolchain_digest",
+            "target_inventory_digest",
             "cwd",
             "command_digest",
             "environment_policy_digest",
@@ -384,6 +388,7 @@ class ExecutorWorkspaceRunSpec:
         for name in (
             "executor_hpc_workspace_generation",
             "repository_binding_version",
+            "target_inventory_generation",
         ):
             value = data[name]
             if not isinstance(value, int) or isinstance(value, bool):
@@ -415,7 +420,8 @@ class ExecutorWorkspaceRunSpec:
             source_manifest_created_at=data["source_manifest_created_at"],
             target_profile_digest=data["target_profile_digest"],
             runner_policy_digest=data["runner_policy_digest"],
-            toolchain_digest=data["toolchain_digest"],
+            target_inventory_generation=data["target_inventory_generation"],
+            target_inventory_digest=data["target_inventory_digest"],
             cwd=data["cwd"],
             command=tuple(raw_command),
             command_digest=data["command_digest"],
@@ -454,7 +460,8 @@ class ExecutorWorkspaceRunSpec:
             "source_manifest_created_at": self.source_manifest_created_at,
             "target_profile_digest": self.target_profile_digest,
             "runner_policy_digest": self.runner_policy_digest,
-            "toolchain_digest": self.toolchain_digest,
+            "target_inventory_generation": self.target_inventory_generation,
+            "target_inventory_digest": self.target_inventory_digest,
             "cwd": self.cwd,
             "command": list(self.command),
             "command_digest": self.command_digest,

@@ -29,7 +29,7 @@ session、task、lane、approval、artifact、report、scientific attempt 或 ca
 # 精确 focused feedback
 uv run python scripts/run-test-gate.py focused-diagnostic \
   /tmp/openzyme-focused-example \
-  --pytest-path packages/openzyme-core/tests/test_protocols.py
+  --pytest-path packages/openzyme-kernel/tests/test_protocol_application.py
 
 # 以显式 local base 扩张 staged/unstaged/untracked change
 uv run python scripts/run-test-gate.py affected-scope-diagnostic \

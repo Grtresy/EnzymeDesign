@@ -16,22 +16,34 @@ runtime records、旧 storage、收据、缓存和备份；源码、Git/OpenSpec
 
 ## 公开切换
 
-当前 public contract 是 `file_workspace_public@1`。Host、CLI、SDK 和 UI 只表达：
+当前源码唯一的 public contract 是 `file_workspace_public@2`。Host、CLI、UI 与共享 Client 使用 closed
+`core + extensions`：
 
-- agent workspace generation、clean/dirty status 和 private checkpoint；
-- immutable `PublishedRevision`、Git/LFS closure 和 `RevisionPathRef`；
-- report、scientific deliverable、external job/result 和 capability lease；
-- task、lane、protocol、approval、runtime 和 failure 的 control-plane 状态。
+- Core 表达 Session/Task/Lane/Agent/Protocol/Approval、`AgentAuthorityLease`、capability binding、
+  runtime/workspace/publication/operation/failure；
+- Plugin section 分别表达 Research、Reporting、Science、Compute/HPC 等 owner state；
+- release identity 分别固定 Kernel/schema、Adapter/Extension bundle、tool/route/projection/migration catalog、
+  workspace backend 与 Host/client build；
+- Session mutation 额外固定当前 projection、capability-binding 与 affordance-snapshot digest。
 
-旧工具、字段、media type、restore schema 和 saved catalog context 以不可重试 closed error
-拒绝。禁止 dual serialization、自动 rename、read-through 和 silent fallback。
+这描述源码和待激活 Distribution，不表示本设备已执行真实 cutover。旧工具、字段、media type、restore schema
+和 saved catalog context 只能由 offline historical operator 读取；普通 Host 以不可重试 closed error 拒绝。
+禁止 dual serialization、自动 rename、read-through 和 silent fallback。
 
 ## Fresh install 与普通启动
 
-fresh empty SQLite 只执行 `001_file_workspace_final.sql`，写入
-`openzyme_file_workspace_final@2`、exact schema manifest digest 和 deterministic typed
-`FreshInstallBootstrapReceipt`。重启时必须重算并匹配同一 manifest 与 bootstrap receipt digest。
-fresh proof 不伪造 offline removal ledger；offline proof 继续要求完整且逐项闭合的独立 ledger。
+目标 fresh empty SQLite 先按显式 Distribution profile 安装 owner-partitioned schema，再顺序执行
+Store-owned `001_composition_state.sql` 与 `002_deployment_proof.sql`。离线 seed 只在所有表为空时，以一个事务
+写入 exact activation epoch、Extension bundle、七类 catalog identity、
+`openzyme_fresh_install_bootstrap_receipt@2` 和 `fresh_install_complete` deployment state。receipt 绑定
+Distribution、完整 schema manifest、owner profile、migration sources、installed wheels、table-owner manifest
+与 layered release identity，并明确两个 legacy initialization fact 均为 false；它不创建 removal ledger。
+
+重启 verifier 接收同一显式 composition seed，只读重算 schema、catalog、receipt、activation 和 deployment
+state digest。`offline_removal_complete` 是另一 proof variant，必须解析到唯一完整的
+`openzyme_offline_cutover_ledger@2`；fresh receipt 不能替代它。当前 fresh verifier/receipt 已实现并通过
+isolated SQLite 测试；完整 offline plan/apply/rollback/restart、Host startup proof 和 Session 分类也已在隔离
+fixture 中实现。真实部署 cutover 仍未授权、未执行，测试 receipt 不能替代设备 proof。
 
 以下输入在任何 mutation 前拒绝：
 
@@ -50,6 +62,13 @@ startup failure 必须报告 proof kind、expected/observed generation/manifest/
 
 迁移前必须：maintenance mode、停止 Host/runtime/continuation/execution/runner callback/UI
 writer、验证数据库和 storage 备份，并签发 exact quiescence/writer-freeze receipts。
+
+当前 target Store 已实现这一阶段的计划/验证合同：十六类 inventory dry run、exact
+owner/surface quiescence、三类 independent backup readback 和逐 Session 三分类。它们不读取真实
+外部路径、不停止进程、不制作备份、不写数据库；真实 operator 必须以另行授权的观察填充
+这些 closed DTO。随后的 target Store adoption 已在 isolated SQLite fixture 中实现：它在一个短事务
+内重验 authority mapping，写入 exact composition/Session pin/ledger/state，失败则全量回滚。这不表示
+真实 deployment 已执行 cutover；本 change 仍禁止未经另行授权调用该 mutation 路径。
 
 `offline_historical_inventory.py` 从只读旧库与 explicit source map 生成 exact manifest：
 database/storage snapshot、schema inventory、每个 object 的 owner/lineage/source row version、
@@ -127,6 +146,20 @@ response 详细失败，不能覆盖当前 state 或静默改用全量列表。
 
 所有上述验收均为 non-live。它们不访问 provider、真实 SSH/Slurm/HPC 或浏览器外部服务，也不授权
 设备删除；设备 reset 必须另行完成精确 inventory、quiescence、逐项删除、零残留扫描和
-`DeviceFreshInstallResetReceipt`。
+`device_fresh_install_reset_receipt@2`。
+
+`@2` reset inventory 不再用一个笼统的“旧 OpenZyme state”标签覆盖整棵目录。每个 target 必须绑定 closed
+component kind、component owner、旧 Distribution identity/manifest、owner evidence 和 ownership scope；closed
+path 模式遇到未归属 sibling 时记录 unresolved 并在删除前停止。计划必须同时列出并保护 source tree、Git 历史、
+OpenSpec 历史与当前仍被引用的 repository-service Git/LFS truth，任何 target/exclusion ancestry overlap 都失败。
+仅当旧 service 已由零 pin、零未结算 effect、owner evidence 和单独授权证明为退役 storage 时，才可作为精确
+`repository_service` target 删除；新建空根随即恢复为 current exclusion。
+
+最终 reset receipt 逐项闭合 deletion occurrence 和 post-delete absence，并绑定 exact quiescence、zero scan、
+built-wheel/document set、目标 Standard/EnzymeDesign Distribution、composition bundle、fresh database identity 与
+独立 fresh-bootstrap receipt。它明确 `recoverable=false`，不能被描述为自动 rollback，也不能替代 bootstrap、
+offline cutover、Session composition pin 或 production startup proof。真实操作另记 operator evidence。若一次删除
+未先经过 frozen `@2` inventory 和逐路径 occurrence log，后续不得追认或补造正式 reset receipt；独立
+fresh-bootstrap proof 仍可按其自身合同验证。
 
 隔离 fixture 回执只是测试证据，不能冒充真实部署 receipt。

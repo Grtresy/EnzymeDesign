@@ -57,13 +57,11 @@ def _pytest_outcome(phases: list[dict[str, object]]) -> str:
     if any(phase["outcome"] == "skipped" for phase in phases):
         return "skip"
     if any(
-        phase["phase"] == "call" and phase["outcome"] == "failed"
-        for phase in phases
+        phase["phase"] == "call" and phase["outcome"] == "failed" for phase in phases
     ):
         return "fail"
     if any(
-        phase["phase"] == "call" and phase["outcome"] == "passed"
-        for phase in phases
+        phase["phase"] == "call" and phase["outcome"] == "passed" for phase in phases
     ):
         return "pass"
     return "error"
@@ -119,9 +117,7 @@ def pytest_collection_finish(session: pytest.Session) -> None:
                     f"mainline qualification contains duplicate node id {node_id!r}"
                 )
             _MAINLINE_NODES[node_id] = {
-                "markers": sorted(
-                    {marker.name for marker in item.iter_markers()}
-                ),
+                "markers": sorted({marker.name for marker in item.iter_markers()}),
                 "phases": [],
             }
 
@@ -140,17 +136,13 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     if scenario is not None:
         phases = scenario["phases"]
         if not isinstance(phases, list):
-            raise AssertionError(
-                "qualification execution phases lost list identity"
-            )
+            raise AssertionError("qualification execution phases lost list identity")
         phases.append(_report_phase(report))
     mainline = _MAINLINE_NODES.get(str(report.nodeid))
     if mainline is not None:
         mainline_phases = mainline["phases"]
         if not isinstance(mainline_phases, list):
-            raise AssertionError(
-                "mainline qualification phases lost list identity"
-            )
+            raise AssertionError("mainline qualification phases lost list identity")
         mainline_phases.append(_report_phase(report))
 
 
@@ -173,9 +165,7 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
     if target_text is not None:
         target = Path(target_text)
         if not target.is_absolute():
-            raise pytest.UsageError(
-                f"{_EXECUTION_OUTPUT_ENV} must be an absolute path"
-            )
+            raise pytest.UsageError(f"{_EXECUTION_OUTPUT_ENV} must be an absolute path")
         evidence = execution_evidence_snapshot()
         records: list[dict[str, object]] = []
         for raw in sorted(
@@ -192,12 +182,8 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
                     "duration_milliseconds": sum(
                         int(phase["duration_milliseconds"]) for phase in phases
                     ),
-                    "effect_ledger_digests": evidence[
-                        "effect_ledger_digests"
-                    ],
-                    "external_effects_real": evidence[
-                        "external_effects_real"
-                    ],
+                    "effect_ledger_digests": evidence["effect_ledger_digests"],
+                    "external_effects_real": evidence["external_effects_real"],
                     "failure_digests": [
                         phase["failure_digest"]
                         for phase in phases
@@ -205,17 +191,13 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
                     ],
                     "family": raw["family"],
                     "observation_digests": evidence["observation_digests"],
-                    "observed_p0_trigger_ids": evidence[
-                        "observed_p0_trigger_ids"
-                    ],
+                    "observed_p0_trigger_ids": evidence["observed_p0_trigger_ids"],
                     "pytest_outcome": _pytest_outcome(phases),
                     "scenario_id": raw["scenario_id"],
                     "test_selector": raw["test_selector"],
                 }
             )
-            records[-1]["failure_digests"] = sorted(
-                set(records[-1]["failure_digests"])
-            )
+            records[-1]["failure_digests"] = sorted(set(records[-1]["failure_digests"]))
         payload = {"records": records, "schema_id": _EXECUTION_SCHEMA_ID}
         content = canonical_json_document_bytes(payload)
         try:
@@ -233,9 +215,7 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
         return
     mainline_target = Path(mainline_target_text)
     if not mainline_target.is_absolute():
-        raise pytest.UsageError(
-            f"{_MAINLINE_NODE_OUTPUT_ENV} must be an absolute path"
-        )
+        raise pytest.UsageError(f"{_MAINLINE_NODE_OUTPUT_ENV} must be an absolute path")
     node_records: list[dict[str, object]] = []
     for node_id in sorted(_MAINLINE_NODES):
         raw = _MAINLINE_NODES[node_id]

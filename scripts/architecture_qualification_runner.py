@@ -328,6 +328,15 @@ def non_live_environment(source: Mapping[str, str] | None = None) -> dict[str, s
             "PYTHONDONTWRITEBYTECODE": "1",
         }
     )
+    qualification_tests = str(
+        Path(__file__).resolve().parents[1] / "apps/openzyme-host-api/tests"
+    )
+    existing_pythonpath = environment.get("PYTHONPATH")
+    environment["PYTHONPATH"] = (
+        qualification_tests
+        if not existing_pythonpath
+        else qualification_tests + os.pathsep + existing_pythonpath
+    )
     return environment
 
 
@@ -639,6 +648,8 @@ def _collect_manifest(
         "--rootdir=.",
         "-q",
         "-p",
+        "architecture_qualification.no_live_effects",
+        "-p",
         "no:cacheprovider",
     )
     collection_environment = dict(environment)
@@ -749,6 +760,8 @@ def _run_harness_self_tests(
         "--rootdir=.",
         "-q",
         "-p",
+        "architecture_qualification.no_live_effects",
+        "-p",
         "no:cacheprovider",
     )
     execution_environment = dict(environment)
@@ -788,6 +801,8 @@ def _run_scenario(
         str(scenario["test_selector"]),
         "--rootdir=.",
         "-q",
+        "-p",
+        "architecture_qualification.no_live_effects",
         "-p",
         "no:cacheprovider",
     )
@@ -886,7 +901,7 @@ def _qualification_evidence_is_green(payload: Mapping[str, object]) -> bool:
             for item in p0_records
         )
         and payload.get("external_effects_real") is False
-        and payload.get("aox_live_started") is False
+        and payload.get("live_campaign_started") is False
         and payload.get("run_failure") is None
         and payload.get("not_run_scenario_ids") == []
     )

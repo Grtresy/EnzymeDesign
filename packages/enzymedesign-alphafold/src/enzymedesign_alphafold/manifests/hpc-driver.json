@@ -1,0 +1,20 @@
+{
+  "identity": {
+    "build_digest": "sha256:a03c1d65389059cc1be9e19f38c1c758f90f2c37a89f2615abc09cb79f4be99b",
+    "component_id": "enzymedesign.alphafold.hpc",
+    "component_kind": "driver",
+    "component_version": "0.1.0",
+    "contract_digest": "sha256:a45691541c3411906ef2cbe9600673bc7ede74cb00920d8d3c9c7504a8d82703",
+    "distribution_name": "enzymedesign-alphafold",
+    "distribution_version": "0.1.0"
+  },
+  "owning_plugin_contract": "enzymedesign.alphafold@1",
+  "owning_plugin_id": "enzymedesign.alphafold",
+  "required_port_contracts": [
+    "openzyme.hpc.scheduler-port@1"
+  ],
+  "result_contract_digest": "sha256:8903fb66fb2426f574381e54c8d015ce65f7a6837ac019d43bffdb639fb49e8e",
+  "route_kind": "hpc",
+  "schema_version": "openzyme_driver_manifest@1",
+  "workload_contract_digest": "sha256:064f520a6f0db511b5e217a7c9b9dabf96c1552e747d36c89a46c7700c5b755f"
+}

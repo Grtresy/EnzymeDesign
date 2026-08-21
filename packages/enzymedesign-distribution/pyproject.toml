@@ -1,0 +1,55 @@
+[project]
+name = "enzymedesign"
+version = "0.1.0"
+description = "EnzymeDesign 显式版本化 Distribution"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "enzymedesign-alphafold",
+  "enzymedesign-aox",
+  "enzymedesign-aox-executor",
+  "enzymedesign-bio-provider-adapters",
+  "enzymedesign-bio-providers",
+  "enzymedesign-docking-preprocess",
+  "enzymedesign-hmmer",
+  "enzymedesign-sequence-toolpack",
+  "enzymedesign-structure",
+  "enzymedesign-vina",
+  "openzyme-compute",
+  "openzyme-contracts",
+  "openzyme-extension-spi",
+  "openzyme-hpc",
+  "openzyme-hpc-slurm",
+  "openzyme-hpc-ssh",
+  "openzyme-kernel",
+  "openzyme-process-podman",
+  "openzyme-reporting",
+  "openzyme-research",
+  "openzyme-research-tavily",
+  "openzyme-runtime-llm",
+  "openzyme-science",
+  "openzyme-science-research",
+  "openzyme-store-sqlite",
+  "openzyme-workspace-git-lfs",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9.0.0"]
+
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/enzymedesign_distribution"]
+
+[tool.openzyme.component]
+component_id = "enzymedesign"
+component_kind = "distribution"
+migration_state = "target_distribution_activatable"
+current_composition_owner = "uncomposed"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"

@@ -48,27 +48,78 @@ class ProductionCompositionReceipt:
 
 
 _PYTEST_SELECTIONS: dict[str, tuple[str, ...]] = {
+    "capability-affordance": (
+        "packages/openzyme-kernel/tests/test_affordance.py",
+        "packages/openzyme-hpc/tests/test_inventory.py",
+        "packages/openzyme-hpc/tests/test_qualification.py",
+        "packages/openzyme-hpc/tests/test_routes.py",
+    ),
     "deployment-proof": (
-        "packages/openzyme-core/tests/test_migrations.py",
-        "packages/openzyme-core/tests/test_offline_removal_fixture.py::test_partial_storage_removal_resumes_only_the_same_ledger",
-        "packages/openzyme-core/tests/test_offline_removal_fixture.py::test_unknown_storage_absence_is_not_reinterpreted_as_success",
+        "packages/openzyme-store-sqlite/tests/test_deployment_proof.py",
+        "packages/openzyme-store-sqlite/tests/test_offline_cutover_contract.py",
+        "packages/openzyme-store-sqlite/tests/test_offline_cutover_planning.py",
     ),
     "diagnostic-publication-cleanup": (
-        "packages/openzyme-core/tests/test_failure_diagnostics.py",
-        "packages/openzyme-core/tests/test_agent_git_workspaces.py::test_publication_response_loss_reconciles_same_ref_without_redispatch",
-        "packages/openzyme-core/tests/test_agent_git_workspaces.py::test_publication_reconcile_read_failure_preserves_prior_effect_and_new_cause",
-        "packages/openzyme-core/tests/test_agent_git_workspaces.py::test_publication_execution_repository_rejects_stale_state_and_fence",
-        "packages/openzyme-core/tests/test_bio_research_tools.py::test_workspace_write_orders_primary_then_cleanup_failure",
-        "packages/openzyme-core/tests/test_bio_research_tools.py::test_workspace_write_reports_successful_effect_with_cleanup_residue",
+        "packages/openzyme-kernel/tests/test_composition_diagnostics.py",
+        "packages/openzyme-kernel/tests/test_workspace_operations.py::test_unclassified_adapter_failure_preserves_cause_after_reconcile_record",
+        "packages/openzyme-kernel/tests/test_publication_application.py::test_publication_response_loss_reconciles_without_redispatch",
+        "packages/openzyme-kernel/tests/test_publication_application.py::test_pending_publication_reconciliation_never_redispatches",
+        "packages/openzyme-kernel/tests/test_publication_application.py::test_publication_reconciles_original_uncertain_effect_after_revoke",
+        "packages/openzyme-process-podman/tests/test_container_lifecycle.py",
+    ),
+    "enzymedesign-composition": (
+        "packages/enzymedesign-distribution/tests/test_distribution.py",
+        "packages/enzymedesign-hmmer/tests/test_hmmer_plugin.py",
+        "packages/openzyme-hpc/tests/test_component_manifest.py",
+        "packages/openzyme-hpc/tests/test_workspace_tools.py",
+    ),
+    "kernel-fake-adapters": (
+        "packages/openzyme-kernel/tests/test_testing_fakes.py",
+        "packages/openzyme-kernel/tests/test_authority_application.py",
+        "packages/openzyme-kernel/tests/test_controlled_operation_application.py",
+        "packages/openzyme-kernel/tests/test_workspace_operations.py",
+    ),
+    "owner-source-document": (
+        "packages/openzyme-kernel/tests/test_architecture_manifests.py",
+        "packages/openzyme-kernel/tests/test_architecture_inventory.py",
+        "packages/openzyme-kernel/tests/test_wheel_qualification_profiles.py",
+    ),
+    "plugin-negative": (
+        "packages/openzyme-kernel/tests/test_composition.py",
+        "packages/openzyme-kernel/tests/test_activation.py",
+        "packages/openzyme-kernel/tests/test_extension_mount.py",
+        "packages/openzyme-kernel/tests/test_session_composition.py",
     ),
     "scientific-finalization": (
-        "packages/openzyme-core/tests/test_scientific_file_deliverables.py",
-        "apps/openzyme-host-api/tests/test_aox_file_bundle_finalizer.py",
+        "packages/openzyme-science/tests/test_science_plugin.py",
+        "packages/openzyme-science/tests/test_sqlite_transaction_integration.py",
+        "packages/enzymedesign-aox/tests/test_file_bundle_finalizer.py",
     ),
     "workspace-job": (
         "apps/mcp-hpc-runner/tests/test_workspace_revision_job_wire.py",
-        "apps/openzyme-host-api/tests/test_workspace_revision_execution_boundary.py",
-        "packages/openzyme-core/tests/test_workspace_revision_execution_authority.py",
+        "packages/openzyme-compute/tests/test_compute_lifecycle.py",
+        "packages/openzyme-hpc-slurm/tests/test_scheduler_adapter.py",
+    ),
+    "workspace-runtime": (
+        "packages/openzyme-kernel/tests/test_workspace_operations.py",
+        "packages/openzyme-kernel/tests/test_workspace_tools.py",
+        "packages/openzyme-process-podman/tests/test_filesystem_adapter.py",
+        "packages/openzyme-process-podman/tests/test_process_adapter.py",
+        "packages/openzyme-hpc/tests/test_workspace_lifecycle.py",
+        "packages/openzyme-hpc/tests/test_workspace_state_machine.py",
+    ),
+    "standard-composition": (
+        "packages/openzyme-standard/tests/test_composition.py",
+        "packages/openzyme-standard/tests/test_host_gateway.py",
+        "packages/openzyme-standard/tests/test_message_ingress_sqlite.py",
+        "packages/openzyme-standard/tests/test_standard_v2_host.py",
+        "packages/openzyme-store-sqlite/tests/test_composite_startup.py",
+        "packages/openzyme-store-sqlite/tests/test_deployment_proof.py",
+        "packages/openzyme-store-sqlite/tests/test_evidence_publication_entity_codecs.py",
+        "packages/openzyme-store-sqlite/tests/test_kernel_command_receipt_codec.py",
+        "packages/openzyme-workspace-git-lfs/tests/test_agent_workspaces.py",
+        "packages/openzyme-workspace-git-lfs/tests/test_revision_backend.py",
+        "packages/openzyme-client/tests/test_v2_client.py",
     ),
 }
 
@@ -91,12 +142,14 @@ def _non_live_environment(*, runner_sources: bool) -> dict[str, str]:
             "PYTHONDONTWRITEBYTECODE": "1",
         }
     )
+    environment.update({name: "" for name in _SENSITIVE_ENV_NAMES})
+    python_paths = [str(REPO_ROOT / "apps/openzyme-host-api/tests")]
     if runner_sources:
-        runner_src = str(REPO_ROOT / "apps/mcp-hpc-runner/src")
-        existing = environment.get("PYTHONPATH")
-        environment["PYTHONPATH"] = (
-            runner_src if not existing else runner_src + os.pathsep + existing
-        )
+        python_paths.append(str(REPO_ROOT / "apps/mcp-hpc-runner/src"))
+    existing = environment.get("PYTHONPATH")
+    if existing:
+        python_paths.append(existing)
+    environment["PYTHONPATH"] = os.pathsep.join(python_paths)
     return environment
 
 
@@ -105,13 +158,28 @@ def run_closed_non_live_suite(suite_id: str) -> ProductionCompositionReceipt:
         command = ("npm", "test")
         cwd = REPO_ROOT / "apps/openzyme-web-ui"
         runner_sources = False
+        timeout_seconds = 45
+    elif suite_id == "wheel-installation":
+        command = (sys.executable, "scripts/qualify-openzyme-contract-wheels.py")
+        cwd = REPO_ROOT
+        runner_sources = False
+        timeout_seconds = 180
     else:
         selectors = _PYTEST_SELECTIONS.get(suite_id)
         if selectors is None:
             raise ValueError(f"unknown production composition suite {suite_id!r}")
-        command = (sys.executable, "-m", "pytest", "-q", *selectors)
+        command = (
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "architecture_qualification.no_live_effects",
+            *selectors,
+        )
         cwd = REPO_ROOT
         runner_sources = suite_id == "workspace-job"
+        timeout_seconds = 45
     started = time.monotonic_ns()
     try:
         result = subprocess.run(
@@ -120,7 +188,7 @@ def run_closed_non_live_suite(suite_id: str) -> ProductionCompositionReceipt:
             env=_non_live_environment(runner_sources=runner_sources),
             check=False,
             capture_output=True,
-            timeout=45,
+            timeout=timeout_seconds,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise AssertionError(

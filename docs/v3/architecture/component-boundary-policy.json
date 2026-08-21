@@ -1,0 +1,347 @@
+{
+  "schema_id": "openzyme_component_boundary_policy@1",
+  "enforced_migration_states": [
+    "foundation_active",
+    "manifest_available_runtime_migration_pending",
+    "scaffold_not_activatable",
+    "target_distribution_activatable",
+    "target_implemented_host_mount_pending",
+    "target_implemented_legacy_callers_pending",
+    "target_implemented_not_cutover"
+  ],
+  "legacy_exempt_states": [
+    "legacy_mixed_active"
+  ],
+  "allowed_dependency_kinds": {
+    "contracts": [],
+    "extension_spi": [
+      "contracts"
+    ],
+    "kernel": [
+      "contracts",
+      "extension_spi",
+      "adapter_spi"
+    ],
+    "capability_contracts": [
+      "contracts"
+    ],
+    "adapter_spi": [
+      "contracts"
+    ],
+    "product_contracts": [
+      "contracts",
+      "extension_spi"
+    ],
+    "plugin": [
+      "contracts",
+      "extension_spi",
+      "capability_contracts",
+      "adapter_spi",
+      "product_contracts"
+    ],
+    "product_plugin": [
+      "contracts",
+      "extension_spi",
+      "capability_contracts",
+      "adapter_spi",
+      "product_contracts"
+    ],
+    "driver": [
+      "contracts",
+      "extension_spi",
+      "capability_contracts",
+      "adapter_spi",
+      "product_contracts",
+      "plugin",
+      "product_plugin",
+      "sdk"
+    ],
+    "adapter": [
+      "contracts",
+      "extension_spi",
+      "capability_contracts",
+      "adapter_spi",
+      "product_contracts"
+    ],
+    "client": [
+      "contracts"
+    ],
+    "delivery_adapter": [
+      "contracts",
+      "extension_spi",
+      "kernel",
+      "client"
+    ],
+    "sdk": [
+      "contracts",
+      "capability_contracts"
+    ],
+    "runner_service": [
+      "capability_contracts"
+    ],
+    "distribution": [
+      "contracts",
+      "extension_spi",
+      "kernel",
+      "adapter",
+      "plugin",
+      "product_plugin",
+      "driver",
+      "client",
+      "delivery_adapter"
+    ]
+  },
+  "allowed_component_dependency_exceptions": {
+    "enzymedesign.aox": [
+      "openzyme.science"
+    ],
+    "openzyme.hpc.slurm": [
+      "openzyme.hpc"
+    ],
+    "openzyme.research.tavily": [
+      "openzyme.research"
+    ],
+    "openzyme.science-research": [
+      "openzyme.research",
+      "openzyme.science"
+    ]
+  },
+  "forbidden_external_dependencies": {
+    "openzyme.contracts": [
+      "fastapi",
+      "langchain",
+      "langgraph",
+      "openai",
+      "tavily",
+      "biopython",
+      "numpy",
+      "rdkit",
+      "meeko",
+      "paramiko"
+    ],
+    "openzyme.extension-spi": [
+      "fastapi",
+      "langchain",
+      "langgraph",
+      "openai",
+      "tavily",
+      "biopython",
+      "numpy",
+      "rdkit",
+      "meeko",
+      "paramiko"
+    ],
+    "openzyme.kernel": [
+      "fastapi",
+      "langchain",
+      "langgraph",
+      "openai",
+      "tavily",
+      "biopython",
+      "numpy",
+      "rdkit",
+      "meeko",
+      "paramiko"
+    ]
+  },
+  "forbidden_import_roots": {
+    "openzyme.contracts": [
+      "fastapi",
+      "langchain",
+      "langgraph",
+      "openai",
+      "openzyme_core",
+      "openzyme_domain",
+      "paramiko",
+      "sqlite3",
+      "subprocess"
+    ],
+    "openzyme.extension-spi": [
+      "fastapi",
+      "langchain",
+      "langgraph",
+      "openai",
+      "openzyme_core",
+      "openzyme_domain",
+      "paramiko",
+      "sqlite3",
+      "subprocess"
+    ],
+    "openzyme.kernel": [
+      "fastapi",
+      "langchain",
+      "langgraph",
+      "openai",
+      "openzyme_core",
+      "openzyme_domain",
+      "openzyme_engines",
+      "openzyme_research",
+      "openzyme_runtime",
+      "paramiko",
+      "sqlite3",
+      "subprocess"
+    ],
+    "openzyme.compute": [
+      "openzyme_hpc",
+      "openzyme_hpc_slurm",
+      "openzyme_hpc_ssh",
+      "paramiko"
+    ],
+    "openzyme.hpc": [
+      "openzyme_hpc_slurm",
+      "openzyme_hpc_ssh",
+      "paramiko"
+    ],
+    "enzymedesign.hmmer": [
+      "openzyme_hpc",
+      "openzyme_hpc_slurm",
+      "openzyme_hpc_ssh",
+      "paramiko"
+    ],
+    "enzymedesign.vina": [
+      "openzyme_hpc",
+      "openzyme_hpc_slurm",
+      "openzyme_hpc_ssh",
+      "paramiko"
+    ]
+  },
+  "forbidden_import_roots_by_kind": {
+    "product_plugin": [
+      "openzyme_core",
+      "openzyme_domain",
+      "openzyme_host_api",
+      "openzyme_hpc",
+      "openzyme_hpc_slurm",
+      "openzyme_hpc_ssh",
+      "openzyme_kernel",
+      "openzyme_process_podman",
+      "openzyme_runtime",
+      "openzyme_runtime_llm",
+      "openzyme_store_sqlite",
+      "openzyme_workspace_git_lfs",
+      "paramiko",
+      "sqlite3"
+    ]
+  },
+  "forbidden_source_vocabulary": {
+    "openzyme.contracts": [
+      "fastapi",
+      "langchain",
+      "tavily",
+      "biopython",
+      "rdkit",
+      "meeko",
+      "podman",
+      "slurm",
+      "hmmer",
+      "vina",
+      "fpocket",
+      "alphafold"
+    ],
+    "openzyme.extension-spi": [
+      "fastapi",
+      "langchain",
+      "tavily",
+      "biopython",
+      "rdkit",
+      "meeko",
+      "podman",
+      "slurm",
+      "hmmer",
+      "vina",
+      "fpocket",
+      "alphafold"
+    ],
+    "openzyme.kernel": [
+      "fastapi",
+      "langchain",
+      "tavily",
+      "biopython",
+      "rdkit",
+      "meeko",
+      "podman",
+      "slurm",
+      "hmmer",
+      "vina",
+      "fpocket",
+      "alphafold"
+    ],
+    "openzyme.standard": [
+      "research",
+      "reporting",
+      "science",
+      "hpc",
+      "aox",
+      "hmmer",
+      "vina",
+      "fpocket",
+      "alphafold",
+      "rdkit",
+      "meeko",
+      "slurm",
+      "tavily",
+      "biopython",
+      "numpy"
+    ],
+    "openzyme.reporting": [
+      "aox",
+      "hmmer",
+      "vina",
+      "fpocket",
+      "alphafold",
+      "rdkit",
+      "meeko"
+    ],
+    "openzyme.science": [
+      "aox",
+      "hmmer",
+      "vina",
+      "fpocket",
+      "alphafold",
+      "rdkit",
+      "meeko"
+    ],
+    "openzyme.compute": [
+      "aox",
+      "hmmer",
+      "vina",
+      "fpocket",
+      "alphafold",
+      "tavily"
+    ],
+    "openzyme.hpc": [
+      "aox",
+      "hmmer",
+      "vina",
+      "fpocket",
+      "alphafold",
+      "tavily"
+    ],
+    "openzyme.execution.contracts": [
+      "fastapi",
+      "langchain",
+      "tavily",
+      "biopython",
+      "rdkit",
+      "meeko",
+      "aox",
+      "hmmer",
+      "vina",
+      "fpocket",
+      "alphafold"
+    ]
+  },
+  "historical_roots": [
+    "archive",
+    "legacy",
+    "old",
+    "openspec/changes/archive"
+  ],
+  "policy": {
+    "adapter_may_declare_agent_tool": false,
+    "ambient_activation": false,
+    "distribution_may_own_canonical_state": false,
+    "driver_may_activate_without_owner": false,
+    "standard_is_semantic_dependency": false
+  }
+}

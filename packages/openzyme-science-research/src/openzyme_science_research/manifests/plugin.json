@@ -1,0 +1,54 @@
+{
+  "configuration_schema_digest": null,
+  "finish_validators": [],
+  "http_routes": [],
+  "identity": {
+    "build_digest": "sha256:1035e070dffc6883a708a83702e053dcffc119c961feda568eda6ec56e1213b8",
+    "component_id": "openzyme.science-research",
+    "component_kind": "plugin",
+    "component_version": "0.1.0",
+    "contract_digest": "sha256:443ff56911373a6bd3f9f8d59121ec479a0fe4034b52c6f6d33e593b205bdf43",
+    "distribution_name": "openzyme-science-research",
+    "distribution_version": "0.1.0"
+  },
+  "migration_bundle_digest": null,
+  "migrations": [],
+  "projections": [],
+  "ui_renderers": [],
+  "provides": [
+    {
+      "capability_id": "openzyme.science-research",
+      "cardinality": "single",
+      "contract_version": "1",
+      "operations": ["evaluate-quorum", "pubmed-search", "semantic-scholar-search"]
+    }
+  ],
+  "qualification_specs": [],
+  "required_extension_spi_contract": "openzyme.extension-spi@1",
+  "required_kernel_contract": "openzyme.kernel@1",
+  "requires": [
+    {
+      "capability_id": "openzyme.research",
+      "contract_spec": "@1",
+      "kind": "extension",
+      "operations": ["observe", "start"],
+      "same_target_as": null,
+      "version_spec": null
+    },
+    {
+      "capability_id": "openzyme.science",
+      "contract_spec": "@1",
+      "kind": "extension",
+      "operations": [],
+      "same_target_as": null,
+      "version_spec": null
+    }
+  ],
+  "routes": [],
+  "schema_version": "openzyme_plugin_manifest@1",
+  "schemas": [],
+  "state_namespace": null,
+  "tools": [],
+  "transaction_participants": [],
+  "workers": []
+}

@@ -1,0 +1,26 @@
+{
+  "configuration_schema_digest": "sha256:47e47881be4cd51998d0b6ad6eeba6ccbe534db83ab3eca44f7b60fa45d48b60",
+  "identity": {
+    "build_digest": "sha256:0358d28af547f2abb83ed488d3313950d25f55033f42d7194d1dcc1b3f13df7d",
+    "component_id": "openzyme.runtime.llm",
+    "component_kind": "adapter",
+    "component_version": "0.1.0",
+    "contract_digest": "sha256:b271a9a123e8cf2aaf72a442fc0d2dced541594b68573064647a5bb651cd0f61",
+    "distribution_name": "openzyme-runtime-llm",
+    "distribution_version": "0.1.0"
+  },
+  "port_contracts": [
+    {
+      "contract_digest": "sha256:b271a9a123e8cf2aaf72a442fc0d2dced541594b68573064647a5bb651cd0f61",
+      "contribution_id": "openzyme.agent-runtime-adapter@1"
+    }
+  ],
+  "preflight_contract_digest": "sha256:5ffaf50de03d9491f3a837e6b9df049e4f7f2ecc3b80b8279bd813f994001947",
+  "required_contracts": [
+    "openzyme.contracts@1",
+    "openzyme.extension-spi@1",
+    "openzyme.runtime-spi@1"
+  ],
+  "schema_version": "openzyme_adapter_manifest@1",
+  "target_scoped": false
+}

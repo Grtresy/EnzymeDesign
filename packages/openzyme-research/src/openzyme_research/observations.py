@@ -2,11 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from typing import Mapping
 
-from openzyme_domain import SourceRefKind
-
-from .adapters import ResearchFinding
-
+from .contracts import SourceRefKind
 
 @dataclass(frozen=True, slots=True)
 class ResearchFileManifest:
@@ -44,7 +42,7 @@ class ResearchFileManifest:
 class ResearchObservation:
     status: str
     summary: str
-    findings: tuple[ResearchFinding | dict[str, Any], ...] = ()
+    findings: tuple[Mapping[str, Any], ...] = ()
     unresolved_gaps: tuple[str, ...] = ()
     files: tuple[ResearchFileManifest | dict[str, Any], ...] = ()
     provider: str | None = None
@@ -55,7 +53,7 @@ class ResearchObservation:
         cls,
         *,
         summary: str,
-        findings: tuple[ResearchFinding | dict[str, Any], ...] = (),
+        findings: tuple[Mapping[str, Any], ...] = (),
         unresolved_gaps: tuple[str, ...] = (),
         files: tuple[ResearchFileManifest | dict[str, Any], ...] = (),
         provider: str | None = None,
@@ -83,10 +81,11 @@ class ResearchObservation:
         }
 
 
-def _serialize_finding(finding: ResearchFinding | dict[str, Any]) -> dict[str, Any]:
-    if isinstance(finding, ResearchFinding):
-        return finding.to_dict()
-    payload = dict(finding)
+def _serialize_finding(finding: Any) -> dict[str, Any]:
+    if hasattr(finding, "to_dict"):
+        payload = dict(finding.to_dict())
+    else:
+        payload = dict(finding)
     payload["sources"] = [_serialize_source(source) for source in payload.get("sources", [])]
     return payload
 

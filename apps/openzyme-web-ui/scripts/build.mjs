@@ -10,6 +10,3 @@ await cp(resolve(root, "src"), resolve(dist, "src"), { recursive: true });
 
 const html = await readFile(resolve(root, "index.html"), "utf8");
 await writeFile(resolve(dist, "index.html"), html, "utf8");
-
-const debugHtml = await readFile(resolve(root, "debug.html"), "utf8");
-await writeFile(resolve(dist, "debug.html"), debugHtml, "utf8");

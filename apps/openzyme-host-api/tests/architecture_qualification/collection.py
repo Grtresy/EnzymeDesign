@@ -87,9 +87,10 @@ def collect_qualification_scenarios(
             raise ArchitectureQualificationManifestError(
                 f"qualification pytest node {item.nodeid!r} may not be parametrized"
             )
-        if item.get_closest_marker("skip") is not None or item.get_closest_marker(
-            "xfail"
-        ) is not None:
+        if (
+            item.get_closest_marker("skip") is not None
+            or item.get_closest_marker("xfail") is not None
+        ):
             raise ArchitectureQualificationManifestError(
                 f"qualification pytest node {item.nodeid!r} may not skip or xfail"
             )

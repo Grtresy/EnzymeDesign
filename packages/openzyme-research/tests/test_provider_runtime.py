@@ -7,8 +7,6 @@ from urllib.error import HTTPError
 from urllib.error import URLError
 
 import pytest
-from tavily.errors import TimeoutError as TavilyTimeoutError
-from tavily.errors import UsageLimitExceededError
 
 from openzyme_research.provider_runtime import BoundedCallableClient
 from openzyme_research.provider_runtime import BoundedHttpClient
@@ -17,6 +15,13 @@ from openzyme_research.provider_runtime import ProviderRequestError
 from openzyme_research.provider_runtime import completed_result
 from openzyme_research.provider_runtime import provider_identity_digest
 from openzyme_research.provider_runtime import safe_public_locator
+
+
+class UsageLimitExceededError(RuntimeError):
+    """Provider-SDK-shaped exception used without installing a concrete adapter SDK."""
+
+
+TavilyTimeoutError = type("TimeoutError", (RuntimeError,), {})
 
 
 class _Response:

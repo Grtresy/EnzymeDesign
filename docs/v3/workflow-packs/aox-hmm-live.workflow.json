@@ -1,9 +1,18 @@
 {
   "workflow_id": "aox-hmm-live",
   "version": "2.0.0",
-  "content_sha256": "sha256:2a1b2da3761ee01b2a905c8042b400851bb73cd02051b5d886f60e48f231fd7f",
+  "content_sha256": "sha256:e26a5cddaf322ea020248ffd04862e64694093cb97bf9e708cb4163001b0cd89",
   "title": "AOX/HMM file-first scientific workflow",
   "summary": "Digest-pinned AOX/HMM workflow over immutable revisions, exact producer adoptions, typed healthy-empty closure, and fail-closed scientific acceptance.",
+  "public_contract": "file_workspace_public@2",
+  "required_runtime_identities": [
+    "release_digest",
+    "extension_bundle_digest",
+    "declared_tool_catalog_digest",
+    "capability_binding_digest",
+    "affordance_snapshot_digest",
+    "workspace_backend_digest"
+  ],
   "capability_requirements": [
     "role:executor",
     "engine:execution"

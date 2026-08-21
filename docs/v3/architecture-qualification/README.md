@@ -19,14 +19,23 @@ production composition；历史 campaign、旧 receipt、源码名称扫描和 f
 agent 选择策略。报告是 source-bound repository evidence，不是运行 authority；通过资格验证不会
 启动 provider、真实 HPC、浏览器或任何 live campaign。
 
-当前唯一 profile 是 `local_single_process_file_sqlite@1`。它证明 trusted Host、单进程和
-file-backed SQLite 组合中的登记不变量，不推导 multi-process、multi-Host、distributed writer、
-真实外部服务可用性或签名 CI provenance。
+当前资格验证固定三个互补而非互相替代的剖面：
+
+- `kernel_fake_adapters@1`：只加载 Contracts、Extension SPI、Kernel 与显式 fake Ports；不得 import
+  或启动 SQLite、Git、Host、模型运行时实现和 Plugin；
+- `openzyme_standard_local_file_sqlite_git@1`：加载 Plugin-free Standard、file SQLite、local
+  Git/LFS、Client 与 Kernel UI 路径；
+- `enzymedesign_local_single_process_file_sqlite@1`：加载 EnzymeDesign Distribution 的 exact
+  Plugin/Driver 组合，但 Provider、runner、Chrome、process 与 HPC 只能经过 registry 登记的 non-live Port。
+
+三个剖面都不推导 multi-process、multi-Host、distributed writer、真实外部服务可用性或签名 CI
+provenance。场景和不变量各自声明 `profile_ids`；Science/HPC/EnzymeDesign 证据不得冒充 Kernel-only
+证据。
 
 ## 当前 registry
 
 `invariant-registry.json` 使用
-`openzyme_v3_architecture_invariant_registry@2`。当前 closed registry 包含 19 个不变量、19 个场景和
+`openzyme_v3_architecture_invariant_registry@3`。当前 closed registry 包含 27 个不变量、27 个场景和
 十二个 family：
 
 - authority composition、wire contract、identity semantics；
@@ -39,7 +48,16 @@ registry 必须声明非空 `boundary_relations` 和 `external_ports`。当前�
 `non-live-test-process`，模式为 `local_fault_process`。任何未声明端口、source drift、selector drift、
 boundary relation drift、skip、xfail、timeout 或不完整 effect ledger 都使证明失败。
 
-除原有十四个场景外，当前 cutover 强制包含五个 production-composition 场景：
+除原有十四个基础场景和五个 cutover 场景外，当前还固定八个 composition profile 场景：
+
+- 三个剖面各自的真实闭包：Kernel fake、Plugin-free Standard、EnzymeDesign Plugin/Driver；
+- dependency/pyproject/wheel content/fresh import/archive exposure；
+- Plugin activation 的 add/remove/missing/degraded/drift/collision/cycle/namespace/Session pin 负例；
+- capability inventory、qualification、declared/effective catalog、affordance 与 route stale 负例；
+- local/HPC Workspace Runtime 的 path、receipt、opaque identity、response loss 与 scheduler separation；
+- source、owner manifest 与文档 traceability 的反向一致性检查。
+
+当前 cutover 仍强制包含以下五个 production-composition 场景：
 
 - `reconciliation.workspace-job-response-loss`：runner/Host/SQLite authority 的 dispatch、cancel、
   response loss、restart、fencing 与 exact-handle replay；
@@ -55,12 +73,20 @@ boundary relation drift、skip、xfail、timeout 或不完整 effect ledger 都�
 这些场景通过
 `apps/openzyme-host-api/tests/architecture_qualification/production_composition.py` 运行精确的本地
 non-live suites。子进程 receipt 保存 command、exit、duration、stdout/stderr digest 与 byte count；失败
-保留有界 tail 和 cause chain。credential/live opt-in 会从环境移除，不允许网络或真实外部 effect。
+保留有界 tail 和 cause chain。`no_live_effects` pytest Plugin 把 live credential/opt-in、IP socket、skip
+和 xfail 视为资格失败；不会因本机缺失软件而把场景静默记绿。
 
 ## Registry 与 runner closure
 
 - `registry-schema.md` 定义 canonical JSON、field/reference/selection closure。
 - `owner-constraint-registry.json` 定义 owner、consumer 和 forbidden edge，不进入产品 runtime。
+- `../architecture/catalog-owner-inventory.json` 固定 active tool/route/event/worker/migration/test/qualification
+  surface 的重算 count 与 digest；重复 owner 是迁移阻塞证据，不能由资格 green 豁免。
+- `../architecture/source-document-traceability.json@2` 对三剖面资格 seam 声明 owner、identity、lifecycle、
+  persistence、compatibility、error、forbidden fallback 与 command/path/configuration 八类结构化合同维度，
+  并重算 source/document/test 文件集合的内容摘要；它不通过关键词命中推断文档正确。
+- `../architecture/pre-split-deployment-state-inventory.json` 是只读部署聚合快照，不进入 runtime，也不授权
+  cutover、Plugin activation 或 live resource。
 - `p0-closures.json` 只保存 source-bound historical closure，不能 waiver 当前 red/unproven。
 - `apps/openzyme-host-api/tests/architecture_qualification/` 拥有 stable scenario id、safety gate、
   production composition 和负向控制。
@@ -71,7 +97,11 @@ non-live suites。子进程 receipt 保存 command、exit、duration、stdout/st
 
 process phase 必须是 `collection -> harness -> selected scenarios` 的 exact prefix。首个 terminal
 failure 后停止，不为未执行场景合成 fallback result。报告绑定 source、registry、selection、external
-port manifest、phase receipt、earliest cause、cleanup evidence 与 not-run set。
+port manifest、phase receipt、earliest cause、cleanup evidence 与 not-run set。当前报告是
+`openzyme_v3_architecture_qualification_report@4`；`@1`–`@3` 只能读取，不能作为当前 admission evidence。
+`@4.qualification_bindings` 另外绑定 OpenSpec change、三剖面、Distribution/component manifests、wheel
+集合、catalogs、inventory、schemas、文档实际字节和 test selection digest。任一 source/doc/manifest 变化
+都必须重新生成报告，不接受手工沿用旧 digest。
 
 ## 模式和命令
 
@@ -94,7 +124,8 @@ uv run python scripts/verify-v3-architecture-qualification.py \
   "$qualification_parent/diagnostic-report/architecture-qualification-report.json"
 ```
 
-`premerge_subset` 是 mainline 同一 invocation 的优化证据，不是 admission。缺失、mismatch、timeout、
+`premerge_subset` 是 mainline 同一 invocation 的有界优化证据，包含三个剖面的闭包场景，但不是完整
+qualification 或 cutover proof。缺失、mismatch、timeout、
 source drift 或 prior-invocation sidecar 都失败，不得回退为 ordinary pytest green。
 
 只有全部变更已提交、canonical checkout clean 后才允许 admission：

@@ -1,63 +1,56 @@
 # openzyme-host-cli
 
-Thin CLI client for the OpenZyme V3 Host API.
+OpenZyme exact `file_workspace_public@2` 的薄命令行客户端。它只依赖公开 client/contracts 与 HTTP，不拥有
+runtime，不 import Provider、scheduler、Host internals 或旧 mixed runtime。
 
-## Scope
+## Contract
 
-- Calls the Host HTTP API for session, task, lane, and approval control
-- Does not own a private runtime
-- Renders terminal-friendly V3 workspace summaries
+`HostApiV2Client` 要求 operator 提供完整 `LayeredReleaseIdentity`，并使用共享 `openzyme-client` 校验：
 
-## Examples
+- exact media type 与 closed `@2` root/core/extensions；
+- release/public-contract/projection identity；
+- Session capability-binding 与 per-turn affordance snapshot；
+- 每个 Plugin section 的 contract/projection digest；
+- mutation response 与发送前 inspection 的 identity 连续性。
 
-```bash
-uv --project apps/openzyme-host-cli run openzyme sessions create --project-id proj_001 --session-id sess_123 --objective "Design a thermostable enzyme candidate"
-uv --project apps/openzyme-host-cli run openzyme sessions show --session-id sess_123
-uv --project apps/openzyme-host-cli run openzyme sessions message --session-id sess_123 --message "Create a research task"
-uv --project apps/openzyme-host-cli run openzyme tasks create --session-id sess_123 --subject "Collect evidence"
-uv --project apps/openzyme-host-cli run openzyme runtime health
-```
+Session bootstrap 发生在 projection 尚不存在时，只发送 release/public-contract identity；CLI 不伪造
+projection、binding 或 affordance header。Session-scoped mutation 先 inspection，再携带六个 exact identity
+与调用者提供的 `Idempotency-Key`。发送后的 identity 丢失或漂移报告 `dispatch_in_doubt`，不重试、不切换
+`@1`。
 
-## Public evidence receipts
-
-Codex-conducted AOX tests use the same thin public client. `--receipt-chain` appends one canonical
-`openzyme_public_api_receipt@3` JSONL record for every Host response, including non-2xx responses.
-The record binds normalized request identity, caller-selected mutation idempotency, effect certainty,
-retry eligibility, reconciliation requirement and an occurrence-local terminal scope. An identical
-last request/response converges on the existing receipt; response drift requires exact reconciliation.
-Historical homogeneous `@2` chains remain readable under their original closed shape, but the client
-rejects them before issuing a current request and never mixes or appends `@3` records to them.
-`--seal-response` publishes the current semantic response once and requires the same receipt chain.
-Neither option drives runtime or interprets business terminal state.
+## 使用
 
 ```bash
 uv --project apps/openzyme-host-cli run openzyme \
-  --receipt-chain /absolute/private/receipts.jsonl \
-  --seal-response /absolute/private/final-evidence.json \
-  scientific export-evidence \
-  --session-id sess_123 \
-  --attempt-id attempt_123 \
-  --selection-id selection_123
+  --release-identity /absolute/operator/release-identity.json \
+  sessions create --project-id proj_001 --session-id sess_123 \
+  --objective "Design a thermostable enzyme candidate" \
+  --idempotency-key bootstrap-sess-123
+
+uv --project apps/openzyme-host-cli run openzyme \
+  --release-identity /absolute/operator/release-identity.json \
+  --session-id sess_123 sessions show
+
+uv --project apps/openzyme-host-cli run openzyme \
+  --release-identity /absolute/operator/release-identity.json \
+  --session-id sess_123 sessions message \
+  --message "Create a bounded research task" \
+  --idempotency-key message-001
 ```
 
-The formal public conductor supplies an explicit idempotency key for every mutation; the generic CLI
-may still generate a key when it is used outside that source-bound formal contract. The public conductor
-can also seal one-shot `sessions events`, `approvals pending`, workspace,
-runtime-command status and approval-resolution responses. Receipt storage must be an existing real
-private directory; the chain is continuous, locked and fsynced, while sealed responses are
-no-replace. These are evidence facts, not authority to approve or continue a run.
+当前 exact 模式只执行 CLI 已显式映射且 Host Distribution 已激活的命令。缺少 release 文件、命令不在当前
+route closure、旧 receipt/seal 参数或任何 contract drift 都在 HTTP 前拒绝，不会进入 legacy client。
 
-`operations observe` is the generic read-only surface for one exact supported Host
-mutation. It requires the original command type, owner scope, idempotency key and
-owner request digest; the AOX fault owner also requires its attempt/artifact identity.
-It reads an existing command receipt, runtime command, scientific authorization or
-fault-injection owner and never submits, resumes, retries or creates operation state.
-An absent or drifting owner remains unproven.
-
-## Configuration
-
-The CLI resolves defaults from flags first, then environment variables:
+配置优先级为命令行参数后环境变量：
 
 - `OPENZYME_HOST_BASE_URL`
-- `OPENZYME_HOST_AUTH_TOKEN`（shared Host 的 Bearer token；CLI 对 mutation 自动生成 `Idempotency-Key`）
+- `OPENZYME_HOST_AUTH_TOKEN`
 - `OPENZYME_PROJECT_ID`
+- `OPENZYME_OUTPUT_FORMAT`
+- `OPENZYME_RELEASE_IDENTITY_FILE`
+
+环境读取只构造 closed CLI 配置；本机存在某个 Plugin/Provider 包不会改变工具或 route 可用性。
+
+```bash
+uv --project apps/openzyme-host-cli run pytest
+```

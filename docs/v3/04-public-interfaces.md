@@ -1,12 +1,19 @@
 # V3 Public Interfaces
 
+> Client、CLI 和 Web UI 的生产代码已经只接受 exact `file_workspace_public@2`；通用 Host 也已有独立
+> `create_v2_app()` composition surface。Standard 已接入 Session、Task、Lane、Agent、Protocol、Approval、
+> AgentAuthorityLease、message ingress、runtime turn、workspace CRUD/exec/checkpoint/publication/handoff 和
+> event/restore/continuation 的 exact application/runtime closure。真实历史 deployment 仍未执行一次性离线 cutover；
+> non-live 目标组合完成不得冒充已部署
+> cutover，更不得原地扩展或在线翻译 `@1`。
+
 ## Media contract
 
-当前 workspace contract：
+当前源码唯一的公开 workspace contract：
 
 ```text
-file_workspace_public@1
-application/vnd.openzyme.file-workspace+json;version=1
+file_workspace_public@2
+application/vnd.openzyme.file-workspace+json;version=2
 ```
 
 Host、CLI、UI、SDK、event/restore schema 和 tool catalog 作为一个 digest-bound release bundle。
@@ -14,16 +21,18 @@ Host、CLI、UI、SDK、event/restore schema 和 tool catalog 作为一个 diges
 
 ## Host API
 
-主要接口：
+通用 Host contract 与 Standard 当前已接入的主要接口：
 
-- `POST /v3/sessions`：创建 session 并固定 project repository binding；
+- `POST /v3/sessions`：pre-Session bootstrap 只绑定 exact release/public-contract identity，由 Distribution
+  gateway 经短时 operator authorization 原子创建 Session、master、root AgentAuthorityLease、revision-1
+  capability binding 与 composition pin；尚不存在 projection/binding/affordance 时禁止补造对应 headers；
 - `POST /v3/sessions/{id}/messages`：写消息和 wakeup signal，不同步 drain；
-- `POST /v3/sessions/{id}/runtime/drain`：创建 durable bounded command，返回 `202`；
-- `GET /v3/sessions/{id}/runtime/commands/{command_id}`：查询 command outcome；
+- `POST /v3/sessions/{id}/tasks`、`.../finish`、lane/agent/protocol/approval/authority routes：
+  通过 Standard Kernel application gateway 执行 exact CAS command；
 - `GET /v3/sessions/{id}/workspace`：读取 file-first public projection；
-- `GET /v3/sessions/{id}/workspace/changed-paths`：有界 changed-path projection；
-- `POST /v3/sessions/{id}/workspace-revision-executions`：准入 exact revision job；
-- scientific attempt/authorization、task、lane、approval 和 event 接口。
+- `POST /v3/sessions/{id}/runtime/drain`、workspace CRUD/exec/checkpoint/publication/handoff：已定义
+  closed Kernel route contract，但 Standard 只能在对应 application runtime 真实注入后开放，不能由
+  Host 空壳模拟成功。
 
 request authentication、session access、owner/member、capability lease、generation 和 media version
 在路由层先验证，核心 mutation 下沉 service/repository。
@@ -36,27 +45,168 @@ operator、admin 和浏览器 UI 使用 general catalog，agent principal 使用
 
 ## Workspace projection
 
+`@2` 的 closed root 已在 Contracts/Kernel 实现，形状为：
+
+```json
+{
+  "schema_version": "file_workspace_public@2",
+  "release": {
+    "schema_version": "openzyme_layered_release_identity@1",
+    "kernel_contract_digest": "sha256:...",
+    "core_schema_digest": "sha256:...",
+    "adapter_bundle_digest": "sha256:...",
+    "extension_bundle_digest": "sha256:...",
+    "declared_tool_catalog_digest": "sha256:...",
+    "route_catalog_digest": "sha256:...",
+    "projection_catalog_digest": "sha256:...",
+    "migration_catalog_digest": "sha256:...",
+    "workspace_backend_digest": "sha256:...",
+    "host_build_digest": "sha256:...",
+    "client_build_digest": "sha256:...",
+    "release_digest": "sha256:...",
+    "public_contract_digest": "sha256:..."
+  },
+  "core": {
+    "session": {},
+    "tasks": [],
+    "lanes": [],
+    "agents": [],
+    "protocol": {},
+    "conversation": {},
+    "approvals": [],
+    "authority_leases": [],
+    "capability_binding": {},
+    "runtime": {},
+    "workspace": {},
+    "publications": [],
+    "operations": {},
+    "failures": {},
+    "tool_reflection": {}
+  },
+  "extensions": {
+    "openzyme.science@1": {
+      "section_contract_digest": "sha256:...",
+      "payload": {},
+      "next_cursor": null,
+      "projection_digest": "sha256:..."
+    }
+  }
+}
+```
+
+Kernel 组装器要求 mounted projection runtime 与 authorized projection catalog 精确一致，为每个
+section 传入 item/byte budget 和 cursor，再校验 result identity、digest、section byte budget 与全局 byte
+budget。credential/token/private key/Host path/HPC remote root/login alias/scheduler handle 等字段在公开边界
+直接拒绝。Core 的 object/array section kind 与递归字段词汇也是 closed contract 的一部分；artifact-era、
+`AgentCapabilityLease` 和任何 Research/Reporting/Science/Compute/HPC/EnzymeDesign-owned nested field 都会在
+组装前失败，不能用嵌套字典绕过 owner partition。候选 Host surface 只接受已通过 startup proof 的
+`MountedExtensionSurfaces`，并由 `FileWorkspaceV2HostSurface.from_mounted_surfaces()` 一次绑定 exact activation、
+runtime mount、release、Kernel core provider 与 projection contributor；不能扫描环境或手工补装 contributor。
+之后通用 `create_v2_app()` 才为 exact workspace inspection、Distribution 选定的 Kernel mutation route 和
+manifest-mounted Plugin GET route 调用该组装器；每个 Session-scoped mutation 在 command gateway 前重验 release/public contract/projection/binding/
+affordance identity，inspection 同时重验 Core payload binding 等于 Kernel query context binding，且 declared
+catalog 与 extension bundle 等于 release。未挂载 route 不存在，identity stale 在 command gateway 前拒绝。以上失败都明确
+`mutation_applied=false`、`fallback_performed=false`，不会调用 `@1` builder。该 seam 是 non-live cutover
+preparation，不是已执行 offline activation 的声明。Plugin HTTP runtime 还必须逐项匹配 manifest 的 owner、
+method、normalized path 和 contract digest；当前 query SPI 只接受 GET，mutation 不能绕过 Kernel application service。
+
+Standard 的候选生产路径不再使用测试 fake：`SQLiteControlStore.list_for_session()` 以 target CAS ledger 的
+Session 索引做 `LIMIT + 1` 查询，每个 identity 仍通过 owner-table codec 重建并验证；
+`KernelPublicWorkspaceProjectionService` 从这些 canonical records 解析唯一 subject/root Agent、active
+`AgentAuthorityLease`、latest `SessionCapabilityBindingRevision` 和 local workspace readiness，再使用 Distribution
+提供的 exact capability registry 计算 affordance。尚未 provision workspace 时 snapshot generation 为 `0`、
+workspace-required tool 为 blocked；这不创建 `WorkspaceGeneration`。snapshot ID/timestamp 从当前事实稳定派生，
+不会仅因重复 GET 改变 mutation header。Standard 最后以 `build_standard_file_workspace_v2_host_surface()` 将
+provider、active release 和 empty Plugin mount 注入通用 Host。`build_standard_kernel_application_runtime()` 已把
+真实 Session bootstrap、Task/Lane/Agent、Protocol、Approval、AgentAuthorityLease 与 message ingress application
+接到同一 target SQLite Store；`build_standard_v2_host_app()` 再完成通用 security/Host 组装。消息 ingress 原子写
+conversation、user-kind inbox 和 pending runtime signal，但不隐式执行 drain、不完成 Task。显式 runtime drain、
+local workspace filesystem/process、checkpoint、publication 与 handoff route 已接到 exact Standard operational
+selection；缺少任一选定 Port 时 Host 构造失败，不调用旧 writer。默认 deployment 仍未执行 offline activation，
+且不会把 legacy Session 在线翻译。
+
+workspace projection 同时保留两种不同的版本事实：`state_version` 是 Control Store record CAS，
+`workspace_state_version` 是 `WorkspaceGeneration`/`WorkspaceRuntimeBinding` 同一 logical generation 内的生命周期
+版本。二者不得覆盖或互相推导。
+
+`openzyme-client` 的 `@2` guard 不只 pin release。一次 workspace inspection 必须从
+`core.capability_binding.binding_digest` 与 `core.tool_reflection` 交叉得到同一个 binding digest 和 exact
+`affordance_snapshot_digest`；mutation caller 必须回传这两个 identity。Client 在 inspection 时先把 Host 的
+workspace-contract、release、public-contract、projection、binding、affordance 六个响应头与 closed 正文逐项
+交叉验证；在 mutation transport 前再次重验 release/public contract/binding/affordance，并把 projection、
+binding、snapshot digest 写入请求头。任一漂移
+返回 typed stale error，`mutation_applied=false`、`fallback_performed=false`。Host 候选 surface 已实现相同的
+server-side mutation identity admission；pre-Session bootstrap 只验证 release/public contract，不虚构尚不存在的
+projection/binding/affordance。CLI 的生产模式已通过共享 Client/Contracts 完成 bootstrap 以及 inspection →
+exact-bound message mutation；其他 command 只有在当前 Distribution route closure 内才能发送，否则在
+transport 前失败。Web UI 生产
+client/controller/view 同样只消费 @2；二者都不会把 `@1` response 转成 `@2`。event/restore/continuation 与真实
+deployment epoch cutover 仍待收口。
+
 共享 projection 只输出：
 
-- workspace status、private revision fact、published revisions；
-- reports、scientific deliverables；
-- external jobs/results、capability leases；
-- conversation、task/lane boards、agents、pending approvals；
-- activity feed 和 failure observations。
+- Core 中的 Session/Task/Lane/Agent/Protocol/Conversation/Approval/AgentAuthorityLease；
+- Core 中的 capability binding、runtime、workspace generation/checkpoint/revision verification、publication、
+  ControlledOperation/continuation/task evidence/command receipt 与 failure observation；
+- exact Plugin section 中的 Research、Reporting、Science、Compute/HPC 状态。
+
+每个来自 canonical record 的 Core object/array item 都显式包含其 `state_version`，供后续 CAS command 构造；
+该字段是 Kernel record revision，不是 authority fence、workspace generation 或 Plugin entity version，任何 payload
+自身占用同名字段都会使 projection fail closed。
 
 禁止输出 credential/token、private ref、Host path、remote directory、raw runner/Slurm handle、backend log、
 storage locator、materialization/staging state。owning executor locator 是独立 subject-scoped view。
 
 ## Tool catalog
 
-当前文件/修订工具族包括：
+`@2` 将工具合同与当前可调用性拆成两个身份：
 
-- `workspace.status`、`workspace.exec`、checkpoint verify；
-- `workspace.publish` 与 publication identity/audit/path-ref/handoff/research-index；
-- `hpc.workspace.request/inspect/verify/sync_source`；
-- `workspace_revision_job.submit/observe/cancel`；
-- `scientific.deliverables.finalize`；
-- task、protocol、lane、report、docs、research 和 scientific lifecycle 工具。
+- `DeclaredToolCatalog`：Kernel base tools 加 exact activated Plugin manifests 的稳定合同；
+- `ToolAffordanceSnapshot`：每个 Session/member/turn 基于 capability binding、authority、workspace、route、
+  approval 和 health 计算的 effective catalog。
+
+Deployment composition 还分别固定 Adapter/Extension、capability route、normalized HTTP route、projection、
+UI-renderer、worker、finish-validator、schema、migration、transaction-participant 与 qualification catalog digest。
+这些低频 release identities 不混入 target health 或 per-turn authority。任何 canonical collision 都在 public
+route/worker/renderer 挂载前拒绝整个 activation；不允许 Host 先暴露部分 surface 再报告其余 Plugin 失败。
+
+`@2` 的 `SessionCompositionPin` 还固定 deployment composition bundle、Driver bundle、HTTP route 与全部
+contribution catalogs、workspace backend、initial capability binding 和 Host/client compatibility epoch。
+Host 当前 epoch 与 pin/binding 不一致时，只有安全 inspection 可以返回
+`upgrade_required + drifted_fields + bounded digests`；message、drain、approval、tool、workspace mutation、
+publication、operation 与 restore 都必须在业务 callback 前失败。公开错误固定 no-effect/零 mutation/零
+fallback，不返回 manifest Host path、secret locator value 或 traceback；private diagnostic 通过同一
+`diagnostic_id` 关联。
+
+模型只获得 `AVAILABLE`/`AVAILABLE_WITH_APPROVAL` 工具；`capabilities.inspect` 可返回非隐藏 blocked reason；
+`HIDDEN` 完全不可见。dispatch 携带 snapshot、lease、binding、workspace generation 和 explicit route，任何
+漂移在 effect 前返回 `tool_affordance_stale`，不自动替换 route。
+
+route-bound affordance 的安全投影可包含 opaque route ID、provider/driver ID、target ID、inventory
+generation 及各层 digest，但不包含 SSH endpoint、login、remote root、binary locator、credential 或
+probe output。`capabilities.inspect` 与模型 function list 必须消费同一个经验证 snapshot；前者
+可显示非隐藏 blocker，后者只显示可调用 `ToolSpec`。
+snapshot 同时包含 `subject_policy_digest`，以便 Task/role policy 在模型请求与 dispatch 之间变化时
+fail closed；`HIDDEN` policy 不得借 inspection 泄漏 tool 或 route 存在。
+
+Client 与 Core UI 还必须重验完整 layered release、declared catalog、Session capability binding 和 condensed
+ToolAffordance reflection。公开 reflection 不包含 `HIDDEN` 工具；inactive/degraded Plugin 使用结构化 blocked
+state 与 blocker 解释原因，只有 `AVAILABLE`/`AVAILABLE_WITH_APPROVAL` 进入调用面。单个工具 blocked 不等于
+整个 Core shell 不可读，但该工具 dispatch 必须本地 fail closed，且 `fallback_performed=false`。
+
+`@2` 的五个 Kernel base workspace contract 是：`workspace.status`、
+`workspace.fs.read`、`workspace.fs.list`、`workspace.fs.mutate` 与 `workspace.exec`。它们的 input schema 为
+closed object，不包含 `workspace_id`、credential、target 或 remote locator；Host 从 current Session/member/
+AgentAuthorityLease/workspace generation 与 pinned local route 解析唯一 binding。mutation/exec 由 exact tool
+call 派生 idempotency/operation identity并进入 `WorkspaceOperationCoordinator`，result 明示没有 checkpoint、
+publication、workspace cleanup 或 Task transition。Standard 尚未把所有五个 runtime application 接入
+Host route，因此未接入的工具在当前 affordance 中必须 blocked，不能调用旧 registry。
+
+其中 `workspace.fs.mutate`、`workspace.exec` 与 transfer 先形成 durable ControlledOperation admission，再调用
+exact Adapter；响应丢失时，调用方只能以同一 request/operation/intent/authority/route 发起显式
+reconciliation。Port 的 `reconcile(original_request)` 只观察既有 effect，不重新运行 helper、argv 或复制，
+并固定报告 `redispatch_performed=false`、`fallback_performed=false`；没有 terminal proof 时继续保持
+`dispatch_in_doubt`，不能从路径存在、进程消失或私有文件变化推断 checkpoint、publication 或 Task terminal。
 
 旧 tool name 返回 removed-tool/stale-catalog error，并保留安全的 requested name 和 expected catalog
 identity；不得调用替代 operation。
@@ -64,17 +214,92 @@ identity；不得调用替代 operation。
 general 与 executor catalog 具有不同 digest。executor catalog 只增加 owner-scoped locator 读取，
 不扩大 mutation tool、runner、SSH 或其他 agent workspace 的可见范围。
 
+`@2` 不再用 actor kind 粗略选择全局 catalog；上述 subject-scoped snapshot 是唯一当前行为。
+
+## `@2` projection owner partition
+
+`@2` 使用 closed `core` section 保存 Session/Task/Lane/Agent/Protocol/Approval、
+`AgentAuthorityLease`、Session capability binding、runtime/workspace/publication/operation/failure 等基础事实；
+Plugin 数据只能进入 `extensions[plugin_contract_id]`，并绑定 exact projection schema/renderer digest。
+
+当前 owner 映射为：Research → `openzyme.research@1`，Reporting → `openzyme.reporting@1`，
+Science → `openzyme.science@1`，formal revision execution → `openzyme.compute@1`，远端 workspace、
+target inventory 与 HPC route → `openzyme.hpc@1`。这些 contributor 都由各自 Plugin runtime bundle 显式提供；
+Kernel/Host 只按 activated projection catalog 做 exact mount 和组装，不读取其 repository。现有 EnzymeDesign
+垂直 tools 没有独立 canonical control-plane collection：正式计算状态归 Compute、科学采用/交付物归 Science，
+文件结果归 workspace/publication。因此其 manifest 保持无 projection，不能为了制造产品 section 而从 tool
+receipt 或事件推导空壳状态；未来某个产品 Plugin 真正拥有 canonical state 时，必须新增自己的 exact
+projection contract 后才能公开。
+
+checkpoint/publication 的公共 DTO 已由 `openzyme-contracts` 唯一拥有。公开面可以返回经过验证的
+workspace generation、commit/tree、publication/ref 和 manifest digest，却不得返回 repository root、
+private ref、credential、LFS object locator、remote transport locator 或 Git/LFS 命令细节。上述 locator
+字段由 `@2.core` 递归 closed-schema validator 直接拒绝，而非只依赖调用者 redaction。Git-shaped identity 暂时保留；未来 backend
+变化必须通过新 contract 版本和 offline migration，而不是让 Host/CLI 猜测别名。
+这些 Git-shaped facts 的公共 owner 仍是 Kernel/Contracts；实际 root/ref/hook/LFS bytes、credential claims/
+token/ledger、closure/GC 和 native-client qualification 由 `openzyme-workspace-git-lfs` Adapter 拥有。Adapter
+receipt 进入公开面前必须由 Kernel application boundary 验证，不能公开 Host locator，也不能把 mechanism
+success 提升为 publication、Science adoption 或 Task terminal。
+
+`@2.core` 的通用文件引用使用 Contracts-owned `RevisionPathRef`/`ProtocolFileHandoff` 或
+`EvidenceRef`。Reporting/Science 的 typed refs 只进入相应 namespaced extension section；旧
+`TaskEvidenceRef@1` mixed union 不进入 `@2` public exports。
+
+Reporting 的 section ID 是 `extensions["openzyme.reporting@1"]`。它只含分页后的 draft/report/render/
+validation metadata 和授权的完整 `RevisionPathRef`，不含正文、Host/private path、storage URI、credential 或
+renderer private log。只读 route `GET /v3/extensions/openzyme.reporting/sessions/{session_id}` 与该 section
+共享 exact contract digest 和授权规则；UI 必须加载 `openzyme.reporting.renderer@1` 的精确 digest，否则只显示
+incompatible extension 并禁用相关 mutation control。旧顶层 report 字段只能由 offline historical reader
+解释，不能与当前 section 双写或在线翻译。
+
+Science 的 section ID 是 `extensions["openzyme.science@1"]`。它只含授权、分页、byte-bounded 的 attempt、
+selection、disposition、adoption、deliverable 和 closure metadata；credential、Host/remote path、raw log、storage URI
+与 artifact-era identity 被拒绝。只读 route
+`GET /v3/extensions/openzyme.science/sessions/{session_id}` 与该 section 绑定 exact contract digest；UI 只在
+`openzyme.science.renderer@1` digest 匹配时渲染。旧顶层 scientific 字段只能由 offline historical reader
+解释，不双写、不在线翻译。
+
+`WorkspaceRevisionBackendPort` 是 Host 内部出站接口，不直接成为 HTTP/Agent tool schema。公共接口只消费
+Kernel 验证后的 revision/path fact 或安全 byte projection；Adapter 的 Git command、remote response、
+credential 和 storage locator 永不透传。
+其 publication dispatch identity 也只来自已 admission 的 ControlledOperation；`@2` 客户端不能提交
+execution generation/fence 或 remote receipt。Kernel materialize 必须校验 public command 中的 closed
+receipt 与 Store 中 terminal receipt digest 一致，再调用 Adapter 的 observation-only 恢复路径。
+
+移除 Plugin 只能使对应 extension section unavailable，不得改变 core 语义。`AgentCapabilityLease` 不作为
+兼容 alias；旧 `@1` 仅保留 offline historical reader。任何 bundle/catalog/backend/build/binding/snapshot
+drift 都在 mutation 前 fail closed。
+
+旧 SQLite 物理表名 `agent_capability_lease_records` 可以在首轮 adoption 中保留，但不是公共 schema
+名称。`@2` reader 只接受经过 Store mapper 验证并带 canonical digest 的 `AgentAuthorityLease`；其中
+generation 来自旧 `workspace_generation`、fence 来自旧 `state_version`，旧行无 expiry 时必须保留
+`expires_at=null`。CLI、SDK、UI 和 Plugin 不得观察物理表名、旧 profile tuple 或旧 DTO alias。
+
 ## CLI 与 UI
 
 CLI 是薄 HTTP client，不读取 SQLite 或 repository root。UI reducer 只接受 versioned file workspace
 sections；未知 key 不恢复旧 state。UI 不显示 private locator 或 raw external handle。CLI/UI error
 rendering 使用 Host safe error，不展开 secret 或内部路径。
 
+Web UI 的 `file_workspace_v2_state`、`core_shell` 与
+`extension_renderer_loader` seam。`file_workspace_v2_state` 对 root/release/core/extension section 使用
+closed validation，并递归拒绝 Core 中的 Reporting、Science、Compute/HPC、EnzymeDesign、artifact-era 和
+private locator 字段；`core_shell` 只克隆 `projection.core`，extension payload 只交给 exact
+manifest-declared renderer。renderer catalog、section contract 或 renderer identity 缺失/漂移时 UI 阻止
+mutation，不合并 payload、不加载 fallback renderer。Plugin-free `extensions = {}` 仍产生可工作的 Core shell。
+
+上述 seam 已进入 `main/controller/view/client`、`npm test` 与 build output；生产调用者只消费 exact
+`@2` release/binding/affordance/renderer identity，不再有在线 `@1` reducer。这仍不等于真实 deployment
+cutover 已执行：Host Distribution mount、release injection 和设备上的 activation proof 仍必须另行完成。
+
 ## Restore
 
-continuation snapshot 绑定 session、agent/task/lane/tool call、process epoch、delivery generation、public
-schema 和 tool catalog digest。restore 只重建 typed refs。旧 schema/catalog context 被标记 unsupported，
-不 replay、rename 或重新解释请求。
+continuation intent 绑定 session、agent/member、source command/outcome、process epoch、完整 layered release
+digest、Extension bundle、DeclaredToolCatalog、Session capability binding revision/digest 和
+ToolAffordanceSnapshot identity。恢复时 release/bundle/catalog/owner/epoch 任一漂移以
+`runtime_continuation_contract_stale` 在 claim/dispatch 前硬失败；binding 或 affordance 已更新时允许把对话作为
+新 bounded turn 的输入，但原 dispatch 固定 blocked，必须取得 fresh binding/snapshot。validator 是只读的，
+`mutation_applied=false`、`fallback_performed=false`；旧 schema/catalog context 不 replay、rename 或重新解释。
 
 ## Error semantics
 
@@ -82,6 +307,11 @@ schema 和 tool catalog digest。restore 只重建 typed refs。旧 schema/catal
 phase、typed identities、effect certainty、retry/reconcile policy、`mutation_applied`、
 `fallback_performed`、安全 cause chain、`diagnostic_id` 和 next action。API、tool result、event、workspace
 与 world projection 使用同一字段语义；UI/CLI 不自行推断 retryability。
+
+其 canonical DTO、`ExternalEffectCertainty` 和 `RetryEligibility` 位于
+`openzyme-contracts`。旧 `openzyme_domain` package、alias 与单向重导出已经删除；历史部署只能由
+`openzyme-store-sqlite` 的显式 offline migration reader 按 ledger 读取，不能通过在线 import compatibility
+进入当前 Host。Workspace、tool、Plugin 或 Host 不得再定义第二套 effect/failure enum。
 
 - validation/authorization：请求未被接受，`mutation_applied=false`，外部 effect 为 `no_effect`；
 - `no_effect`：有证据证明外部请求未发生，可否重试仍由显式 policy 决定；

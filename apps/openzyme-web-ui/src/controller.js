@@ -1,37 +1,35 @@
-import {
-  buildInitialViewState,
-  buildSessionSummaryFromWorkspace,
-  eventRequiresWorkspaceRefresh,
-  reduceWorkspaceWithEvent,
-  mergeWorkspaceChangedPathsPage,
-  upsertSessionSummary,
-} from "./state.js";
+import { buildCoreShellState, reduceCoreShellEvent } from "./core_shell.js";
 
-const DEFAULT_WORKSPACE_RECONCILE_INTERVAL_MS = 5_000;
-
-export class WorkspaceController {
-  constructor(client, onChange = () => {}, options = {}) {
-    const setReconcileTimeout =
-      options.setReconcileTimeout ?? globalThis.setTimeout.bind(globalThis);
-    const clearReconcileTimeout =
-      options.clearReconcileTimeout ?? globalThis.clearTimeout.bind(globalThis);
+export class WorkspaceControllerV2 {
+  constructor({
+    client,
+    rendererRegistry,
+    expectedRendererCatalogDigest,
+    onChange = () => {},
+    reconcileIntervalMs = 5_000,
+    setReconcileTimeout = globalThis.setTimeout?.bind(globalThis),
+    clearReconcileTimeout = globalThis.clearTimeout?.bind(globalThis),
+  }) {
     this.client = client;
+    this.rendererRegistry = rendererRegistry;
+    this.expectedRendererCatalogDigest = expectedRendererCatalogDigest;
     this.onChange = onChange;
-    this.workspaceReconcileIntervalMs =
-      options.workspaceReconcileIntervalMs ?? DEFAULT_WORKSPACE_RECONCILE_INTERVAL_MS;
-    // Keep host timer functions detached from the controller instance. Browser
-    // timer APIs reject calls whose receiver is an arbitrary object.
-    this.setReconcileTimeout = (...args) => setReconcileTimeout(...args);
-    this.clearReconcileTimeout = (...args) => clearReconcileTimeout(...args);
-    this.state = buildInitialViewState();
-    this.stream = null;
-    this.requestVersion = 0;
-    this.messageRequestVersion = 0;
-    this.approvalRequestVersion = 0;
-    this.refreshRequestVersion = 0;
-    this.refreshTimeout = null;
+    this.reconcileIntervalMs = reconcileIntervalMs;
+    this.setReconcileTimeout = setReconcileTimeout;
+    this.clearReconcileTimeout = clearReconcileTimeout;
     this.reconcileTimeout = null;
-    this.workspaceRefreshInFlight = null;
+    this.requestGeneration = 0;
+    this.state = {
+      sessionId: "",
+      shell: null,
+      loading: false,
+      refreshing: false,
+      messageBusy: false,
+      drainBusy: false,
+      error: "",
+      mutationError: "",
+      lastMutationStatus: null,
+    };
   }
 
   snapshot() {
@@ -42,561 +40,150 @@ export class WorkspaceController {
     this.onChange(this.snapshot());
   }
 
-  _disconnectStream() {
-    if (this.stream) {
-      this.stream.close();
-      this.stream = null;
-    }
-    if (this.refreshTimeout) {
-      clearTimeout(this.refreshTimeout);
-      this.refreshTimeout = null;
-    }
-    if (this.reconcileTimeout) {
-      this.clearReconcileTimeout(this.reconcileTimeout);
+  _cancelReconciliation() {
+    if (this.reconcileTimeout !== null) {
+      this.clearReconcileTimeout?.(this.reconcileTimeout);
       this.reconcileTimeout = null;
     }
-    this._invalidateWorkspaceRefresh();
   }
 
-  _invalidateWorkspaceRefresh() {
-    this.refreshRequestVersion += 1;
-    this.workspaceRefreshInFlight?.abortController?.abort();
-    this.workspaceRefreshInFlight = null;
-    this.state.refreshingWorkspace = false;
-  }
-
-  _beginRequest() {
-    this.requestVersion += 1;
-    return this.requestVersion;
-  }
-
-  _isCurrentRequest(version) {
-    return version === this.requestVersion;
-  }
-
-  _setExpandedSession(sessionId) {
-    this.state.sidebarExpandedSessionIds = Array.from(
-      new Set([sessionId, ...this.state.sidebarExpandedSessionIds]),
-    );
-  }
-
-  _syncSummaryFromWorkspace() {
-    if (!this.state.workspace?.session) {
-      return;
-    }
-    this.state.sessionSummaries = upsertSessionSummary(
-      this.state.sessionSummaries,
-      buildSessionSummaryFromWorkspace(this.state.workspace),
-    );
-  }
-
-  _clearErrors(...keys) {
-    for (const key of keys) {
-      if (key === "approvals") {
-        this.state.errors.approvals = {};
-      } else {
-        this.state.errors[key] = "";
-      }
-    }
-  }
-
-  _setApprovalError(approvalId, message) {
-    this.state.errors.approvals = {
-      ...this.state.errors.approvals,
-      [approvalId]: message,
-    };
-  }
-
-  _clearApprovalError(approvalId) {
-    const next = { ...this.state.errors.approvals };
-    delete next[approvalId];
-    this.state.errors.approvals = next;
-  }
-
-  _appendOptimisticUserMessage(message) {
-    if (!this.state.workspace?.session) {
-      return null;
-    }
-    const optimisticId = `local_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    this.state.workspace = structuredClone(this.state.workspace);
-    this.state.workspace.conversation = [
-      ...(this.state.workspace.conversation ?? []),
-      {
-        role: "user",
-        content: message,
-        event_id: optimisticId,
-        pending: true,
-      },
-    ];
-    return optimisticId;
-  }
-
-  _appendMessageError(optimisticId, message) {
-    if (!this.state.workspace?.session) {
-      return;
-    }
-    this.state.workspace = structuredClone(this.state.workspace);
-    this.state.workspace.conversation = [
-      ...(this.state.workspace.conversation ?? []),
-      {
-        role: "assistant",
-        content: `Message failed: ${message}`,
-        event_id: optimisticId ? `${optimisticId}_error` : `local_error_${Date.now()}`,
-        error: true,
-      },
-    ];
-  }
-
-  async _refreshSessionSummaries(projectId = this.state.currentProjectId) {
-    this.state.sessionSummaries = await this.client.listV3Sessions(projectId);
-  }
-
-  async _refreshCurrentWorkspace(sessionId, version) {
-    if (
-      !sessionId ||
-      this.state.currentSessionId !== sessionId ||
-      this.workspaceRefreshInFlight !== null ||
-      this.state.messageBusy ||
-      Boolean(this.state.pendingApprovalId)
-    ) {
-      return false;
-    }
-    const refreshToken = {
-      sessionId,
-      version,
-      abortController:
-        typeof globalThis.AbortController === "function" ? new AbortController() : null,
-    };
-    this.workspaceRefreshInFlight = refreshToken;
-    this.state.refreshingWorkspace = true;
-    this._emit();
-    try {
-      const response = await this.client.getV3Session(sessionId, {
-        signal: refreshToken.abortController?.signal,
-      });
-      if (this.state.currentSessionId !== sessionId || version !== this.refreshRequestVersion) {
-        return false;
-      }
-      this.state.workspace = response.workspace;
-      this._syncSummaryFromWorkspace();
-      this._clearErrors("session");
-      return true;
-    } catch (error) {
-      if (this.state.currentSessionId !== sessionId || version !== this.refreshRequestVersion) {
-        return false;
-      }
-      this.state.errors.session = error.message;
-      return false;
-    } finally {
-      if (this.workspaceRefreshInFlight !== refreshToken) {
-        return;
-      }
-      this.workspaceRefreshInFlight = null;
-      if (this.state.currentSessionId !== sessionId || version !== this.refreshRequestVersion) {
-        return;
-      }
-      this.state.refreshingWorkspace = false;
-      this._emit();
-    }
-  }
-
-  _scheduleWorkspaceRefresh(sessionId) {
-    if (!sessionId || this.state.currentSessionId !== sessionId) {
-      return;
-    }
-    this._invalidateWorkspaceRefresh();
-    const version = this.refreshRequestVersion;
-    if (this.refreshTimeout) {
-      clearTimeout(this.refreshTimeout);
-    }
-    const scheduleRefresh = () => {
-      this.refreshTimeout = null;
-      if (this.state.currentSessionId !== sessionId || version !== this.refreshRequestVersion) {
-        return;
-      }
-      if (
-        this.workspaceRefreshInFlight !== null ||
-        this.state.messageBusy ||
-        Boolean(this.state.pendingApprovalId)
-      ) {
-        this.refreshTimeout = setTimeout(scheduleRefresh, 150);
-        return;
-      }
-      void this._refreshCurrentWorkspace(sessionId, version);
-    };
-    this.refreshTimeout = setTimeout(scheduleRefresh, 150);
-  }
-
-  _scheduleWorkspaceReconciliation(sessionId) {
-    if (
-      !sessionId ||
-      this.state.currentSessionId !== sessionId ||
-      !Number.isFinite(this.workspaceReconcileIntervalMs) ||
-      this.workspaceReconcileIntervalMs <= 0
-    ) {
-      return;
-    }
-    if (this.reconcileTimeout) {
-      this.clearReconcileTimeout(this.reconcileTimeout);
-    }
-    this.reconcileTimeout = this.setReconcileTimeout(async () => {
+  _scheduleReconciliation() {
+    this._cancelReconciliation();
+    if (!Number.isFinite(this.reconcileIntervalMs) || this.reconcileIntervalMs <= 0) return;
+    this.reconcileTimeout = this.setReconcileTimeout?.(async () => {
       this.reconcileTimeout = null;
-      if (this.state.currentSessionId !== sessionId) {
-        return;
-      }
-      if (
-        this.workspaceRefreshInFlight === null &&
-        !this.state.messageBusy &&
-        !this.state.pendingApprovalId
-      ) {
-        this.refreshRequestVersion += 1;
-        const version = this.refreshRequestVersion;
-        await this._refreshCurrentWorkspace(sessionId, version);
-      }
-      if (this.state.currentSessionId === sessionId) {
-        this._scheduleWorkspaceReconciliation(sessionId);
-      }
-    }, this.workspaceReconcileIntervalMs);
+      if (!this.state.messageBusy && !this.state.drainBusy) await this.refresh();
+      this._scheduleReconciliation();
+    }, this.reconcileIntervalMs);
     this.reconcileTimeout?.unref?.();
   }
 
-  _connectV3Stream(sessionId) {
-    this._disconnectStream();
-    this.stream = this.client.streamV3Session(sessionId, (event) => {
-      if (!this.state.workspace?.session || this.state.currentSessionId !== sessionId) {
-        return;
-      }
-      const nextWorkspace = reduceWorkspaceWithEvent(this.state.workspace, event);
-      if (nextWorkspace !== this.state.workspace) {
-        // Any durable event reducer is newer than an already-started snapshot
-        // read.  Retire that read generation before applying the event so its
-        // late response cannot roll the UI back.
-        this._invalidateWorkspaceRefresh();
-        this.state.workspace = nextWorkspace;
-        this._syncSummaryFromWorkspace();
-        this._emit();
-      }
-      if (eventRequiresWorkspaceRefresh(event)) {
-        this._scheduleWorkspaceRefresh(sessionId);
-      }
-    });
-    this._scheduleWorkspaceReconciliation(sessionId);
-  }
-
-  async bootstrap() {
-    const requestVersion = this._beginRequest();
-    this._disconnectStream();
-    this.messageRequestVersion += 1;
-    this.approvalRequestVersion += 1;
-    this.state.workspace = null;
-    this.state.runtimeHealth = null;
-    this.state.currentSessionId = "";
-    this.state.currentSection = "conversation";
-    this.state.mobilePane = "conversation";
-    this.state.selectedTeammateAgentId = "";
-    this.state.sidebarExpandedSessionIds = [];
-    this._clearErrors(
-      "sidebar",
-      "createSession",
-      "session",
-      "message",
-      "runtimeHealth",
-      "approvals",
+  _adoptProjection(projection) {
+    this.state.shell = buildCoreShellState(
+      projection,
+      this.rendererRegistry,
+      { expectedRendererCatalogDigest: this.expectedRendererCatalogDigest },
     );
-    this.state.sidebarBusy = true;
-    this.state.messageBusy = false;
-    this.state.createSessionBusy = false;
-    this.state.pendingApprovalId = "";
-    this.state.refreshingWorkspace = false;
-    this._emit();
-    try {
-      const [sessionsResult, healthResult] = await Promise.allSettled([
-        this._refreshSessionSummaries(),
-        typeof this.client.getV3RuntimeHealth === "function"
-          ? this.client.getV3RuntimeHealth()
-          : Promise.resolve(null),
-      ]);
-      if (healthResult.status === "fulfilled") {
-        this.state.runtimeHealth = healthResult.value;
-      } else {
-        this.state.errors.runtimeHealth = healthResult.reason?.message ?? String(healthResult.reason);
-      }
-      if (sessionsResult.status === "rejected") {
-        throw sessionsResult.reason;
-      }
-    } catch (error) {
-      if (!this._isCurrentRequest(requestVersion)) {
-        return;
-      }
-      this.state.errors.sidebar = error.message;
-    } finally {
-      if (!this._isCurrentRequest(requestVersion)) {
-        return;
-      }
-      this.state.sidebarBusy = false;
-      this._emit();
-    }
+    this.state.error = "";
   }
 
-  async createSession(payload) {
-    if (this.state.createSessionBusy) {
-      return false;
-    }
-    const requestVersion = this._beginRequest();
-    this.messageRequestVersion += 1;
-    this.approvalRequestVersion += 1;
-    this.state.createSessionBusy = true;
-    this._clearErrors("createSession", "session");
+  async bootstrap(sessionId) {
+    this.requestGeneration += 1;
+    const generation = this.requestGeneration;
+    this._cancelReconciliation();
+    this.state = {
+      ...this.state,
+      sessionId,
+      shell: null,
+      loading: true,
+      refreshing: false,
+      error: "",
+      mutationError: "",
+    };
     this._emit();
     try {
-      const response = await this.client.createV3Session({
-        ...payload,
-        project_id: payload.project_id || this.state.currentProjectId || "proj_001",
-      });
-      if (!this._isCurrentRequest(requestVersion)) {
-        return;
-      }
-      this.state.workspace = response.workspace;
-      this.state.currentSessionId = response.session_id;
-      this.state.currentProjectId = response.workspace.session.project_id;
-      this.state.currentSection = "conversation";
-      this.state.mobilePane = "conversation";
-      this.state.selectedTeammateAgentId = "";
-      this._setExpandedSession(response.session_id);
-      this._syncSummaryFromWorkspace();
-      await this._refreshSessionSummaries(this.state.currentProjectId);
-      this._connectV3Stream(response.session_id);
+      if (!sessionId) throw new Error("exact @2 Web UI requires one configured session_id");
+      const { projection } = await this.client.inspectWorkspace(sessionId);
+      if (generation !== this.requestGeneration) return false;
+      this._adoptProjection(projection);
+      this._scheduleReconciliation();
       return true;
     } catch (error) {
-      if (!this._isCurrentRequest(requestVersion)) {
-        return false;
-      }
-      this.state.errors.createSession = error.message;
+      if (generation !== this.requestGeneration) return false;
+      this.state.error = error.message;
+      return false;
     } finally {
-      if (!this._isCurrentRequest(requestVersion)) {
-        return false;
+      if (generation === this.requestGeneration) {
+        this.state.loading = false;
+        this._emit();
       }
-      this.state.createSessionBusy = false;
-      this._emit();
     }
-    return false;
   }
 
-  async selectSession(sessionId, section = "conversation") {
-    if (!sessionId || this.state.sidebarBusy) {
-      return;
-    }
-    const requestVersion = this._beginRequest();
-    this._disconnectStream();
-    this.messageRequestVersion += 1;
-    this.approvalRequestVersion += 1;
-    this.state.sidebarBusy = true;
-    this.state.currentSessionId = sessionId;
-    this.state.currentSection = section;
-    this.state.mobilePane = section === "conversation" ? "conversation" : "inspector";
-    this.state.selectedTeammateAgentId = "";
-    this._setExpandedSession(sessionId);
-    this._clearErrors("session", "message", "approvals");
-    this.state.pendingApprovalId = "";
-    this.state.messageBusy = false;
+  async refresh() {
+    if (!this.state.sessionId || this.state.refreshing) return false;
+    const generation = this.requestGeneration;
+    this.state.refreshing = true;
     this._emit();
     try {
-      const response = await this.client.getV3Session(sessionId);
-      if (!this._isCurrentRequest(requestVersion)) {
-        return;
-      }
-      this.state.workspace = response.workspace;
-      this._syncSummaryFromWorkspace();
-      await this._refreshSessionSummaries(this.state.currentProjectId);
-      this._connectV3Stream(sessionId);
+      const { projection } = await this.client.inspectWorkspace(this.state.sessionId);
+      if (generation !== this.requestGeneration) return false;
+      this._adoptProjection(projection);
+      return true;
     } catch (error) {
-      if (!this._isCurrentRequest(requestVersion)) {
-        return;
-      }
-      this.state.errors.session = error.message;
-      this.state.workspace = null;
-    } finally {
-      if (!this._isCurrentRequest(requestVersion)) {
-        return;
-      }
-      this.state.sidebarBusy = false;
-      this._emit();
-    }
-  }
-
-  selectSection(section) {
-    this.state.currentSection = section || "conversation";
-    this.state.mobilePane = this.state.currentSection === "conversation" ? "conversation" : "inspector";
-    this.state.selectedTeammateAgentId = "";
-    this._emit();
-  }
-
-  selectTeammate(agentId) {
-    if (!agentId || !this.state.workspace?.session) {
-      return;
-    }
-    this.state.currentSection = "team";
-    this.state.mobilePane = "conversation";
-    this.state.selectedTeammateAgentId = agentId;
-    this._emit();
-  }
-
-  toggleSessionTree(sessionId) {
-    if (this.state.sidebarExpandedSessionIds.includes(sessionId)) {
-      this.state.sidebarExpandedSessionIds = this.state.sidebarExpandedSessionIds.filter((item) => item !== sessionId);
-    } else {
-      this._setExpandedSession(sessionId);
-    }
-    this._emit();
-  }
-
-  selectMobilePane(pane) {
-    if (!["sessions", "conversation", "inspector"].includes(pane)) {
-      return;
-    }
-    this.state.mobilePane = pane;
-    this._emit();
-  }
-
-  async sendMessage(message) {
-    const trimmedMessage = message.trim();
-    if (!this.state.currentSessionId || this.state.messageBusy || !trimmedMessage) {
+      if (generation === this.requestGeneration) this.state.error = error.message;
       return false;
+    } finally {
+      if (generation === this.requestGeneration) {
+        this.state.refreshing = false;
+        this._emit();
+      }
     }
-    const sessionId = this.state.currentSessionId;
-    this.messageRequestVersion += 1;
-    const requestVersion = this.messageRequestVersion;
-    this._invalidateWorkspaceRefresh();
+  }
+
+  async sendMessage(message, idempotencyKey) {
+    const trimmed = String(message ?? "").trim();
+    if (!trimmed || this.state.messageBusy || !this.state.shell?.mutationAllowed) return false;
     this.state.messageBusy = true;
-    this._clearErrors("message");
-    const optimisticId = this._appendOptimisticUserMessage(trimmedMessage);
+    this.state.mutationError = "";
     this._emit();
     try {
-      const response = await this.client.postV3Message(sessionId, { message: trimmedMessage });
-      if (requestVersion !== this.messageRequestVersion) {
-        return false;
-      }
-      if (this.state.currentSessionId !== sessionId) {
-        await this._refreshSessionSummaries(this.state.currentProjectId);
-        return false;
-      }
-      this._invalidateWorkspaceRefresh();
-      this.state.workspace = response.workspace;
-      this._syncSummaryFromWorkspace();
-      await this._refreshSessionSummaries(this.state.currentProjectId);
+      const result = await this.client.postMessage(
+        this.state.sessionId,
+        { message: trimmed },
+        idempotencyKey,
+      );
+      this._adoptProjection(result.projection);
+      this.state.lastMutationStatus = result.responseStatus;
       return true;
     } catch (error) {
-      if (requestVersion !== this.messageRequestVersion || this.state.currentSessionId !== sessionId) {
-        return false;
-      }
-      this._appendMessageError(optimisticId, error.message);
-      this.state.errors.message = error.message;
+      this.state.mutationError = error.message;
+      return false;
     } finally {
-      if (requestVersion === this.messageRequestVersion && this.state.currentSessionId === sessionId) {
-        this.state.messageBusy = false;
-        this._emit();
-      }
+      this.state.messageBusy = false;
+      this._emit();
     }
-    return false;
   }
 
-  async resolveApproval(approvalId, decision) {
-    if (!this.state.currentSessionId || !this.state.workspace?.session || !approvalId) {
-      return false;
-    }
-    const sessionId = this.state.currentSessionId;
-    this.approvalRequestVersion += 1;
-    const requestVersion = this.approvalRequestVersion;
-    this._invalidateWorkspaceRefresh();
-    this.state.pendingApprovalId = approvalId;
-    this._clearApprovalError(approvalId);
+  async drainRuntime({ maxSignals = 3, maxStepsPerAgent = 8 }, idempotencyKey) {
+    if (this.state.drainBusy || !this.state.shell?.mutationAllowed) return false;
+    if (!Number.isInteger(maxSignals) || maxSignals <= 0) return false;
+    if (!Number.isInteger(maxStepsPerAgent) || maxStepsPerAgent <= 0) return false;
+    this.state.drainBusy = true;
+    this.state.mutationError = "";
     this._emit();
     try {
-      const response = await this.client.resolveV3Approval(approvalId, { decision });
-      if (requestVersion !== this.approvalRequestVersion) {
-        return false;
-      }
-      if (this.state.currentSessionId !== sessionId) {
-        await this._refreshSessionSummaries(this.state.currentProjectId);
-        return false;
-      }
-      this._invalidateWorkspaceRefresh();
-      this.state.workspace = response.workspace;
-      this._syncSummaryFromWorkspace();
-      await this._refreshSessionSummaries(this.state.currentProjectId);
+      const result = await this.client.drainRuntime(
+        this.state.sessionId,
+        { max_signals: maxSignals, max_steps_per_agent: maxStepsPerAgent },
+        idempotencyKey,
+      );
+      this._adoptProjection(result.projection);
+      this.state.lastMutationStatus = result.responseStatus;
       return true;
     } catch (error) {
-      if (requestVersion !== this.approvalRequestVersion || this.state.currentSessionId !== sessionId) {
-        return false;
-      }
-      this._setApprovalError(approvalId, error.message);
+      this.state.mutationError = error.message;
+      return false;
     } finally {
-      if (requestVersion === this.approvalRequestVersion && this.state.currentSessionId === sessionId) {
-        this.state.pendingApprovalId = "";
-        this._emit();
-      }
+      this.state.drainBusy = false;
+      this._emit();
     }
-    return false;
   }
 
-  async loadMoreChangedPaths(workspaceId) {
-    if (
-      !this.state.currentSessionId
-      || !this.state.workspace?.session
-      || this.state.pendingWorkspacePathId
-    ) {
-      return false;
-    }
-    const status = (this.state.workspace.workspace_status ?? []).find(
-      (item) => item.workspace_id === workspaceId,
-    );
-    if (!status?.changed_paths_continuation) {
-      return false;
-    }
-    const sessionId = this.state.currentSessionId;
-    const generation = status.workspace_generation;
-    const continuation = status.changed_paths_continuation;
-    this.state.pendingWorkspacePathId = workspaceId;
-    const errors = { ...(this.state.errors.changedPaths ?? {}) };
-    delete errors[workspaceId];
-    this.state.errors.changedPaths = errors;
+  acceptEvent(event) {
+    if (!this.state.shell) return false;
+    this.state.shell = reduceCoreShellEvent(this.state.shell, event);
     this._emit();
-    try {
-      const page = await this.client.getV3WorkspaceChangedPathsPage(
-        sessionId,
-        workspaceId,
-        generation,
-        continuation,
-      );
-      const currentStatus = (this.state.workspace?.workspace_status ?? []).find(
-        (item) => item.workspace_id === workspaceId,
-      );
-      if (
-        this.state.currentSessionId !== sessionId
-        || currentStatus?.workspace_generation !== generation
-        || currentStatus?.changed_paths_continuation !== continuation
-      ) {
-        return false;
-      }
-      this.state.workspace = mergeWorkspaceChangedPathsPage(
-        this.state.workspace,
-        workspaceId,
-        page,
-      );
-      return true;
-    } catch (error) {
-      if (this.state.currentSessionId === sessionId) {
-        this.state.errors.changedPaths = {
-          ...(this.state.errors.changedPaths ?? {}),
-          [workspaceId]: error.message,
-        };
-      }
-      return false;
-    } finally {
-      if (this.state.pendingWorkspacePathId === workspaceId) {
-        this.state.pendingWorkspacePathId = "";
-        this._emit();
-      }
+    if (this.state.shell.refreshRequired && this.state.shell.mutationAllowed) {
+      void this.refresh();
     }
+    return true;
+  }
+
+  close() {
+    this.requestGeneration += 1;
+    this._cancelReconciliation();
   }
 }
+
+export const WorkspaceController = WorkspaceControllerV2;

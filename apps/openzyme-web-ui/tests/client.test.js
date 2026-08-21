@@ -1,232 +1,223 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import test from "node:test";
 
-import { buildHostPaths, HostApiClient } from "../src/client.js";
-import { FILE_WORKSPACE_RELEASE } from "../src/file_workspace_release.js";
+import {
+  buildHostV2Paths,
+  canonicalSha256Digest,
+  HostApiV2Client,
+  WebUiContractError,
+} from "../src/client.js";
 
-function workspaceResponse() {
+const digest = (character) => `sha256:${character.repeat(64)}`;
+
+function release() {
   return {
-    session_id: "sess_001",
-    workspace: {
-      schema_version: FILE_WORKSPACE_RELEASE.schemaVersion,
-      tool_catalog_digest: FILE_WORKSPACE_RELEASE.toolCatalogDigest,
-      schema_bundle_digest: FILE_WORKSPACE_RELEASE.schemaBundleDigest,
-      session: { session_id: "sess_001" },
-      agent_workspaces: [],
-      workspace_status: [],
-      private_revisions: [],
-      published_revisions: [],
-      reports: [],
-      scientific_deliverables: [],
-      external_jobs: [],
-      external_job_results: [],
-      capability_leases: [],
-      failure_observations: [],
-    },
+    schema_version: "openzyme_layered_release_identity@1",
+    kernel_contract_digest: digest("a"),
+    core_schema_digest: digest("b"),
+    adapter_bundle_digest: digest("c"),
+    extension_bundle_digest: digest("d"),
+    declared_tool_catalog_digest: digest("e"),
+    route_catalog_digest: digest("f"),
+    projection_catalog_digest: digest("1"),
+    migration_catalog_digest: digest("2"),
+    workspace_backend_digest: digest("3"),
+    host_build_digest: digest("4"),
+    client_build_digest: digest("5"),
+    release_digest: digest("6"),
+    public_contract_digest: digest("7"),
   };
 }
 
-test("changed-path pagination binds the current workspace generation", async () => {
-  const originalFetch = globalThis.fetch;
-  let request = null;
-  globalThis.fetch = async (url, options = {}) => {
-    request = { url, options };
-    return {
-      ok: true,
-      async json() {
-        return {
-          schema_version: "workspace_changed_paths_page@1",
-          workspace_id: "workspace-1",
-          workspace_generation: 7,
-          paths: ["scientific/result.json"],
-          continuation: null,
-          source_truncated: false,
-        };
+function projection(expectedRelease = release()) {
+  const binding = digest("8");
+  return {
+    schema_version: "file_workspace_public@2",
+    release: expectedRelease,
+    core: {
+      agents: [],
+      approvals: [],
+      authority_leases: [],
+      capability_binding: { binding_digest: binding },
+      conversation: { memories: [], messages: [] },
+      failures: { observations: [] },
+      lanes: [],
+      operations: {
+        command_receipts: [], continuations: [], controlled: [],
+        publication_intents: [], task_evidence: [],
       },
-    };
+      protocol: { inbox: [], records: [] },
+      publications: [],
+      runtime: {
+        continuation_intents: [], outcome_consumptions: [], session_leases: [],
+        settlement_intents: [], signals: [], turn_commands: [],
+      },
+      session: { session_id: "session-1", objective: "Verify exact UI" },
+      tasks: [],
+      tool_reflection: {
+        declared_tool_catalog_digest: expectedRelease.declared_tool_catalog_digest,
+        affordance_snapshot_digest: digest("9"),
+        capability_binding_digest: binding,
+        available_tool_names: [],
+        affordances: [],
+      },
+      workspace: {
+        checkpoints: [], generations: [], repository_binding_pins: [],
+        revision_path_verifications: [], runtime_bindings: [],
+      },
+    },
+    extensions: {},
   };
-  try {
-    const page = await new HostApiClient().getV3WorkspaceChangedPathsPage(
-      "sess_001",
-      "workspace-1",
-      7,
-      "observation-1:100",
-    );
-    assert.match(
-      request.url,
-      /^\/v3\/sessions\/sess_001\/workspace\/changed-paths\?workspace_id=workspace-1&continuation=observation-1%3A100$/,
-    );
-    assert.deepEqual(page.paths, ["scientific/result.json"]);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
+}
 
-test("changed-path pagination rejects stale workspace identity", async () => {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => ({
+class Headers {
+  constructor(values) {
+    this.values = Object.fromEntries(
+      Object.entries(values).map(([key, value]) => [key.toLowerCase(), value]),
+    );
+  }
+
+  get(name) {
+    return this.values[name.toLowerCase()] ?? null;
+  }
+}
+
+async function workspaceResponse(payload = projection(), overrides = {}) {
+  const projectionDigest = await canonicalSha256Digest(payload);
+  return {
     ok: true,
-    async json() {
-      return {
-        schema_version: "workspace_changed_paths_page@1",
-        workspace_id: "workspace-1",
-        workspace_generation: 6,
-        paths: [],
-        continuation: null,
-      };
+    status: 200,
+    headers: new Headers({
+      "content-type": "application/vnd.openzyme.file-workspace+json;version=2",
+      "openzyme-workspace-contract": "file_workspace_public@2",
+      "openzyme-release-digest": payload.release.release_digest,
+      "openzyme-public-contract-digest": payload.release.public_contract_digest,
+      "openzyme-projection-digest": projectionDigest,
+      "openzyme-capability-binding-digest": payload.core.capability_binding.binding_digest,
+      "openzyme-affordance-snapshot-digest": payload.core.tool_reflection.affordance_snapshot_digest,
+      ...overrides,
+    }),
+    async json() { return structuredClone(payload); },
+  };
+}
+
+test("exact @2 workspace read verifies body and all response identities", async () => {
+  const requests = [];
+  const response = await workspaceResponse();
+  const client = new HostApiV2Client({
+    expectedRelease: release(),
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return response;
     },
   });
-  try {
-    await assert.rejects(
-      new HostApiClient().getV3WorkspaceChangedPathsPage(
-        "sess_001",
-        "workspace-1",
-        7,
-        "observation-1:100",
-      ),
-      /workspace identity is stale/,
-    );
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+
+  const result = await client.inspectWorkspace("session-1");
+
+  assert.equal(result.projection.core.session.session_id, "session-1");
+  assert.equal(requests[0].url, "/v3/sessions/session-1/workspace");
+  assert.equal(
+    requests[0].options.headers.Accept,
+    "application/vnd.openzyme.file-workspace+json;version=2",
+  );
+  assert.equal(requests[0].options.headers["OpenZyme-Client-Build-Digest"], digest("5"));
 });
 
-test("buildHostPaths exposes the v3 session workspace surface", () => {
-  assert.deepEqual(buildHostPaths("proj_001", "sess_001"), {
-    v3ProjectSessions: "/v3/projects/proj_001/sessions",
-    v3RuntimeHealth: "/v3/runtime/health",
-    v3RuntimeDrain: "/v3/sessions/sess_001/runtime/drain",
-    v3RuntimeCommand: "/v3/sessions/sess_001/runtime/commands/runtime_command_001",
-    v3CreateSession: "/v3/sessions",
-    v3Session: "/v3/sessions/sess_001",
-    v3Messages: "/v3/sessions/sess_001/messages",
-    v3Events: "/v3/sessions/sess_001/events?replay=1&follow=1&envelope=1",
-    v3ApprovalResolve: "/v3/approvals/appr_001/resolve",
-    debugLlmCalls: "/debug/llm-calls",
-    debugLlmCall: "/debug/llm-calls/llmdbg_001",
-    debugLlmClear: "/debug/llm-calls/clear",
+test("artifact-era or @1 body is rejected without synthesis", async () => {
+  const response = await workspaceResponse();
+  response.json = async () => ({ schema_version: "file_workspace_public@1", artifacts: [] });
+  const client = new HostApiV2Client({
+    expectedRelease: release(),
+    fetchImpl: async () => response,
   });
+
+  await assert.rejects(
+    client.inspectWorkspace("session-1"),
+    /fields are closed|unsupported file_workspace_public@2 schema/,
+  );
 });
 
-test("v3 stream consumes the generic envelope without an event-type allowlist", () => {
-  const originalEventSource = globalThis.EventSource;
-  let source = null;
-  class FakeEventSource {
-    constructor(url) {
-      this.url = url;
-      this.listeners = new Map();
-      source = this;
-    }
-
-    addEventListener(name, handler) {
-      this.listeners.set(name, handler);
-    }
-
-    close() {}
-  }
-  globalThis.EventSource = FakeEventSource;
-  try {
-    const events = [];
-    new HostApiClient().streamV3Session("sess_001", (event) => events.push(event));
-    assert.match(source.url, /envelope=1/);
-    assert.deepEqual(Array.from(source.listeners.keys()), ["openzyme.event"]);
-    source.listeners.get("openzyme.event")({
-      data: JSON.stringify({
-        schema_version: FILE_WORKSPACE_RELEASE.schemaVersion,
-        event_id: "evt_future",
-        event_type: "future.event.type",
-        payload: { value: 1 },
-      }),
-    });
-    assert.equal(events[0].event_type, "future.event.type");
-  } finally {
-    globalThis.EventSource = originalEventSource;
-  }
-});
-
-test("v3 mutations carry a unique idempotency key", async () => {
-  const originalFetch = globalThis.fetch;
-  let request = null;
-  globalThis.fetch = async (url, options) => {
-    request = { url, options };
-    return {
-      ok: true,
-      async json() {
-        return workspaceResponse();
-      },
-    };
+test("extension section payload drift is rejected before rendering", async () => {
+  const payload = projection();
+  payload.extensions["openzyme.science@1"] = {
+    section_contract_digest: digest("a"),
+    payload: { attempts: [] },
+    next_cursor: null,
+    projection_digest: digest("b"),
   };
-  try {
-    await new HostApiClient().createV3Session({
-      project_id: "proj_001",
-      objective: "Retry safely",
-    });
-    assert.equal(request.url, "/v3/sessions");
-    assert.equal(request.options.method, "POST");
-    assert.match(request.options.headers["Idempotency-Key"], /^web-/);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  const response = await workspaceResponse(payload);
+  const client = new HostApiV2Client({
+    expectedRelease: release(),
+    fetchImpl: async () => response,
+  });
+
+  await assert.rejects(
+    client.inspectWorkspace("session-1"),
+    (error) => error.code === "web_ui_extension_projection_digest_mismatch",
+  );
 });
 
-test("v3 session reads forward an abort signal", async () => {
-  const originalFetch = globalThis.fetch;
-  let request = null;
-  globalThis.fetch = async (url, options) => {
-    request = { url, options };
-    return {
-      ok: true,
-      async json() {
-        return workspaceResponse();
-      },
-    };
+test("mutation binds inspected identities and re-inspects canonical @2 state", async () => {
+  const inspected = await workspaceResponse();
+  const mutation = {
+    ok: true,
+    status: 202,
+    headers: inspected.headers,
+    async json() { return { legacy_workspace: "must-not-be-consumed" }; },
   };
-  const abortController = new AbortController();
-  try {
-    await new HostApiClient().getV3Session("sess_001", {
-      signal: abortController.signal,
-    });
-    assert.equal(request.url, "/v3/sessions/sess_001");
-    assert.equal(request.options.signal, abortController.signal);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("v3 runtime command client uses session-scoped command routes", async () => {
-  const originalFetch = globalThis.fetch;
+  const responses = [inspected, mutation, inspected];
   const requests = [];
-  globalThis.fetch = async (url, options = {}) => {
-    requests.push({ url, options });
-    return {
-      ok: true,
-      async json() {
-        return {
-          schema_version: "runtime_command_status@1",
-          session_id: "sess_001",
-          command_id: "runtime_command_001",
-          status: "accepted",
-        };
-      },
-    };
-  };
-  try {
-    const client = new HostApiClient();
-    await client.drainV3Runtime("sess_001", {
-      max_signals: 1,
-      max_steps_per_agent: 2,
-    });
-    await client.getV3RuntimeCommand("sess_001", "runtime_command_001");
+  const client = new HostApiV2Client({
+    expectedRelease: release(),
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return responses.shift();
+    },
+  });
 
-    assert.equal(requests[0].url, "/v3/sessions/sess_001/runtime/drain");
-    assert.equal(requests[0].options.method, "POST");
-    assert.match(requests[0].options.headers["Idempotency-Key"], /^web-/);
-    assert.equal(
-      requests[1].url,
-      "/v3/sessions/sess_001/runtime/commands/runtime_command_001",
-    );
-    assert.equal(requests[1].options.method, undefined);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  const result = await client.postMessage(
+    "session-1",
+    { message: "continue" },
+    "web-ui:message:1",
+  );
+
+  assert.equal(result.responseStatus, 202);
+  assert.deepEqual(requests.map((item) => item.options.method ?? "GET"), ["GET", "POST", "GET"]);
+  assert.equal(requests[1].options.headers["Idempotency-Key"], "web-ui:message:1");
+  assert.equal(
+    requests[1].options.headers["OpenZyme-Capability-Binding-Digest"],
+    digest("8"),
+  );
+});
+
+test("post-dispatch identity drift is unknown-effect and never falls back", async () => {
+  const inspected = await workspaceResponse();
+  const mutation = await workspaceResponse(projection(), {
+    "openzyme-projection-digest": digest("0"),
+  });
+  const responses = [inspected, mutation];
+  const client = new HostApiV2Client({
+    expectedRelease: release(),
+    fetchImpl: async () => responses.shift(),
+  });
+
+  await assert.rejects(
+    client.postMessage("session-1", { message: "continue" }, "web-ui:message:2"),
+    (error) => {
+      assert.equal(error instanceof WebUiContractError, true);
+      assert.equal(error.code, "web_ui_mutation_response_identity_mismatch");
+      assert.equal(error.mutationApplied, null);
+      assert.equal(error.effectCertainty, "dispatch_in_doubt");
+      assert.equal(error.fallbackPerformed, false);
+      return true;
+    },
+  );
+});
+
+test("buildHostV2Paths exposes only activated exact @2 routes", () => {
+  assert.deepEqual(buildHostV2Paths("session-1"), {
+    workspace: "/v3/sessions/session-1/workspace",
+    messages: "/v3/sessions/session-1/messages",
+    runtimeDrain: "/v3/sessions/session-1/runtime/drain",
+  });
 });

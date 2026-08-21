@@ -1,0 +1,825 @@
+{
+  "schema_id": "openzyme_source_bound_architecture_baseline@1",
+  "component_inventory_digest": "sha256:beeee89137dfa6590ca7de6d27a19bec9c923da68d57a61c7e6988c38ca3c8a7",
+  "import_graph_digest": "sha256:6554ed007f306d1b2a30a2bce661bacad5ab3d4886bd857dd8d303ba07b293d2",
+  "accepted_import_graph_transitions": [
+    {
+      "phase": "18_retire_legacy_authority_packages",
+      "added_edges": [],
+      "removed_edges": [
+        {
+          "source": "openzyme-core",
+          "target": "openzyme-runtime",
+          "reason": "The final legacy mixed Core and runtime implementation packages were removed after all target Distributions adopted Contracts, Kernel, SPI and selected Adapters"
+        }
+      ],
+      "direction_check": "retired_packages_absent_from_workspace_wheels_import_graph_and_entry_points"
+    },
+    {
+      "phase": "10_generic_host_delivery_cutover",
+      "added_edges": [],
+      "removed_edges": [
+        {
+          "source": "openzyme-host-api",
+          "target": "mcp-hpc-runner",
+          "reason": "The generic Host no longer constructs or calls the independently deployed runner"
+        },
+        {
+          "source": "openzyme-host-api",
+          "target": "openzyme-compute",
+          "reason": "Compute lifecycle and routes are mounted only by an explicit Distribution Plugin contribution"
+        },
+        {
+          "source": "openzyme-host-api",
+          "target": "openzyme-hpc",
+          "reason": "HPC target and workspace semantics are no longer hard-coded into the generic delivery Adapter"
+        },
+        {
+          "source": "openzyme-host-api",
+          "target": "openzyme-runtime",
+          "reason": "The generic Host consumes Kernel application contracts and never imports the legacy runtime implementation"
+        },
+        {
+          "source": "openzyme-host-api",
+          "target": "openzyme-science",
+          "reason": "Science lifecycle and finalization are mounted as namespaced Plugin contributions"
+        },
+        {
+          "source": "openzyme-host-api",
+          "target": "openzyme-store-sqlite",
+          "reason": "The selected Distribution injects the Control Store Adapter behind Kernel application services"
+        },
+        {
+          "source": "openzyme-host-api",
+          "target": "openzyme-workspace-git-lfs",
+          "reason": "The selected Distribution injects the Workspace Backend Adapter behind Kernel application services"
+        }
+      ],
+      "direction_check": "delivery_adapter_to_contracts_kernel_and_extension_spi_only"
+    },
+    {
+      "phase": "15_standard_owns_host_v2_surface_composition",
+      "added_edges": [
+        {
+          "source": "openzyme-standard",
+          "target": "openzyme-host-api",
+          "reason": "The Distribution composes the generic Host delivery Adapter with its verified Kernel projection provider and exact empty Plugin mount"
+        }
+      ],
+      "removed_edges": [
+        {
+          "source": "openzyme-host-api",
+          "target": "openzyme-standard",
+          "reason": "The generic Host no longer owns the legacy Standard-specific development composition entry point"
+        }
+      ],
+      "direction_check": "distribution_to_delivery_adapter_without_host_to_distribution_reverse_dependency"
+    },
+    {
+      "phase": "18_retire_zero_caller_domain_contract_shims",
+      "added_edges": [],
+      "removed_edges": [
+        {
+          "source": "openzyme-domain",
+          "target": "openzyme-process-podman",
+          "reason": "The zero-caller Podman state compatibility module and top-level aliases were deleted after all writers adopted the Adapter-owned contracts"
+        },
+        {
+          "source": "openzyme-domain",
+          "target": "openzyme-workspace-git-lfs",
+          "reason": "The zero-caller Agent workspace and Git LFS compatibility modules and top-level aliases were deleted after all writers adopted the Adapter-owned contracts"
+        },
+        {
+          "source": "openzyme-domain",
+          "target": "openzyme-hpc",
+          "reason": "The zero-caller executor HPC workspace compatibility module and top-level aliases were deleted after all writers adopted the Plugin-owned contracts"
+        },
+        {
+          "source": "openzyme-domain",
+          "target": "openzyme-compute",
+          "reason": "The zero-caller Compute compatibility modules and top-level aliases were deleted after formal execution DTO ownership moved to the Plugin"
+        },
+        {
+          "source": "openzyme-domain",
+          "target": "openzyme-execution-contracts",
+          "reason": "The zero-caller runner wire compatibility module and top-level aliases were deleted after all runner consumers adopted the narrow wire package"
+        },
+        {
+          "source": "openzyme-domain",
+          "target": "openzyme-research",
+          "reason": "The Research compatibility module and top-level aliases were deleted after legacy Core research repositories were removed and Plugin ownership became exclusive"
+        }
+      ],
+      "direction_check": "legacy_domain_dependency_closure_shrinks_toward_contracts_only; canonical_adapter_state_remains_adapter_owned"
+    },
+    {
+      "phase": "10_standard_kernel_workspace_runtime_mount",
+      "added_edges": [
+        {
+          "source": "openzyme-standard",
+          "target": "openzyme-runtime-spi",
+          "reason": "The Distribution composes its selected process-isolation Port behind Kernel-owned local workspace runtimes"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "distribution_to_selected_adapter_port_contract; kernel_and_adapters_do_not_depend_on_distribution"
+    },
+    {
+      "phase": "11_reporting_kernel_runtime_removal",
+      "added_edges": [],
+      "removed_edges": [
+        {
+          "source": "openzyme-core",
+          "target": "openzyme-reporting",
+          "reason": "Kernel no longer registers Reporting tools, restores Reporting state or owns legacy report repositories; the Plugin is mounted only by a Distribution"
+        }
+      ],
+      "direction_check": "kernel_does_not_depend_on_reporting_plugin; historical tables remain Store-owned migration input only"
+    },
+    {
+      "phase": "16_distribution_startup_proof",
+      "added_edges": [
+        {
+          "source": "enzymedesign",
+          "target": "openzyme-contracts",
+          "reason": "The Distribution builds and verifies the exact layered release and persisted activation epoch through public contracts"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "distribution_to_contracts_and_selected_implementations; no_selected_component_depends_on_distribution"
+    },
+    {
+      "phase": "10_15_public_v2_contract_and_client",
+      "added_edges": [
+        {
+          "source": "openzyme-client",
+          "target": "openzyme-contracts",
+          "reason": "The implementation-free client validates the canonical public @2 DTO and layered release identity"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "client_to_contracts_only; no_client_to_host_runtime_or_repository"
+    },
+    {
+      "phase": "14_distribution_owned_aox_host_contributions",
+      "added_edges": [],
+      "removed_edges": [
+        {
+          "source": "openzyme-host-api",
+          "target": "enzymedesign-aox",
+          "reason": "Host receives the workflow registry and finalization handler through generic Science contracts"
+        },
+        {
+          "source": "openzyme-host-api",
+          "target": "enzymedesign-aox-executor",
+          "reason": "The EnzymeDesign Distribution constructs the exact AOX receipt validator"
+        }
+      ],
+      "direction_check": "distribution_to_product; generic_host_to_science_contract_only"
+    },
+    {
+      "phase": "14_versioned_enzymedesign_distribution",
+      "added_edges": [
+        {
+          "source": "enzymedesign",
+          "target": "selected_adapters_plugins_and_drivers",
+          "reason": "The Distribution is the only composition root and imports every exact selected implementation"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "distribution_to_selected_components_only; no_component_depends_on_distribution; standard_not_a_semantic_dependency"
+    },
+    {
+      "phase": "14_bio_provider_product_plugin_and_adapter",
+      "added_edges": [
+        {
+          "source": "enzymedesign-bio-provider-adapters",
+          "target": "enzymedesign-core",
+          "reason": "The HTTP Adapter implements the narrow Product-owned bio Provider Port"
+        },
+        {
+          "source": "enzymedesign-bio-provider-adapters",
+          "target": "openzyme-extension-spi",
+          "reason": "The Adapter exposes only an exact side-effect-free manifest locator"
+        },
+        {
+          "source": "enzymedesign-bio-providers",
+          "target": "enzymedesign-core",
+          "reason": "The Product Plugin consumes provider DTOs and the narrow Provider Port"
+        },
+        {
+          "source": "enzymedesign-bio-providers",
+          "target": "openzyme-contracts",
+          "reason": "The Product Plugin returns canonical ToolResult receipts"
+        },
+        {
+          "source": "enzymedesign-bio-providers",
+          "target": "openzyme-extension-spi",
+          "reason": "The Product Plugin contributes exact capabilities and routes"
+        },
+        {
+          "source": "enzymedesign-sequence-toolpack",
+          "target": "enzymedesign-core",
+          "reason": "The Sequence Tool Pack consumes the Product-owned provider application Port"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "adapter_to_product_contracts; product_plugins_to_product_contracts_and_platform_contracts; no_generic_science_to_product_provider"
+    },
+    {
+      "phase": "14_aox_product_ownership_and_pipeline_removal",
+      "added_edges": [
+        {
+          "source": "enzymedesign-aox",
+          "target": "openzyme-extension-spi",
+          "reason": "AOX exposes an exact explicit Plugin manifest and capability requirements"
+        },
+        {
+          "source": "enzymedesign-aox",
+          "target": "openzyme-science",
+          "reason": "AOX specializes the public Science workflow contract without importing Core repositories"
+        },
+        {
+          "source": "enzymedesign-aox-executor",
+          "target": "openzyme-execution-sdk",
+          "reason": "The subordinate Driver invokes only the domain-neutral supervised execution SDK"
+        },
+        {
+          "source": "enzymedesign-aox-executor",
+          "target": "openzyme-extension-spi",
+          "reason": "The subordinate Driver exposes an exact metadata-only manifest locator"
+        },
+        {
+          "source": "openzyme-host-api",
+          "target": "enzymedesign-aox",
+          "reason": "The legacy mixed Host temporarily consumes the Product-owned contract until Distribution route injection completes"
+        },
+        {
+          "source": "openzyme-host-api",
+          "target": "enzymedesign-aox-executor",
+          "reason": "The legacy mixed Host temporarily consumes the selected AOX Driver until route injection completes"
+        }
+      ],
+      "removed_edges": [
+        {
+          "source": "openzyme-pipeline",
+          "target": "openzyme-execution-sdk",
+          "reason": "The generic-looking AOX calculation wheel was deleted"
+        },
+        {
+          "source": "openzyme-pipeline",
+          "target": "enzymedesign-aox",
+          "reason": "AOX calculation ownership no longer crosses a legacy wheel"
+        },
+        {
+          "source": "openzyme-host-api",
+          "target": "openzyme-pipeline",
+          "reason": "Host now consumes the exact AOX Product owner"
+        }
+      ],
+      "direction_check": "product_plugin_to_public_science_and_extension_spi; subordinate_driver_to_execution_sdk; legacy_host_consumers_explicitly_temporary"
+    },
+    {
+      "phase": "14_sequence_toolpack_product_plugin",
+      "added_edges": [
+        {
+          "source": "enzymedesign-sequence-toolpack",
+          "target": "openzyme-contracts",
+          "reason": "Sequence parsing and provider-neutral ToolSpecs use canonical invocation/result contracts"
+        },
+        {
+          "source": "enzymedesign-sequence-toolpack",
+          "target": "openzyme-extension-spi",
+          "reason": "UniProt, RCSB and InterPro are exact capability requirements rather than embedded provider implementations"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "product_plugin_to_contracts_and_extension_spi_only"
+    },
+    {
+      "phase": "4_unique_declared_tool_contract_owners",
+      "added_edges": [
+        {
+          "source": "openzyme-core",
+          "target": "openzyme-kernel",
+          "reason": "The bounded legacy harness projects exact Kernel-owned workspace base ToolSpecs until Host runtime cutover"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "legacy_mixed_core_to_canonical_kernel_contract_owner_only"
+    },
+    {
+      "phase": "14_remove_openzyme_tools_surface",
+      "added_edges": [],
+      "removed_edges": [],
+      "direction_check": "openzyme.tools component removed after fpocket, Vina and AlphaFold ownership moved to exact product manifests"
+    },
+    {
+      "phase": "14_alphafold_product_plugin",
+      "added_edges": [
+        {
+          "source": "enzymedesign-alphafold",
+          "target": "openzyme-contracts",
+          "reason": "AlphaFold owns provider-neutral tool and result contracts"
+        },
+        {
+          "source": "enzymedesign-alphafold",
+          "target": "openzyme-execution-contracts",
+          "reason": "AlphaFold HPC Driver compiles a closed formal workload without dispatch"
+        },
+        {
+          "source": "enzymedesign-alphafold",
+          "target": "openzyme-extension-spi",
+          "reason": "AlphaFold declares same-target software, model, database and accelerator requirements"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "product_plugin_to_contracts_execution_contracts_and_extension_spi_only"
+    },
+    {
+      "phase": "14_fpocket_structure_product_plugin",
+      "added_edges": [
+        {
+          "source": "enzymedesign-structure",
+          "target": "openzyme-contracts",
+          "reason": "fpocket owns provider-neutral tool/result contracts"
+        },
+        {
+          "source": "enzymedesign-structure",
+          "target": "openzyme-execution-contracts",
+          "reason": "fpocket Drivers compile typed workloads without dispatch"
+        },
+        {
+          "source": "enzymedesign-structure",
+          "target": "openzyme-extension-spi",
+          "reason": "fpocket declares exact capability, qualification, tool and Driver manifests"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "product_plugin_to_contracts_execution_contracts_and_extension_spi_only"
+    },
+    {
+      "phase": "14_docking_preprocess_product_plugin",
+      "added_edges": [
+        {
+          "source": "enzymedesign-docking-preprocess",
+          "target": "openzyme-contracts",
+          "reason": "Docking preprocess owns a closed ToolSpec and safe ToolResult contract"
+        },
+        {
+          "source": "enzymedesign-docking-preprocess",
+          "target": "openzyme-extension-spi",
+          "reason": "Docking preprocess declares exact RDKit, Meeko and Open Babel resource requirements and qualification specs"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "product_plugin_to_contracts_and_extension_spi_only; preprocess.backend removed"
+    },
+    {
+      "phase": "14_vina_product_plugin",
+      "added_edges": [
+        {
+          "source": "enzymedesign-vina",
+          "target": "openzyme-contracts",
+          "reason": "Vina owns provider-neutral docking tool/result identities and safe ToolResult contracts"
+        },
+        {
+          "source": "enzymedesign-vina",
+          "target": "openzyme-execution-contracts",
+          "reason": "Vina local/HPC Drivers compile closed formal ExecutionWorkloadSpec values without dispatch"
+        },
+        {
+          "source": "enzymedesign-vina",
+          "target": "openzyme-extension-spi",
+          "reason": "Vina declares exact Compute/resource requirements, qualification, tool runtime and subordinate Driver manifests"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "product_plugin_to_contracts_execution_contracts_and_extension_spi_only"
+    },
+    {
+      "phase": "14_hmmer_product_plugin",
+      "added_edges": [
+        {
+          "source": "enzymedesign-hmmer",
+          "target": "openzyme-contracts",
+          "reason": "HMMER owns provider-neutral tool/result identity and safe ToolResult contracts"
+        },
+        {
+          "source": "enzymedesign-hmmer",
+          "target": "openzyme-execution-contracts",
+          "reason": "HMMER local/HPC Drivers compile closed formal ExecutionWorkloadSpec values without dispatch"
+        },
+        {
+          "source": "enzymedesign-hmmer",
+          "target": "openzyme-extension-spi",
+          "reason": "HMMER declares exact capability requirements, qualification, tool runtimes and subordinate Driver manifests"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "product_plugin_to_contracts_execution_contracts_and_extension_spi_only"
+    },
+    {
+      "phase": "12_science_target_runtime",
+      "added_edges": [
+        {
+          "source": "openzyme-science",
+          "target": "openzyme-extension-spi",
+          "reason": "Science implements manifest-declared lifecycle tools, bounded projection, worker, read-only finish validator and namespace-confined transaction participant"
+        },
+        {
+          "source": "openzyme-host-api",
+          "target": "openzyme-science",
+          "reason": "Legacy Host AOX composition consumes the canonical Science-owned workflow contract registry until EnzymeDesign composition replaces the hard-coded product wiring"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "plugin_to_contracts_and_extension_spi_with_legacy_host_to_canonical_science_owner"
+    },
+    {
+      "phase": "3_contract_extraction",
+      "added_edges": [
+        {
+          "source": "openzyme-reporting",
+          "target": "openzyme-contracts",
+          "reason": "Reporting-owned ReportRef reuses the Contracts-owned canonical revision digest contract"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "plugin_to_contracts_only"
+    },
+    {
+      "phase": "11_reporting_target_runtime",
+      "added_edges": [
+        {
+          "source": "openzyme-reporting",
+          "target": "openzyme-extension-spi",
+          "reason": "Reporting implements manifest-declared tools, bounded projection, render worker, read-only finish validator and namespace-confined transaction participant"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "plugin_to_contracts_and_extension_spi_only"
+    },
+    {
+      "phase": "3_contract_extraction",
+      "added_edges": [
+        {
+          "source": "openzyme-domain",
+          "target": "openzyme-hpc",
+          "reason": "The legacy domain compatibility shim re-exports the canonical HPC Plugin contracts during bounded migration"
+        },
+        {
+          "source": "openzyme-core",
+          "target": "openzyme-hpc",
+          "reason": "The legacy mixed Core service consumes the canonical HPC Plugin contracts until service ownership moves in phase 13"
+        },
+        {
+          "source": "openzyme-host-api",
+          "target": "openzyme-hpc",
+          "reason": "The legacy composition root consumes the canonical HPC Plugin contracts until manifest-driven composition replaces hard-coded wiring"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "legacy_callers_to_canonical_plugin_contracts_only"
+    },
+    {
+      "phase": "5_sqlite_store_extraction",
+      "added_edges": [
+        {
+          "source": "openzyme-core",
+          "target": "openzyme-store-sqlite",
+          "reason": "The legacy mixed repository aggregate consumes the Store-owned schema bootstrap while repository classes are split by owner"
+        },
+        {
+          "source": "openzyme-host-api",
+          "target": "openzyme-store-sqlite",
+          "reason": "The legacy delivery root consumes Store-owned schema identity and errors instead of re-exporting persistence from Core"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "legacy_callers_to_canonical_control_store_adapter_only"
+    },
+    {
+      "phase": "6_git_lfs_adapter_extraction",
+      "added_edges": [
+        {
+          "source": "openzyme-domain",
+          "target": "openzyme-workspace-git-lfs",
+          "reason": "The legacy Domain shims re-export canonical Git/LFS Adapter records until offline cutover"
+        },
+        {
+          "source": "openzyme-core",
+          "target": "openzyme-workspace-git-lfs",
+          "reason": "Legacy mixed workspace services consume canonical Adapter records until their implementation moves"
+        },
+        {
+          "source": "openzyme-host-api",
+          "target": "openzyme-workspace-git-lfs",
+          "reason": "The legacy composition root consumes canonical Adapter records while Git/LFS mechanisms remain in migration"
+        },
+        {
+          "source": "openzyme-workspace-git-lfs",
+          "target": "openzyme-contracts",
+          "reason": "The Adapter-owned Git workspace record reuses the Contracts-owned GitObjectFormat identity"
+        }
+      ],
+      "removed_edges": [
+        {
+          "source": "openzyme-host-api",
+          "target": "openzyme-domain",
+          "reason": "Host Git/LFS callers no longer use the aggregate legacy Domain namespace"
+        }
+      ],
+      "direction_check": "legacy_callers_to_canonical_adapter_contracts_only"
+    },
+    {
+      "phase": "6_local_process_adapter_extraction",
+      "added_edges": [
+        {
+          "source": "openzyme-process-podman",
+          "target": "openzyme-contracts",
+          "reason": "The Podman Adapter implements the canonical WorkspaceProcessPort and failure/effect contracts"
+        },
+        {
+          "source": "openzyme-process-podman",
+          "target": "openzyme-runtime-spi",
+          "reason": "The Podman Adapter implements the framework-independent ProcessIsolationPort"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "adapter_to_contracts_and_adapter_spi_only"
+    },
+    {
+      "phase": "6_kernel_workspace_base_tool_extraction",
+      "added_edges": [
+        {
+          "source": "openzyme-host-api",
+          "target": "openzyme-kernel",
+          "reason": "The delivery composition root resolves current local workspace facts for the Kernel-owned base tool runtimes"
+        },
+        {
+          "source": "openzyme-host-api",
+          "target": "openzyme-extension-spi",
+          "reason": "The Host resolver constructs the narrow KernelCommandContext contract without importing Kernel repositories"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "delivery_adapter_to_kernel_and_application_contracts_only"
+    },
+    {
+      "phase": "7_runtime_coordinator_extraction",
+      "added_edges": [
+        {
+          "source": "openzyme-kernel",
+          "target": "openzyme-runtime-spi",
+          "reason": "The Kernel constructs and consumes the implementation-free bounded RuntimeTurnCommand and RuntimeTurnOutcome SPI"
+        }
+      ],
+      "removed_edges": [
+        {
+          "source": "openzyme-host-cli",
+          "target": "openzyme-runtime",
+          "reason": "The thin CLI now owns only local environment parsing and consumes public Contracts/client surfaces, not the legacy runtime implementation"
+        }
+      ],
+      "direction_check": "kernel_to_adapter_spi_only"
+    },
+    {
+      "phase": "8_explicit_component_manifest_locator",
+      "added_edges": [
+        {
+          "source": "openzyme-process-podman",
+          "target": "openzyme-extension-spi",
+          "reason": "The Podman Adapter exposes a pure openzyme.extensions locator for its canonical manifest resource without ambient activation"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "adapter_to_extension_spi_locator_contract_only"
+    },
+    {
+      "phase": "9_research_reference_extension",
+      "added_edges": [
+        {
+          "source": "openzyme-science-research",
+          "target": "openzyme-research",
+          "reason": "The optional science-research Plugin layers literature policy over provider-neutral Research contracts"
+        }
+      ],
+      "removed_edges": [
+        {
+          "source": "openzyme-host-api",
+          "target": "openzyme-engines",
+          "reason": "The deleted aggregate engines package no longer participates in Host composition"
+        }
+      ],
+      "direction_check": "plugin_to_public_capability_contract_only"
+    },
+    {
+      "phase": "9_research_legacy_caller_removal",
+      "added_edges": [],
+      "removed_edges": [
+        {
+          "source": "openzyme-core",
+          "target": "openzyme-research",
+          "reason": "Core no longer owns or injects Research tools; its uncutover SQLite compatibility repositories temporarily consume only the registered Domain shim"
+        },
+        {
+          "source": "openzyme-core",
+          "target": "openzyme-science-research",
+          "reason": "The unused bio research tool registrar was deleted from Core"
+        },
+        {
+          "source": "openzyme-runtime",
+          "target": "openzyme-research",
+          "reason": "The generic legacy runtime no longer defines Research tool/provider seams"
+        },
+        {
+          "source": "openzyme-runtime",
+          "target": "openzyme-science-research",
+          "reason": "The generic legacy runtime no longer constructs biology-specific research tools"
+        },
+        {
+          "source": "openzyme-host-api",
+          "target": "openzyme-research",
+          "reason": "The base Host foundation no longer constructs an ambient Research capability"
+        },
+        {
+          "source": "openzyme-host-api",
+          "target": "openzyme-research-tavily",
+          "reason": "Tavily remains an explicit optional Adapter and is not a base Host runtime dependency"
+        },
+        {
+          "source": "openzyme-host-api",
+          "target": "openzyme-science-research",
+          "reason": "Science Research remains a Plugin and is not a base Host runtime dependency"
+        }
+      ],
+      "direction_check": "base_host_core_and_runtime_are_research_implementation_free"
+    },
+    {
+      "phase": "13_execution_contract_and_sdk_extraction",
+      "added_edges": [
+        {
+          "source": "openzyme-compute",
+          "target": "openzyme-execution-contracts",
+          "reason": "Compute formal lifecycle DTOs consume only the closed runner wire and workload contracts"
+        },
+        {
+          "source": "openzyme-execution-sdk",
+          "target": "openzyme-execution-contracts",
+          "reason": "The sandbox SDK accepts parsed closed workload and exact route identities"
+        },
+        {
+          "source": "openzyme-host-api",
+          "target": "openzyme-compute",
+          "reason": "The legacy composition root consumes Compute-owned formal execution DTOs until Plugin activation replaces hard-coded wiring"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "sdk_and_plugin_to_wire_contracts_with_bounded_legacy_composition_caller"
+    },
+    {
+      "phase": "13_target_inventory_contracts",
+      "added_edges": [
+        {
+          "source": "openzyme-hpc",
+          "target": "openzyme-contracts",
+          "reason": "HPC-owned immutable target inventory projects qualified resource facts into implementation-free capability contracts"
+        },
+        {
+          "source": "openzyme-hpc",
+          "target": "openzyme-extension-spi",
+          "reason": "The operator qualification workflow consumes declarative Plugin QualificationSpec contracts through the public SPI"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "plugin_to_public_kernel_contracts_only"
+    },
+    {
+      "phase": "13_hpc_ssh_workspace_adapter",
+      "added_edges": [
+        {
+          "source": "openzyme-hpc-ssh",
+          "target": "openzyme-contracts",
+          "reason": "The target-scoped SSH/SFTP/rsync Adapter implements the shared Workspace Runtime port contracts"
+        },
+        {
+          "source": "openzyme-hpc-ssh",
+          "target": "openzyme-extension-spi",
+          "reason": "The Adapter exposes only a metadata locator for explicit manifest selection"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "adapter_to_port_contracts_and_manifest_spi_only"
+    },
+    {
+      "phase": "13_hpc_slurm_scheduler_adapter",
+      "added_edges": [
+        {
+          "source": "openzyme-hpc-slurm",
+          "target": "openzyme-contracts",
+          "reason": "The target-scoped Slurm Adapter preserves canonical effect-certainty and digest contracts"
+        },
+        {
+          "source": "openzyme-hpc-slurm",
+          "target": "openzyme-extension-spi",
+          "reason": "The Adapter exposes only a metadata locator for explicit manifest selection"
+        },
+        {
+          "source": "openzyme-hpc-slurm",
+          "target": "openzyme-hpc",
+          "reason": "The Adapter implements the scheduler port and typed request/receipt contracts owned by the HPC Plugin"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "adapter_to_plugin_port_contracts_and_manifest_spi_only"
+    }
+  ],
+  "expected_component_ids": [
+    "enzymedesign",
+    "enzymedesign.alphafold",
+    "enzymedesign.aox",
+    "enzymedesign.aox.executor",
+    "enzymedesign.bio-provider-http",
+    "enzymedesign.bio-providers",
+    "enzymedesign.core",
+    "enzymedesign.docking.preprocess",
+    "enzymedesign.hmmer",
+    "enzymedesign.sequence.toolpack",
+    "enzymedesign.structure",
+    "enzymedesign.vina",
+    "mcp.hpc.runner",
+    "openzyme.client",
+    "openzyme.compute",
+    "openzyme.contracts",
+    "openzyme.execution.contracts",
+    "openzyme.execution.sdk",
+    "openzyme.extension-spi",
+    "openzyme.host.api",
+    "openzyme.host.cli",
+    "openzyme.hpc",
+    "openzyme.hpc.slurm",
+    "openzyme.hpc.ssh",
+    "openzyme.kernel",
+    "openzyme.process.podman",
+    "openzyme.reporting",
+    "openzyme.research",
+    "openzyme.research.tavily",
+    "openzyme.runtime.llm",
+    "openzyme.runtime.spi",
+    "openzyme.science",
+    "openzyme.science-research",
+    "openzyme.standard",
+    "openzyme.store.sqlite",
+    "openzyme.web.ui",
+    "openzyme.workspace.git.lfs"
+  ],
+  "legacy_reverse_edges": [],
+  "migration_targets": {
+    "openzyme.core": [
+      "openzyme.kernel",
+      "openzyme.store.sqlite",
+      "openzyme.workspace.git.lfs",
+      "openzyme.process.podman",
+      "openzyme.reporting",
+      "openzyme.science",
+      "openzyme.compute",
+      "openzyme.hpc"
+    ],
+    "openzyme.domain": [
+      "openzyme.contracts",
+      "openzyme.reporting",
+      "openzyme.science"
+    ],
+    "openzyme.runtime": [
+      "openzyme.runtime.spi",
+      "openzyme.runtime.llm",
+      "openzyme.process.podman"
+    ],
+    "openzyme.engines": [
+      "openzyme.research",
+      "enzymedesign.hmmer",
+      "enzymedesign.vina"
+    ],
+    "openzyme.execution": [
+      "openzyme.compute",
+      "openzyme.hpc"
+    ],
+    "openzyme.pipeline": [
+      "openzyme.execution.sdk",
+      "enzymedesign.aox"
+    ],
+    "openzyme.tools": [
+      "enzymedesign.alphafold",
+      "enzymedesign.vina"
+    ],
+    "preprocess.backend": [
+      "enzymedesign.docking.preprocess"
+    ]
+  },
+  "decisions": {
+    "external_consumers": "none_confirmed",
+    "revision_contract": "git_shaped_retained_for_this_change",
+    "repository_split": "deferred_to_separate_change"
+  }
+}

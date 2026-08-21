@@ -1,0 +1,20 @@
+{
+  "identity": {
+    "build_digest": "sha256:1765432a4f0ad491d94932caa43bee7d70189a8315c25fa544761f08dd0e2e32",
+    "component_id": "enzymedesign.aox.executor",
+    "component_kind": "driver",
+    "component_version": "0.1.0",
+    "contract_digest": "sha256:9949fd88b50d08bd0544ea3e61363834af18700529d9f2d17498a845cf07bdf5",
+    "distribution_name": "enzymedesign-aox-executor",
+    "distribution_version": "0.1.0"
+  },
+  "owning_plugin_contract": "enzymedesign.aox.workflow@1",
+  "owning_plugin_id": "enzymedesign.aox",
+  "required_port_contracts": [
+    "openzyme.process-isolation-port@1"
+  ],
+  "result_contract_digest": "sha256:9fd0c2d41d8369d5b81cbaeeeb223546c665c63c933884d34a2b255cbc56d250",
+  "route_kind": "sandbox",
+  "schema_version": "openzyme_driver_manifest@1",
+  "workload_contract_digest": "sha256:7e35b53476af72c0e8fa35ce5d5e52cf0636b32cad3f5239ae7cfe325046a83d"
+}

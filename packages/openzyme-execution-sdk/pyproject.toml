@@ -1,0 +1,32 @@
+[project]
+name = "openzyme-execution-sdk"
+version = "0.1.0"
+description = "受控 sandbox 的通用 execution SDK"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "openzyme-execution-contracts",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=9.0.0",
+]
+
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openzyme_execution_sdk"]
+
+[tool.openzyme.component]
+component_id = "openzyme.execution.sdk"
+component_kind = "sdk"
+migration_state = "target_implemented_not_cutover"
+current_composition_owner = "openzyme.execution.sdk"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"

@@ -1,0 +1,20 @@
+{
+  "identity": {
+    "build_digest": "sha256:ac6b39d34c84356f19bad55193321ffbcfc289e464182e6c7e2f2e31409243e2",
+    "component_id": "enzymedesign.hmmer.hpc",
+    "component_kind": "driver",
+    "component_version": "0.1.0",
+    "contract_digest": "sha256:8472c14a07a6e4ad281871eb4cdb5965a9f289f73e6c9b32984e8c97f3351374",
+    "distribution_name": "enzymedesign-hmmer",
+    "distribution_version": "0.1.0"
+  },
+  "owning_plugin_contract": "enzymedesign.hmmer@1",
+  "owning_plugin_id": "enzymedesign.hmmer",
+  "required_port_contracts": [
+    "openzyme.workspace-process-port@1"
+  ],
+  "result_contract_digest": "sha256:1a10eca493b8a2854bb70040b6dccfc4444753250d750f769ae3b95f7880f6fc",
+  "route_kind": "hpc",
+  "schema_version": "openzyme_driver_manifest@1",
+  "workload_contract_digest": "sha256:49d7d06b1f174a399add26d560ef1d62a9cc92a79ca9e5ed877635f3710c6b06"
+}

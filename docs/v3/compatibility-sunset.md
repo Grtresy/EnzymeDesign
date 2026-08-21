@@ -2,6 +2,10 @@
 
 ## 当前决策
 
+当前源码唯一的在线公共工作区合同是 `file_workspace_public@2`。`file_workspace_public@1`
+及其 media type、事件、restore/continuation 和工具目录只能由显式离线历史 reader 解释；它们不进入
+普通 Host、CLI、UI、SDK、Plugin mount 或 Session 组合。
+
 文件工作区切换是 breaking release。当前产品 surface 中，下列旧边界为 `RETIRED`：
 
 - generic artifact domain/repository/projection/storage 和 mutation writer；
@@ -42,8 +46,20 @@ surface 或 stale-context error，并保留安全的原始 contract identity。�
 - 因 current code “不用了”就跳过 receipt；
 - 通过 feature flag、empty count、backup 或 operator assertion 恢复旧路径。
 
-普通 startup 面向 old/incomplete deployment 只暴露中性
-`legacy_schema_unsupported` / `legacy_removal_incomplete`，不重新导出已删除领域模型。
+普通 startup 面向 old/incomplete deployment 只暴露中性、不可重试且无 mutation 的部署错误，不重新导出
+已删除领域模型。稳定分类至少区分：
+
+- `legacy_schema_unsupported`：旧或未知 schema，要求 fresh reset 或另行授权的 offline cutover；
+- `legacy_removal_incomplete`：同一 removal/cutover ledger 未闭合，只能继续 exact forward repair；
+- `deployment_proof_missing` / `deployment_proof_invalid`：缺失或漂移的 bootstrap/cutover proof；
+- `deployment_composition_mismatch`：Adapter/Extension/catalog/workspace backend 或 installed-wheel identity 漂移；
+- `session_composition_upgrade_required`：Session pin/binding/inventory 与 active epoch 不一致。
+
+所有 startup rejection 都在打开 repository writer、Plugin runtime、route、worker 或外部 effect surface 前发生，
+返回 stable phase、safe expected/observed identity、`mutation_applied=false`、`effect_certainty=no_effect` 和
+`fallback_performed=false`。系统不得尝试旧 reader、补写 proof、自动 migration、切换 Distribution 或忽略 optional
+Plugin 的完整性错误。只有 optional Plugin 明确 absent/inactive 或 resource-degraded 且其 manifest closure 无错误时，
+对应工具可以保持不可用而 deployment 继续启动。
 
 ## 保留的非兼容层
 

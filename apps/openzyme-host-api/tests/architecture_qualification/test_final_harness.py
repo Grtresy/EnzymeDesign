@@ -11,11 +11,21 @@ from openzyme_host_api.architecture_qualification import (
     ArchitectureQualificationRegistryError,
 )
 from openzyme_host_api.architecture_qualification import REQUIRED_FAMILIES
+from openzyme_host_api.architecture_qualification import PROFILE_IDS
+from openzyme_host_api.architecture_qualification import (
+    QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID,
+)
+from openzyme_host_api.architecture_qualification import QUALIFICATION_REPORT_SCHEMA_ID
 from openzyme_host_api.architecture_qualification import canonical_json_document_bytes
 from openzyme_host_api.architecture_qualification import load_invariant_registry
 from openzyme_host_api.architecture_qualification import resolve_boundary_relation
 from openzyme_host_api.architecture_qualification import (
     validate_invariant_registry_bytes,
+)
+from openzyme_host_api.architecture_qualification_report import _profiles
+from openzyme_host_api.architecture_qualification_report import _qualification_bindings
+from scripts.architecture_qualification_runner import (
+    _qualification_evidence_is_green,
 )
 
 from . import production_composition
@@ -38,6 +48,48 @@ def test_final_file_architecture_registry_closes_required_families() -> None:
         "boundary-scale.public-diagnostic-bounded-work",
         "supervisor-progress.semantic-progress-only",
     } <= {item["scenario_id"] for item in scenarios}
+    assert tuple(item["profile_id"] for item in registry.payload["profiles"]) == (
+        PROFILE_IDS
+    )
+    assert {
+        profile_id for item in invariants for profile_id in item["profile_ids"]
+    } == set(PROFILE_IDS)
+    by_id = {item["invariant_id"]: item for item in invariants}
+    assert by_id["authority-composition.kernel-fake-profile"]["profile_ids"] == [
+        "kernel_fake_adapters@1"
+    ]
+    assert by_id["evidence-projection.standard-profile"]["profile_ids"] == [
+        "openzyme_standard_local_file_sqlite_git@1"
+    ]
+    assert by_id["wire-contract.enzymedesign-profile"]["profile_ids"] == [
+        "enzymedesign_local_single_process_file_sqlite@1"
+    ]
+
+
+def test_report_v4_binds_all_profiles_and_source_bundles() -> None:
+    registry = load_invariant_registry(repo_root=REPO_ROOT)
+    assert QUALIFICATION_REPORT_SCHEMA_ID.endswith("report@4")
+    assert QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID.endswith("payload@4")
+    profiles = _profiles(registry)
+    assert tuple(item["profile_id"] for item in profiles) == PROFILE_IDS
+    bindings = _qualification_bindings(
+        repo_root=REPO_ROOT,
+        registry=registry,
+        test_manifest={"schema_id": "test-manifest-fixture@1"},
+        selection={"scenario_ids": [], "selection_id": "fixture"},
+    )
+    assert set(bindings) == {
+        "catalog_bundle_digest",
+        "distribution_bundle_digest",
+        "documentation_bundle_digest",
+        "inventory_bundle_digest",
+        "openspec_change_digest",
+        "profile_bundle_digest",
+        "schema_bundle_digest",
+        "test_selection_digest",
+        "wheel_set_digest",
+    }
+    assert all(value.startswith("sha256:") for value in bindings.values())
 
 
 @pytest.mark.parametrize(
@@ -51,7 +103,9 @@ def test_scenario_policy_rejects_simplified_fixture_and_undeclared_external_call
     tmp_path,
     source: str,
 ) -> None:
-    relative = "apps/openzyme-host-api/tests/architecture_qualification/scenarios/test_bad.py"
+    relative = (
+        "apps/openzyme-host-api/tests/architecture_qualification/scenarios/test_bad.py"
+    )
     target = tmp_path / relative
     target.parent.mkdir(parents=True)
     target.write_text(source, encoding="utf-8")
@@ -80,7 +134,9 @@ def test_boundary_relation_drift_fails_before_scenario_credit() -> None:
     boundary["seams"][0]["relation"] = "equal"
     registry = _validate_payload(payload)
 
-    with pytest.raises(ArchitectureQualificationBoundaryError, match="equality drifted"):
+    with pytest.raises(
+        ArchitectureQualificationBoundaryError, match="equality drifted"
+    ):
         resolve_boundary_relation(
             registry,
             boundary_id="diagnostic-public-bytes",
@@ -97,7 +153,9 @@ def test_undeclared_external_port_fails_registry_validation() -> None:
     )
     scenario["external_port_ids"] = ["undeclared-network-port"]
 
-    with pytest.raises(ArchitectureQualificationRegistryError, match="unknown external port"):
+    with pytest.raises(
+        ArchitectureQualificationRegistryError, match="unknown external port"
+    ):
         _validate_payload(payload)
 
 
@@ -114,7 +172,41 @@ def test_missing_cutover_family_fails_registry_validation() -> None:
         item for item in payload["invariants"] if item["invariant_id"] != removed
     ]
 
-    with pytest.raises(ArchitectureQualificationRegistryError, match="cutover production"):
+    with pytest.raises(
+        ArchitectureQualificationRegistryError, match="cutover production"
+    ):
+        _validate_payload(payload)
+
+
+def test_profile_identity_refs_and_layered_digests_fail_closed() -> None:
+    payload = deepcopy(load_invariant_registry(repo_root=REPO_ROOT).payload)
+    payload["profiles"][0]["layered_composition_digests"]["extension_bundle_digest"] = (
+        "sha256:invalid"
+    )
+    with pytest.raises(ArchitectureQualificationRegistryError, match="is invalid"):
+        _validate_payload(payload)
+
+    payload = deepcopy(load_invariant_registry(repo_root=REPO_ROOT).payload)
+    payload["profiles"][1]["component_manifest_refs"] = ["missing.json"]
+    with pytest.raises(ArchitectureQualificationRegistryError, match="readable"):
+        _validate_payload(payload)
+
+
+def test_profile_external_port_and_exact_set_fail_closed() -> None:
+    payload = deepcopy(load_invariant_registry(repo_root=REPO_ROOT).payload)
+    payload["profiles"][1]["allowed_external_port_ids"] = ["undeclared-port"]
+    with pytest.raises(
+        ArchitectureQualificationRegistryError,
+        match="undeclared external port",
+    ):
+        _validate_payload(payload)
+
+    payload = deepcopy(load_invariant_registry(repo_root=REPO_ROOT).payload)
+    payload["profiles"].pop()
+    with pytest.raises(
+        ArchitectureQualificationRegistryError,
+        match="exact three composition profiles",
+    ):
         _validate_payload(payload)
 
 
@@ -148,3 +240,20 @@ def test_no_replacement_oracle_rejects_inferred_fallback() -> None:
             {**expected, "replacement_inferred": True},
             expected=expected,
         )
+
+
+def test_non_admission_green_uses_generic_live_campaign_fact() -> None:
+    payload = {
+        "external_effects_real": False,
+        "harness": {"outcome": "pass"},
+        "invariants": [{"status": "satisfied"}],
+        "live_campaign_started": False,
+        "not_run_scenario_ids": [],
+        "p0_records": [],
+        "run_failure": None,
+        "scenario_results": [{"qualification_status": "satisfied"}],
+    }
+
+    assert _qualification_evidence_is_green(payload) is True
+    payload["live_campaign_started"] = True
+    assert _qualification_evidence_is_green(payload) is False

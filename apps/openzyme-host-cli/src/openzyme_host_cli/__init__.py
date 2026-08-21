@@ -1,5 +1,5 @@
 from .cli import main
-from .client import HostApiClient
+from .v2_client import HostApiV2Client
 from .config import HostCliConfig
 
-__all__ = ["HostApiClient", "HostCliConfig", "main"]
+__all__ = ["HostApiV2Client", "HostCliConfig", "main"]

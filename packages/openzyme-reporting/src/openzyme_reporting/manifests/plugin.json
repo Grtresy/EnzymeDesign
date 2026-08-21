@@ -1,0 +1,1314 @@
+{
+  "configuration_schema_digest": "sha256:75f993e284a7d5d22faba1c6d68bcf0c2beb732248498295181d8cf97808d4e9",
+  "finish_validators": [
+    {
+      "contract_digest": "sha256:dc1830268190598fc763d91bc59ae5c1e29b6084c274f786395b232c9142fcd9",
+      "contribution_id": "openzyme.reporting.finish-validator@1"
+    }
+  ],
+  "http_routes": [
+    {
+      "contract_digest": "sha256:a69bdc0d3911c81533d1c713b556a4b2c2d63e102a3e52881ce3a03eb50c0bbf",
+      "method": "GET",
+      "owner_plugin_id": "openzyme.reporting",
+      "path": "/v3/extensions/openzyme.reporting/sessions/{session_id}",
+      "route_id": "openzyme.reporting.http.session-view@1"
+    }
+  ],
+  "identity": {
+    "build_digest": "sha256:63936d7531af083e0705944b368167ce41f1bff2276cad2a3a1938000f4537cc",
+    "component_id": "openzyme.reporting",
+    "component_kind": "plugin",
+    "component_version": "0.1.0",
+    "contract_digest": "sha256:b3b0b9a19301743cf76c7db596ce9409a6f9d6cbe383c7fbb72c62ad6eaf7228",
+    "distribution_name": "openzyme-reporting",
+    "distribution_version": "0.1.0"
+  },
+  "migration_bundle_digest": "sha256:822603499ae6fb42435f13ed037d297e2372950398db9ad6fdba4a95d6651eb3",
+  "migrations": [
+    {
+      "contract_digest": "sha256:14dd955ec0521eb12fc4671b0ef239bad3276fe40b1ee9cbee4d317e6ce098d9",
+      "contribution_id": "openzyme.reporting.migration.001@1"
+    }
+  ],
+  "projections": [
+    {
+      "contract_digest": "sha256:08408823e7f54408a2a71cbc7632360caa98d6ade3bf906321cad2793c98e09b",
+      "contribution_id": "openzyme.reporting@1"
+    }
+  ],
+  "provides": [
+    {
+      "capability_id": "openzyme.reporting",
+      "cardinality": "single",
+      "contract_version": "1",
+      "operations": [
+        "draft",
+        "publish",
+        "render",
+        "validate"
+      ]
+    }
+  ],
+  "qualification_specs": [],
+  "required_extension_spi_contract": "openzyme.extension-spi@1",
+  "required_kernel_contract": "openzyme.kernel@1",
+  "requires": [],
+  "routes": [],
+  "schema_version": "openzyme_plugin_manifest@1",
+  "schemas": [
+    {
+      "contract_digest": "sha256:b6b550cbdc85c15cccc3fab4087705efa68ac0a04b735b94d215bdafde6208dc",
+      "contribution_id": "openzyme.reporting.state@1"
+    }
+  ],
+  "state_namespace": "openzyme_reporting",
+  "tools": [
+    {
+      "contract": {
+        "approval_policy_id": null,
+        "description": "Read bounded Reporting draft metadata. Report bodies remain immutable workspace files and are never returned by this tool.",
+        "input_schema": {
+          "additionalProperties": false,
+          "maxProperties": 1,
+          "minProperties": 1,
+          "properties": {
+            "draft_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "task_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "output_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "content_ref": {
+              "additionalProperties": false,
+              "properties": {
+                "commit": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "entry_kind": {
+                  "enum": [
+                    "file",
+                    "lfs_file"
+                  ]
+                },
+                "lfs_oid": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "lfs_size_bytes": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "object_id": {
+                  "type": "string"
+                },
+                "path": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "path_manifest_digest": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "project_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "publication_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "ref_digest": {
+                  "pattern": "^sha256:[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "ref_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "repository_binding_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "repository_binding_version": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "repository_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "schema_version": {
+                  "const": "revision_path_ref@1"
+                },
+                "session_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "size_bytes": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "tree": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "schema_version",
+                "ref_id",
+                "publication_id",
+                "project_id",
+                "session_id",
+                "repository_binding_id",
+                "repository_binding_version",
+                "repository_id",
+                "commit",
+                "tree",
+                "path",
+                "entry_kind",
+                "object_id",
+                "size_bytes",
+                "lfs_oid",
+                "lfs_size_bytes",
+                "path_manifest_digest",
+                "created_at",
+                "ref_digest"
+              ],
+              "type": "object"
+            },
+            "entity_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "entity_kind": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "fallback_performed": {
+              "const": false
+            },
+            "receipt_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "record_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "render_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "render_performed": {
+              "type": "boolean"
+            },
+            "report_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "report_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "report_version": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "state": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "state_version": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "summary": {
+              "maxLength": 16384,
+              "type": "string"
+            },
+            "task_finished": {
+              "const": false
+            },
+            "task_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "title": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string"
+            },
+            "workspace_publication_performed": {
+              "const": false
+            }
+          },
+          "required": [
+            "state",
+            "workspace_publication_performed",
+            "render_performed",
+            "fallback_performed",
+            "task_finished"
+          ],
+          "type": "object"
+        },
+        "required_authorities": [],
+        "schema_version": "openzyme_tool_spec@1",
+        "tool_name": "report_draft.get"
+      },
+      "owner_plugin_id": "openzyme.reporting",
+      "requirements": [],
+      "requires_explicit_route": false,
+      "requires_workspace": false,
+      "runtime_id": "openzyme.reporting.report_draft-get@1"
+    },
+    {
+      "contract": {
+        "approval_policy_id": null,
+        "description": "Create or update bounded draft metadata linked to an already published RevisionPathRef. It never writes, commits or publishes report bytes.",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "content_ref": {
+              "additionalProperties": false,
+              "properties": {
+                "commit": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "entry_kind": {
+                  "enum": [
+                    "file",
+                    "lfs_file"
+                  ]
+                },
+                "lfs_oid": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "lfs_size_bytes": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "object_id": {
+                  "type": "string"
+                },
+                "path": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "path_manifest_digest": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "project_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "publication_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "ref_digest": {
+                  "pattern": "^sha256:[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "ref_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "repository_binding_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "repository_binding_version": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "repository_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "schema_version": {
+                  "const": "revision_path_ref@1"
+                },
+                "session_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "size_bytes": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "tree": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "schema_version",
+                "ref_id",
+                "publication_id",
+                "project_id",
+                "session_id",
+                "repository_binding_id",
+                "repository_binding_version",
+                "repository_id",
+                "commit",
+                "tree",
+                "path",
+                "entry_kind",
+                "object_id",
+                "size_bytes",
+                "lfs_oid",
+                "lfs_size_bytes",
+                "path_manifest_digest",
+                "created_at",
+                "ref_digest"
+              ],
+              "type": "object"
+            },
+            "draft_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "expected_state_version": {
+              "minimum": 1,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "idempotency_key": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "summary": {
+              "maxLength": 16384,
+              "type": "string"
+            },
+            "task_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "title": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "task_id",
+            "title",
+            "summary",
+            "idempotency_key"
+          ],
+          "type": "object"
+        },
+        "output_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "content_ref": {
+              "additionalProperties": false,
+              "properties": {
+                "commit": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "entry_kind": {
+                  "enum": [
+                    "file",
+                    "lfs_file"
+                  ]
+                },
+                "lfs_oid": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "lfs_size_bytes": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "object_id": {
+                  "type": "string"
+                },
+                "path": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "path_manifest_digest": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "project_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "publication_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "ref_digest": {
+                  "pattern": "^sha256:[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "ref_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "repository_binding_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "repository_binding_version": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "repository_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "schema_version": {
+                  "const": "revision_path_ref@1"
+                },
+                "session_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "size_bytes": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "tree": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "schema_version",
+                "ref_id",
+                "publication_id",
+                "project_id",
+                "session_id",
+                "repository_binding_id",
+                "repository_binding_version",
+                "repository_id",
+                "commit",
+                "tree",
+                "path",
+                "entry_kind",
+                "object_id",
+                "size_bytes",
+                "lfs_oid",
+                "lfs_size_bytes",
+                "path_manifest_digest",
+                "created_at",
+                "ref_digest"
+              ],
+              "type": "object"
+            },
+            "entity_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "entity_kind": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "fallback_performed": {
+              "const": false
+            },
+            "receipt_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "record_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "render_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "render_performed": {
+              "type": "boolean"
+            },
+            "report_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "report_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "report_version": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "state": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "state_version": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "summary": {
+              "maxLength": 16384,
+              "type": "string"
+            },
+            "task_finished": {
+              "const": false
+            },
+            "task_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "title": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string"
+            },
+            "workspace_publication_performed": {
+              "const": false
+            }
+          },
+          "required": [
+            "state",
+            "workspace_publication_performed",
+            "render_performed",
+            "fallback_performed",
+            "task_finished"
+          ],
+          "type": "object"
+        },
+        "required_authorities": [
+          "workspace.fs.read"
+        ],
+        "schema_version": "openzyme_tool_spec@1",
+        "tool_name": "report_draft.update"
+      },
+      "owner_plugin_id": "openzyme.reporting",
+      "requirements": [
+        {
+          "capability_id": "openzyme.workspace.published-revision",
+          "contract_spec": "@1",
+          "kind": "extension",
+          "operations": [
+            "read"
+          ],
+          "same_target_as": null,
+          "version_spec": null
+        }
+      ],
+      "requires_explicit_route": false,
+      "requires_workspace": true,
+      "runtime_id": "openzyme.reporting.report_draft-update@1"
+    },
+    {
+      "contract": {
+        "approval_policy_id": null,
+        "description": "Register one immutable report version against an exact published RevisionPathRef. It does not publish workspace bytes or finish a Task.",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "content_ref": {
+              "additionalProperties": false,
+              "properties": {
+                "commit": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "entry_kind": {
+                  "enum": [
+                    "file",
+                    "lfs_file"
+                  ]
+                },
+                "lfs_oid": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "lfs_size_bytes": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "object_id": {
+                  "type": "string"
+                },
+                "path": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "path_manifest_digest": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "project_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "publication_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "ref_digest": {
+                  "pattern": "^sha256:[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "ref_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "repository_binding_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "repository_binding_version": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "repository_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "schema_version": {
+                  "const": "revision_path_ref@1"
+                },
+                "session_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "size_bytes": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "tree": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "schema_version",
+                "ref_id",
+                "publication_id",
+                "project_id",
+                "session_id",
+                "repository_binding_id",
+                "repository_binding_version",
+                "repository_id",
+                "commit",
+                "tree",
+                "path",
+                "entry_kind",
+                "object_id",
+                "size_bytes",
+                "lfs_oid",
+                "lfs_size_bytes",
+                "path_manifest_digest",
+                "created_at",
+                "ref_digest"
+              ],
+              "type": "object"
+            },
+            "idempotency_key": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "report_contract_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "report_format": {
+              "enum": [
+                "markdown",
+                "html",
+                "pdf"
+              ]
+            },
+            "report_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "report_version": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "summary": {
+              "maxLength": 16384,
+              "type": "string"
+            },
+            "supersedes_report_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "task_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "title": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "report_id",
+            "task_id",
+            "report_contract_id",
+            "report_version",
+            "report_format",
+            "title",
+            "summary",
+            "content_ref",
+            "idempotency_key"
+          ],
+          "type": "object"
+        },
+        "output_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "content_ref": {
+              "additionalProperties": false,
+              "properties": {
+                "commit": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "entry_kind": {
+                  "enum": [
+                    "file",
+                    "lfs_file"
+                  ]
+                },
+                "lfs_oid": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "lfs_size_bytes": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "object_id": {
+                  "type": "string"
+                },
+                "path": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "path_manifest_digest": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "project_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "publication_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "ref_digest": {
+                  "pattern": "^sha256:[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "ref_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "repository_binding_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "repository_binding_version": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "repository_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "schema_version": {
+                  "const": "revision_path_ref@1"
+                },
+                "session_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "size_bytes": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "tree": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "schema_version",
+                "ref_id",
+                "publication_id",
+                "project_id",
+                "session_id",
+                "repository_binding_id",
+                "repository_binding_version",
+                "repository_id",
+                "commit",
+                "tree",
+                "path",
+                "entry_kind",
+                "object_id",
+                "size_bytes",
+                "lfs_oid",
+                "lfs_size_bytes",
+                "path_manifest_digest",
+                "created_at",
+                "ref_digest"
+              ],
+              "type": "object"
+            },
+            "entity_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "entity_kind": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "fallback_performed": {
+              "const": false
+            },
+            "receipt_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "record_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "render_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "render_performed": {
+              "type": "boolean"
+            },
+            "report_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "report_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "report_version": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "state": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "state_version": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "summary": {
+              "maxLength": 16384,
+              "type": "string"
+            },
+            "task_finished": {
+              "const": false
+            },
+            "task_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "title": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string"
+            },
+            "workspace_publication_performed": {
+              "const": false
+            }
+          },
+          "required": [
+            "state",
+            "workspace_publication_performed",
+            "render_performed",
+            "fallback_performed",
+            "task_finished"
+          ],
+          "type": "object"
+        },
+        "required_authorities": [
+          "workspace.fs.read"
+        ],
+        "schema_version": "openzyme_tool_spec@1",
+        "tool_name": "report.publish"
+      },
+      "owner_plugin_id": "openzyme.reporting",
+      "requirements": [
+        {
+          "capability_id": "openzyme.workspace.published-revision",
+          "contract_spec": "@1",
+          "kind": "extension",
+          "operations": [
+            "verify"
+          ],
+          "same_target_as": null,
+          "version_spec": null
+        }
+      ],
+      "requires_explicit_route": false,
+      "requires_workspace": true,
+      "runtime_id": "openzyme.reporting.report-publish@1"
+    },
+    {
+      "contract": {
+        "approval_policy_id": null,
+        "description": "Queue an explicit render with one exact renderer and source report. Missing or drifted renderers fail without format fallback.",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "idempotency_key": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "output_format": {
+              "enum": [
+                "html",
+                "pdf"
+              ]
+            },
+            "renderer_contract_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "renderer_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "report_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "report_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "report_id",
+            "report_digest",
+            "renderer_id",
+            "renderer_contract_digest",
+            "output_format",
+            "idempotency_key"
+          ],
+          "type": "object"
+        },
+        "output_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "content_ref": {
+              "additionalProperties": false,
+              "properties": {
+                "commit": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "entry_kind": {
+                  "enum": [
+                    "file",
+                    "lfs_file"
+                  ]
+                },
+                "lfs_oid": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "lfs_size_bytes": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "object_id": {
+                  "type": "string"
+                },
+                "path": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "path_manifest_digest": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "project_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "publication_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "ref_digest": {
+                  "pattern": "^sha256:[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "ref_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "repository_binding_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "repository_binding_version": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "repository_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "schema_version": {
+                  "const": "revision_path_ref@1"
+                },
+                "session_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "size_bytes": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "tree": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "schema_version",
+                "ref_id",
+                "publication_id",
+                "project_id",
+                "session_id",
+                "repository_binding_id",
+                "repository_binding_version",
+                "repository_id",
+                "commit",
+                "tree",
+                "path",
+                "entry_kind",
+                "object_id",
+                "size_bytes",
+                "lfs_oid",
+                "lfs_size_bytes",
+                "path_manifest_digest",
+                "created_at",
+                "ref_digest"
+              ],
+              "type": "object"
+            },
+            "entity_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "entity_kind": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "fallback_performed": {
+              "const": false
+            },
+            "receipt_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "record_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "render_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "render_performed": {
+              "type": "boolean"
+            },
+            "report_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "report_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "report_version": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "state": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "state_version": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "summary": {
+              "maxLength": 16384,
+              "type": "string"
+            },
+            "task_finished": {
+              "const": false
+            },
+            "task_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "title": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string"
+            },
+            "workspace_publication_performed": {
+              "const": false
+            }
+          },
+          "required": [
+            "state",
+            "workspace_publication_performed",
+            "render_performed",
+            "fallback_performed",
+            "task_finished"
+          ],
+          "type": "object"
+        },
+        "required_authorities": [
+          "workspace.process.exec"
+        ],
+        "schema_version": "openzyme_tool_spec@1",
+        "tool_name": "report.render.request"
+      },
+      "owner_plugin_id": "openzyme.reporting",
+      "requirements": [
+        {
+          "capability_id": "openzyme.workspace.process",
+          "contract_spec": "@1",
+          "kind": "extension",
+          "operations": [
+            "execute"
+          ],
+          "same_target_as": null,
+          "version_spec": null
+        }
+      ],
+      "requires_explicit_route": false,
+      "requires_workspace": true,
+      "runtime_id": "openzyme.reporting.report-render-request@1"
+    }
+  ],
+  "transaction_participants": [
+    {
+      "contract_digest": "sha256:4f373a10075fb702ba9a73f65f3f57527f13e17efc742805be6313b8d0bf246c",
+      "contribution_id": "openzyme.reporting.transaction@1"
+    }
+  ],
+  "ui_renderers": [
+    {
+      "contract_digest": "sha256:80caef79ad3113b458914789e9ed87d86a363f3ff19fcfff46acb9e920535f57",
+      "contribution_id": "openzyme.reporting.renderer@1"
+    }
+  ],
+  "workers": [
+    {
+      "contract_digest": "sha256:31913ae2451cbf295d1ed737d8ba105e26f59454d0b36b1a6cd7166e6ca35674",
+      "contribution_id": "openzyme.reporting.render-worker@1"
+    }
+  ]
+}

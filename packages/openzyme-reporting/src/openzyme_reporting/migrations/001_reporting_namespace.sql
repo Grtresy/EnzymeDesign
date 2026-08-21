@@ -1,0 +1,6 @@
+-- openzyme.reporting.migration.001@1
+--
+-- Reporting target state is stored through the Store-owned, namespace-confined
+-- extension state table. This bundle declares the logical adoption boundary and
+-- deliberately creates no second SQLite writer or report-specific physical table.
+-- Existing session_report_* rows are adopted only by the later offline cutover.

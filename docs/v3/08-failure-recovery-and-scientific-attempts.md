@@ -5,6 +5,17 @@
 系统分别记录 occurrence、cause/hypothesis、effect certainty、retry eligibility、recovery disposition 和
 terminal proof。一个异常可以阻断当前 observation，但不能自动说明 task、attempt 或 external effect 的终态。
 
+`FailureObservation`、`ExternalEffectCertainty`、`RetryEligibility`、ControlledOperation 纯执行 DTO
+和 runtime command 纯协调 DTO 的 canonical code owner 是 `openzyme-contracts`。Kernel application
+service 决定写入与状态转换，Store Adapter 负责持久化；Plugin 只通过 `FailureApplicationService` 提交
+安全 observation，不能写 raw diagnostic table。
+
+目标 SQLite Store 对 extension participant、CAS、budget、authorizer 和 event/outbox 冲突采用同一
+fail-closed 规则：公开错误保留 stable code、phase、safe observed identity、`mutation_applied=false` 与
+`fallback_performed=false`，底层 SQLite cause 通过 exception chaining 留在私有诊断。任一 participant
+失败会回滚同一短事务中的 Core mutation、extension state、event 和 outbox；系统不得在失败后绕过该
+participant 另行提交，也不得把未提交的 receipt 或临时 target health 写成 release proof。
+
 ## Effect certainty
 
 - `no_effect`：证明外部动作未发生，可在同 phase/identity 下进行有界恢复；
@@ -14,13 +25,44 @@ terminal proof。一个异常可以阻断当前 observation，但不能自动说
 
 timeout、missing response、process exit 或 stale lease 不得提升 certainty。
 
+LLM provider 调用不是可据此改变 Task/Science 的业务 effect。目标 Runtime Adapter 的 provider failure
+固定记录 exact provider/backend/config identity、stable code、phase、retry eligibility、
+`mutation_applied=false`、`fallback_performed=false`；原始异常、credential 和私有 URL 只进入 private
+diagnostic。显式 retry budget 只可重试同一 provider/backend，禁止自动换模型、Provider 或 base URL。
+
+远端 Workspace Runtime 还要求 response identity 回绑 exact operation/request digest。SSH/SFTP/rsync 请求发出后
+响应丢失时，Adapter 返回 `dispatch_in_doubt`，`mutation_applied=null` 且无 result payload；后续只允许通过同一
+opaque workspace、generation、target qualification 和 operation identity reconcile，禁止重新执行命令、切换
+target/provider 或回退为本地操作。
+
+Slurm 也遵守相同规则：raw scheduler id 只属于 Adapter 私有 ledger，公开 opaque handle 不足以授权 submit 或
+cancel；`dispatch_in_doubt` 时只允许用 exact operation/request/credential occurrence reconciliation。login/file
+credential 永远不能升级为 scheduler occurrence credential。
+
 ## Recovery
 
 recovery disposition 必须绑定 exact occurrence、owner、phase、operation digest、fence 和理由。允许的动作由
 machine contract 限定，但 agent 决定何时检查、如何解释和是否请求新的用户授权。不能用“换 backend/参数”
 绕开原 approval 或未知 effect。
 
+deployment/cutover failure 还必须区分发生边界。只读 dry run、quiescence、backup verification 或 startup proof
+失败时，`mutation_applied=false`，修复输入后从完整只读序列重跑；不得在失败点继续 mount surface。offline
+adoption 的短事务失败由 SQLite 整体 rollback，且不得留下 activation、Session pin、ledger 或 complete receipt 的
+部分 authority。只有 activation 前且 post-freeze canonical mutation 为零时，operator 才可恢复 exact verified
+database/configuration/storage backups。
+
+一旦 activation epoch 或其他 `@2` canonical mutation 已持久化，恢复状态固定为
+`post_activation_forward_only`：停止 exact owner/surface、保留旧 occurrence/Session/authority identity并执行
+forward repair。禁止 downgrade、恢复旧 Host reader、重启旧 Plugin、双写或把 backup/reset receipt 当作 current
+authority。device reset 第一次删除后同样不可描述为自动可逆；失败只能以同一 frozen inventory 和 durable
+occurrence log reconcile，未知 sibling、identity drift 或 lost occurrence 阻止 complete receipt。
+
 ## Scientific attempt
+
+`openzyme-science` 是 attempt、selection、disposition、adoption、closure、deliverable、validation receipt、
+application services、repositories、workflow registry、tools 和 Plugin routes 的 canonical owner。旧
+`openzyme_domain`/Core compatibility modules 已删除。它通过 restricted transaction participant 与 Kernel
+application services 组合；代码所有权切换不改变历史物理表名，真实 deployment cutover 仍需离线授权。
 
 formal attempt 由显式 admission/authorization 创建，绑定 campaign、task、workflow/root、scope、budget 和
 source identity。attempt 内的 operation universe 不从成功文件反推。
@@ -35,6 +77,10 @@ selection lifecycle：
 6. attempt close 绑定 selection、adoptions、deliverable receipt、quiescence 和 authority consumption。
 
 attempt close、report publish、task finish 和 master response delivery 仍是独立事实。
+
+Session 必须固定 exact Science extension contract。已创建 Session 不因 wheel 安装、升级或删除而静默
+切换 Science 语义；兼容 shim 也不能作为 capability activation proof。跨 Session、attempt、selection
+revision、workspace generation 或 authority fence 的 adoption/closure 一律拒绝。
 
 ## Scientific files
 

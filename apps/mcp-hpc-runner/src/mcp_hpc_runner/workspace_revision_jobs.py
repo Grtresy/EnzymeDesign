@@ -13,15 +13,15 @@ import threading
 from typing import Any
 from typing import Protocol
 
-from openzyme_domain.workspace_job_wire import parse_external_job_observation
-from openzyme_domain.workspace_job_wire import (
+from openzyme_execution_contracts.workspace_job_wire import parse_external_job_observation
+from openzyme_execution_contracts.workspace_job_wire import (
     parse_workspace_job_cancellation_intent,
 )
-from openzyme_domain.workspace_job_wire import (
+from openzyme_execution_contracts.workspace_job_wire import (
     parse_workspace_job_cancellation_receipt,
 )
-from openzyme_domain.workspace_job_wire import parse_workspace_job_reconciliation
-from openzyme_domain.workspace_job_wire import parse_workspace_job_runner_handle
+from openzyme_execution_contracts.workspace_job_wire import parse_workspace_job_reconciliation
+from openzyme_execution_contracts.workspace_job_wire import parse_workspace_job_runner_handle
 
 from .config import RunnerConfig
 from .models import ExecutorWorkspaceRunSpec
@@ -31,8 +31,8 @@ from .transport import SshTransportManager
 
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}")
-_PREPARE_SCHEMA = "workspace_revision_source_prepare_request@1"
-_QUALIFICATION_SCHEMA = "workspace_job_runner_target_qualification@1"
+_PREPARE_SCHEMA = "workspace_revision_source_prepare_request@2"
+_QUALIFICATION_SCHEMA = "workspace_job_runner_target_qualification@2"
 _CREDENTIAL_SCHEMA = "scheduler_occurrence_credential@1"
 
 
@@ -86,7 +86,8 @@ class WorkspaceRevisionSourcePrepareRequest:
     source_tree: str
     source_ref: str
     lfs_closure_manifest_digest: str
-    toolchain_digest: str
+    target_inventory_generation: int
+    target_inventory_digest: str
     owner_identity_digest: str
     absolute_deadline: str
     request_digest: str
@@ -113,7 +114,8 @@ class WorkspaceRevisionSourcePrepareRequest:
                 "source_tree",
                 "source_ref",
                 "lfs_closure_manifest_digest",
-                "toolchain_digest",
+                "target_inventory_generation",
+                "target_inventory_digest",
                 "owner_identity_digest",
                 "absolute_deadline",
                 "request_digest",
@@ -128,7 +130,11 @@ class WorkspaceRevisionSourcePrepareRequest:
         for name in ("request_id", "workspace_id", "repository_binding_id"):
             if _IDENTIFIER.fullmatch(getattr(self, name)) is None:
                 raise ValueError(f"source prepare {name} is invalid")
-        for name in ("remote_workspace_generation", "repository_binding_version"):
+        for name in (
+            "remote_workspace_generation",
+            "repository_binding_version",
+            "target_inventory_generation",
+        ):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 raise ValueError(f"source prepare {name} must be positive")
@@ -138,7 +144,7 @@ class WorkspaceRevisionSourcePrepareRequest:
             "target_profile_digest",
             "runner_policy_digest",
             "lfs_closure_manifest_digest",
-            "toolchain_digest",
+            "target_inventory_digest",
             "owner_identity_digest",
             "request_digest",
         ):
@@ -169,7 +175,8 @@ class WorkspaceRevisionSourcePrepareRequest:
             "source_tree": self.source_tree,
             "source_ref": self.source_ref,
             "lfs_closure_manifest_digest": self.lfs_closure_manifest_digest,
-            "toolchain_digest": self.toolchain_digest,
+            "target_inventory_generation": self.target_inventory_generation,
+            "target_inventory_digest": self.target_inventory_digest,
             "owner_identity_digest": self.owner_identity_digest,
             "absolute_deadline": self.absolute_deadline,
             "request_digest": self.request_digest,
@@ -255,7 +262,8 @@ class SchedulerOccurrenceCredential:
 class WorkspaceJobRunnerQualification:
     target_profile_digest: str
     runner_policy_digest: str
-    toolchain_digest: str
+    target_inventory_generation: int
+    target_inventory_digest: str
     protected_wrapper_path: str
     protected_wrapper_digest: str
     dispatch_ledger_digest: str
@@ -280,7 +288,7 @@ class WorkspaceJobRunnerQualification:
         for name in (
             "target_profile_digest",
             "runner_policy_digest",
-            "toolchain_digest",
+            "target_inventory_digest",
             "protected_wrapper_digest",
             "dispatch_ledger_digest",
             "ambient_submit_denial_proof_digest",
@@ -290,6 +298,12 @@ class WorkspaceJobRunnerQualification:
         ):
             if _DIGEST.fullmatch(getattr(self, name)) is None:
                 raise ValueError(f"runner qualification {name} is invalid")
+        if (
+            not isinstance(self.target_inventory_generation, int)
+            or isinstance(self.target_inventory_generation, bool)
+            or self.target_inventory_generation < 1
+        ):
+            raise ValueError("runner qualification inventory generation is invalid")
         wrapper = Path(self.protected_wrapper_path)
         if not wrapper.is_absolute() or any(char.isspace() for char in self.protected_wrapper_path):
             raise ValueError("protected wrapper path must be absolute and canonical")
@@ -308,7 +322,8 @@ class WorkspaceJobRunnerQualification:
             "schema_version": self.schema_version,
             "target_profile_digest": self.target_profile_digest,
             "runner_policy_digest": self.runner_policy_digest,
-            "toolchain_digest": self.toolchain_digest,
+            "target_inventory_generation": self.target_inventory_generation,
+            "target_inventory_digest": self.target_inventory_digest,
             "protected_wrapper_path": self.protected_wrapper_path,
             "protected_wrapper_digest": self.protected_wrapper_digest,
             "dispatch_ledger_digest": self.dispatch_ledger_digest,
@@ -361,7 +376,8 @@ class WorkspaceRevisionJobService:
         qualification = self._qualification(
             target_profile_digest=request.target_profile_digest,
             runner_policy_digest=request.runner_policy_digest,
-            toolchain_digest=request.toolchain_digest,
+            target_inventory_generation=request.target_inventory_generation,
+            target_inventory_digest=request.target_inventory_digest,
         )
         workspace = self._private_workspace(
             workspace_id=request.workspace_id,
@@ -464,7 +480,8 @@ class WorkspaceRevisionJobService:
             "source_tree": request.source_tree,
             "source_ref": request.source_ref,
             "lfs_closure_manifest_digest": request.lfs_closure_manifest_digest,
-            "toolchain_digest": request.toolchain_digest,
+            "target_inventory_generation": request.target_inventory_generation,
+            "target_inventory_digest": request.target_inventory_digest,
             "owner_identity_digest": request.owner_identity_digest,
         }
 
@@ -582,7 +599,8 @@ class WorkspaceRevisionJobService:
         qualification = self._qualification(
             target_profile_digest=spec.target_profile_digest,
             runner_policy_digest=spec.runner_policy_digest,
-            toolchain_digest=spec.toolchain_digest,
+            target_inventory_generation=spec.target_inventory_generation,
+            target_inventory_digest=spec.target_inventory_digest,
         )
         if spec.selected_mode == "sbatch":
             if not qualification.slurm_enabled or scheduler_credential is None:
@@ -666,7 +684,8 @@ class WorkspaceRevisionJobService:
         qualification = self._qualification(
             target_profile_digest=spec.target_profile_digest,
             runner_policy_digest=spec.runner_policy_digest,
-            toolchain_digest=spec.toolchain_digest,
+            target_inventory_generation=spec.target_inventory_generation,
+            target_inventory_digest=spec.target_inventory_digest,
         )
         self._require_dispatch_intent(spec)
         handle_path = self._record_path("handles", spec.dispatch_id)
@@ -700,7 +719,8 @@ class WorkspaceRevisionJobService:
         qualification = self._qualification(
             target_profile_digest=spec.target_profile_digest,
             runner_policy_digest=spec.runner_policy_digest,
-            toolchain_digest=spec.toolchain_digest,
+            target_inventory_generation=spec.target_inventory_generation,
+            target_inventory_digest=spec.target_inventory_digest,
         )
         handle = self._require_handle(spec)
         observation_path = self._record_path(
@@ -784,7 +804,8 @@ class WorkspaceRevisionJobService:
         qualification = self._qualification(
             target_profile_digest=spec.target_profile_digest,
             runner_policy_digest=spec.runner_policy_digest,
-            toolchain_digest=spec.toolchain_digest,
+            target_inventory_generation=spec.target_inventory_generation,
+            target_inventory_digest=spec.target_inventory_digest,
         )
         handle = self._require_handle(spec)
         cancellation = parse_workspace_job_cancellation_intent(
@@ -869,7 +890,8 @@ class WorkspaceRevisionJobService:
         *,
         target_profile_digest: str,
         runner_policy_digest: str | None,
-        toolchain_digest: str,
+        target_inventory_generation: int,
+        target_inventory_digest: str,
     ) -> WorkspaceJobRunnerQualification:
         if _DIGEST.fullmatch(target_profile_digest) is None:
             raise WorkspaceRevisionJobError("target qualification identity is invalid")
@@ -882,7 +904,9 @@ class WorkspaceRevisionJobService:
         qualification = WorkspaceJobRunnerQualification.from_dict(data)
         if (
             qualification.target_profile_digest != target_profile_digest
-            or qualification.toolchain_digest != toolchain_digest
+            or qualification.target_inventory_generation
+            != target_inventory_generation
+            or qualification.target_inventory_digest != target_inventory_digest
             or (
                 runner_policy_digest is not None
                 and qualification.runner_policy_digest != runner_policy_digest
@@ -1010,7 +1034,8 @@ class WorkspaceRevisionJobService:
                 "lfs_closure_manifest_digest",
                 "binding_digest",
                 "repository_policy_digest",
-                "toolchain_digest",
+                "target_inventory_generation",
+                "target_inventory_digest",
                 "owner_identity_digest",
                 "entries",
                 "created_at",
@@ -1019,7 +1044,7 @@ class WorkspaceRevisionJobService:
         )
         manifest = _require_exact_object(response, fields=fields, label="source manifest")
         if (
-            manifest["schema_version"] != "compute_source_manifest@1"
+            manifest["schema_version"] != "compute_source_manifest@2"
             or manifest["request_id"] != request.request_id
             or manifest["workspace_id"] != request.workspace_id
             or manifest["source_commit"] != request.source_commit
@@ -1029,7 +1054,10 @@ class WorkspaceRevisionJobService:
             or manifest["binding_digest"] != request.repository_binding_digest
             or manifest["repository_policy_digest"]
             != request.repository_policy_digest
-            or manifest["toolchain_digest"] != request.toolchain_digest
+            or manifest["target_inventory_generation"]
+            != request.target_inventory_generation
+            or manifest["target_inventory_digest"]
+            != request.target_inventory_digest
             or manifest["owner_identity_digest"] != request.owner_identity_digest
             or manifest["manifest_digest"]
             != _digest({key: value for key, value in manifest.items() if key != "manifest_digest"})

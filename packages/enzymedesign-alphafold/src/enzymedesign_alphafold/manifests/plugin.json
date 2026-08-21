@@ -1,0 +1,337 @@
+{
+  "configuration_schema_digest": null,
+  "finish_validators": [],
+  "http_routes": [],
+  "identity": {
+    "build_digest": "sha256:f347472eb0021e35cfe867e19b8ad3a5c7c7ef28b6e6c3acdd7654513b65fcfb",
+    "component_id": "enzymedesign.alphafold",
+    "component_kind": "plugin",
+    "component_version": "0.1.0",
+    "contract_digest": "sha256:2243fd0f5982fb9bdfb6fa19d97f1561b5d0cc8e042c176344b4b47a255f2d4a",
+    "distribution_name": "enzymedesign-alphafold",
+    "distribution_version": "0.1.0"
+  },
+  "migration_bundle_digest": null,
+  "migrations": [],
+  "projections": [],
+  "provides": [
+    {
+      "capability_id": "enzymedesign.alphafold",
+      "cardinality": "single",
+      "contract_version": "1",
+      "operations": [
+        "predict"
+      ]
+    }
+  ],
+  "qualification_specs": [
+    {
+      "capability_id": "software.alphafold3",
+      "contract_version": "1",
+      "expected_result_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "exit_code": {
+            "const": 0
+          },
+          "operations": {
+            "items": {
+              "const": "predict"
+            },
+            "type": "array"
+          },
+          "version": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "operations",
+          "exit_code"
+        ],
+        "type": "object"
+      },
+      "owner_plugin_id": "enzymedesign.alphafold",
+      "qualification_spec_id": "enzymedesign.alphafold.qualification@1",
+      "required_resource_capabilities": [
+        "accelerator.cuda",
+        "asset.alphafold3-model-parameters",
+        "dataset.alphafold3-database"
+      ],
+      "smoke_argv": [
+        "python",
+        "run_alphafold.py",
+        "--help"
+      ],
+      "version_argv": [
+        "python",
+        "run_alphafold.py",
+        "--help"
+      ]
+    }
+  ],
+  "required_extension_spi_contract": "openzyme.extension-spi@1",
+  "required_kernel_contract": "openzyme.kernel@1",
+  "requires": [
+    {
+      "capability_id": "accelerator.cuda",
+      "contract_spec": "@1",
+      "kind": "resource",
+      "operations": [
+        "compute"
+      ],
+      "same_target_as": "openzyme.execution.revision-job",
+      "version_spec": null
+    },
+    {
+      "capability_id": "asset.alphafold3-model-parameters",
+      "contract_spec": "@1",
+      "kind": "resource",
+      "operations": [
+        "read"
+      ],
+      "same_target_as": "openzyme.execution.revision-job",
+      "version_spec": null
+    },
+    {
+      "capability_id": "dataset.alphafold3-database",
+      "contract_spec": "@1",
+      "kind": "resource",
+      "operations": [
+        "query"
+      ],
+      "same_target_as": "openzyme.execution.revision-job",
+      "version_spec": null
+    },
+    {
+      "capability_id": "openzyme.execution.revision-job",
+      "contract_spec": "@1",
+      "kind": "extension",
+      "operations": [
+        "observe",
+        "submit"
+      ],
+      "same_target_as": null,
+      "version_spec": null
+    },
+    {
+      "capability_id": "software.alphafold3",
+      "contract_spec": "@1",
+      "kind": "resource",
+      "operations": [
+        "predict"
+      ],
+      "same_target_as": "openzyme.execution.revision-job",
+      "version_spec": ">=3,<4"
+    }
+  ],
+  "routes": [
+    {
+      "capability_ids": ["enzymedesign.alphafold", "openzyme.execution.revision-job", "software.alphafold3"],
+      "driver_id": "enzymedesign.alphafold.hpc",
+      "owner_component_id": "enzymedesign.alphafold",
+      "route_contract_digest": "sha256:f9221154baa17775d345658e827e8dff4c60893a180de842c754feeabfcc907f",
+      "route_id": "enzymedesign.alphafold.hpc-primary@1",
+      "route_kind": "hpc",
+      "target_id": "hpc-primary"
+    }
+  ],
+  "schema_version": "openzyme_plugin_manifest@1",
+  "schemas": [],
+  "state_namespace": null,
+  "tools": [
+    {
+      "contract": {
+        "approval_policy_id": null,
+        "description": "Compile one formal AlphaFold 3 request from an immutable job JSON on an explicit qualified route. No model parameters or database paths are exposed.",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "affordance_snapshot_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "cwd": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "environment_policy_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "inputs": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "commit": {
+                    "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+                    "type": "string"
+                  },
+                  "content_digest": {
+                    "pattern": "^sha256:[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "path": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "revision_id": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "tree": {
+                    "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "revision_id",
+                  "commit",
+                  "tree",
+                  "path",
+                  "content_digest"
+                ],
+                "type": "object"
+              },
+              "maxItems": 1,
+              "minItems": 1,
+              "type": "array"
+            },
+            "resource_policy_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "result_root": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "route_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "workload_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "workload_id",
+            "route_id",
+            "affordance_snapshot_digest",
+            "cwd",
+            "resource_policy_digest",
+            "environment_policy_digest",
+            "result_root",
+            "inputs"
+          ],
+          "type": "object"
+        },
+        "output_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "fallback_performed": {
+              "const": false
+            },
+            "formal_compute_requested": {
+              "const": true
+            },
+            "raw_shell": {
+              "const": false
+            },
+            "state": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "task_finished": {
+              "const": false
+            },
+            "workload_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "workload_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "workload_id",
+            "workload_digest",
+            "state",
+            "formal_compute_requested",
+            "raw_shell",
+            "fallback_performed",
+            "task_finished"
+          ],
+          "type": "object"
+        },
+        "required_authorities": [
+          "external_compute"
+        ],
+        "schema_version": "openzyme_tool_spec@1",
+        "tool_name": "enzymedesign.alphafold.predict"
+      },
+      "owner_plugin_id": "enzymedesign.alphafold",
+      "requirements": [
+        {
+          "capability_id": "accelerator.cuda",
+          "contract_spec": "@1",
+          "kind": "resource",
+          "operations": [
+            "compute"
+          ],
+          "same_target_as": "openzyme.execution.revision-job",
+          "version_spec": null
+        },
+        {
+          "capability_id": "asset.alphafold3-model-parameters",
+          "contract_spec": "@1",
+          "kind": "resource",
+          "operations": [
+            "read"
+          ],
+          "same_target_as": "openzyme.execution.revision-job",
+          "version_spec": null
+        },
+        {
+          "capability_id": "dataset.alphafold3-database",
+          "contract_spec": "@1",
+          "kind": "resource",
+          "operations": [
+            "query"
+          ],
+          "same_target_as": "openzyme.execution.revision-job",
+          "version_spec": null
+        },
+        {
+          "capability_id": "openzyme.execution.revision-job",
+          "contract_spec": "@1",
+          "kind": "extension",
+          "operations": [
+            "observe",
+            "submit"
+          ],
+          "same_target_as": null,
+          "version_spec": null
+        },
+        {
+          "capability_id": "software.alphafold3",
+          "contract_spec": "@1",
+          "kind": "resource",
+          "operations": [
+            "predict"
+          ],
+          "same_target_as": "openzyme.execution.revision-job",
+          "version_spec": ">=3,<4"
+        }
+      ],
+      "requires_explicit_route": true,
+      "requires_workspace": true,
+      "runtime_id": "enzymedesign.alphafold.predict-runtime@1"
+    }
+  ],
+  "transaction_participants": [],
+  "ui_renderers": [],
+  "workers": []
+}

@@ -16,13 +16,14 @@ from .architecture_qualification import ArchitectureQualificationOutputError
 from .architecture_qualification import ArchitectureQualificationVerification
 from .architecture_qualification import CollectedQualificationScenario
 from .architecture_qualification import LoadedArchitectureQualificationReport
-from .architecture_qualification import PROFILE_ID
 from .architecture_qualification import QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID
 from .architecture_qualification import QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID_V1
 from .architecture_qualification import QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID_V2
+from .architecture_qualification import QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID_V3
 from .architecture_qualification import QUALIFICATION_REPORT_SCHEMA_ID
 from .architecture_qualification import QUALIFICATION_REPORT_SCHEMA_ID_V1
 from .architecture_qualification import QUALIFICATION_REPORT_SCHEMA_ID_V2
+from .architecture_qualification import QUALIFICATION_REPORT_SCHEMA_ID_V3
 from .architecture_qualification import ValidatedInvariantRegistry
 from .architecture_qualification import ValidatedTestManifest
 from .architecture_qualification import ValidatedQualificationOutputTarget
@@ -37,9 +38,7 @@ _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _CHANGE_REF = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 _MODES = frozenset({"admission", "diagnostic", "premerge_subset"})
 P0_CLOSURE_SCHEMA_ID = "openzyme_v3_architecture_p0_closures@1"
-P0_CLOSURE_RELATIVE_PATH = Path(
-    "docs/v3/architecture-qualification/p0-closures.json"
-)
+P0_CLOSURE_RELATIVE_PATH = Path("docs/v3/architecture-qualification/p0-closures.json")
 _PYTEST_OUTCOMES = frozenset(
     {"error", "fail", "pass", "skip", "timeout", "xfail", "xpass"}
 )
@@ -56,7 +55,7 @@ _REPORT_FIELDS = frozenset({"payload", "payload_digest", "schema_id"})
 _PAYLOAD_FIELDS_V1 = frozenset(
     {
         "admission_eligible",
-        "aox_live_started",
+        "live_campaign_started",
         "command",
         "external_effects_real",
         "gaps",
@@ -87,12 +86,24 @@ _PAYLOAD_FIELDS_V2 = frozenset(
         "terminal_source_identity",
     }
 )
-_PAYLOAD_FIELDS = frozenset(
+_PAYLOAD_FIELDS_V3 = frozenset(
     set(_PAYLOAD_FIELDS_V2)
     | {
         "owner_constraint_registry_digest",
         "transformation_results_digest",
     }
+)
+_PAYLOAD_FIELDS = frozenset(
+    (
+        set(_PAYLOAD_FIELDS_V2)
+        | {
+            "qualification_bindings",
+            "profiles",
+            "owner_constraint_registry_digest",
+            "transformation_results_digest",
+        }
+    )
+    - {"profile"}
 )
 _SOURCE_FIELDS = frozenset(
     {
@@ -107,7 +118,38 @@ _SOURCE_FIELDS = frozenset(
 )
 _FILE_FIELDS = frozenset({"byte_length", "content_digest", "path"})
 _DIGESTED_FILE_FIELDS = frozenset({"content_digest", "path"})
-_PROFILE_FIELDS = frozenset({"claims", "excludes", "profile_id"})
+_PROFILE_FIELDS = frozenset(
+    {
+        "allowed_external_port_ids",
+        "claims",
+        "component_manifest_refs",
+        "database_mode",
+        "distribution_id",
+        "document_refs",
+        "excludes",
+        "import_root_refs",
+        "layered_composition_digests",
+        "process_model",
+        "profile_id",
+        "semantic_owner_ids",
+        "trust_boundary",
+        "wheel_distribution_names",
+    }
+)
+_PROFILE_FIELDS_V3 = frozenset({"claims", "excludes", "profile_id"})
+_QUALIFICATION_BINDING_FIELDS = frozenset(
+    {
+        "catalog_bundle_digest",
+        "distribution_bundle_digest",
+        "documentation_bundle_digest",
+        "inventory_bundle_digest",
+        "openspec_change_digest",
+        "profile_bundle_digest",
+        "schema_bundle_digest",
+        "test_selection_digest",
+        "wheel_set_digest",
+    }
+)
 _SELECTION_FIELDS = frozenset({"scenario_ids", "selection_id"})
 _HARNESS_FIELDS = frozenset(
     {
@@ -118,11 +160,9 @@ _HARNESS_FIELDS = frozenset(
         "stdout_digest",
     }
 )
-_IDENTITY_FIELDS = frozenset(
-    {"files", "implementation_digest", "runner", "verifier"}
-)
+_IDENTITY_FIELDS = frozenset({"files", "implementation_digest", "runner", "verifier"})
 _VERIFIER_FIELDS = frozenset({"content_digest", "files"})
-_SCENARIO_RESULT_FIELDS = frozenset(
+_SCENARIO_RESULT_FIELDS_V3 = frozenset(
     {
         "budget_exceeded",
         "budgets",
@@ -140,6 +180,7 @@ _SCENARIO_RESULT_FIELDS = frozenset(
         "test_selector",
     }
 )
+_SCENARIO_RESULT_FIELDS = frozenset(set(_SCENARIO_RESULT_FIELDS_V3) | {"profile_ids"})
 _BUDGET_FIELDS = frozenset(
     {
         "deadline_seconds",
@@ -150,10 +191,17 @@ _BUDGET_FIELDS = frozenset(
         "max_ticks",
     }
 )
-_INVARIANT_RESULT_FIELDS = frozenset(
-    {"evidence_digest", "family", "invariant_id", "scenario_ids", "status"}
+_INVARIANT_RESULT_FIELDS_V3 = frozenset(
+    {
+        "evidence_digest",
+        "family",
+        "invariant_id",
+        "scenario_ids",
+        "status",
+    }
 )
-_GAP_FIELDS = frozenset(
+_INVARIANT_RESULT_FIELDS = frozenset(set(_INVARIANT_RESULT_FIELDS_V3) | {"profile_ids"})
+_GAP_FIELDS_V3 = frozenset(
     {
         "classification",
         "evidence_digest",
@@ -167,6 +215,7 @@ _GAP_FIELDS = frozenset(
         "trigger_ids",
     }
 )
+_GAP_FIELDS = frozenset((set(_GAP_FIELDS_V3) - {"profile_id"}) | {"profile_ids"})
 _P0_FIELDS = frozenset(
     {
         "change_ref",
@@ -334,8 +383,10 @@ def _digests(value: object, *, label: str) -> list[str]:
 def _relative_source_path(value: object, *, label: str) -> str:
     text = _text(value, label=label)
     path = PurePosixPath(text)
-    if path.is_absolute() or text != path.as_posix() or any(
-        part in {"", ".", ".."} for part in path.parts
+    if (
+        path.is_absolute()
+        or text != path.as_posix()
+        or any(part in {"", ".", ".."} for part in path.parts)
     ):
         raise _error(f"{label} must be a normalized repository-relative path")
     return text
@@ -483,7 +534,11 @@ def collect_source_identity(*, repo_root: Path) -> Mapping[str, object]:
             relative = resolved.relative_to(root)
         except (OSError, ValueError) as exc:
             raise _error("an untracked source escapes or is unreadable") from exc
-        if candidate.is_symlink() or not resolved.is_file() or relative.as_posix() != normalized:
+        if (
+            candidate.is_symlink()
+            or not resolved.is_file()
+            or relative.as_posix() != normalized
+        ):
             raise _error("untracked source identity requires regular non-alias files")
         content = resolved.read_bytes()
         untracked_sources.append(
@@ -510,7 +565,9 @@ def _relative_file_entry(path: Path, *, repo_root: Path) -> dict[str, str]:
         resolved = path.resolve(strict=True)
         relative = resolved.relative_to(root)
     except (OSError, ValueError) as exc:
-        raise _error("qualification implementation file is outside the repository") from exc
+        raise _error(
+            "qualification implementation file is outside the repository"
+        ) from exc
     if path.is_symlink() or not resolved.is_file():
         raise _error("qualification implementation identity requires a regular file")
     return {
@@ -526,7 +583,9 @@ def _implementation_identity(
     test_manifest: Mapping[str, object],
 ) -> dict[str, object]:
     root = _canonical_repo_root(repo_root)
-    files = _list(test_manifest.get("implementation_files"), label="implementation files")
+    files = _list(
+        test_manifest.get("implementation_files"), label="implementation files"
+    )
     validated_files = [
         dict(_validate_digested_file(item, label=f"implementation files[{index}]"))
         for index, item in enumerate(files)
@@ -660,9 +719,7 @@ def _load_p0_closure_records(
             record["red_scenario_id"],
             label=f"P0 closure records[{index}].red scenario id",
         )
-        report_record = {
-            key: record[key] for key in sorted(_P0_FIELDS)
-        }
+        report_record = {key: record[key] for key in sorted(_P0_FIELDS)}
         _validate_p0(report_record, index=index)
         if report_record["status"] != "closed":
             raise _error("P0 closure registry may contain only closed records")
@@ -673,7 +730,9 @@ def _load_p0_closure_records(
         if report_record["p0_id"] != f"p0.{invariant_id}":
             raise _error("P0 closure registry P0 identity drifted")
         if red_scenario_id not in invariant["scenario_ids"]:
-            raise _error("P0 closure registry red scenario is not owned by its invariant")
+            raise _error(
+                "P0 closure registry red scenario is not owned by its invariant"
+            )
         if red_scenario_id not in scenarios:
             raise _error("P0 closure registry red scenario is unknown")
         trigger_ids = set(report_record["trigger_ids"])
@@ -810,9 +869,7 @@ def _normalize_scenario_results(
             for trigger_id in invariant["p0_trigger_ids"]
         }
         if not set(observed_triggers) <= allowed_triggers:
-            raise _error(
-                f"scenario {scenario_id!r} recorded an undeclared P0 trigger"
-            )
+            raise _error(f"scenario {scenario_id!r} recorded an undeclared P0 trigger")
         if outcome == "pass" and observed_triggers:
             raise _error(
                 f"satisfied scenario {scenario_id!r} cannot record a P0 trigger"
@@ -826,6 +883,7 @@ def _normalize_scenario_results(
             "observation_digests": observations,
             "observed_p0_trigger_ids": observed_triggers,
             "pytest_outcome": outcome,
+            "profile_ids": list(expected["profile_ids"]),
             "scenario_id": scenario_id,
             "test_selector": selector,
         }
@@ -871,6 +929,7 @@ def _invariant_results(
                 "evidence_digest": _value_digest(selected),
                 "family": invariant["family"],
                 "invariant_id": invariant_id,
+                "profile_ids": list(invariant["profile_ids"]),
                 "scenario_ids": scenario_ids,
                 "status": status,
             }
@@ -886,9 +945,7 @@ def _gap_and_p0_records(
     closed_p0_records: Sequence[Mapping[str, object]],
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     scenarios, invariants = _registry_records(registry)
-    scenario_evidence = {
-        str(item["scenario_id"]): item for item in scenario_results
-    }
+    scenario_evidence = {str(item["scenario_id"]): item for item in scenario_results}
     gaps: list[dict[str, object]] = []
     p0_records: list[dict[str, object]] = []
     for result in invariant_results:
@@ -923,7 +980,7 @@ def _gap_and_p0_records(
             "invariant_id": invariant_id,
             "owner": invariant["owner_boundary"],
             "priority_recommendation": priority,
-            "profile_id": PROFILE_ID,
+            "profile_ids": list(invariant["profile_ids"]),
             "related_change_ref": None,
             "reproducer": reproducer,
             "trigger_ids": trigger_ids,
@@ -941,8 +998,7 @@ def _gap_and_p0_records(
                 }
             )
     invariant_status = {
-        str(item["invariant_id"]): str(item["status"])
-        for item in invariant_results
+        str(item["invariant_id"]): str(item["status"]) for item in invariant_results
     }
     open_p0_ids = {str(item["p0_id"]) for item in p0_records}
     for raw_record in closed_p0_records:
@@ -967,7 +1023,7 @@ def _rejection_and_eligibility(
     invariant_results: Sequence[Mapping[str, object]],
     p0_records: Sequence[Mapping[str, object]],
     external_effects_real: bool,
-    aox_live_started: bool,
+    live_campaign_started: bool,
     not_run_scenario_ids: Sequence[str] = (),
     run_failure: Mapping[str, object] | None = None,
     source_stable: bool = True,
@@ -1001,20 +1057,168 @@ def _rejection_and_eligibility(
         reasons.append("open_p0")
     if external_effects_real:
         reasons.append("real_external_effect_detected")
-    if aox_live_started:
-        reasons.append("aox_live_started")
+    if live_campaign_started:
+        reasons.append("live_campaign_started")
     normalized = sorted(set(reasons))
     return normalized, not normalized
 
 
-def _profile(registry: ValidatedInvariantRegistry) -> dict[str, object]:
-    raw = registry.payload["profile"]
-    if not isinstance(raw, Mapping):
-        raise _error("validated registry profile lost object identity")
+def _profiles(registry: ValidatedInvariantRegistry) -> list[dict[str, object]]:
+    raw_profiles = _list(registry.payload["profiles"], label="registry profiles")
+    profiles = [dict(raw) for raw in raw_profiles if isinstance(raw, Mapping)]
+    if len(profiles) != len(raw_profiles):
+        raise _error("validated registry profiles lost object identity")
+    return profiles
+
+
+def _source_file_digest(
+    relative_paths: Sequence[str],
+    *,
+    repo_root: Path,
+    label: str,
+) -> str:
+    entries: list[dict[str, str]] = []
+    for index, raw_path in enumerate(sorted(set(relative_paths))):
+        normalized = _relative_source_path(raw_path, label=f"{label}[{index}]")
+        path = repo_root / normalized
+        try:
+            resolved = path.resolve(strict=True)
+            relative = resolved.relative_to(repo_root)
+        except (OSError, ValueError) as exc:
+            raise _error(f"{label} contains an unavailable source file") from exc
+        if (
+            path.is_symlink()
+            or not resolved.is_file()
+            or relative.as_posix() != normalized
+        ):
+            raise _error(f"{label} must contain regular non-alias source files")
+        entries.append(
+            {"content_digest": _sha256(resolved.read_bytes()), "path": normalized}
+        )
+    return _value_digest(entries)
+
+
+def _openspec_change_digest(*, repo_root: Path) -> str:
+    change_root = (
+        repo_root
+        / "openspec/changes/separate-openzyme-kernel-from-capability-extensions"
+    )
+    if change_root.is_symlink() or not change_root.is_dir():
+        raise _error("qualification OpenSpec change root is unavailable")
+    relative_paths = sorted(
+        path.relative_to(repo_root).as_posix()
+        for path in change_root.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    )
+    if not relative_paths:
+        raise _error("qualification OpenSpec change has no source files")
+    return _source_file_digest(
+        relative_paths,
+        repo_root=repo_root,
+        label="OpenSpec change files",
+    )
+
+
+def _qualification_bindings(
+    *,
+    repo_root: Path,
+    registry: ValidatedInvariantRegistry,
+    test_manifest: Mapping[str, object],
+    selection: Mapping[str, object],
+) -> dict[str, str]:
+    profiles = _profiles(registry)
+    documents = sorted(
+        {str(path) for profile in profiles for path in profile["document_refs"]}
+    )
+    component_manifests = sorted(
+        {
+            str(path)
+            for profile in profiles
+            for path in profile["component_manifest_refs"]
+        }
+    )
+    packaging_sources = sorted(
+        {
+            "pyproject.toml",
+            "uv.lock",
+            *(
+                path.relative_to(repo_root).as_posix()
+                for root_name in ("apps", "packages")
+                for path in (repo_root / root_name).glob("*/pyproject.toml")
+            ),
+        }
+    )
     return {
-        "claims": list(raw["claims"]),
-        "excludes": list(raw["excludes"]),
-        "profile_id": raw["profile_id"],
+        "catalog_bundle_digest": _value_digest(
+            [
+                {
+                    "declared_tool_catalog_digest": profile[
+                        "layered_composition_digests"
+                    ]["declared_tool_catalog_digest"],
+                    "profile_id": profile["profile_id"],
+                    "projection_catalog_digest": profile["layered_composition_digests"][
+                        "projection_catalog_digest"
+                    ],
+                    "route_catalog_digest": profile["layered_composition_digests"][
+                        "route_catalog_digest"
+                    ],
+                }
+                for profile in profiles
+            ]
+        ),
+        "distribution_bundle_digest": _value_digest(
+            [
+                {
+                    "component_manifest_refs": profile["component_manifest_refs"],
+                    "distribution_id": profile["distribution_id"],
+                    "profile_id": profile["profile_id"],
+                }
+                for profile in profiles
+            ]
+        ),
+        "documentation_bundle_digest": _source_file_digest(
+            documents,
+            repo_root=repo_root,
+            label="qualification documents",
+        ),
+        "inventory_bundle_digest": _source_file_digest(
+            component_manifests,
+            repo_root=repo_root,
+            label="qualification component manifests",
+        ),
+        "openspec_change_digest": _openspec_change_digest(repo_root=repo_root),
+        "profile_bundle_digest": _value_digest(profiles),
+        "schema_bundle_digest": _value_digest(
+            {
+                "owner_constraint_registry_digest": (
+                    registry.owner_constraint_registry_digest
+                ),
+                "registry_digest": registry.registry_digest,
+                "registry_schema_id": registry.payload["schema_id"],
+            }
+        ),
+        "test_selection_digest": _value_digest(
+            {
+                "selection": dict(selection),
+                "test_manifest": dict(test_manifest),
+            }
+        ),
+        "wheel_set_digest": _value_digest(
+            {
+                "packaging_source_digest": _source_file_digest(
+                    packaging_sources,
+                    repo_root=repo_root,
+                    label="qualification packaging sources",
+                ),
+                "profiles": [
+                    {
+                        "profile_id": profile["profile_id"],
+                        "wheel_distribution_names": profile["wheel_distribution_names"],
+                    }
+                    for profile in profiles
+                ],
+            }
+        ),
     }
 
 
@@ -1039,10 +1243,7 @@ def _expected_process_phases(selection: Mapping[str, object]) -> list[str]:
     return [
         "collection",
         "harness",
-        *[
-            f"scenario:{scenario_id}"
-            for scenario_id in selection["scenario_ids"]
-        ],
+        *[f"scenario:{scenario_id}" for scenario_id in selection["scenario_ids"]],
     ]
 
 
@@ -1083,7 +1284,12 @@ def _source_revalidation_chain_is_complete(
     source_revalidations: Sequence[Mapping[str, object]],
 ) -> bool:
     phases = [str(item["phase_id"]) for item in source_revalidations]
-    expected = ["lock_admission", "before_collection", "after_collection", "after_harness"]
+    expected = [
+        "lock_admission",
+        "before_collection",
+        "after_collection",
+        "after_harness",
+    ]
     for scenario_id in selection["scenario_ids"]:
         expected.extend(
             [
@@ -1211,7 +1417,7 @@ def build_report(
     external_effects_real = any(
         bool(item["external_effects_real"]) for item in normalized_scenarios
     )
-    aox_live_started = False
+    live_campaign_started = False
     rejection_reasons, admission_eligible = _rejection_and_eligibility(
         mode=mode,
         source_identity=admission_source,
@@ -1221,16 +1427,22 @@ def build_report(
         invariant_results=invariant_results,
         p0_records=p0_records,
         external_effects_real=external_effects_real,
-        aox_live_started=aox_live_started,
+        live_campaign_started=live_campaign_started,
         not_run_scenario_ids=normalized_not_run,
         run_failure=normalized_failure,
         source_stable=source_stable,
         process_chain_complete=process_chain_complete,
         source_revalidation_complete=source_revalidation_complete,
     )
+    qualification_bindings = _qualification_bindings(
+        repo_root=root,
+        registry=registry,
+        test_manifest=test_manifest.payload,
+        selection=selection,
+    )
     payload: dict[str, object] = {
         "admission_eligible": admission_eligible,
-        "aox_live_started": aox_live_started,
+        "live_campaign_started": live_campaign_started,
         "command": [str(item) for item in command],
         "external_effects_real": external_effects_real,
         "gaps": gaps,
@@ -1247,13 +1459,12 @@ def build_report(
         "invariants": invariant_results,
         "mode": mode,
         "not_run_scenario_ids": normalized_not_run,
-        "owner_constraint_registry_digest": (
-            registry.owner_constraint_registry_digest
-        ),
+        "owner_constraint_registry_digest": (registry.owner_constraint_registry_digest),
         "p0_records": p0_records,
         "payload_schema_id": QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID,
-        "profile": _profile(registry),
+        "profiles": _profiles(registry),
         "process_receipts": normalized_receipts,
+        "qualification_bindings": qualification_bindings,
         "registry_digest": registry.registry_digest,
         "rejection_reasons": rejection_reasons,
         "run_evidence_digest": _value_digest(run_evidence_preimage),
@@ -1301,9 +1512,7 @@ def _validate_source(value: object) -> dict[str, Any]:
     if manifest_digest != _value_digest(untracked):
         raise _error("untracked source manifest digest drifted")
     clean = _boolean(source["worktree_clean"], label="worktree_clean")
-    if clean != (
-        source["tracked_diff_digest"] == _sha256(b"") and not untracked
-    ):
+    if clean != (source["tracked_diff_digest"] == _sha256(b"") and not untracked):
         raise _error("worktree_clean contradicts the bound source identity")
     return source
 
@@ -1497,10 +1706,14 @@ def _validate_implementation(value: object) -> dict[str, Any]:
     identity = _object(value, fields=_IDENTITY_FIELDS, label="implementation")
     files = [
         _validate_digested_file(item, label=f"implementation.files[{index}]")
-        for index, item in enumerate(_list(identity["files"], label="implementation.files"))
+        for index, item in enumerate(
+            _list(identity["files"], label="implementation.files")
+        )
     ]
     _validate_sorted_records(files, key="path", label="implementation.files")
-    if _digest(identity["implementation_digest"], label="implementation digest") != _value_digest(files):
+    if _digest(
+        identity["implementation_digest"], label="implementation digest"
+    ) != _value_digest(files):
         raise _error("implementation digest drifted")
     _validate_digested_file(identity["runner"], label="implementation.runner")
     verifier = _object(
@@ -1511,15 +1724,26 @@ def _validate_implementation(value: object) -> dict[str, Any]:
         for index, item in enumerate(_list(verifier["files"], label="verifier.files"))
     ]
     _validate_sorted_records(verifier_files, key="path", label="verifier.files")
-    if _digest(verifier["content_digest"], label="verifier content digest") != _value_digest(verifier_files):
+    if _digest(
+        verifier["content_digest"], label="verifier content digest"
+    ) != _value_digest(verifier_files):
         raise _error("verifier content digest drifted")
     return identity
 
 
-def _validate_scenario_result(value: object, *, index: int) -> dict[str, Any]:
+def _validate_scenario_result(
+    value: object,
+    *,
+    index: int,
+    schema_version: int,
+) -> dict[str, Any]:
     result = _object(
         value,
-        fields=_SCENARIO_RESULT_FIELDS,
+        fields=(
+            _SCENARIO_RESULT_FIELDS
+            if schema_version >= 4
+            else _SCENARIO_RESULT_FIELDS_V3
+        ),
         label=f"scenario_results[{index}]",
     )
     _text(result["scenario_id"], label="scenario id")
@@ -1541,17 +1765,30 @@ def _validate_scenario_result(value: object, *, index: int) -> dict[str, Any]:
         result["observed_p0_trigger_ids"],
         label="scenario observed P0 trigger ids",
     )
+    if schema_version >= 4:
+        _texts(result["profile_ids"], label="scenario profile ids")
     _digest(result["execution_ledger_digest"], label="execution ledger digest")
-    budgets = _object(result["budgets"], fields=_BUDGET_FIELDS, label="scenario budgets")
+    budgets = _object(
+        result["budgets"], fields=_BUDGET_FIELDS, label="scenario budgets"
+    )
     for key in sorted(_BUDGET_FIELDS):
         _nonnegative_int(budgets[key], label=f"scenario budgets.{key}")
     return result
 
 
-def _validate_invariant_result(value: object, *, index: int) -> dict[str, Any]:
+def _validate_invariant_result(
+    value: object,
+    *,
+    index: int,
+    schema_version: int,
+) -> dict[str, Any]:
     result = _object(
         value,
-        fields=_INVARIANT_RESULT_FIELDS,
+        fields=(
+            _INVARIANT_RESULT_FIELDS
+            if schema_version >= 4
+            else _INVARIANT_RESULT_FIELDS_V3
+        ),
         label=f"invariants[{index}]",
     )
     _text(result["invariant_id"], label="invariant id")
@@ -1560,12 +1797,23 @@ def _validate_invariant_result(value: object, *, index: int) -> dict[str, Any]:
     if status not in _QUALIFICATION_STATUSES:
         raise _error("invariant status is unknown")
     _texts(result["scenario_ids"], label="invariant scenario ids")
+    if schema_version >= 4:
+        _texts(result["profile_ids"], label="invariant profile ids")
     _digest(result["evidence_digest"], label="invariant evidence digest")
     return result
 
 
-def _validate_gap(value: object, *, index: int) -> dict[str, Any]:
-    gap = _object(value, fields=_GAP_FIELDS, label=f"gaps[{index}]")
+def _validate_gap(
+    value: object,
+    *,
+    index: int,
+    schema_version: int,
+) -> dict[str, Any]:
+    gap = _object(
+        value,
+        fields=_GAP_FIELDS if schema_version >= 4 else _GAP_FIELDS_V3,
+        label=f"gaps[{index}]",
+    )
     _text(gap["gap_id"], label="gap id")
     _text(gap["invariant_id"], label="gap invariant id")
     classification = _text(gap["classification"], label="gap classification")
@@ -1574,7 +1822,10 @@ def _validate_gap(value: object, *, index: int) -> dict[str, Any]:
     _text(gap["owner"], label="gap owner")
     _text(gap["reproducer"], label="gap reproducer")
     _digest(gap["evidence_digest"], label="gap evidence digest")
-    _text(gap["profile_id"], label="gap profile")
+    if schema_version >= 4:
+        _texts(gap["profile_ids"], label="gap profile ids")
+    else:
+        _text(gap["profile_id"], label="gap profile")
     _optional_text(gap["related_change_ref"], label="gap change ref")
     priority = _text(gap["priority_recommendation"], label="gap priority")
     if priority not in {"blocking", "p0"}:
@@ -1605,13 +1856,15 @@ def _validate_p0(value: object, *, index: int) -> dict[str, Any]:
 def _validate_payload(
     value: object,
     *,
-    schema_version: int = 3,
+    schema_version: int = 4,
 ) -> dict[str, Any]:
     payload_fields = (
         _PAYLOAD_FIELDS_V1
         if schema_version == 1
         else _PAYLOAD_FIELDS_V2
         if schema_version == 2
+        else _PAYLOAD_FIELDS_V3
+        if schema_version == 3
         else _PAYLOAD_FIELDS
     )
     payload = _object(
@@ -1624,6 +1877,8 @@ def _validate_payload(
         if schema_version == 1
         else QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID_V2
         if schema_version == 2
+        else QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID_V3
+        if schema_version == 3
         else QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID
     )
     if payload["payload_schema_id"] != expected_payload_schema:
@@ -1635,16 +1890,58 @@ def _validate_payload(
     if not command:
         raise _error("report command must not be empty")
     _boolean(payload["admission_eligible"], label="admission eligibility")
-    _boolean(payload["aox_live_started"], label="AOX live flag")
+    _boolean(payload["live_campaign_started"], label="live campaign flag")
     _boolean(payload["external_effects_real"], label="external effect flag")
     _digest(payload["registry_digest"], label="registry digest")
     _digest(payload["test_manifest_digest"], label="test manifest digest")
     source = _validate_source(payload["source_identity"])
     del source
-    profile = _object(payload["profile"], fields=_PROFILE_FIELDS, label="profile")
-    _text(profile["profile_id"], label="profile id")
-    _texts(profile["claims"], label="profile claims")
-    _texts(profile["excludes"], label="profile excludes")
+    if schema_version >= 4:
+        profiles = [
+            _object(item, fields=_PROFILE_FIELDS, label=f"profiles[{index}]")
+            for index, item in enumerate(_list(payload["profiles"], label="profiles"))
+        ]
+        for index, profile in enumerate(profiles):
+            _text(profile["profile_id"], label=f"profiles[{index}].profile_id")
+            for field in (
+                "allowed_external_port_ids",
+                "claims",
+                "component_manifest_refs",
+                "document_refs",
+                "excludes",
+                "import_root_refs",
+                "semantic_owner_ids",
+                "wheel_distribution_names",
+            ):
+                _texts(profile[field], label=f"profiles[{index}].{field}")
+            for field in (
+                "database_mode",
+                "distribution_id",
+                "process_model",
+                "trust_boundary",
+            ):
+                _text(profile[field], label=f"profiles[{index}].{field}")
+            layered = profile["layered_composition_digests"]
+            if not isinstance(layered, Mapping) or not layered:
+                raise _error("profile layered composition digests must be an object")
+            for key, digest in layered.items():
+                _text(key, label="profile layered digest field")
+                _digest(digest, label=f"profiles[{index}].{key}")
+        _validate_sorted_records(profiles, key="profile_id", label="profiles")
+        bindings = _object(
+            payload["qualification_bindings"],
+            fields=_QUALIFICATION_BINDING_FIELDS,
+            label="qualification_bindings",
+        )
+        for field in sorted(_QUALIFICATION_BINDING_FIELDS):
+            _digest(bindings[field], label=f"qualification_bindings.{field}")
+    else:
+        profile = _object(
+            payload["profile"], fields=_PROFILE_FIELDS_V3, label="profile"
+        )
+        _text(profile["profile_id"], label="profile id")
+        _texts(profile["claims"], label="profile claims")
+        _texts(profile["excludes"], label="profile excludes")
     selection = _object(
         payload["selection"], fields=_SELECTION_FIELDS, label="selection"
     )
@@ -1656,7 +1953,7 @@ def _validate_payload(
     _validate_test_manifest(payload["test_manifest"])
     _validate_implementation(payload["implementation"])
     scenario_results = [
-        _validate_scenario_result(item, index=index)
+        _validate_scenario_result(item, index=index, schema_version=schema_version)
         for index, item in enumerate(
             _list(payload["scenario_results"], label="scenario_results")
         )
@@ -1665,12 +1962,12 @@ def _validate_payload(
         scenario_results, key="scenario_id", label="scenario_results"
     )
     invariants = [
-        _validate_invariant_result(item, index=index)
+        _validate_invariant_result(item, index=index, schema_version=schema_version)
         for index, item in enumerate(_list(payload["invariants"], label="invariants"))
     ]
     _validate_sorted_records(invariants, key="invariant_id", label="invariants")
     gaps = [
-        _validate_gap(item, index=index)
+        _validate_gap(item, index=index, schema_version=schema_version)
         for index, item in enumerate(_list(payload["gaps"], label="gaps"))
     ]
     _validate_sorted_records(gaps, key="gap_id", label="gaps")
@@ -1710,7 +2007,7 @@ def _validate_payload(
     )
     if run_evidence_digest != expected_run_evidence_digest:
         raise _error("qualification run evidence digest drifted")
-    if schema_version == 3:
+    if schema_version >= 3:
         _digest(
             payload["owner_constraint_registry_digest"],
             label="owner constraint registry digest",
@@ -1739,7 +2036,9 @@ def _validate_payload(
     if run_failure is not None:
         bound_receipt = run_failure["process_receipt_digest"]
         if bound_receipt is not None and bound_receipt not in receipt_digests:
-            raise _error("qualification run failure receipt is not in the selected chain")
+            raise _error(
+                "qualification run failure receipt is not in the selected chain"
+            )
         if bound_receipt is not None and receipt_digests[-1] != bound_receipt:
             raise _error("qualification selected process chain continued after failure")
     elif receipt_phases != expected_process_phases:
@@ -1763,9 +2062,10 @@ def _validate_payload(
             raise _error("qualification process failure source binding drifted")
     selected_ids = set(selection["scenario_ids"])
     observed_ids = {str(item["scenario_id"]) for item in scenario_results}
-    if observed_ids & set(not_run_scenario_ids) or (
-        observed_ids | set(not_run_scenario_ids)
-    ) != selected_ids:
+    if (
+        observed_ids & set(not_run_scenario_ids)
+        or (observed_ids | set(not_run_scenario_ids)) != selected_ids
+    ):
         raise _error("qualification scenario and not-run closure drifted")
     return payload
 
@@ -1774,6 +2074,8 @@ def load_report_bytes(content: bytes) -> LoadedArchitectureQualificationReport:
     raw = _strict_json(content)
     envelope = _object(raw, fields=_REPORT_FIELDS, label="report envelope")
     if envelope["schema_id"] == QUALIFICATION_REPORT_SCHEMA_ID:
+        schema_version = 4
+    elif envelope["schema_id"] == QUALIFICATION_REPORT_SCHEMA_ID_V3:
         schema_version = 3
     elif envelope["schema_id"] == QUALIFICATION_REPORT_SCHEMA_ID_V2:
         schema_version = 2
@@ -1871,7 +2173,9 @@ def verify_report(
         payload["owner_constraint_registry_digest"]
         != registry.owner_constraint_registry_digest
     ):
-        raise _error("qualification owner constraint registry digest differs from checkout")
+        raise _error(
+            "qualification owner constraint registry digest differs from checkout"
+        )
     manifest = _manifest_from_bound_payload(
         payload["test_manifest"],
         registry=registry,
@@ -1886,12 +2190,20 @@ def verify_report(
     )
     if dict(payload["implementation"]) != expected_implementation:
         raise _error("qualification implementation identity differs from checkout")
-    if dict(payload["profile"]) != _profile(registry):
-        raise _error("qualification report profile differs from registry")
+    if list(payload["profiles"]) != _profiles(registry):
+        raise _error("qualification report profiles differ from registry")
     mode = str(payload["mode"])
     selection = _selection(mode=mode, registry=registry)
     if dict(payload["selection"]) != selection:
         raise _error("qualification report scenario selection drifted")
+    expected_bindings = _qualification_bindings(
+        repo_root=root,
+        registry=registry,
+        test_manifest=manifest.payload,
+        selection=selection,
+    )
+    if dict(payload["qualification_bindings"]) != expected_bindings:
+        raise _error("qualification report source bundle bindings drifted")
 
     raw_results = [
         _execution_facts(item)
@@ -1948,8 +2260,8 @@ def verify_report(
     )
     if payload["external_effects_real"] is not external_effects_real:
         raise _error("qualification external-effect summary drifted")
-    if payload["aox_live_started"] is not False:
-        raise _error("qualification report cannot claim an AOX live start")
+    if payload["live_campaign_started"] is not False:
+        raise _error("qualification report cannot claim a live campaign start")
     admission_source = payload["source_identity"]
     admission_source_digest = _value_digest(admission_source)
     source_stable = (
@@ -1962,9 +2274,7 @@ def verify_report(
             if isinstance(item, Mapping)
         )
         and len(payload["source_revalidations"])
-        == sum(
-            isinstance(item, Mapping) for item in payload["source_revalidations"]
-        )
+        == sum(isinstance(item, Mapping) for item in payload["source_revalidations"])
     )
     expected_rejections, expected_eligible = _rejection_and_eligibility(
         mode=mode,
@@ -1975,7 +2285,7 @@ def verify_report(
         invariant_results=expected_invariants,
         p0_records=expected_p0,
         external_effects_real=external_effects_real,
-        aox_live_started=False,
+        live_campaign_started=False,
         not_run_scenario_ids=payload["not_run_scenario_ids"],
         run_failure=payload["run_failure"],
         source_stable=source_stable,
@@ -2014,9 +2324,7 @@ def validate_output_target(
     except OSError as exc:
         raise _output_error("qualification output parent is unavailable") from exc
     if output_directory.parent.absolute() != parent:
-        raise _output_error(
-            "qualification output parent aliases another directory"
-        )
+        raise _output_error("qualification output parent aliases another directory")
     if not parent.is_dir():
         raise _output_error("qualification output parent is not a directory")
     target_directory = parent / output_directory.name

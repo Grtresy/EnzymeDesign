@@ -1,0 +1,85 @@
+{
+  "schema_id": "openzyme_catalog_owner_inventory@1",
+  "catalog_digest": "sha256:99d6092a80652d4c8a2373f2d0b280771e2c458118aeca3638e316196ef5f518",
+  "expected_counts": {
+    "adapter_slot": 12,
+    "driver": 8,
+    "event": 20,
+    "finish_validator": 4,
+    "http_route": 8,
+    "manifest_http_route": 2,
+    "migration": 5,
+    "projection": 5,
+    "pytest_marker": 9,
+    "qualification_scenario": 27,
+    "qualification_spec": 7,
+    "route": 13,
+    "schema": 7,
+    "tool": 37,
+    "ui_renderer": 4,
+    "worker": 5
+  },
+  "expected_temporary_duplicate_authorities": [],
+  "observation_policy": {
+    "catalog_families": [
+      "tool",
+      "http_route",
+      "event",
+      "projection",
+      "ui_renderer",
+      "worker",
+      "finish_validator",
+      "schema",
+      "migration",
+      "qualification_spec",
+      "route",
+      "manifest_http_route",
+      "pytest_marker",
+      "qualification_scenario",
+      "adapter_slot",
+      "driver"
+    ],
+    "duplicate_identity_policy": "fail_closed",
+    "imports_product_packages": false,
+    "new_identity_requires_owner": true,
+    "observer": "scripts/check-openzyme-architecture.py"
+  },
+  "supplemental_surfaces": [
+    {
+      "canonical_id": "openzyme.science.legacy-finalizer@1",
+      "current_owner": "openzyme.science",
+      "kind": "finish_validator",
+      "source_refs": [
+        "packages/openzyme-science/src/openzyme_science/file_deliverables.py"
+      ],
+      "target_owner": "openzyme.science"
+    },
+    {
+      "canonical_id": "enzymedesign.aox.file-bundle-finalizer@1",
+      "current_owner": "enzymedesign.aox",
+      "kind": "finish_validator",
+      "source_refs": [
+        "packages/enzymedesign-aox/src/enzymedesign_aox/file_bundle_finalizer.py"
+      ],
+      "target_owner": "enzymedesign.aox"
+    },
+    {
+      "canonical_id": "openzyme_file_workspace_final@2",
+      "current_owner": "openzyme.store.sqlite",
+      "kind": "schema",
+      "source_refs": [
+        "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/migrations/001_file_workspace_final.sql"
+      ],
+      "target_owner": "openzyme.store.sqlite"
+    },
+    {
+      "canonical_id": "openzyme_v3_architecture_invariant_registry@1",
+      "current_owner": "openzyme.host.api",
+      "kind": "schema",
+      "source_refs": [
+        "docs/v3/architecture-qualification/invariant-registry.json"
+      ],
+      "target_owner": "openzyme.host.api"
+    }
+  ]
+}

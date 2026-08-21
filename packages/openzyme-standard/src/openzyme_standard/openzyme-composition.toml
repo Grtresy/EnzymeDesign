@@ -1,0 +1,60 @@
+schema_id = "openzyme_composition@1"
+manifest_state = "active"
+delivery_surfaces = [
+  { component_id = "openzyme.host.api", contract_digest = "sha256:7263ba09651bd023e4162d022706865b5825d680ed6fefea2aabe159ef7860c1" },
+  { component_id = "openzyme.client", contract_digest = "sha256:1e173a930f4d5240ae3a8b8b769a754b01576ffe450ef00cd9113b91f43546d1" },
+  { component_id = "openzyme.host.cli", contract_digest = "sha256:6b20afa5804533c9aa549fe824cd9386b5be4414f87b417c0460568d1bf12fad" },
+  { component_id = "openzyme.web.ui", contract_digest = "sha256:a1d9cf3a9b00ddc290de1d242ecee985c01e7205fa3174c257382338d89d502d" },
+]
+drivers = []
+
+[distribution]
+id = "openzyme.standard"
+version = "0.1.0"
+distribution_name = "openzyme-standard"
+build_digest = "sha256:5931543621ccac68b20d740feae8146f1d54b423775b5f593eb20ce7aecc0d9b"
+contract_digest = "sha256:f15e0de9ed2acecdce767a4c5a38aea13c09de9396be3ba343b3a55cf69f596c"
+
+[kernel]
+component_id = "openzyme.kernel"
+contract_id = "openzyme.kernel@1"
+contract_digest = "sha256:57b5b756f1a3639afee4aba5b988b0df9a0bc61e8bdbd0e1724f82ea530da86b"
+manifest_digest = "sha256:a013864f9353d5a407e38e19af61dd7c051c48587708a85aee9d18e0a80ff082"
+distribution_name = "openzyme-kernel"
+distribution_version = "0.1.0"
+
+[[adapters]]
+slot = "kernel.store"
+component_id = "openzyme.store.sqlite"
+distribution_name = "openzyme-store-sqlite"
+distribution_version = "0.1.0"
+manifest_digest = "sha256:ef17029ddd1bced87e501aa05692c692faf27980c10ab2db8a37dc52057b3c2b"
+
+[[adapters]]
+slot = "workspace.backend"
+component_id = "openzyme.workspace.git.lfs"
+distribution_name = "openzyme-workspace-git-lfs"
+distribution_version = "0.1.0"
+manifest_digest = "sha256:99bb32be534b0ca9e1e7ea15102c1b35342ca3591d324c0364135a278c7a08b3"
+
+[[adapters]]
+slot = "agent.turn"
+component_id = "openzyme.runtime.llm"
+distribution_name = "openzyme-runtime-llm"
+distribution_version = "0.1.0"
+manifest_digest = "sha256:6e16b2af91d4e18b25747fd7bab071bfa4261b26c520c04e58cf78fb0ea0713a"
+
+[[adapters]]
+slot = "process.isolation"
+component_id = "openzyme.process.podman"
+distribution_name = "openzyme-process-podman"
+distribution_version = "0.1.0"
+manifest_digest = "sha256:42fbd21f02f1c5c374cbfcf0dea6c129d474010485bb80ef5e821d86e80816b0"
+
+[plugins]
+required = []
+optional = []
+
+[policy]
+ambient_discovery_enables_components = false
+session_hot_swap = false

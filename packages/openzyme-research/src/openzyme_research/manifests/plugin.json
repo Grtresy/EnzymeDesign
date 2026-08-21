@@ -1,0 +1,108 @@
+{
+  "configuration_schema_digest": "sha256:2868cfa5860a0427c306b3bcd26b53ab002761a2ed56810e06a835e698672c79",
+  "finish_validators": [],
+  "http_routes": [],
+  "identity": {
+    "build_digest": "sha256:d79688d4198f67885ee9035e7176b7ba1c095232736c0e6db3296871258d7d4d",
+    "component_id": "openzyme.research",
+    "component_kind": "plugin",
+    "component_version": "0.1.0",
+    "contract_digest": "sha256:d15f90926a90756544e1a2cfd0dd57f27f52c9108b4e8c1a60546707c70d35db",
+    "distribution_name": "openzyme-research",
+    "distribution_version": "0.1.0"
+  },
+  "migration_bundle_digest": "sha256:7f3954021d565fa1907ac281c51acc6786d1b8dbb00fef396b3118b4a5200a50",
+  "migrations": [
+    {
+      "contract_digest": "sha256:8bf6640cefd23902215cbdf461a4351f5dc6a092fb31c5e70c540272d7405377",
+      "contribution_id": "openzyme.research.migration.001@1"
+    }
+  ],
+  "projections": [
+    {
+      "contract_digest": "sha256:1b1c9e1ecc5959881f675ce540bf6c3e3fe434fa307f3503f58a11b3ff5b40cb",
+      "contribution_id": "openzyme.research@1"
+    }
+  ],
+  "ui_renderers": [],
+  "provides": [
+    {
+      "capability_id": "openzyme.research",
+      "cardinality": "single",
+      "contract_version": "1",
+      "operations": ["link-publication", "observe", "reconcile", "start"]
+    }
+  ],
+  "qualification_specs": [],
+  "required_extension_spi_contract": "openzyme.extension-spi@1",
+  "required_kernel_contract": "openzyme.kernel@1",
+  "requires": [],
+  "routes": [],
+  "schema_version": "openzyme_plugin_manifest@1",
+  "schemas": [
+    {
+      "contract_digest": "sha256:0347256e439a4755dc36d6c7cd7a174d93921aadaac06c3a23391bddcb3bb231",
+      "contribution_id": "openzyme.research.state@1"
+    }
+  ],
+  "state_namespace": "openzyme_research",
+  "tools": [
+    {
+      "contract": {
+        "approval_policy_id": null,
+        "description": "Start one explicit, bounded Research invocation. Provider transcripts are not publications, scientific adoption, Task evidence, or Task completion.",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "brief": {"maxLength": 8192, "minLength": 1, "type": "string"},
+            "units": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "query": {"minLength": 1, "type": "string"},
+                  "topic": {"minLength": 1, "type": "string"},
+                  "unit_id": {"minLength": 1, "type": "string"}
+                },
+                "required": ["unit_id", "topic", "query"],
+                "type": "object"
+              },
+              "maxItems": 8,
+              "minItems": 1,
+              "type": "array"
+            }
+          },
+          "required": ["brief", "units"],
+          "type": "object"
+        },
+        "output_schema": {
+          "required": ["invocation_id", "request_digest", "status", "publication_created", "task_finished"],
+          "type": "object"
+        },
+        "required_authorities": ["ordinary_network"],
+        "schema_version": "openzyme_tool_spec@1",
+        "tool_name": "deep_research.start"
+      },
+      "owner_plugin_id": "openzyme.research",
+      "requirements": [
+        {
+          "capability_id": "openzyme.research.provider",
+          "contract_spec": "@1",
+          "kind": "extension",
+          "operations": ["dispatch", "reconcile"],
+          "same_target_as": null,
+          "version_spec": null
+        }
+      ],
+      "requires_explicit_route": false,
+      "requires_workspace": false,
+      "runtime_id": "openzyme.research.deep-research-start@1"
+    }
+  ],
+  "transaction_participants": [],
+  "workers": [
+    {
+      "contract_digest": "sha256:585c3fa0368076283eac4a4685409b89fe332dd71946ececa2519ed75134d1de",
+      "contribution_id": "openzyme.research.worker@1"
+    }
+  ]
+}

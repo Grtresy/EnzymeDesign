@@ -1,0 +1,170 @@
+{
+  "configuration_schema_digest": null,
+  "finish_validators": [],
+  "http_routes": [],
+  "identity": {
+    "build_digest": "sha256:24fc0aba7fabdfb958e2cb29214b5d3104e606a663e09232a8df7d2e70c20f3f",
+    "component_id": "enzymedesign.structure",
+    "component_kind": "plugin",
+    "component_version": "0.1.0",
+    "contract_digest": "sha256:7b088306593c1daae0dddbc1211419ecaf964611eeb655f2583c7c519d01524a",
+    "distribution_name": "enzymedesign-structure",
+    "distribution_version": "0.1.0"
+  },
+  "migration_bundle_digest": null,
+  "migrations": [],
+  "projections": [],
+  "provides": [
+    {
+      "capability_id": "enzymedesign.structure",
+      "cardinality": "single",
+      "contract_version": "1",
+      "operations": ["pocket_detection"]
+    }
+  ],
+  "qualification_specs": [
+    {
+      "capability_id": "software.fpocket",
+      "contract_version": "1",
+      "expected_result_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "exit_code": {"const": 0},
+          "operations": {"items": {"const": "detect"}, "type": "array"},
+          "version": {"minLength": 1, "type": "string"}
+        },
+        "required": ["version", "operations", "exit_code"],
+        "type": "object"
+      },
+      "owner_plugin_id": "enzymedesign.structure",
+      "qualification_spec_id": "enzymedesign.fpocket.qualification@1",
+      "required_resource_capabilities": [],
+      "smoke_argv": ["fpocket", "--help"],
+      "version_argv": ["fpocket", "--version"]
+    }
+  ],
+  "required_extension_spi_contract": "openzyme.extension-spi@1",
+  "required_kernel_contract": "openzyme.kernel@1",
+  "requires": [
+    {
+      "capability_id": "openzyme.execution.revision-job",
+      "contract_spec": "@1",
+      "kind": "extension",
+      "operations": ["observe", "submit"],
+      "same_target_as": null,
+      "version_spec": null
+    },
+    {
+      "capability_id": "software.fpocket",
+      "contract_spec": "@1",
+      "kind": "resource",
+      "operations": ["detect"],
+      "same_target_as": "openzyme.execution.revision-job",
+      "version_spec": ">=4,<5"
+    }
+  ],
+  "routes": [
+    {
+      "capability_ids": ["enzymedesign.structure", "openzyme.execution.revision-job", "software.fpocket"],
+      "driver_id": "enzymedesign.fpocket.hpc",
+      "owner_component_id": "enzymedesign.structure",
+      "route_contract_digest": "sha256:42a4125ca73afd4b5adaae2a54c424b71b790433a6dfe0ca10327534e5936150",
+      "route_id": "enzymedesign.fpocket.hpc-primary@1",
+      "route_kind": "hpc",
+      "target_id": "hpc-primary"
+    },
+    {
+      "capability_ids": ["enzymedesign.structure", "openzyme.execution.revision-job", "software.fpocket"],
+      "driver_id": "enzymedesign.fpocket.local",
+      "owner_component_id": "enzymedesign.structure",
+      "route_contract_digest": "sha256:34ae4c744a169b6f57bdc6722d2f33c9c20d15feda5c4c113a471b035d738722",
+      "route_id": "enzymedesign.fpocket.local@1",
+      "route_kind": "local",
+      "target_id": "local:podman"
+    }
+  ],
+  "schema_version": "openzyme_plugin_manifest@1",
+  "schemas": [],
+  "state_namespace": null,
+  "tools": [
+    {
+      "contract": {
+        "approval_policy_id": null,
+        "description": "Compile one formal fpocket request against an explicit qualified route. The Plugin never probes or dispatches the target itself.",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "affordance_snapshot_digest": {"pattern": "^sha256:[0-9a-f]{64}$", "type": "string"},
+            "cwd": {"minLength": 1, "type": "string"},
+            "environment_policy_digest": {"pattern": "^sha256:[0-9a-f]{64}$", "type": "string"},
+            "inputs": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "commit": {"pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$", "type": "string"},
+                  "content_digest": {"pattern": "^sha256:[0-9a-f]{64}$", "type": "string"},
+                  "path": {"minLength": 1, "type": "string"},
+                  "revision_id": {"minLength": 1, "type": "string"},
+                  "tree": {"pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$", "type": "string"}
+                },
+                "required": ["revision_id", "commit", "tree", "path", "content_digest"],
+                "type": "object"
+              },
+              "maxItems": 1,
+              "minItems": 1,
+              "type": "array"
+            },
+            "resource_policy_digest": {"pattern": "^sha256:[0-9a-f]{64}$", "type": "string"},
+            "result_root": {"minLength": 1, "type": "string"},
+            "route_id": {"minLength": 1, "type": "string"},
+            "workload_id": {"minLength": 1, "type": "string"}
+          },
+          "required": ["workload_id", "route_id", "affordance_snapshot_digest", "cwd", "resource_policy_digest", "environment_policy_digest", "result_root", "inputs"],
+          "type": "object"
+        },
+        "output_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "fallback_performed": {"const": false},
+            "formal_compute_requested": {"const": true},
+            "raw_shell": {"const": false},
+            "state": {"minLength": 1, "type": "string"},
+            "task_finished": {"const": false},
+            "workload_digest": {"pattern": "^sha256:[0-9a-f]{64}$", "type": "string"},
+            "workload_id": {"minLength": 1, "type": "string"}
+          },
+          "required": ["workload_id", "workload_digest", "state", "formal_compute_requested", "raw_shell", "fallback_performed", "task_finished"],
+          "type": "object"
+        },
+        "required_authorities": ["external_compute"],
+        "schema_version": "openzyme_tool_spec@1",
+        "tool_name": "enzymedesign.fpocket.detect"
+      },
+      "owner_plugin_id": "enzymedesign.structure",
+      "requirements": [
+        {
+          "capability_id": "openzyme.execution.revision-job",
+          "contract_spec": "@1",
+          "kind": "extension",
+          "operations": ["observe", "submit"],
+          "same_target_as": null,
+          "version_spec": null
+        },
+        {
+          "capability_id": "software.fpocket",
+          "contract_spec": "@1",
+          "kind": "resource",
+          "operations": ["detect"],
+          "same_target_as": "openzyme.execution.revision-job",
+          "version_spec": ">=4,<5"
+        }
+      ],
+      "requires_explicit_route": true,
+      "requires_workspace": true,
+      "runtime_id": "enzymedesign.fpocket.detect-runtime@1"
+    }
+  ],
+  "transaction_participants": [],
+  "ui_renderers": [],
+  "workers": []
+}

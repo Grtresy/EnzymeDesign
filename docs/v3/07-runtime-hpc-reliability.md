@@ -1,5 +1,13 @@
 # V3 Runtime 与 HPC Reliability
 
+> revision-execution DTO 与 runner wire parser 位于 `openzyme-execution-contracts`，runner 只依赖该窄 wheel。
+> 运行时语义 owner 是 `openzyme-compute` Plugin、`openzyme-hpc` Plugin、`openzyme-hpc-ssh` 与
+> `openzyme-hpc-slurm` Adapters。HPC workspace DTO、纯 lifecycle、manifest、inventory、8 个 workspace
+> tool runtime、两条 capability route runtime、完整 workspace application/SQLite writer，以及 SSH/Slurm
+> Adapter 均由目标包拥有；Host 只保留窄 Kernel-facts/tool composition gateway。是否激活取决于 exact
+> Distribution、deployment epoch、Session pin、inventory binding 与 Agent affordance；任何 non-live mount
+> 都不表示 live route 已可用。
+
 ## Authority 分层
 
 session runtime lease、agent process epoch、controlled-operation execution fence、continuation delivery
@@ -14,6 +22,26 @@ login/file credential 只允许 owner root 内 SSH、Git/LFS、rsync/scp 和 CRU
 
 `hpc.workspace.sync_source` 只准备 exact private checkpoint 或 immutable publication；fetch、checkout、merge、
 rebase 和冲突处理由 agent 显式决定。它不发布 revision、不完成 task，也不提交 job。
+
+HPC Plugin 现在贡献 `hpc.workspace.request/inspect/verify/sync_source/fs.read/fs.list/fs.mutate/exec`，除首次
+request 外的请求都携带 Host 发出的
+opaque workspace ID，并重新验证 owner、local/remote generation、target qualification 与 operation-specific
+authority。SSH/SFTP/rsync Adapter 执行具体 I/O；Plugin import、Agent turn 和 tool visibility 计算均不得临时
+SSH/`which` 探测软件。远端 response loss 进入同一 ControlledOperation reconcile，不自动重发。
+
+普通 login Shell 与 scheduler 永远分开：`hpc.workspace.exec` 不能调用/模拟 `sbatch`、`scancel` 或 runner
+API；formal occurrence credential 只由 Compute admission 为 exact workload/route 签发。
+
+## Target inventory 与领域工具
+
+HPC qualification 将当前 opaque toolchain digest 扩为 immutable inventory generation，逐项记录 software/
+hardware/data/asset/license capability、version、operations、environment/binary/qualification digest 和 validity。
+只有 operator/admin 能 publish/adopt/revoke；Session 通过 capability binding revision 采用 exact generation。
+
+HMMER/Vina 等 Product Plugin 声明 capability/version/operation/same-target requirements，不 import HPC 或 Slurm。
+Resolver 只有在 Plugin、inventory、route、Agent authority 与 workspace 均满足时才暴露 formal tool；Agent 必须
+选择 exact route，Driver 再编译 typed `ExecutionWorkloadSpec` 交给 Compute。直接在 HPC Shell 运行二进制只
+是 exploratory process receipt，不等于 formal result、Science adoption、publication 或 Task finish evidence。
 
 ## Job admission
 
@@ -30,6 +58,10 @@ payload 不携带 `.git`、repository credential、LFS endpoint、object-store l
 不跨边界。dispatch 前 crash 可证明 `no_effect`；payload 已交给 transport 但 receipt 未落盘则
 `dispatch_in_doubt`，只能 query/reconcile exact occurrence。
 
+Runner 配置不是领域工具目录。当前 `runner_effective_config@2` 关闭所有未知顶层 section，
+明确拒绝 `[adapters.*]`、领域软件路径或版本选择；这些事实只能来自 exact
+Plugin/Driver manifest、operator qualification 和 Session 已采用的 target inventory。
+
 observe、logs、cancel 都必须匹配 occurrence credential 和 opaque handle。cancel intent 不等于 backend 已
 取消；cancellation receipt 使用唯一 canonical wire contract，必须包含 `receipt_id`、cancellation/handle
 identity、requested/settlement facts、backend receipt digest、时间与完整 receipt digest。只有经过 exact
@@ -40,8 +72,9 @@ reconcile replay 在返回持久化对象前重新比对当前 RunSpec、dispatc
 ## Results
 
 terminal success 形成 `WorkspaceJobResult`，可选择绑定 result revision。runner 不声明、枚举或验证
-`expected_outputs`；结果文件留在 owner executor workspace，由 agent 通过原生 SSH/rsync/scp 检查并
-显式形成新的 clean result revision。job 可以在没有结果文件时成功，但仍需要 terminal observation、
+`expected_outputs`；结果文件留在 owner executor workspace，由 agent 通过 `hpc.workspace.*` 检查和同步，
+具体 SSH/SFTP/rsync 只由选定 Adapter 在不泄漏 locator/credential 的边界内执行；随后 Agent 显式形成新的
+clean result revision。job 可以在没有结果文件时成功，但仍需要 terminal observation、
 result digest 和 lifecycle receipt；不得创建占位文件、自动 fetch/commit/publish 或从文件存在推断成功。
 
 ## Restart

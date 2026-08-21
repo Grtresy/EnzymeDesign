@@ -3,30 +3,78 @@ members = [
   "apps/mcp-hpc-runner",
   "apps/openzyme-host-api",
   "apps/openzyme-host-cli",
-  "packages/openzyme-core",
-  "packages/openzyme-domain",
-  "packages/openzyme-engines",
-  "packages/openzyme-execution",
-  "packages/openzyme-pipeline",
-  "packages/preprocess-backend",
+  "packages/enzymedesign-alphafold",
+  "packages/enzymedesign-aox",
+  "packages/enzymedesign-aox-executor",
+  "packages/enzymedesign-bio-provider-adapters",
+  "packages/enzymedesign-bio-providers",
+  "packages/enzymedesign-core",
+  "packages/enzymedesign-docking-preprocess",
+  "packages/enzymedesign-distribution",
+  "packages/enzymedesign-hmmer",
+  "packages/enzymedesign-sequence-toolpack",
+  "packages/enzymedesign-structure",
+  "packages/enzymedesign-vina",
+  "packages/openzyme-client",
+  "packages/openzyme-compute",
+  "packages/openzyme-contracts",
+  "packages/openzyme-execution-contracts",
+  "packages/openzyme-execution-sdk",
+  "packages/openzyme-extension-spi",
+  "packages/openzyme-hpc",
+  "packages/openzyme-hpc-slurm",
+  "packages/openzyme-hpc-ssh",
+  "packages/openzyme-kernel",
+  "packages/openzyme-process-podman",
+  "packages/openzyme-reporting",
   "packages/openzyme-research",
-  "packages/openzyme-runtime",
-  "packages/openzyme-tools",
+  "packages/openzyme-research-tavily",
+  "packages/openzyme-runtime-llm",
+  "packages/openzyme-runtime-spi",
+  "packages/openzyme-science",
+  "packages/openzyme-science-research",
+  "packages/openzyme-standard",
+  "packages/openzyme-store-sqlite",
+  "packages/openzyme-workspace-git-lfs",
 ]
 
 [tool.uv.sources]
 mcp-hpc-runner = { workspace = true }
 openzyme-host-api = { workspace = true }
 openzyme-host-cli = { workspace = true }
-openzyme-core = { workspace = true }
-openzyme-domain = { workspace = true }
-openzyme-engines = { workspace = true }
-openzyme-execution = { workspace = true }
-openzyme-pipeline = { workspace = true }
-preprocess-backend = { workspace = true }
+enzymedesign-alphafold = { workspace = true }
+enzymedesign-aox = { workspace = true }
+enzymedesign-aox-executor = { workspace = true }
+enzymedesign-bio-provider-adapters = { workspace = true }
+enzymedesign-bio-providers = { workspace = true }
+enzymedesign-core = { workspace = true }
+enzymedesign-docking-preprocess = { workspace = true }
+enzymedesign = { workspace = true }
+enzymedesign-hmmer = { workspace = true }
+enzymedesign-sequence-toolpack = { workspace = true }
+enzymedesign-structure = { workspace = true }
+enzymedesign-vina = { workspace = true }
+openzyme-client = { workspace = true }
+openzyme-compute = { workspace = true }
+openzyme-contracts = { workspace = true }
+openzyme-execution-contracts = { workspace = true }
+openzyme-execution-sdk = { workspace = true }
+openzyme-extension-spi = { workspace = true }
+openzyme-hpc = { workspace = true }
+openzyme-hpc-slurm = { workspace = true }
+openzyme-hpc-ssh = { workspace = true }
+openzyme-kernel = { workspace = true }
+openzyme-process-podman = { workspace = true }
+openzyme-reporting = { workspace = true }
 openzyme-research = { workspace = true }
-openzyme-runtime = { workspace = true }
-openzyme-tools = { workspace = true }
+openzyme-research-tavily = { workspace = true }
+openzyme-runtime-llm = { workspace = true }
+openzyme-runtime-spi = { workspace = true }
+openzyme-science = { workspace = true }
+openzyme-science-research = { workspace = true }
+openzyme-standard = { workspace = true }
+openzyme-store-sqlite = { workspace = true }
+openzyme-workspace-git-lfs = { workspace = true }
 
 [dependency-groups]
 dev = [

@@ -1,0 +1,42 @@
+[project]
+name = "openzyme-runtime-llm"
+version = "0.1.0"
+description = "LLM/provider bounded-turn Adapter"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "openzyme-contracts",
+  "openzyme-extension-spi",
+  "openzyme-runtime-spi",
+  "pydantic>=2.8,<3.0",
+]
+
+[project.optional-dependencies]
+openai = [
+  "langchain>=1.0,<2.0",
+  "langchain-openai>=1.0,<2.0",
+]
+dev = [
+  "pytest>=9.0.0",
+]
+
+[project.entry-points."openzyme.extensions"]
+"openzyme.runtime.llm" = "openzyme_runtime_llm.manifest_locator:locate_component_manifest"
+
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openzyme_runtime_llm"]
+
+[tool.openzyme.component]
+component_id = "openzyme.runtime.llm"
+component_kind = "adapter"
+migration_state = "target_implemented_not_cutover"
+current_composition_owner = "openzyme.standard"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"

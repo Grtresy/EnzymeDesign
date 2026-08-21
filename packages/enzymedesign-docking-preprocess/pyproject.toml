@@ -1,0 +1,42 @@
+[project]
+name = "enzymedesign-docking-preprocess"
+version = "0.1.0"
+description = "分子对接前处理插件"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "enzymedesign-core",
+  "openzyme-contracts",
+  "openzyme-extension-spi",
+]
+
+[project.entry-points."openzyme.extensions"]
+"enzymedesign.docking.preprocess" = "enzymedesign_docking_preprocess.manifest_locator:locate_component_manifest"
+
+[project.optional-dependencies]
+chem = [
+  "rdkit>=2024.9.1",
+  "meeko>=0.6.1",
+  "openbabel-wheel>=3.1.1.22",
+]
+dev = [
+  "pytest>=9.0.0",
+]
+
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/enzymedesign_docking_preprocess"]
+
+[tool.openzyme.component]
+component_id = "enzymedesign.docking.preprocess"
+component_kind = "product_plugin"
+migration_state = "target_implemented_not_cutover"
+current_composition_owner = "uncomposed"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"

@@ -1,82 +1,103 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  renderV3Failures,
-  renderV3Outputs,
-  renderV3ScientificAttempts,
-} from "../src/view.js";
+import { buildCoreShellState } from "../src/core_shell.js";
+import { ExtensionRendererRegistry } from "../src/extension_renderer_loader.js";
+import { renderApp, renderCoreWorkspace, renderToolAffordances } from "../src/view.js";
 
-test("file tree, private revision, publication and pagination render exact public identities", () => {
-  const html = renderV3Outputs({
-    workspace_status: [{
-      workspace_id: "workspace-1",
-      workspace_generation: 5,
-      status: "ready",
-      dirty_state: "dirty",
-      head_commit: "a".repeat(40),
-      changed_paths: ["scientific/result.json"],
-      changed_paths_truncated: true,
-      changed_paths_continuation: "observation-1:100",
-    }],
-    private_revisions: [{
-      workspace_id: "workspace-1",
-      workspace_generation: 5,
-      commit: "b".repeat(40),
-      tree: "c".repeat(40),
-    }],
-    published_revisions: [{
-      publication_ref: "refs/openzyme/publications/publication-1",
-      commit: "d".repeat(40),
-      manifest_digest: `sha256:${"e".repeat(64)}`,
-      publisher_agent_member_id: "member-1",
-    }],
-    reports: [],
-  });
-  assert.match(html, /scientific\/result\.json/);
-  assert.match(html, /bbbbbbbbbbbb/);
-  assert.match(html, /refs\/openzyme\/publications\/publication-1/);
-  assert.match(html, /data-action="load-more-changed-paths"/);
-  assert.match(html, /data-workspace-id="workspace-1"/);
-});
+const digest = (character) => `sha256:${character.repeat(64)}`;
 
-test("external job view distinguishes unknown effect from terminal observation", () => {
-  const html = renderV3ScientificAttempts({
-    external_jobs: [{
-      execution_id: "execution-1",
-      lifecycle_state: "cancel_requested",
-      effect_certainty: "unknown",
-      source_commit: "a".repeat(40),
-      accepted_at: "2026-08-18T00:00:00Z",
-    }],
-    external_job_results: [{
-      result_id: "result-1",
-      terminal_state: "cancelled",
-      exit_code: null,
-      result_digest: `sha256:${"b".repeat(64)}`,
-      source_commit: "a".repeat(40),
-    }],
-  });
-  assert.match(html, /cancel_requested · unknown/);
-  assert.match(html, /cancelled · exit unknown/);
-});
-
-test("diagnostic view renders allowlisted public facts and never private context", () => {
-  const html = renderV3Failures({
-    failure_observations: [{
-      failure_id: "failure-1",
-      failure_class: "workspace_file_cleanup_incomplete",
-      recoverability: "operator_action_required",
-      safe_summary: "temporary handoff residue requires exact cleanup",
-      effect_certainty: "effect_applied",
-      private_diagnostic: {
-        traceback: "SECRET_TOKEN=do-not-render",
-        absolute_path: "/private/operator/path",
+function shell() {
+  const release = {
+    schema_version: "openzyme_layered_release_identity@1",
+    kernel_contract_digest: digest("a"), core_schema_digest: digest("b"),
+    adapter_bundle_digest: digest("c"), extension_bundle_digest: digest("d"),
+    declared_tool_catalog_digest: digest("e"), route_catalog_digest: digest("f"),
+    projection_catalog_digest: digest("1"), migration_catalog_digest: digest("2"),
+    workspace_backend_digest: digest("3"), host_build_digest: digest("4"),
+    client_build_digest: digest("5"), release_digest: digest("6"),
+    public_contract_digest: digest("7"),
+  };
+  const payload = {
+    schema_version: "file_workspace_public@2",
+    release,
+    core: {
+      agents: [], approvals: [], authority_leases: [],
+      capability_binding: { binding_digest: digest("8") },
+      conversation: { memories: [], messages: [] },
+      failures: { observations: [] }, lanes: [],
+      operations: {
+        command_receipts: [], continuations: [], controlled: [],
+        publication_intents: [], task_evidence: [],
       },
-    }],
+      protocol: { inbox: [], records: [] },
+      publications: [{ publication_ref: "refs/openzyme/publication-1", commit: "abc" }],
+      runtime: {
+        continuation_intents: [], outcome_consumptions: [], session_leases: [],
+        settlement_intents: [], signals: [], turn_commands: [],
+      },
+      session: { session_id: "session-1", objective: "Render Kernel truth" },
+      tasks: [],
+      tool_reflection: {
+        declared_tool_catalog_digest: release.declared_tool_catalog_digest,
+        affordance_snapshot_digest: digest("9"),
+        capability_binding_digest: digest("8"),
+        available_tool_names: [],
+        affordances: [{
+          tool_name: "workspace.exec",
+          tool_contract_digest: digest("0"),
+          state: "blocked_authority",
+          required_authorities: ["workspace.process.exec"],
+          route_ids: [], route_refs: [],
+          blockers: [{ code: "authority_missing", requirement: null, target_id: null }],
+        }],
+      },
+      workspace: {
+        checkpoints: [],
+        generations: [{ workspace_id: "workspace-1", generation: 2, status: "ready" }],
+        repository_binding_pins: [], revision_path_verifications: [], runtime_bindings: [],
+      },
+    },
+    extensions: {},
+  };
+  return buildCoreShellState(
+    payload,
+    new ExtensionRendererRegistry({ rendererCatalogDigest: digest("a") }),
+    { expectedRendererCatalogDigest: digest("a") },
+  );
+}
+
+test("Core view renders workspace revision/publication truth without product placeholders", () => {
+  const html = renderCoreWorkspace(shell());
+  assert.match(html, /workspace-1/);
+  assert.match(html, /refs\/openzyme\/publication-1/);
+  assert.doesNotMatch(html, /Scientific|Research|HPC|Report/);
+});
+
+test("blocked affordance remains visible with its exact blocker", () => {
+  const html = renderToolAffordances(shell());
+  assert.match(html, /workspace\.exec/);
+  assert.match(html, /blocked_authority/);
+  assert.match(html, /authority_missing/);
+});
+
+test("Plugin-free Standard shell stays usable and has no empty extension panel", () => {
+  const html = renderApp({
+    shell: shell(), loading: false, refreshing: false,
+    messageBusy: false, drainBusy: false, error: "", mutationError: "",
   });
-  assert.match(html, /workspace_file_cleanup_incomplete/);
-  assert.match(html, /failure-1/);
-  assert.match(html, /effect effect_applied/);
-  assert.doesNotMatch(html, /SECRET_TOKEN|do-not-render|\/private\/operator\/path/);
+  assert.match(html, /OpenZyme Kernel workspace/);
+  assert.match(html, /Message OpenZyme/);
+  assert.doesNotMatch(html, /Extension views/);
+});
+
+test("contract blocker removes every mutation control", () => {
+  const blocked = shell();
+  blocked.contractBlocked = true;
+  blocked.mutationAllowed = false;
+  blocked.blockingError = "renderer_catalog_drift";
+  const html = renderApp({ shell: blocked, loading: false, error: "" });
+  assert.match(html, /non-operational/);
+  assert.match(html, /renderer_catalog_drift/);
+  assert.doesNotMatch(html, /<form|runtime-drain/);
 });

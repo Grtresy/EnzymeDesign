@@ -17,12 +17,18 @@ from .harness_owner_constraints import OWNER_CONSTRAINT_REGISTRY_SCHEMA_ID
 from .harness_owner_constraints import load_harness_owner_constraint_registry
 
 
-REGISTRY_SCHEMA_ID = "openzyme_v3_architecture_invariant_registry@2"
+REGISTRY_SCHEMA_ID = "openzyme_v3_architecture_invariant_registry@3"
 REGISTRY_ID = "openzyme_v3_architecture_invariants"
 REGISTRY_RELATIVE_PATH = Path(
     "docs/v3/architecture-qualification/invariant-registry.json"
 )
-PROFILE_ID = "local_single_process_file_sqlite@1"
+PROFILE_IDS = (
+    "enzymedesign_local_single_process_file_sqlite@1",
+    "kernel_fake_adapters@1",
+    "openzyme_standard_local_file_sqlite_git@1",
+)
+# Temporary compatibility export for callers that only need the product profile.
+PROFILE_ID = PROFILE_IDS[0]
 TEST_MANIFEST_SCHEMA_ID = "openzyme_v3_architecture_test_manifest@1"
 QUALIFICATION_REPORT_SCHEMA_ID_V1 = "openzyme_v3_architecture_qualification_report@1"
 QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID_V1 = (
@@ -32,9 +38,13 @@ QUALIFICATION_REPORT_SCHEMA_ID_V2 = "openzyme_v3_architecture_qualification_repo
 QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID_V2 = (
     "openzyme_v3_architecture_qualification_payload@2"
 )
-QUALIFICATION_REPORT_SCHEMA_ID = "openzyme_v3_architecture_qualification_report@3"
-QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID = (
+QUALIFICATION_REPORT_SCHEMA_ID_V3 = "openzyme_v3_architecture_qualification_report@3"
+QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID_V3 = (
     "openzyme_v3_architecture_qualification_payload@3"
+)
+QUALIFICATION_REPORT_SCHEMA_ID = "openzyme_v3_architecture_qualification_report@4"
+QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID = (
+    "openzyme_v3_architecture_qualification_payload@4"
 )
 
 REQUIRED_FAMILIES = (
@@ -78,7 +88,7 @@ _TOP_LEVEL_FIELDS = frozenset(
         "invariants",
         "owner_constraint_registry",
         "p0_triggers",
-        "profile",
+        "profiles",
         "registry_id",
         "required_families",
         "required_scenario_ids",
@@ -91,12 +101,32 @@ _OWNER_CONSTRAINT_REGISTRY_FIELDS = frozenset(
 )
 _PROFILE_FIELDS = frozenset(
     {
+        "allowed_external_port_ids",
         "claims",
+        "component_manifest_refs",
         "database_mode",
+        "distribution_id",
+        "document_refs",
         "excludes",
+        "import_root_refs",
+        "layered_composition_digests",
         "process_model",
         "profile_id",
+        "semantic_owner_ids",
         "trust_boundary",
+        "wheel_distribution_names",
+    }
+)
+_LAYERED_COMPOSITION_DIGEST_FIELDS = frozenset(
+    {
+        "adapter_bundle_digest",
+        "composition_bundle_digest",
+        "declared_tool_catalog_digest",
+        "extension_bundle_digest",
+        "migration_catalog_digest",
+        "projection_catalog_digest",
+        "route_catalog_digest",
+        "workspace_backend_digest",
     }
 )
 _EXTERNAL_PORT_FIELDS = frozenset(
@@ -110,9 +140,7 @@ _EXTERNAL_PORT_FIELDS = frozenset(
 _P0_TRIGGER_FIELDS = frozenset({"description", "trigger_id"})
 _BOUNDARY_RELATION_FIELDS = frozenset({"boundary_id", "owner", "seams"})
 _SYMBOL_REFERENCE_FIELDS = frozenset({"module", "source_file", "symbol"})
-_SEAM_REFERENCE_FIELDS = frozenset(
-    {"module", "relation", "source_file", "symbol"}
-)
+_SEAM_REFERENCE_FIELDS = frozenset({"module", "relation", "source_file", "symbol"})
 _INVARIANT_FIELDS = frozenset(
     {
         "contract_refs",
@@ -134,6 +162,7 @@ _SCENARIO_FIELDS = frozenset(
         "family",
         "fault_points",
         "provenance_refs",
+        "profile_ids",
         "scenario_id",
         "selections",
         "source_files",
@@ -156,7 +185,7 @@ _QUALIFICATION_MODES = frozenset(
 )
 _BOUNDARY_RELATIONS = frozenset({"equal", "less_than_or_equal"})
 _SELECTIONS = frozenset({"full", "premerge_subset"})
-_STABLE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
+_STABLE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*(?:@[0-9]+)?$")
 
 
 class ArchitectureQualificationError(ValueError):
@@ -459,30 +488,101 @@ def _source_files(
     return items
 
 
-def _validate_profile(value: object) -> None:
-    profile = _object(value, label="profile", fields=_PROFILE_FIELDS)
-    if profile["profile_id"] != PROFILE_ID:
-        raise ArchitectureQualificationRegistryError(
-            f"profile.profile_id must be {PROFILE_ID!r}"
-        )
-    if profile["trust_boundary"] != "trusted_host":
-        raise ArchitectureQualificationRegistryError(
-            "profile.trust_boundary must be 'trusted_host'"
-        )
-    if profile["database_mode"] != "file_sqlite":
-        raise ArchitectureQualificationRegistryError(
-            "profile.database_mode must be 'file_sqlite'"
-        )
-    if profile["process_model"] != "single_process":
-        raise ArchitectureQualificationRegistryError(
-            "profile.process_model must be 'single_process'"
-        )
-    _sorted_unique_texts(
-        profile["claims"], label="profile.claims", allow_empty=False
+def _validate_profiles(
+    value: object,
+    *,
+    repo_root: Path,
+    external_port_ids: frozenset[str],
+) -> dict[str, dict[str, object]]:
+    profiles = _records_by_id(
+        value,
+        label="profiles",
+        fields=_PROFILE_FIELDS,
+        id_field="profile_id",
     )
-    _sorted_unique_texts(
-        profile["excludes"], label="profile.excludes", allow_empty=False
-    )
+    if tuple(profiles) != PROFILE_IDS:
+        raise ArchitectureQualificationRegistryError(
+            "profiles must define the exact three composition profiles"
+        )
+    expected_modes = {
+        "kernel_fake_adapters@1": ("fake_port", "in_process_fake"),
+        "openzyme_standard_local_file_sqlite_git@1": (
+            "file_sqlite",
+            "single_process",
+        ),
+        "enzymedesign_local_single_process_file_sqlite@1": (
+            "file_sqlite",
+            "single_process",
+        ),
+    }
+    for profile_id, profile in profiles.items():
+        if profile["trust_boundary"] != "trusted_host":
+            raise ArchitectureQualificationRegistryError(
+                f"profile {profile_id!r} trust_boundary must be 'trusted_host'"
+            )
+        expected_database, expected_process = expected_modes[profile_id]
+        if profile["database_mode"] != expected_database:
+            raise ArchitectureQualificationRegistryError(
+                f"profile {profile_id!r} database_mode is not exact"
+            )
+        if profile["process_model"] != expected_process:
+            raise ArchitectureQualificationRegistryError(
+                f"profile {profile_id!r} process_model is not exact"
+            )
+        _stable_id(
+            profile["distribution_id"],
+            label=f"profiles[{profile_id}].distribution_id",
+        )
+        for field_name in (
+            "claims",
+            "excludes",
+            "semantic_owner_ids",
+            "wheel_distribution_names",
+        ):
+            _sorted_unique_texts(
+                profile[field_name],
+                label=f"profiles[{profile_id}].{field_name}",
+                allow_empty=False,
+            )
+        for field_name in (
+            "component_manifest_refs",
+            "document_refs",
+            "import_root_refs",
+        ):
+            _source_files(
+                profile[field_name],
+                label=f"profiles[{profile_id}].{field_name}",
+                repo_root=repo_root,
+                allow_empty=False,
+            )
+        allowed_ports = frozenset(
+            _sorted_unique_texts(
+                profile["allowed_external_port_ids"],
+                label=f"profiles[{profile_id}].allowed_external_port_ids",
+                allow_empty=True,
+                stable_ids=True,
+            )
+        )
+        if not allowed_ports <= external_port_ids:
+            raise ArchitectureQualificationRegistryError(
+                f"profile {profile_id!r} allows an undeclared external port"
+            )
+        layered = _object(
+            profile["layered_composition_digests"],
+            label=f"profiles[{profile_id}].layered_composition_digests",
+            fields=_LAYERED_COMPOSITION_DIGEST_FIELDS,
+        )
+        for field_name in sorted(_LAYERED_COMPOSITION_DIGEST_FIELDS):
+            digest = layered[field_name]
+            if (
+                not isinstance(digest, str)
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None
+            ):
+                raise ArchitectureQualificationRegistryError(
+                    f"profiles[{profile_id}].layered_composition_digests."
+                    f"{field_name} is invalid"
+                )
+    return profiles
 
 
 def _validate_external_ports(value: object) -> dict[str, dict[str, object]]:
@@ -549,13 +649,13 @@ def _validate_symbol_reference(
     reference = _object(value, label=label, fields=fields)
     _text(reference["module"], label=f"{label}.module")
     _text(reference["symbol"], label=f"{label}.symbol")
-    _source_file(reference["source_file"], label=f"{label}.source_file", repo_root=repo_root)
+    _source_file(
+        reference["source_file"], label=f"{label}.source_file", repo_root=repo_root
+    )
     if allow_relation:
         relation = _text(reference["relation"], label=f"{label}.relation")
         if relation not in _BOUNDARY_RELATIONS:
-            raise ArchitectureQualificationRegistryError(
-                f"{label}.relation is unknown"
-            )
+            raise ArchitectureQualificationRegistryError(f"{label}.relation is unknown")
     return reference
 
 
@@ -607,6 +707,7 @@ def _validate_invariants(
     *,
     repo_root: Path,
     p0_trigger_ids: frozenset[str],
+    registered_profile_ids: frozenset[str],
 ) -> dict[str, dict[str, object]]:
     invariants = _records_by_id(
         value,
@@ -633,14 +734,14 @@ def _validate_invariants(
             repo_root=repo_root,
             allow_empty=False,
         )
-        profile_ids = _sorted_unique_texts(
+        invariant_profile_ids = _sorted_unique_texts(
             invariant["profile_ids"],
             label=f"invariants[{invariant_id}].profile_ids",
             allow_empty=False,
         )
-        if profile_ids != (PROFILE_ID,):
+        if not frozenset(invariant_profile_ids) <= registered_profile_ids:
             raise ArchitectureQualificationRegistryError(
-                f"invariant {invariant_id!r} must bind the exact local profile"
+                f"invariant {invariant_id!r} references an unknown profile"
             )
         failure_class = _stable_id(
             invariant["failure_class"],
@@ -695,6 +796,7 @@ def _validate_scenarios(
     repo_root: Path,
     external_port_ids: frozenset[str],
     boundary_ids: frozenset[str],
+    profile_ids: frozenset[str],
 ) -> dict[str, dict[str, object]]:
     scenarios = _records_by_id(
         value,
@@ -760,6 +862,17 @@ def _validate_scenarios(
             label=f"scenarios[{scenario_id}].provenance_refs",
             allow_empty=True,
         )
+        scenario_profiles = frozenset(
+            _sorted_unique_texts(
+                scenario["profile_ids"],
+                label=f"scenarios[{scenario_id}].profile_ids",
+                allow_empty=False,
+            )
+        )
+        if not scenario_profiles <= profile_ids:
+            raise ArchitectureQualificationRegistryError(
+                f"scenario {scenario_id!r} references an unknown profile"
+            )
         selections = frozenset(
             _sorted_unique_texts(
                 scenario["selections"],
@@ -780,7 +893,9 @@ def _validate_invariant_scenario_closure(
     invariants: Mapping[str, Mapping[str, object]],
     scenarios: Mapping[str, Mapping[str, object]],
 ) -> None:
-    scenario_owners: dict[str, list[str]] = {scenario_id: [] for scenario_id in scenarios}
+    scenario_owners: dict[str, list[str]] = {
+        scenario_id: [] for scenario_id in scenarios
+    }
     for invariant_id, invariant in invariants.items():
         scenario_ids = _sorted_unique_texts(
             invariant["scenario_ids"],
@@ -797,6 +912,10 @@ def _validate_invariant_scenario_closure(
             if scenario["family"] != invariant["family"]:
                 raise ArchitectureQualificationRegistryError(
                     f"scenario {scenario_id!r} crosses invariant family ownership"
+                )
+            if not set(invariant["profile_ids"]).issubset(set(scenario["profile_ids"])):
+                raise ArchitectureQualificationRegistryError(
+                    f"scenario {scenario_id!r} does not cover its invariant profiles"
                 )
             scenario_owners[scenario_id].append(invariant_id)
     orphaned = sorted(
@@ -853,7 +972,6 @@ def validate_invariant_registry_bytes(
         raise ArchitectureQualificationRegistryError(
             "owner_constraint_registry.content_digest differs from canonical bytes"
         )
-    _validate_profile(registry["profile"])
     required_families = _sorted_unique_texts(
         registry["required_families"],
         label="required_families",
@@ -862,7 +980,7 @@ def validate_invariant_registry_bytes(
     )
     if required_families != REQUIRED_FAMILIES:
         raise ArchitectureQualificationRegistryError(
-            "required_families must equal the exact schema-v2 family set"
+            "required_families must equal the exact schema-v3 family set"
         )
     _source_files(
         registry["implementation_files"],
@@ -875,6 +993,11 @@ def validate_invariant_registry_bytes(
         raise ArchitectureQualificationRegistryError(
             "current qualification registry must declare its external ports"
         )
+    profiles = _validate_profiles(
+        registry["profiles"],
+        repo_root=root,
+        external_port_ids=frozenset(external_ports),
+    )
     p0_triggers = _validate_p0_triggers(registry["p0_triggers"])
     boundaries = _validate_boundary_relations(
         registry["boundary_relations"], repo_root=root
@@ -887,14 +1010,18 @@ def validate_invariant_registry_bytes(
         registry["invariants"],
         repo_root=root,
         p0_trigger_ids=frozenset(p0_triggers),
+        registered_profile_ids=frozenset(profiles),
     )
     scenarios = _validate_scenarios(
         registry["scenarios"],
         repo_root=root,
         external_port_ids=frozenset(external_ports),
         boundary_ids=frozenset(boundaries),
+        profile_ids=frozenset(profiles),
     )
-    actual_families = tuple(sorted({str(item["family"]) for item in invariants.values()}))
+    actual_families = tuple(
+        sorted({str(item["family"]) for item in invariants.values()})
+    )
     if actual_families != REQUIRED_FAMILIES:
         raise ArchitectureQualificationRegistryError(
             "invariants do not cover the exact required family set"
@@ -912,8 +1039,7 @@ def validate_invariant_registry_bytes(
     missing_cutover = sorted(REQUIRED_CUTOVER_SCENARIO_IDS - set(scenarios))
     if missing_cutover:
         raise ArchitectureQualificationRegistryError(
-            "required cutover production scenarios are missing: "
-            f"{missing_cutover}"
+            f"required cutover production scenarios are missing: {missing_cutover}"
         )
     _validate_invariant_scenario_closure(invariants, scenarios)
     digest = f"sha256:{hashlib.sha256(content).hexdigest()}"
@@ -1080,9 +1206,7 @@ def build_test_manifest(
     manifest_bytes = canonical_json_document_bytes(manifest)
     return ValidatedTestManifest(
         payload=manifest,
-        test_manifest_digest=(
-            f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"
-        ),
+        test_manifest_digest=(f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"),
     )
 
 
@@ -1339,12 +1463,15 @@ __all__ = [
     "CollectedQualificationScenario",
     "LoadedArchitectureQualificationReport",
     "PROFILE_ID",
+    "PROFILE_IDS",
     "QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID",
     "QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID_V1",
     "QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID_V2",
+    "QUALIFICATION_REPORT_PAYLOAD_SCHEMA_ID_V3",
     "QUALIFICATION_REPORT_SCHEMA_ID",
     "QUALIFICATION_REPORT_SCHEMA_ID_V1",
     "QUALIFICATION_REPORT_SCHEMA_ID_V2",
+    "QUALIFICATION_REPORT_SCHEMA_ID_V3",
     "REGISTRY_ID",
     "REGISTRY_RELATIVE_PATH",
     "REGISTRY_SCHEMA_ID",

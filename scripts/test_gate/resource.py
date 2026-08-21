@@ -112,15 +112,14 @@ _HYPOTHESIS_STORAGE_FIXTURE = "scripts/test_gate/hypothesis_storage.py"
 _HOST_FIXTURES = (
     "conftest.py",
     _HYPOTHESIS_STORAGE_FIXTURE,
-    "apps/openzyme-host-api/tests/conftest.py",
 )
 _ROOT_FIXTURES = ("conftest.py", _HYPOTHESIS_STORAGE_FIXTURE)
 _RESOURCE_PROOF_NODE = (
-    "packages/openzyme-core/tests/test_test_gate_resource.py"
+    "packages/openzyme-kernel/tests/test_test_gate_resource.py"
     "::test_initial_resource_entries_bind_exact_modules_and_safe_closure"
 )
 _WORKER_PROOF_NODE = (
-    "packages/openzyme-core/tests/test_test_gate_resource.py"
+    "packages/openzyme-kernel/tests/test_test_gate_resource.py"
     "::test_xdist_worker_allocations_are_unique_and_checkout_external"
 )
 
@@ -156,216 +155,35 @@ def _parallel_temp_root_entry(
 
 INITIAL_RESOURCE_ENTRY_SPECS: tuple[ResourceEntrySpec, ...] = (
     ResourceEntrySpec(
-        entry_id="host_api_repository_native_clients_bounded_service",
-        module_path=(
-            "apps/openzyme-host-api/tests/test_repository_native_clients.py"
-        ),
+        entry_id="host_api_v2_adapter_process_local",
+        module_path="apps/openzyme-host-api/tests/test_v2_app.py",
         resource_class="bounded_service",
-        fixture_paths=(
-            *_HOST_FIXTURES,
-            "apps/openzyme-host-api/tests/repository_test_support.py",
-        ),
+        fixture_paths=_HOST_FIXTURES,
         proof_node_ids=(_RESOURCE_PROOF_NODE,),
-        audited_resources=tuple(
-            sorted(
-                (
-                    ("cache", "worker_isolated", "cache provider disabled"),
-                    ("cwd", "process_local", "tests do not change process cwd"),
-                    (
-                        "environment",
-                        "explicit_subprocess_environments",
-                        "native clients and service children use explicit environments",
-                    ),
-                    (
-                        "filesystem",
-                        "test_temp_root",
-                        "TLS, Git, LFS, SQLite, and clones use tmp_path",
-                    ),
-                    ("micu", "forbidden", "no MICU ledger or token consumer"),
-                    (
-                        "port",
-                        "loopback_ephemeral_bounded_listener",
-                        "one loopback TLS listener uses an ephemeral test port",
-                    ),
-                    (
-                        "process",
-                        "joined_uvicorn_thread_and_native_clients",
-                        "server thread is joined and native clients are awaited",
-                    ),
-                    (
-                        "qualification",
-                        "forbidden",
-                        "no qualification output or admission consumer",
-                    ),
-                    (
-                        "sandbox",
-                        "forbidden",
-                        "no live sandbox or HPC workspace",
-                    ),
-                    (
-                        "signal",
-                        "forbidden",
-                        "no process signal or process-group operation",
-                    ),
-                    (
-                        "sqlite",
-                        "test_temp_root",
-                        "file database is exclusive to the test tmp_path",
-                    ),
-                )
-            )
-        ),
-    ),
-    ResourceEntrySpec(
-        entry_id="host_api_api_temp_root",
-        module_path="apps/openzyme-host-api/tests/test_api.py",
-        resource_class="parallel_temp_root",
-        fixture_paths=_HOST_FIXTURES,
-        proof_node_ids=(_RESOURCE_PROOF_NODE, _WORKER_PROOF_NODE),
-        audited_resources=_common_audit(
-            filesystem="test_temp_root",
-            sqlite="memory_or_test_temp_root",
-            environment="worker_process_local",
-            process="joined_threads_and_testclient_lifespans",
-        ),
-    ),
-    ResourceEntrySpec(
-        entry_id="host_api_runtime_commands_temp_root",
-        module_path="apps/openzyme-host-api/tests/test_runtime_commands.py",
-        resource_class="parallel_temp_root",
-        fixture_paths=_HOST_FIXTURES,
-        proof_node_ids=(_RESOURCE_PROOF_NODE, _WORKER_PROOF_NODE),
-        audited_resources=_common_audit(
-            filesystem="test_temp_root",
-            sqlite="memory_or_test_temp_root",
-            environment="worker_process_local",
-            process="joined_threads_and_testclient_lifespans",
-        ),
-    ),
-    ResourceEntrySpec(
-        entry_id="core_agent_scheduler_temp_root",
-        module_path="packages/openzyme-core/tests/test_agent_scheduler.py",
-        resource_class="parallel_temp_root",
-        fixture_paths=_ROOT_FIXTURES,
-        proof_node_ids=(_RESOURCE_PROOF_NODE, _WORKER_PROOF_NODE),
-        audited_resources=_common_audit(
-            filesystem="test_temp_root",
-            sqlite="memory_or_test_temp_root",
-            environment="worker_process_local",
-            process="joined_threads_only",
-        ),
-    ),
-    ResourceEntrySpec(
-        entry_id="core_harness_strategy_properties_worker_local",
-        module_path="packages/openzyme-core/tests/test_harness_strategy_properties.py",
-        resource_class="parallel_temp_root",
-        fixture_paths=_ROOT_FIXTURES,
-        proof_node_ids=(_RESOURCE_PROOF_NODE, _WORKER_PROOF_NODE),
         audited_resources=_common_audit(
             filesystem="none",
-            sqlite="memory_only",
+            sqlite="none",
             environment="worker_process_local",
-            process="none",
-        ),
-    ),
-    ResourceEntrySpec(
-        entry_id="core_sqlite_uow_temp_root",
-        module_path="packages/openzyme-core/tests/test_sqlite_uow.py",
-        resource_class="parallel_temp_root",
-        fixture_paths=_ROOT_FIXTURES,
-        proof_node_ids=(_RESOURCE_PROOF_NODE, _WORKER_PROOF_NODE),
-        audited_resources=_common_audit(
-            filesystem="test_temp_root",
-            sqlite="test_temp_root_only",
-            environment="worker_process_local",
-            process="joined_threads_only",
+            process="bounded_subprocess_and_asgi_lifespan",
         ),
     ),
     _parallel_temp_root_entry(
-        entry_id="host_api_security_temp_root",
-        module_path="apps/openzyme-host-api/tests/test_security.py",
-        fixture_paths=_HOST_FIXTURES,
-        process="testclient_lifespans_joined",
-    ),
-    _parallel_temp_root_entry(
-        entry_id="core_bio_research_tools_worker_local",
-        module_path="packages/openzyme-core/tests/test_bio_research_tools.py",
-        fixture_paths=_ROOT_FIXTURES,
-        filesystem="immutable_checkout_read",
-        sqlite="memory_only",
-    ),
-    _parallel_temp_root_entry(
-        entry_id="core_compat_caller_audit_temp_root",
-        module_path="packages/openzyme-core/tests/test_compat_caller_audit.py",
-        fixture_paths=_ROOT_FIXTURES,
-        filesystem="immutable_checkout_read_and_test_temp_root",
-        sqlite="none",
-    ),
-    _parallel_temp_root_entry(
-        entry_id="core_durable_events_worker_local",
-        module_path="packages/openzyme-core/tests/test_durable_events.py",
-        fixture_paths=_ROOT_FIXTURES,
-        filesystem="none",
-        sqlite="memory_only",
-    ),
-    _parallel_temp_root_entry(
-        entry_id="core_memory_worker_local",
-        module_path="packages/openzyme-core/tests/test_memory.py",
-        fixture_paths=_ROOT_FIXTURES,
-        filesystem="none",
-        sqlite="memory_only",
-    ),
-    _parallel_temp_root_entry(
-        entry_id="core_migrations_worker_local",
-        module_path="packages/openzyme-core/tests/test_migrations.py",
-        fixture_paths=_ROOT_FIXTURES,
-        filesystem="immutable_packaged_migration_read",
-        sqlite="memory_only",
-    ),
-    _parallel_temp_root_entry(
-        entry_id="core_protocols_worker_local",
-        module_path="packages/openzyme-core/tests/test_protocols.py",
-        fixture_paths=_ROOT_FIXTURES,
-        sqlite="memory_or_test_temp_root",
-    ),
-    _parallel_temp_root_entry(
-        entry_id="core_runtime_consistency_worker_local",
-        module_path="packages/openzyme-core/tests/test_runtime_consistency.py",
-        fixture_paths=_ROOT_FIXTURES,
-        filesystem="none",
-        sqlite="memory_only",
-    ),
-    _parallel_temp_root_entry(
-        entry_id="core_task_board_worker_local",
-        module_path="packages/openzyme-core/tests/test_task_board.py",
-        fixture_paths=_ROOT_FIXTURES,
-        filesystem="none",
-        sqlite="memory_only",
-    ),
-    _parallel_temp_root_entry(
-        entry_id="core_workflow_knowledge_temp_root",
-        module_path="packages/openzyme-core/tests/test_workflow_knowledge.py",
-        fixture_paths=_ROOT_FIXTURES,
-        filesystem="immutable_checkout_read_and_test_temp_root",
-        sqlite="none",
-    ),
-    _parallel_temp_root_entry(
-        entry_id="engines_deep_research_worker_local",
-        module_path="packages/openzyme-engines/tests/test_deep_research.py",
+        entry_id="kernel_test_gate_resource_worker_local",
+        module_path="packages/openzyme-kernel/tests/test_test_gate_resource.py",
         fixture_paths=_ROOT_FIXTURES,
         filesystem="immutable_checkout_read",
         sqlite="none",
     ),
     _parallel_temp_root_entry(
-        entry_id="pipeline_aox_similarity_worker_local",
-        module_path="packages/openzyme-pipeline/tests/test_aox_similarity.py",
+        entry_id="kernel_compat_caller_audit_temp_root",
+        module_path="packages/openzyme-kernel/tests/test_compat_caller_audit.py",
         fixture_paths=_ROOT_FIXTURES,
-        filesystem="none",
+        filesystem="immutable_checkout_read_and_test_temp_root",
         sqlite="none",
     ),
     _parallel_temp_root_entry(
-        entry_id="runtime_public_diagnostics_worker_local",
-        module_path="packages/openzyme-runtime/tests/test_public_diagnostics.py",
+        entry_id="enzymedesign_aox_similarity_worker_local",
+        module_path="packages/enzymedesign-aox-executor/tests/test_aox_similarity.py",
         fixture_paths=_ROOT_FIXTURES,
         filesystem="none",
         sqlite="none",

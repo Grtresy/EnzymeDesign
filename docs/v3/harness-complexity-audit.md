@@ -6,6 +6,14 @@
 
 本文是追踪文档，不是实现变更。每个发现项前面都带复选框。后续 change 修正一个或多个问题后，应回到本文勾选对应项，并补充简短说明或 change / PR 引用。
 
+2026-08-21 架构拆分记录：framework-free runtime command/outcome 由 `openzyme-runtime-spi` 拥有，
+`openzyme-runtime-llm` 以 exact provider/backend 和 bounded context/step/time/usage 实现 Adapter，
+`openzyme-process-podman` 拥有 process/filesystem/transfer/container lifecycle；thin CLI 与公共 diagnostic
+redaction 不依赖 mixed runtime。旧 Core/Domain/Runtime/Execution authority packages 已从 active workspace
+删除，Standard Host 通过 exact startup proof、runtime mount 与 operational selection 使用 Kernel writer。
+本文后续出现的已删除 `packages/openzyme-core/...` 或旧 Host 路径均是发现当时的历史证据，不是当前源码路径；
+对应修正记录与当前 target tests 才是现状。真实历史 deployment 的离线 adoption/cutover 未在本 change 中执行。
+
 默认校准目标：
 
 **OpenZyme V3 应采用严格 harness 边界。**
@@ -377,6 +385,14 @@ execution boundaries。Master agent 与 teammate agents 负责用户意图理解
   不修改 validator、failure chain、recovery 或 orchestration。README 的 conductor `@3` 漂移另以 production
   `@4` constant 驱动的跨来源 regression 封闭。该修复减少重复真值与策略摩擦，不把 staging 变成隐式
   fallback，也不替 agent 选择科学步骤或 cadence。
+
+  2026-08-20 composition split 复审：architecture qualification registry 已升级为 `@3`，分别固定
+  Kernel fake、Plugin-free Standard 与 EnzymeDesign 三种剖面。新增的 profile 场景直接运行目标
+  package/Distribution 测试，覆盖 Plugin/Driver、capability/affordance、local/HPC Workspace Runtime、
+  wheel/import/archive 以及 source-document owner closure；Science/HPC 场景不再被错误映射到 Kernel-only。
+  报告 `@4` 绑定 OpenSpec、profiles、Distribution/component manifests、wheels、catalogs、inventory、
+  schemas、文档字节与 test selection。子进程禁用 live credential/IP socket，任何 skip/xfail 失败；
+  `premerge_subset` 仍只是 mainline 的有界优化证据，不是 cutover proof。
 
 - [x] AOX observer/driver 是否仍是 safety mechanism，还是把测试策略写进 Harness 的重复控制面。
 

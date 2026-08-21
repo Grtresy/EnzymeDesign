@@ -19,9 +19,9 @@ from mcp_hpc_runner.workspace_revision_jobs import SchedulerOccurrenceCredential
 from mcp_hpc_runner.workspace_revision_jobs import WorkspaceRevisionJobError
 from mcp_hpc_runner.workspace_revision_jobs import WorkspaceRevisionJobService
 from mcp_hpc_runner.transport import SshTransportError
-from openzyme_domain import WorkspaceJobWireContractError
-from openzyme_domain import canonical_workspace_job_wire_digest
-from openzyme_domain import serialize_workspace_job_cancellation_receipt
+from openzyme_execution_contracts import WorkspaceJobWireContractError
+from openzyme_execution_contracts import canonical_workspace_job_wire_digest
+from openzyme_execution_contracts import serialize_workspace_job_cancellation_receipt
 
 
 DIGEST = f"sha256:{'a' * 64}"
@@ -46,7 +46,7 @@ def _runspec() -> ExecutorWorkspaceRunSpec:
     )
     resources = ResourceSpec()
     manifest_payload = {
-        "schema_version": "compute_source_manifest@1",
+        "schema_version": "compute_source_manifest@2",
         "manifest_id": "manifest_1",
         "request_id": "source_request_1",
         "workspace_id": "workspace_1",
@@ -55,7 +55,8 @@ def _runspec() -> ExecutorWorkspaceRunSpec:
         "lfs_closure_manifest_digest": DIGEST,
         "binding_digest": DIGEST,
         "repository_policy_digest": DIGEST,
-        "toolchain_digest": DIGEST,
+        "target_inventory_generation": 1,
+        "target_inventory_digest": DIGEST,
         "owner_identity_digest": DIGEST,
         "entries": [entry.to_dict()],
         "created_at": NOW,
@@ -82,7 +83,8 @@ def _runspec() -> ExecutorWorkspaceRunSpec:
         source_manifest_created_at=NOW,
         target_profile_digest=DIGEST,
         runner_policy_digest=DIGEST,
-        toolchain_digest=DIGEST,
+        target_inventory_generation=1,
+        target_inventory_digest=DIGEST,
         cwd=".",
         command=("true",),
         command_digest=models._canonical_digest(["true"]),

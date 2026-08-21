@@ -11,6 +11,15 @@ claim signal -> acquire session lease -> build truthful projection
 loop 是 bounded coordinator，不是 workflow truth owner。它读取 typed repositories，通过 canonical
 tool router mutation，并将每个 outcome 显式记录。
 
+新 Kernel 的 coordinator 从 exact claimed signal、SessionRuntimeLease、Distribution/Adapter/Extension/catalog
+identities、SessionCapabilityBindingRevision 与本 turn ToolAffordanceSnapshot 构造 immutable
+`RuntimeTurnCommand`。Runtime Adapter 只返回 closed proposal；Kernel 在原子 once-only consume 时重验全部
+identity/budget，并分别写 continuation 与 settlement outbox。重复 outcome 不重跑 Adapter，runtime settlement
+也没有 `Task` 终态写权限。目标 LLM Adapter 已实现 exact provider/backend、bounded context/step/time/usage、
+同 provider 有限 retry 和 no-switch failure；LangChain factory/invoker、token/model limits、debug 与
+connectivity mechanism 也由该包唯一拥有并由 Standard factory 构造。旧 production loop 在显式 composition
+cutover 前仍保留，不能把目标实现存在当成已激活。
+
 ## Projection
 
 model context 包含：objective、task/lane、assignment、inbox、approval、workspace status、private/published
@@ -50,3 +59,8 @@ report presence、scientific closure、job success 或 max-step exit 推断 term
 provider unavailable、invalid tool response、context overflow、lease loss 和 repository conflict 都有 typed
 failure。unknown external effect 交给 execution owner reconcile；loop 不重发。stale context 终止当前 turn，
 不把旧 catalog/tool/filesystem shape 翻译到新 contract。
+
+LLM provider failure 不是 Task failure 或外部业务 mutation proof。公开 observation 只包含 selected provider、
+backend/config digest、稳定 error code、retry eligibility、`mutation_applied=false` 和
+`fallback_performed=false`；原始 provider prose/credential/URL 只进入 private diagnostic。Adapter 不尝试另一
+provider/model/base URL。

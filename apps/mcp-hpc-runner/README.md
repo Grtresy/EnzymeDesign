@@ -1,8 +1,10 @@
 # MCP HPC Runner
 
 `mcp-hpc-runner` is the trusted SSH/Slurm boundary for revision-bound OpenZyme jobs.
-It accepts `executor_workspace_runspec@2`, prepares an exact Gitless compute tree,
+It accepts `executor_workspace_runspec@3`, prepares an exact Gitless compute tree,
 dispatches one qualified occurrence, and exposes only an opaque `run_id` lifecycle.
+Its Python dependency boundary is the narrow `openzyme-execution-contracts` wheel;
+it does not import the platform-wide `openzyme-domain` package.
 
 ## Run locally
 
@@ -18,18 +20,24 @@ uv --project apps/mcp-hpc-runner run mcp-hpc-runner serve \
 A request binds the executor workspace id/generation, repository binding, exact source
 revision/ref/commit/tree, verified LFS closure, repository-relative cwd, command,
 environment policy, resources, target profile, execution mode, controlled-operation
-identity, scheduler occurrence credential, runner policy, and absolute deadline.
+identity, scheduler occurrence credential, runner policy, exact target inventory
+generation/closure digest, and absolute deadline.
 
 The request does not accept Host-local paths, mutable branch-only source, arbitrary
 remote roots, declared output lists, old staging references, repository credentials,
 or raw scheduler handles. Unknown fields fail before source preparation or dispatch.
 
+Runner configuration is also closed. It contains transport, workspace, scheduler and
+bounded resource policy only; it does not accept a per-tool or per-domain adapter catalog.
+Software/version/asset requirements belong to Tool Plugin manifests, qualified target
+inventory and explicit Distribution-selected Drivers.
+
 ## Source preparation
 
 The runner verifies the pinned binding/commit/tree/LFS closure and builds a job-specific
 compute tree without `.git`, Git/LFS binaries, credentials, endpoints, or object-store
-locators. Cache reuse is keyed by the exact binding, commit, closure, toolchain, target,
-and owner identity; drift fails closed.
+locators. Cache reuse is keyed by the exact binding, commit, LFS closure, target inventory
+generation/closure, target, and owner identity; drift fails closed.
 
 ## Dispatch and recovery
 

@@ -1,0 +1,893 @@
+{
+  "content_bound_seam_ids": [
+    "three-profile-architecture-qualification"
+  ],
+  "entries": [
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/02-control-plane.md",
+        "docs/v3/04-public-interfaces.md"
+      ],
+      "owner": "openzyme.contracts",
+      "seam_id": "authority-public-name",
+      "source_refs": [
+        "packages/openzyme-contracts/src/openzyme_contracts/authority.py"
+      ],
+      "test_refs": [
+        "packages/openzyme-contracts/tests/test_contracts.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/02-control-plane.md",
+        "docs/v3/04-public-interfaces.md",
+        "packages/openzyme-store-sqlite/README.md"
+      ],
+      "owner": "openzyme.store.sqlite",
+      "seam_id": "authority-store-mapping",
+      "source_refs": [
+        "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/authority_mapping.py",
+        "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/entity_codecs.py",
+        "docs/v3/architecture/authority-store-mapping.json",
+        "docs/v3/architecture/table-owner-manifest.json",
+        "scripts/check-openzyme-architecture.py"
+      ],
+      "test_refs": [
+        "packages/openzyme-store-sqlite/tests/test_authority_entity_codec.py",
+        "packages/openzyme-store-sqlite/tests/test_authority_mapping.py",
+        "packages/openzyme-contracts/tests/test_contracts.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/02-control-plane.md",
+        "packages/openzyme-contracts/README.md"
+      ],
+      "owner": "openzyme.contracts",
+      "seam_id": "canonical-control-plane-repository-contracts",
+      "source_refs": [
+        "packages/openzyme-contracts/src/openzyme_contracts/control_plane.py",
+        "packages/openzyme-contracts/src/openzyme_contracts/repository_bindings.py",
+        "docs/v3/architecture/temporary-reexport-ledger.json"
+      ],
+      "test_refs": [
+        "packages/openzyme-contracts/tests/test_repository_bindings.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/02-control-plane.md",
+        "packages/openzyme-contracts/README.md"
+      ],
+      "owner": "openzyme.contracts",
+      "seam_id": "canonical-reliability-failure-contracts",
+      "source_refs": [
+        "packages/openzyme-contracts/src/openzyme_contracts/reliability.py",
+        "packages/openzyme-contracts/src/openzyme_contracts/failures.py",
+        "docs/v3/architecture/temporary-reexport-ledger.json"
+      ],
+      "test_refs": [
+        "packages/openzyme-contracts/tests/test_contracts.py",
+        "packages/openzyme-contracts/tests/test_reliability.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/02-control-plane.md",
+        "docs/v3/04-public-interfaces.md",
+        "packages/openzyme-contracts/README.md"
+      ],
+      "owner": "openzyme.contracts",
+      "seam_id": "canonical-revision-collaboration-contracts",
+      "source_refs": [
+        "packages/openzyme-contracts/src/openzyme_contracts/workspace_checkpoints.py",
+        "packages/openzyme-contracts/src/openzyme_contracts/workspace_publications.py",
+        "packages/openzyme-contracts/src/openzyme_contracts/revision_paths.py",
+        "packages/openzyme-contracts/src/openzyme_contracts/revision_ports.py",
+        "docs/v3/architecture/temporary-reexport-ledger.json"
+      ],
+      "test_refs": [
+        "packages/openzyme-contracts/tests/test_workspace_checkpoints.py",
+        "packages/openzyme-contracts/tests/test_workspace_publications.py",
+        "packages/openzyme-contracts/tests/test_revision_ports.py",
+        "scripts/qualify-openzyme-contract-wheels.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "packages/openzyme-contracts/README.md",
+        "docs/v3/03-capability-engines.md",
+        "docs/v3/05-agent-runtime.md"
+      ],
+      "owner": "openzyme.contracts",
+      "seam_id": "canonical-tool-contracts",
+      "source_refs": [
+        "packages/openzyme-contracts/src/openzyme_contracts/tools.py",
+        "packages/openzyme-contracts/src/openzyme_contracts/tool_runtime.py"
+      ],
+      "test_refs": [
+        "packages/openzyme-contracts/tests/test_contracts.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/adr/0001-what-is-openzyme.md",
+        "docs/v3/03-capability-engines.md"
+      ],
+      "owner": "openzyme.kernel",
+      "seam_id": "capability-and-tool-affordance",
+      "source_refs": [
+        "packages/openzyme-contracts/src/openzyme_contracts/capabilities.py",
+        "packages/openzyme-kernel/src/openzyme_kernel/affordance.py",
+        "packages/openzyme-kernel/src/openzyme_kernel/runtime_capability_gateway.py",
+        "packages/openzyme-kernel/src/openzyme_kernel/catalog.py",
+        "packages/openzyme-kernel/src/openzyme_kernel/registry.py",
+        "packages/openzyme-kernel/src/openzyme_kernel/binding.py"
+      ],
+      "test_refs": [
+        "packages/openzyme-kernel/tests/test_affordance.py",
+        "packages/openzyme-kernel/tests/test_runtime_capability_gateway.py",
+        "packages/openzyme-kernel/tests/test_binding.py",
+        "packages/openzyme-kernel/tests/test_composition.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/01-target-architecture.md",
+        "docs/v3/architecture-qualification/README.md"
+      ],
+      "owner": "openzyme.kernel",
+      "seam_id": "catalog-owner-inventory",
+      "source_refs": [
+        "scripts/check-openzyme-architecture.py",
+        "docs/v3/architecture/catalog-owner-inventory.json",
+        "docs/v3/architecture/component-boundary-policy.json"
+      ],
+      "test_refs": [
+        "packages/openzyme-kernel/tests/test_architecture_inventory.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/02-control-plane.md",
+        "docs/v3/03-capability-engines.md",
+        "docs/v3/07-runtime-hpc-reliability.md",
+        "docs/v3/execution-pipeline-docs/workspace-revision-jobs.md",
+        "packages/openzyme-compute/README.md"
+      ],
+      "owner": "openzyme.compute",
+      "seam_id": "compute-plugin-lifecycle-and-legacy-contract-owner",
+      "source_refs": [
+        "packages/openzyme-compute/src/openzyme_compute/contracts.py",
+        "packages/openzyme-compute/src/openzyme_compute/lifecycle.py",
+        "packages/openzyme-compute/src/openzyme_compute/runtime_contributions.py",
+        "packages/openzyme-compute/src/openzyme_compute/transaction.py",
+        "packages/openzyme-compute/src/openzyme_compute/workspace_revision_executions.py",
+        "packages/openzyme-compute/src/openzyme_compute/manifests/plugin.json",
+        "packages/openzyme-compute/src/openzyme_compute/manifest_locator.py",
+        "docs/v3/architecture/table-owner-manifest.json",
+        "docs/v3/architecture/temporary-reexport-ledger.json"
+      ],
+      "test_refs": [
+        "packages/openzyme-compute/tests/test_compute_contracts.py",
+        "packages/openzyme-compute/tests/test_compute_lifecycle.py",
+        "packages/openzyme-compute/tests/test_component_manifest.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/v3/adr/0001-what-is-openzyme.md",
+        "docs/v3/03-capability-engines.md",
+        "packages/enzymedesign-vina/README.md"
+      ],
+      "owner": "enzymedesign.vina",
+      "seam_id": "compute-vina-capability-route",
+      "source_refs": [
+        "packages/enzymedesign-vina/src/enzymedesign_vina/contracts.py",
+        "packages/enzymedesign-vina/src/enzymedesign_vina/runtime.py",
+        "packages/enzymedesign-vina/src/enzymedesign_vina/drivers.py",
+        "packages/enzymedesign-vina/src/enzymedesign_vina/manifests/plugin.json",
+        "packages/enzymedesign-vina/src/enzymedesign_vina/manifests/local-driver.json",
+        "packages/enzymedesign-vina/src/enzymedesign_vina/manifests/hpc-driver.json",
+        "distributions/enzymedesign/openzyme-composition.toml"
+      ],
+      "test_refs": [
+        "packages/enzymedesign-vina/tests/test_vina_plugin.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/07-runtime-hpc-reliability.md",
+        "packages/openzyme-execution-contracts/README.md",
+        "apps/mcp-hpc-runner/README.md"
+      ],
+      "owner": "openzyme.execution.contracts",
+      "seam_id": "execution-runner-wire-contract-owner",
+      "source_refs": [
+        "packages/openzyme-execution-contracts/src/openzyme_execution_contracts/workspace_job_wire.py",
+        "packages/openzyme-execution-contracts/src/openzyme_execution_contracts/workloads.py",
+        "packages/openzyme-execution-sdk/src/openzyme_execution_sdk/client.py",
+        "packages/openzyme-execution-sdk/src/openzyme_execution_sdk/workload.py",
+        "apps/mcp-hpc-runner/pyproject.toml",
+        "docs/v3/architecture/temporary-reexport-ledger.json"
+      ],
+      "test_refs": [
+        "packages/openzyme-execution-contracts/tests/test_workspace_job_wire.py",
+        "packages/openzyme-execution-contracts/tests/test_workloads.py",
+        "packages/openzyme-execution-sdk/tests/test_execution_sdk.py",
+        "apps/mcp-hpc-runner/tests/test_workspace_revision_job_wire.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/adr/0001-what-is-openzyme.md",
+        "docs/v3/01-target-architecture.md",
+        "packages/openzyme-standard/README.md"
+      ],
+      "owner": "openzyme.kernel",
+      "seam_id": "explicit-extension-composition",
+      "source_refs": [
+        "packages/openzyme-kernel/src/openzyme_kernel/composition.py",
+        "packages/openzyme-kernel/src/openzyme_kernel/extension_mount.py",
+        "packages/openzyme-extension-spi/src/openzyme_extension_spi/manifests.py",
+        "packages/openzyme-standard/src/openzyme_standard/composition.py",
+        "distributions/openzyme-standard/openzyme-composition.toml",
+        "docs/v3/architecture/component-boundary-policy.json",
+        "scripts/check-openzyme-architecture.py"
+      ],
+      "test_refs": [
+        "packages/openzyme-kernel/tests/test_composition.py",
+        "packages/openzyme-kernel/tests/test_architecture_manifests.py",
+        "packages/openzyme-standard/tests/test_composition.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/04-public-interfaces.md",
+        "apps/openzyme-host-api/README.md",
+        "apps/openzyme-host-cli/README.md",
+        "apps/openzyme-web-ui/README.md",
+        "packages/openzyme-client/README.md"
+      ],
+      "owner": "openzyme.host.api",
+      "seam_id": "file-workspace-public-v2-host-surface",
+      "source_refs": [
+        "packages/openzyme-contracts/src/openzyme_contracts/public_workspace.py",
+        "packages/openzyme-contracts/src/openzyme_contracts/schemas/file_workspace_public_v2.schema.json",
+        "packages/openzyme-kernel/src/openzyme_kernel/public_workspace.py",
+        "packages/openzyme-kernel/src/openzyme_kernel/extension_mount.py",
+        "apps/openzyme-host-api/src/openzyme_host_api/file_workspace_v2.py",
+        "packages/openzyme-client/src/openzyme_client/v2.py",
+        "apps/openzyme-host-cli/src/openzyme_host_cli/v2_client.py",
+        "apps/openzyme-web-ui/src/file_workspace_v2_state.js",
+        "apps/openzyme-web-ui/src/file_workspace_v2_types.d.ts"
+      ],
+      "test_refs": [
+        "packages/openzyme-kernel/tests/test_public_workspace_v2.py",
+        "apps/openzyme-host-api/tests/test_v2_app.py",
+        "packages/openzyme-client/tests/test_v2_client.py",
+        "apps/openzyme-host-cli/tests/test_v2_client.py",
+        "apps/openzyme-web-ui/tests/core_shell_v2.test.js"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/01-target-architecture.md",
+        "docs/v3/02-control-plane.md",
+        "packages/openzyme-workspace-git-lfs/README.md"
+      ],
+      "owner": "openzyme.workspace.git.lfs",
+      "seam_id": "git-lfs-adapter-contract-owner",
+      "source_refs": [
+        "packages/openzyme-workspace-git-lfs/src/openzyme_workspace_git_lfs/agent_workspaces.py",
+        "packages/openzyme-workspace-git-lfs/src/openzyme_workspace_git_lfs/lfs.py",
+        "docs/v3/architecture/temporary-reexport-ledger.json"
+      ],
+      "test_refs": [
+        "packages/openzyme-workspace-git-lfs/tests/test_agent_workspaces.py",
+        "packages/openzyme-workspace-git-lfs/tests/test_lfs.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/v3/adr/0001-what-is-openzyme.md",
+        "docs/v3/03-capability-engines.md",
+        "docs/v3/07-runtime-hpc-reliability.md",
+        "packages/enzymedesign-hmmer/README.md"
+      ],
+      "owner": "enzymedesign.hmmer",
+      "seam_id": "hpc-hmmer-capability-route",
+      "source_refs": [
+        "packages/openzyme-extension-spi/src/openzyme_extension_spi/contributions.py",
+        "packages/openzyme-kernel/src/openzyme_kernel/affordance.py",
+        "packages/enzymedesign-hmmer/src/enzymedesign_hmmer/contracts.py",
+        "packages/enzymedesign-hmmer/src/enzymedesign_hmmer/runtime.py",
+        "packages/enzymedesign-hmmer/src/enzymedesign_hmmer/drivers.py",
+        "packages/enzymedesign-hmmer/src/enzymedesign_hmmer/manifests/plugin.json",
+        "packages/enzymedesign-hmmer/src/enzymedesign_hmmer/manifests/local-driver.json",
+        "packages/enzymedesign-hmmer/src/enzymedesign_hmmer/manifests/hpc-driver.json",
+        "distributions/enzymedesign/openzyme-composition.toml"
+      ],
+      "test_refs": [
+        "packages/openzyme-kernel/tests/test_affordance.py",
+        "packages/enzymedesign-hmmer/tests/test_hmmer_plugin.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "packages/openzyme-hpc-slurm/README.md",
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/03-capability-engines.md",
+        "docs/v3/08-failure-recovery-and-scientific-attempts.md"
+      ],
+      "owner": "openzyme.hpc.slurm",
+      "seam_id": "hpc-slurm-scheduler-adapter",
+      "source_refs": [
+        "packages/openzyme-hpc/src/openzyme_hpc/scheduler.py",
+        "packages/openzyme-hpc-slurm/src/openzyme_hpc_slurm/adapter.py",
+        "packages/openzyme-hpc-slurm/src/openzyme_hpc_slurm/manifests/adapter.json"
+      ],
+      "test_refs": [
+        "packages/openzyme-hpc-slurm/tests/test_scheduler_adapter.py",
+        "packages/openzyme-hpc-slurm/tests/test_component_manifest.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "packages/openzyme-hpc-ssh/README.md",
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/03-capability-engines.md",
+        "docs/v3/08-failure-recovery-and-scientific-attempts.md"
+      ],
+      "owner": "openzyme.hpc.ssh",
+      "seam_id": "hpc-ssh-workspace-adapter",
+      "source_refs": [
+        "packages/openzyme-hpc-ssh/src/openzyme_hpc_ssh/workspace.py",
+        "packages/openzyme-hpc-ssh/src/openzyme_hpc_ssh/manifests/adapter.json",
+        "packages/openzyme-contracts/src/openzyme_contracts/workspace_runtime.py"
+      ],
+      "test_refs": [
+        "packages/openzyme-hpc-ssh/tests/test_workspace_adapter.py",
+        "packages/openzyme-hpc-ssh/tests/test_component_manifest.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/01-target-architecture.md",
+        "docs/v3/03-capability-engines.md",
+        "docs/v3/deployment-composition-operator-guide.md",
+        "apps/mcp-hpc-runner/README.md",
+        "packages/openzyme-hpc/README.md"
+      ],
+      "owner": "openzyme.hpc",
+      "seam_id": "hpc-target-inventory",
+      "source_refs": [
+        "packages/openzyme-hpc/src/openzyme_hpc/inventory.py",
+        "packages/openzyme-hpc/src/openzyme_hpc/qualification.py",
+        "packages/openzyme-hpc/src/openzyme_hpc/sqlite_inventory.py",
+        "packages/openzyme-hpc/src/openzyme_hpc/migrations/001_target_toolchain_inventory.sql",
+        "apps/mcp-hpc-runner/src/mcp_hpc_runner/config.py",
+        "apps/mcp-hpc-runner/src/mcp_hpc_runner/models.py",
+        "packages/openzyme-contracts/src/openzyme_contracts/capabilities.py",
+        "packages/openzyme-kernel/src/openzyme_kernel/binding.py"
+      ],
+      "test_refs": [
+        "packages/openzyme-hpc/tests/test_inventory.py",
+        "packages/openzyme-hpc/tests/test_qualification.py",
+        "packages/openzyme-hpc/tests/test_sqlite_inventory.py",
+        "apps/mcp-hpc-runner/tests/test_executor_workspace_contract.py",
+        "packages/openzyme-kernel/tests/test_affordance.py",
+        "packages/openzyme-kernel/tests/test_binding.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/02-control-plane.md",
+        "docs/v3/07-runtime-hpc-reliability.md",
+        "packages/openzyme-hpc/README.md"
+      ],
+      "owner": "openzyme.hpc",
+      "seam_id": "hpc-workspace-contract-owner",
+      "source_refs": [
+        "packages/openzyme-hpc/src/openzyme_hpc/contracts.py",
+        "docs/v3/architecture/temporary-reexport-ledger.json"
+      ],
+      "test_refs": [
+        "packages/openzyme-hpc/tests/test_contracts.py",
+        "scripts/qualify-openzyme-contract-wheels.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "packages/openzyme-hpc/README.md",
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/03-capability-engines.md"
+      ],
+      "owner": "openzyme.hpc",
+      "seam_id": "hpc-workspace-plugin-contracts-and-routes",
+      "source_refs": [
+        "packages/openzyme-hpc/src/openzyme_hpc/contracts.py",
+        "packages/openzyme-hpc/src/openzyme_hpc/workspace_lifecycle.py",
+        "packages/openzyme-hpc/src/openzyme_hpc/workspace_state_machine.py",
+        "packages/openzyme-hpc/src/openzyme_hpc/workspace_application_ports.py",
+        "packages/openzyme-hpc/src/openzyme_hpc/workspace_application.py",
+        "packages/openzyme-hpc/src/openzyme_hpc/sqlite_workspace_repository.py",
+        "packages/openzyme-hpc/src/openzyme_hpc/workspace_tools.py",
+        "packages/openzyme-hpc/src/openzyme_hpc/projection_worker.py",
+        "packages/openzyme-hpc/src/openzyme_hpc/routes.py",
+        "packages/openzyme-hpc/src/openzyme_hpc/runtime_contributions.py",
+        "packages/openzyme-hpc/src/openzyme_hpc/manifests/plugin.json",
+        "packages/openzyme-hpc/src/openzyme_hpc/manifest_locator.py",
+        "packages/enzymedesign-distribution/src/enzymedesign_distribution/composition.py"
+      ],
+      "test_refs": [
+        "packages/openzyme-hpc/tests/test_component_manifest.py",
+        "packages/openzyme-hpc/tests/test_workspace_lifecycle.py",
+        "packages/openzyme-hpc/tests/test_workspace_state_machine.py",
+        "packages/openzyme-hpc/tests/test_workspace_tools.py",
+        "packages/openzyme-hpc/tests/test_routes.py",
+        "packages/openzyme-hpc/tests/test_contracts.py",
+        "packages/openzyme-hpc/tests/test_workspace_application.py",
+        "packages/enzymedesign-distribution/tests/test_distribution.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/02-control-plane.md",
+        "docs/v3/05-agent-runtime.md",
+        "packages/openzyme-contracts/README.md",
+        "packages/openzyme-runtime-spi/README.md"
+      ],
+      "owner": "openzyme.contracts",
+      "seam_id": "infrastructure-and-runtime-ports",
+      "source_refs": [
+        "packages/openzyme-contracts/src/openzyme_contracts/infrastructure.py",
+        "packages/openzyme-kernel/src/openzyme_kernel/runtime_capability_gateway.py",
+        "packages/openzyme-kernel/src/openzyme_kernel/runtime_turns.py",
+        "packages/openzyme-runtime-spi/src/openzyme_runtime_spi/runtime.py",
+        "packages/openzyme-runtime-spi/src/openzyme_runtime_spi/process.py"
+      ],
+      "test_refs": [
+        "packages/openzyme-contracts/tests/test_infrastructure_ports.py",
+        "packages/openzyme-kernel/tests/test_runtime_capability_gateway.py",
+        "packages/openzyme-kernel/tests/test_runtime_turns.py",
+        "packages/openzyme-runtime-spi/tests/test_runtime_spi.py",
+        "scripts/qualify-openzyme-contract-wheels.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/02-control-plane.md",
+        "docs/v3/03-capability-engines.md",
+        "docs/v3/plugin-authoring-guide.md"
+      ],
+      "owner": "openzyme.extension-spi",
+      "seam_id": "kernel-application-extension-spi",
+      "source_refs": [
+        "packages/openzyme-extension-spi/src/openzyme_extension_spi/application.py",
+        "packages/openzyme-extension-spi/src/openzyme_extension_spi/drivers.py",
+        "packages/openzyme-extension-spi/src/openzyme_extension_spi/protocols.py",
+        "packages/openzyme-extension-spi/src/openzyme_extension_spi/transactions.py",
+        "packages/openzyme-kernel/src/openzyme_kernel/extension_state_application.py",
+        "packages/openzyme-science/src/openzyme_science/transaction.py",
+        "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/unit_of_work.py"
+      ],
+      "test_refs": [
+        "packages/openzyme-extension-spi/tests/test_application_spi.py",
+        "packages/openzyme-extension-spi/tests/test_manifests.py",
+        "packages/openzyme-kernel/tests/test_extension_state_application.py",
+        "packages/openzyme-science/tests/test_science_plugin.py",
+        "packages/openzyme-store-sqlite/tests/test_unit_of_work.py",
+        "scripts/qualify-openzyme-contract-wheels.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "packages/openzyme-kernel/README.md",
+        "packages/openzyme-standard/README.md",
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/01-target-architecture.md",
+        "docs/v3/03-capability-engines.md",
+        "docs/v3/04-public-interfaces.md",
+        "docs/v3/05-agent-runtime.md"
+      ],
+      "owner": "openzyme.kernel",
+      "seam_id": "kernel-local-workspace-base-tools",
+      "source_refs": [
+        "packages/openzyme-kernel/src/openzyme_kernel/workspace_tools.py",
+        "packages/openzyme-kernel/src/openzyme_kernel/workspace_operations.py",
+        "packages/openzyme-kernel/src/openzyme_kernel/runtime_capability_gateway.py",
+        "packages/openzyme-standard/src/openzyme_standard/composition.py",
+        "packages/openzyme-standard/src/openzyme_standard/factories.py",
+        "packages/openzyme-standard/src/openzyme_standard/application_runtime.py",
+        "packages/enzymedesign-distribution/src/enzymedesign_distribution/composition.py"
+      ],
+      "test_refs": [
+        "packages/openzyme-kernel/tests/test_workspace_tools.py",
+        "packages/openzyme-kernel/tests/test_runtime_capability_gateway.py",
+        "packages/openzyme-standard/tests/test_composition.py",
+        "packages/openzyme-standard/tests/test_factories.py",
+        "packages/openzyme-standard/tests/test_standard_v2_host.py",
+        "packages/enzymedesign-distribution/tests/test_distribution.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/05-agent-runtime.md"
+      ],
+      "owner": "openzyme.kernel",
+      "seam_id": "local-hpc-workspace-tool-boundary",
+      "source_refs": [
+        "packages/openzyme-hpc/src/openzyme_hpc/workspace_tools.py",
+        "packages/openzyme-kernel/src/openzyme_kernel/workspace_tools.py",
+        "packages/openzyme-standard/src/openzyme_standard/application_runtime.py"
+      ],
+      "test_refs": [
+        "packages/openzyme-kernel/tests/test_workspace_tools.py",
+        "packages/openzyme-standard/tests/test_standard_v2_host.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/02-control-plane.md",
+        "docs/v3/05-agent-runtime.md",
+        "packages/openzyme-process-podman/README.md"
+      ],
+      "owner": "openzyme.process.podman",
+      "seam_id": "podman-process-state-owner",
+      "source_refs": [
+        "packages/openzyme-process-podman/src/openzyme_process_podman/state.py",
+        "docs/v3/architecture/table-owner-manifest.json",
+        "docs/v3/architecture/temporary-reexport-ledger.json"
+      ],
+      "test_refs": [
+        "packages/openzyme-process-podman/tests/test_state_contracts.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "packages/openzyme-process-podman/README.md",
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/01-target-architecture.md",
+        "docs/v3/05-agent-runtime.md"
+      ],
+      "owner": "openzyme.process.podman",
+      "seam_id": "podman-workspace-process-adapter",
+      "source_refs": [
+        "packages/openzyme-process-podman/src/openzyme_process_podman/process.py",
+        "packages/openzyme-process-podman/src/openzyme_process_podman/filesystem.py",
+        "packages/openzyme-process-podman/src/openzyme_process_podman/assets/workspace_fs_helper.py",
+        "packages/openzyme-process-podman/src/openzyme_process_podman/transfer.py",
+        "packages/openzyme-process-podman/src/openzyme_process_podman/assets/workspace_transfer_helper.py",
+        "packages/openzyme-runtime-spi/src/openzyme_runtime_spi/process.py",
+        "packages/openzyme-contracts/src/openzyme_contracts/workspace_runtime.py"
+      ],
+      "test_refs": [
+        "packages/openzyme-process-podman/tests/test_process_adapter.py",
+        "packages/openzyme-process-podman/tests/test_filesystem_adapter.py",
+        "packages/openzyme-process-podman/tests/test_transfer_adapter.py",
+        "packages/openzyme-runtime-spi/tests/test_runtime_spi.py",
+        "packages/openzyme-contracts/tests/test_contracts.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/01-target-architecture.md",
+        "docs/v3/deployment-composition-operator-guide.md"
+      ],
+      "owner": "openzyme.store.sqlite",
+      "seam_id": "pre-split-deployment-state-inventory",
+      "source_refs": [
+        "scripts/inventory-openzyme-deployment-state.py",
+        "docs/v3/architecture/pre-split-deployment-state-inventory.json",
+        "docs/v3/architecture/table-owner-manifest.json"
+      ],
+      "test_refs": [
+        "packages/openzyme-kernel/tests/test_architecture_inventory.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/02-control-plane.md",
+        "docs/v3/03-capability-engines.md",
+        "docs/v3/reporting-extension.md",
+        "packages/openzyme-reporting/README.md"
+      ],
+      "owner": "openzyme.reporting",
+      "seam_id": "reporting-contract-owner",
+      "source_refs": [
+        "packages/openzyme-reporting/src/openzyme_reporting/contracts.py",
+        "packages/openzyme-reporting/src/openzyme_reporting/application.py",
+        "packages/openzyme-reporting/src/openzyme_reporting/legacy_repositories.py",
+        "packages/openzyme-reporting/src/openzyme_reporting/lifecycle.py",
+        "packages/openzyme-reporting/src/openzyme_reporting/projection.py",
+        "packages/openzyme-reporting/src/openzyme_reporting/runtime_contributions.py",
+        "packages/openzyme-reporting/src/openzyme_reporting/transaction.py",
+        "packages/openzyme-reporting/src/openzyme_reporting/manifests/plugin.json",
+        "packages/openzyme-reporting/src/openzyme_reporting/refs.py",
+        "docs/v3/architecture/temporary-reexport-ledger.json"
+      ],
+      "test_refs": [
+        "packages/openzyme-reporting/tests/test_reporting_contracts.py",
+        "packages/openzyme-reporting/tests/test_reporting_plugin.py",
+        "packages/openzyme-reporting/tests/test_sqlite_transaction_integration.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/02-control-plane.md",
+        "docs/v3/03-capability-engines.md",
+        "packages/openzyme-research/README.md"
+      ],
+      "owner": "openzyme.research",
+      "seam_id": "research-contract-owner",
+      "source_refs": [
+        "packages/openzyme-research/src/openzyme_research/contracts.py",
+        "packages/openzyme-research/src/openzyme_research/adapters.py",
+        "docs/v3/architecture/temporary-reexport-ledger.json"
+      ],
+      "test_refs": [
+        "packages/openzyme-research/tests/test_contracts.py",
+        "packages/openzyme-research/tests/test_plugin_runtime.py",
+        "packages/openzyme-research/tests/test_reference_composition.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/02-control-plane.md",
+        "docs/v3/03-capability-engines.md",
+        "docs/v3/science-extension.md",
+        "docs/v3/08-failure-recovery-and-scientific-attempts.md",
+        "packages/openzyme-science/README.md"
+      ],
+      "owner": "openzyme.science",
+      "seam_id": "science-contract-owner",
+      "source_refs": [
+        "docs/v3/architecture/temporary-reexport-ledger.json",
+        "packages/openzyme-science/src/openzyme_science/attempt_service.py",
+        "packages/openzyme-science/src/openzyme_science/application.py",
+        "packages/openzyme-science/src/openzyme_science/attempts.py",
+        "packages/openzyme-science/src/openzyme_science/deliverables.py",
+        "packages/openzyme-science/src/openzyme_science/file_deliverables.py",
+        "packages/openzyme-science/src/openzyme_science/manifests/plugin.json",
+        "packages/openzyme-science/src/openzyme_science/offline_verification.py",
+        "packages/openzyme-science/src/openzyme_science/projection.py",
+        "packages/openzyme-science/src/openzyme_science/refs.py",
+        "packages/openzyme-science/src/openzyme_science/runtime_contributions.py",
+        "packages/openzyme-science/src/openzyme_science/transaction.py",
+        "packages/openzyme-science/src/openzyme_science/workflow_contracts.py",
+        "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/extension_state.py"
+      ],
+      "test_refs": [
+        "packages/openzyme-science/tests/test_science_contracts.py",
+        "packages/openzyme-science/tests/test_science_plugin.py",
+        "packages/openzyme-science/tests/test_sqlite_transaction_integration.py",
+        "packages/openzyme-store-sqlite/tests/test_extension_projection_query.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/v3/adr/0001-what-is-openzyme.md",
+        "docs/v3/02-control-plane.md"
+      ],
+      "owner": "openzyme.store.sqlite",
+      "seam_id": "sqlite-table-ownership",
+      "source_refs": [
+        "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/migrations/001_file_workspace_final.sql",
+        "docs/v3/architecture/table-owner-manifest.json",
+        "scripts/check-openzyme-architecture.py"
+      ],
+      "test_refs": [
+        "packages/openzyme-kernel/tests/test_architecture_manifests.py",
+        "packages/openzyme-store-sqlite/tests/test_owner_migration_catalog.py",
+        "packages/openzyme-store-sqlite/tests/test_owner_startup.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/02-control-plane.md",
+        "docs/v3/08-failure-recovery-and-scientific-attempts.md",
+        "docs/v3/deployment-composition-operator-guide.md",
+        "docs/v3/file-workspace-migration.md",
+        "packages/openzyme-store-sqlite/README.md"
+      ],
+      "owner": "openzyme.store.sqlite",
+      "seam_id": "sqlite-target-control-store",
+      "source_refs": [
+        "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/adapter.py",
+        "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/control_store.py",
+        "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/device_fresh_reset.py",
+        "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/entity_codecs.py",
+        "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/extension_state.py",
+        "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/migration_catalog.py",
+        "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/persistence.py",
+        "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/startup.py",
+        "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/unit_of_work.py"
+      ],
+      "test_refs": [
+        "packages/openzyme-standard/tests/test_composition.py",
+        "packages/openzyme-store-sqlite/tests/test_adapter.py",
+        "packages/openzyme-store-sqlite/tests/test_coordination_entity_codecs.py",
+        "packages/openzyme-store-sqlite/tests/test_device_fresh_reset.py",
+        "packages/openzyme-store-sqlite/tests/test_evidence_publication_entity_codecs.py",
+        "packages/openzyme-store-sqlite/tests/test_migration_and_startup.py",
+        "packages/openzyme-store-sqlite/tests/test_persistence.py",
+        "packages/openzyme-store-sqlite/tests/test_repository_binding_entity_codecs.py",
+        "packages/openzyme-store-sqlite/tests/test_runtime_signal_entity_codec.py",
+        "packages/openzyme-store-sqlite/tests/test_unit_of_work.py",
+        "packages/openzyme-store-sqlite/tests/test_workspace_identity_entity_codecs.py"
+      ]
+    },
+    {
+      "contract_dimensions": [
+        "commands_paths_configuration",
+        "compatibility",
+        "error_semantics",
+        "forbidden_fallback",
+        "identity",
+        "lifecycle",
+        "owner",
+        "persistence"
+      ],
+      "document_bundle_digest": "sha256:ef217ae017a200caf80960a2b4dd146342e5a4ad7d1de11771cfadaac69a227c",
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/architecture-qualification/README.md",
+        "docs/v3/architecture-qualification/registry-schema.md",
+        "docs/v3/harness-complexity-audit.md"
+      ],
+      "owner": "openzyme.host.api",
+      "seam_id": "three-profile-architecture-qualification",
+      "source_bundle_digest": "sha256:7aea8955586468577e74c2193a1cec843026fb32bc5400f8c4e853fa60cfb7af",
+      "source_refs": [
+        "apps/openzyme-host-api/src/openzyme_host_api/architecture_qualification.py",
+        "apps/openzyme-host-api/src/openzyme_host_api/architecture_qualification_report.py",
+        "docs/v3/architecture-qualification/invariant-registry.json",
+        "scripts/architecture_qualification_runner.py",
+        "scripts/v3_architecture_qualification.py"
+      ],
+      "test_bundle_digest": "sha256:b20531cb54c2f034d2f5ce05a66566853800a0f831e74519d3a83fac7a4500c5",
+      "test_refs": [
+        "apps/openzyme-host-api/tests/architecture_qualification/test_final_harness.py",
+        "apps/openzyme-host-api/tests/architecture_qualification/scenarios/test_composition_profiles.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/01-target-architecture.md",
+        "docs/v3/plugin-authoring-guide.md"
+      ],
+      "owner": "openzyme.extension-spi",
+      "seam_id": "wheel-installation-profiles",
+      "source_refs": [
+        "scripts/qualify-openzyme-contract-wheels.py",
+        "pyproject.toml",
+        "distributions/openzyme-standard/openzyme-composition.toml",
+        "distributions/enzymedesign/openzyme-composition.toml"
+      ],
+      "test_refs": [
+        "packages/openzyme-kernel/tests/test_wheel_qualification_profiles.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/adr/0001-what-is-openzyme.md",
+        "docs/v3/05-agent-runtime.md"
+      ],
+      "owner": "openzyme.contracts",
+      "seam_id": "workspace-runtime-contracts",
+      "source_refs": [
+        "packages/openzyme-contracts/src/openzyme_contracts/workspace_runtime.py"
+      ],
+      "test_refs": [
+        "packages/openzyme-contracts/tests/test_contracts.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/02-control-plane.md",
+        "packages/openzyme-contracts/README.md",
+        "packages/openzyme-kernel/README.md",
+        "packages/openzyme-standard/README.md"
+      ],
+      "owner": "openzyme.kernel",
+      "seam_id": "operator-authorized-session-bootstrap",
+      "source_refs": [
+        "packages/openzyme-contracts/src/openzyme_contracts/session_bootstrap.py",
+        "packages/openzyme-kernel/src/openzyme_kernel/session_bootstrap_application.py",
+        "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/entity_codecs.py"
+      ],
+      "test_refs": [
+        "packages/openzyme-contracts/tests/test_session_bootstrap.py",
+        "packages/openzyme-kernel/tests/test_session_bootstrap_application.py",
+        "packages/openzyme-standard/tests/test_session_bootstrap.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/03-capability-engines.md",
+        "docs/v3/05-agent-runtime.md",
+        "packages/openzyme-kernel/README.md"
+      ],
+      "owner": "openzyme.kernel",
+      "seam_id": "workspace-runtime-controlled-operation-coordinator",
+      "source_refs": [
+        "packages/openzyme-kernel/src/openzyme_kernel/workspace_operations.py",
+        "packages/openzyme-contracts/src/openzyme_contracts/workspace_runtime.py",
+        "packages/openzyme-extension-spi/src/openzyme_extension_spi/application.py"
+      ],
+      "test_refs": [
+        "packages/openzyme-kernel/tests/test_workspace_operations.py",
+        "packages/openzyme-contracts/tests/test_contracts.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "apps/openzyme-host-api/README.md",
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/02-control-plane.md",
+        "packages/openzyme-kernel/README.md",
+        "packages/openzyme-standard/README.md",
+        "packages/openzyme-store-sqlite/README.md"
+      ],
+      "owner": "openzyme.kernel",
+      "seam_id": "publication-controlled-operation-coordinator",
+      "source_refs": [
+        "packages/openzyme-kernel/src/openzyme_kernel/publication_application.py",
+        "packages/openzyme-kernel/src/openzyme_kernel/publication_coordination.py",
+        "packages/openzyme-kernel/src/openzyme_kernel/controlled_operation_application.py",
+        "packages/openzyme-contracts/src/openzyme_contracts/revision_ports.py",
+        "packages/openzyme-standard/src/openzyme_standard/composition.py",
+        "packages/openzyme-standard/src/openzyme_standard/application_runtime.py",
+        "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/entity_codecs.py"
+      ],
+      "test_refs": [
+        "packages/openzyme-kernel/tests/test_publication_application.py",
+        "packages/openzyme-kernel/tests/test_controlled_operation_application.py",
+        "packages/openzyme-store-sqlite/tests/test_evidence_publication_entity_codecs.py",
+        "packages/openzyme-store-sqlite/tests/test_kernel_command_receipt_codec.py",
+        "packages/openzyme-standard/tests/test_composition.py",
+        "packages/openzyme-standard/tests/test_standard_v2_host.py",
+        "packages/openzyme-workspace-git-lfs/tests/test_revision_backend.py"
+      ]
+    }
+  ],
+  "required_contract_dimensions": [
+    "commands_paths_configuration",
+    "compatibility",
+    "error_semantics",
+    "forbidden_fallback",
+    "identity",
+    "lifecycle",
+    "owner",
+    "persistence"
+  ],
+  "schema_id": "openzyme_source_document_traceability@2"
+}

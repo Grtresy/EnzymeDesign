@@ -1,0 +1,6 @@
+-- openzyme.science.migration.001@1
+--
+-- Science target state is stored through the Store-owned, namespace-confined
+-- extension state table. This bundle declares the logical adoption boundary and
+-- deliberately creates no second SQLite writer or Science-specific physical table.
+-- Existing scientific_* rows are adopted only by the later offline @2 cutover.

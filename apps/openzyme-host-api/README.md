@@ -1,180 +1,120 @@
 # openzyme-host-api
 
-V3 Host API app for OpenZyme.
-
-## Scope
-
-This app exposes the V3 Host-side API surface for:
-
-- session creation and workspace queries
-- message ingress and durable command-based `runtime/drain`
-- task board, lane, approval, and debug endpoints
-- V3 session events consumed by the Web UI
-- exact closed scientific-attempt/selection evidence export for a public offline conductor
-
-## Repository service
-
-当完整 `OPENZYME_REPOSITORY_*` block 已配置时，V3 Host startup 会在启动后台 worker
-之前验证 active project bindings、durable roots、exact base commits 与 inventory。新 session
-必须在同一 transaction 写入 exact repository binding pin；未配置 service、缺 active binding
-或 legacy session 未 mapping 时返回显式 `repository_binding_required`，不会使用当前 checkout。
-
-Git smart HTTP v2 与 Git LFS Batch v2/basic 由独立 TLS app 提供，不挂在 `/v3` 的
-local-dev/shared auth middleware 下：
+OpenZyme 的通用 HTTP delivery Adapter。当前源码的公开入口是 exact
+`file_workspace_public@2`；没有 `@1` 在线兼容、产品能力自动发现或按 Session 选择旧 Host 的模式。
 
 ```sh
-uv run openzyme-repository preflight --database-path /absolute/control-plane.sqlite3
-uv run openzyme-repository serve --database-path /absolute/control-plane.sqlite3
-uv run openzyme-repository audit --database-path /absolute/control-plane.sqlite3
+pip install openzyme-host-api
+pip install 'openzyme-host-api[server]'
 ```
 
-独立 app 的 `GET https://<repository-origin>/health` 每次重新执行完整 repository
-preflight；preflight 领域识别出的 durable storage、identity、inventory 或 configuration
-drift 返回 `503 repository_service_preflight_failed`。未被领域层归一的 OS、subprocess 或
-SSL fault 继续显式成为 `500`，transport 不用 catch-all 改写。该 route 只返回安全的
-协议/摘要事实，并且不能由
-`GET /v3/runtime/health` 的 control-plane 投影替代。
+Host wheel 不再提供 `legacy` extra。历史读取、迁移验证与删除审计使用独立的 offline operator
+入口，不能通过安装 Host 可选依赖恢复旧在线组合。
 
-它只接受 binding/session/agent/workspace-generation/lease/protocol/ref-scope 绑定的短期
-repository bearer；不会暴露 Host roots/signing key，也不会在 internal remote 失败时切换到
-upstream。bootstrap、activation、mapping、retirement 和 restore rehearsal 见
-[repository service 运维合同](../../docs/v3/repository-service-operations.md)。
+## 组合边界
 
-## AOX public conductor boundary
+包根 `openzyme_host_api` 只导出：
 
-The current AOX production path has no automatic run command. `openzyme-aox-cutover preflight`
-validates one exact consumed authority slot before creating its private root;
-`serve-attempt` starts only the fixed loopback production Host and does not send messages, drains or
-approvals; `finalize-and-seal` consumes exact public CLI receipts plus sealed final responses and
-atomically creates one source-reconstructable, start-claim-bound `aox_blank_world_attempt_bundle@4`.
+- `create_v2_app()` 与 closed Host DTO；
+- `FileWorkspaceV2HostSurface`；
+- Host 认证策略；
+- manifest-mounted Plugin GET route 的通用交付协议。
 
-The public evidence route is:
+导入包根不会加载旧 mixed runtime、Research、Science、Compute/HPC、runner 或 EnzymeDesign。Host 不选择
+SQLite、Git/LFS、模型、Podman、Provider、HPC target 或科学策略；Distribution 必须注入：
+
+1. 已通过 deployment startup proof 的 exact release；
+2. `KernelPublicWorkspaceProjectionService`；
+3. 已由 `mount_extension_surfaces()` exact-match 的 projection/HTTP runtime；
+4. 把 HTTP command 翻译为 Kernel application command 的窄网关；
+5. 本 Distribution 明确开放的 Kernel mutation route closure。
+
+Plugin query runtime 的 owner、method、normalized path 与 contract digest 必须和 manifest 一致。当前 query
+SPI 只允许 GET；Plugin mutation 必须经过 Kernel application service，不能直接访问 Core repository、SQLite
+连接或 Host 私有 service。
+
+## `file_workspace_public@2`
+
+Session 创建前只有 release/public-contract identity：
 
 ```text
-GET /v3/sessions/{session_id}/scientific-attempts/{attempt_id}/selections/{selection_id}/evidence
+POST /v3/sessions
+Accept: application/vnd.openzyme.file-workspace+json;version=2
+OpenZyme-Workspace-Contract: file_workspace_public@2
+OpenZyme-Release-Digest: sha256:...
+OpenZyme-Public-Contract-Digest: sha256:...
+Idempotency-Key: caller-stable-intent
 ```
 
-It accepts only a closed attempt and exact sealed selection. Formal positive export revalidates the
-persisted 17-deliverable finalization receipt and reads each sealed file through the artifact
-boundary. None of these shells chooses the next Codex action or derives GO; the network-free verifier
-and exact-three campaign reducer retain that authority.
+Session 建立后，inspection 返回六个相互校验的响应 identity：workspace contract、release、public contract、
+projection、capability binding 与 affordance snapshot。每个 mutation 必须回传全部六项和调用者选择的
+`Idempotency-Key`。任何 identity 漂移都在业务 handler 前失败，`mutation_applied=false`、
+`fallback_performed=false`；如果 gateway 已越过 effect boundary 后失去结果，则保留
+`effect_certainty=dispatch_in_doubt`，不自动重发或换 route。
 
-## Runtime Drain Contract
+```text
+GET /v3/sessions/{session_id}/workspace
+POST /v3/sessions/{session_id}/messages
+POST /v3/sessions/{session_id}/tasks
+POST /v3/sessions/{session_id}/tasks/{task_id}/finish
+POST /v3/sessions/{session_id}/runtime/drain
+```
 
-`POST /v3/sessions/{session_id}/runtime/drain` is command admission, not a
-synchronous scheduler call. It requires `Idempotency-Key`, accepts only
-`max_signals`, `max_steps_per_agent`, and `auto_enqueue_ready_tasks`, and always
-returns HTTP `202` with a closed `runtime_command_status@1` body. An optional
-exact `Prefer: wait=<seconds>` value may be between `0` and `2`; it only waits
-briefly for an updated command state and never transfers provider/HPC ownership
-to the request.
+上述只是通用 route contract 的示例；实际可用集合由 Distribution 注入，缺少 application/runtime 的 route
+必须不存在或 fail closed。消息入口只记录 user-source conversation、root-Agent admission、inbox 与 durable
+runtime signal，不同步 drain，也不完成 Task。
+
+响应正文形状：
+
+```json
+{
+  "schema_version": "file_workspace_public@2",
+  "release": {"schema_version": "openzyme_layered_release_identity@1"},
+  "core": {
+    "session": {},
+    "tasks": [],
+    "lanes": [],
+    "agents": [],
+    "protocol": {},
+    "conversation": {},
+    "approvals": [],
+    "authority_leases": [],
+    "capability_binding": {},
+    "runtime": {},
+    "workspace": {},
+    "publications": [],
+    "operations": {},
+    "failures": {},
+    "tool_reflection": {}
+  },
+  "extensions": {},
+  "projection_digest": "sha256:..."
+}
+```
+
+Reporting、Research、Science、Compute/HPC 与 EnzymeDesign 状态只能出现在 exact namespaced extension
+section，不能成为 Core 字段。Host 不调用旧 projection builder、不在线翻译事件/continuation，也不因缺少
+Plugin 而返回空成功替代物。
+
+## 当前实现与部署事实
+
+OpenZyme Standard 已有真实 SQLite → Kernel application → generic Host 的 Plugin-free non-live composition，
+覆盖 Session bootstrap、inspection、Task/Lane/Agent/Protocol/Approval/Authority、message admission、local
+workspace CRUD/exec、checkpoint/publication/handoff 与 bounded runtime turn。EnzymeDesign exact component
+graph、Plugin/Driver contributions、namespaced projection 和 dynamic affordance 已在三 profile non-live
+qualification 中完成显式 mount；这仍不是设备上的 deployment activation 或任何 live Provider/HPC proof。
+
+本仓库没有执行真实 offline cutover、Provider、SSH/Slurm/HPC 或设备删除。旧 mixed app、在线 `@1`
+projection、runtime implementation wiring、Science/HPC service 与 repository transport 已从 Host wheel 删除；
+Git 历史和独立 offline verifier 保留历史证据，但不存在可导入的在线兼容入口或自动 translation/fallback。
+
+## 验证
 
 ```sh
-curl -i -X POST \
-  -H 'Content-Type: application/json' \
-  -H 'Idempotency-Key: drain:sess_demo:1' \
-  -H 'Prefer: wait=1' \
-  --data '{"max_signals":3,"max_steps_per_agent":8,"auto_enqueue_ready_tasks":false}' \
-  http://127.0.0.1:8000/v3/sessions/sess_demo/runtime/drain
+uv run pytest apps/openzyme-host-api/tests/test_v2_app.py
+uv run pytest packages/openzyme-standard/tests/test_standard_v2_host.py
+uv run pytest apps/openzyme-host-api/tests/architecture_qualification/scenarios/test_composition_profiles.py
 ```
 
-Poll the returned session-scoped `status_url` until the status is one of
-`completed`, `failed`, `locked`, or `cancelled`. `locked` is terminal for that
-command and provides only a safe retry hint; owner ids, lease/fence values,
-process/socket identities, and private paths are never public. The legacy
-synchronous composite-workspace response is retired.
-
-Controlled-operation execution and attached-process result delivery are driven
-by the lifespan-owned durable supervisor. They do not hold the HTTP request or
-agent session lease across approval/provider/HPC wall time. See
-[Runtime/HPC reliability](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/07-runtime-hpc-reliability.md)
-and the
-[operations runbook](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/runtime-hpc-reliability-operations.md).
-
-## Local Workflow Evals
-
-Run the V3 workflow smoke eval locally:
-
-1. `cd /home/grtresy/VSCodeRepo/EnzymeDesign`
-2. `uv run python -m openzyme_host_api.evals`
-
-The eval harness uses an ephemeral sqlite database and deterministic execution/research adapters. It is the supported local regression path for the V3 Host API loop.
-
-### Real LLM Configuration
-
-The local eval path can optionally use an OpenAI-compatible chat model.
-
-Use the repository-level environment file conventions described in [README.md](/home/grtresy/VSCodeRepo/EnzymeDesign/README.md:39):
-
-1. copy [`.env.example`](/home/grtresy/VSCodeRepo/EnzymeDesign/.env.example) to `.env`
-2. set `OPENZYME_LLM_API_KEY=<your-api-key>`
-3. keep or override the default MICU OpenAI Responses settings as needed:
-   - `OPENZYME_LLM_MODEL=<micu-model-id>`
-   - `OPENZYME_LLM_BASE_URL=https://www.micuapi.ai/v1`
-   - `OPENZYME_LLM_EXTRA_BODY=<optional-json-object>`
-   - `OPENZYME_LLM_USE_RESPONSES_API=true`
-   - `OPENZYME_LLM_USER_AGENT=codex_cli_rs/0.77.0 (Windows 10.0.26100; x86_64) WindowsTerminal`
-   - `OPENZYME_LLM_MAX_TOKENS=<optional-output-cap>`
-   - `OPENZYME_LLM_TIMEOUT=60`
-   - `OPENZYME_LLM_MAX_RETRIES=1`
-   - `OPENZYME_LLM_TEMPERATURE=0`
-   - `OPENZYME_LLM_STRUCTURED_OUTPUT_METHOD=function_calling`
-4. run `uv run python -m openzyme_runtime.llm_connectivity` for a minimal Responses API connectivity check
-5. run `uv run python -m openzyme_host_api.evals`
-
-If no API key is set, the explicitly selected local eval harness uses deterministic `fixture_non_cutover` components. The configured Host never falls back to them.
-For the MICU OpenAI Responses endpoint, `function_calling` remains the default structured-output strategy used by the OpenZyme runtime. If the provider requires extra request payload fields, set them through `OPENZYME_LLM_EXTRA_BODY`.
-`OPENZYME_LLM_MAX_RETRIES=N` allows one initial provider call plus at most `N` runtime-managed retries. The OpenAI-compatible provider client itself always uses `max_retries=0`, so structured and tool-calling requests share the same retry taxonomy and attempt budget. The former `STRUCTURED_OUTPUT_MAX_ATTEMPTS` settings are no longer accepted; configure `MAX_RETRIES` instead.
-
-By default the eval harness stays local and does not upload LangSmith results. To emit LangSmith traces:
-
-1. set `OPENZYME_LANGSMITH_TRACING=true`
-2. optionally set `OPENZYME_LANGSMITH_PROJECT=<project-name>`
-3. run `uv run python -m openzyme_host_api.evals --upload-results`
-
-## Live Integration Suites
-
-For real-provider tests, keep the environment rules from the repository-level [README.md](/home/grtresy/VSCodeRepo/EnzymeDesign/README.md:39) and enable the relevant `.env.test` flags:
-
-- `OPENZYME_TEST_ENABLE_LIVE_LLM=true`
-- `OPENZYME_TEST_ENABLE_LIVE_TAVILY=true`
-- `OPENZYME_TEST_ENABLE_LIVE_HPC=true`
-- `OPENZYME_TEST_ENABLE_LIVE_E2E=true`
-- `OPENZYME_TEST_ENABLE_QUALITY_EVAL=true`
-- `OPENZYME_TEST_LIVE_LLM_*` if you want a separate timeout/retry budget for real-provider LLM smoke tests
-
-For an AOX r48 pin or live launch, the effective live foundation must resolve
-`OPENZYME_LLM_CONTEXT_WINDOW_TOKENS=200000`,
-`OPENZYME_TEST_LIVE_LLM_MAX_TOKENS=8192`,
-`OPENZYME_TEST_LIVE_LLM_TIMEOUT=300`, and
-`OPENZYME_TEST_LIVE_LLM_MAX_RETRIES=1`. It must also resolve
-`OPENZYME_RELIABILITY_CONTROLLED_OPERATION_OWNER_POLICY=durable_only_v1`,
-`OPENZYME_RELIABILITY_RUNTIME_DRAIN_CONTRACT=command_v1`, and
-`OPENZYME_RELIABILITY_MUTATION_CLOSURE_MODE=generic_v1`. The live-test values override the
-ordinary Host LLM max-token/timeout/retry defaults; the sealed effective config,
-not the base variables in isolation, is the launch authority. Canonical `pin`
-rejects an ineligible reliability projection before forced-SSH attestation and
-does not create an attempt, while `openzyme-aox-cutover preflight` does and must
-not be run before the numbered campaign is explicitly authorized.
-
-Live-test and connectivity calls to MICU are guarded by a persistent SQLite ledger. The fixed 500,000,000-token ceiling cannot be raised through environment variables and applies only to OpenZyme's MICU tests, not to Codex. Existing usage remains cumulative and campaign setup never resets the ledger. Existing 100M ledgers are not reinterpreted automatically: an operator must run `uv run python -m openzyme_runtime.live_token_ledger_cli --migrate-legacy-fixed-policy` to apply the exact, transactional 100M-to-500M policy migration. It preserves every prior attempt and charged token, is idempotent at 500M, and rejects noncanonical lower limits. Configure only the file location with `OPENZYME_TEST_LIVE_LLM_TOKEN_LEDGER_PATH`; the default `.openzyme/live_micu_token_ledger.sqlite3` and its SQLite sidecars are gitignored. Before each attempt, the ledger treats serialized full-request UTF-8 bytes plus fixed overhead as a conservative input-token upper bound and adds the configured output reservation. Missing usage and structured responses without usage retain that estimate; reported overages are explicit and stop later calls. The ledger stores call metadata and token counts, never prompts, API keys, or headers. Use `uv run python -m openzyme_runtime.live_token_ledger_cli` for a read-only summary grouped by scenario/model, or add `--attempts 20` for recent attempts.
-
-Useful commands:
-
-1. `uv run pytest -m "integration and live_llm"`
-2. `uv run pytest -m "integration and live_e2e"`
-3. `uv run pytest -m quality_eval`
-
-The ordinary live E2E poller may stop after its bounded operational-idle checks, but that is not a cutover quiescence proof. Formal closure requires the generic mutation scope to freeze admission, retire every covered writer, capture stable snapshots, issue and verify a receipt, and seal the exact generation. Provider rate limits, missing artifacts, and other fail-closed outcomes remain explicit failures instead of waiting for the full graph timeout or being treated as cutover evidence.
-
-## V3 `/ui` fpocket Smoke Test
-
-For a manual Host API plus HPC smoke test:
-
-1. start the configured Host API with `OPENZYME_EXECUTION_BACKEND=hpc uv run python -m openzyme_host_api.dev_web_ui`; use `--fixture-non-cutover` only for synthetic UI/control-flow checks that are excluded from cutover evidence
-2. open `http://127.0.0.1:8000/ui/`
-3. use session `sess_executor_demo`
-4. send `对 art_eval_structure 运行 fpocket 并返回结果`
-5. approve the fpocket execution request
-
-Expected result: the chat shows the executor's fpocket result summary with output artifact references, and the workspace/Inspector shows the fpocket output artifacts. It should not show `Execution finished: Pipeline sandbox completed.` The seeded `art_eval_structure` points at the bundled `fixtures/fpocket/1ubq.pdb` fixture and carries `format=pdb` metadata for fpocket validation.
+完整架构资格通过 `scripts/check-v3-architecture-qualification.sh` 运行，并禁止 live credential、IP network、
+skip/xfail 与未声明外部效果。资格通过不等于真实 cutover 已授权或已执行。

@@ -1,0 +1,456 @@
+{
+  "configuration_schema_digest": null,
+  "finish_validators": [],
+  "http_routes": [],
+  "identity": {
+    "build_digest": "sha256:821fe0d377e1982d37308b6232c269162e9be7dd25091757c3d281339e065e2f",
+    "component_id": "enzymedesign.hmmer",
+    "component_kind": "plugin",
+    "component_version": "0.1.0",
+    "contract_digest": "sha256:4360fbe63e007a56f351eefcba2ed699def0c494de672aee06ee8a0c3896ca4f",
+    "distribution_name": "enzymedesign-hmmer",
+    "distribution_version": "0.1.0"
+  },
+  "migration_bundle_digest": null,
+  "migrations": [],
+  "projections": [],
+  "provides": [
+    {
+      "capability_id": "enzymedesign.hmmer",
+      "cardinality": "single",
+      "contract_version": "1",
+      "operations": [
+        "build",
+        "search"
+      ]
+    }
+  ],
+  "qualification_specs": [
+    {
+      "capability_id": "software.hmmer",
+      "contract_version": "1",
+      "expected_result_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "exit_code": {
+            "const": 0
+          },
+          "operations": {
+            "items": {
+              "enum": [
+                "hmmbuild",
+                "hmmsearch",
+                "hmmpress"
+              ]
+            },
+            "type": "array"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "operations",
+          "exit_code"
+        ],
+        "type": "object"
+      },
+      "owner_plugin_id": "enzymedesign.hmmer",
+      "qualification_spec_id": "enzymedesign.hmmer.qualification@1",
+      "required_resource_capabilities": [],
+      "smoke_argv": [
+        "hmmbuild",
+        "-h"
+      ],
+      "version_argv": [
+        "hmmsearch",
+        "-h"
+      ]
+    }
+  ],
+  "required_extension_spi_contract": "openzyme.extension-spi@1",
+  "required_kernel_contract": "openzyme.kernel@1",
+  "requires": [
+    {
+      "capability_id": "openzyme.execution.revision-job",
+      "contract_spec": "@1",
+      "kind": "extension",
+      "operations": [
+        "observe",
+        "submit"
+      ],
+      "same_target_as": null,
+      "version_spec": null
+    },
+    {
+      "capability_id": "software.hmmer",
+      "contract_spec": "@1",
+      "kind": "resource",
+      "operations": [
+        "hmmbuild",
+        "hmmsearch"
+      ],
+      "same_target_as": "openzyme.execution.revision-job",
+      "version_spec": ">=3.3,<4"
+    }
+  ],
+  "routes": [
+    {
+      "capability_ids": ["enzymedesign.hmmer", "openzyme.execution.revision-job", "software.hmmer"],
+      "driver_id": "enzymedesign.hmmer.hpc",
+      "owner_component_id": "enzymedesign.hmmer",
+      "route_contract_digest": "sha256:4af98cf647e8d07ef9996ff73d221f0aa24a906cd294821f816e7f2ff55cf9b3",
+      "route_id": "enzymedesign.hmmer.hpc-primary@1",
+      "route_kind": "hpc",
+      "target_id": "hpc-primary"
+    },
+    {
+      "capability_ids": ["enzymedesign.hmmer", "openzyme.execution.revision-job", "software.hmmer"],
+      "driver_id": "enzymedesign.hmmer.local",
+      "owner_component_id": "enzymedesign.hmmer",
+      "route_contract_digest": "sha256:972b4ad4fa6a68d271a4129b5c9ca4aef9a694bf780b7ca5c525fba70b8c38ed",
+      "route_id": "enzymedesign.hmmer.local@1",
+      "route_kind": "local",
+      "target_id": "local:podman"
+    }
+  ],
+  "schema_version": "openzyme_plugin_manifest@1",
+  "schemas": [],
+  "state_namespace": null,
+  "tools": [
+    {
+      "contract": {
+        "approval_policy_id": null,
+        "description": "Compile one formal hmmbuild request against an explicit qualified route. The Plugin never probes or dispatches the target itself.",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "affordance_snapshot_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "cwd": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "environment_policy_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "inputs": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "commit": {
+                    "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+                    "type": "string"
+                  },
+                  "content_digest": {
+                    "pattern": "^sha256:[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "path": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "revision_id": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "tree": {
+                    "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "revision_id",
+                  "commit",
+                  "tree",
+                  "path",
+                  "content_digest"
+                ],
+                "type": "object"
+              },
+              "maxItems": 1,
+              "minItems": 1,
+              "type": "array"
+            },
+            "output_path": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "resource_policy_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "result_root": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "route_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "workload_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "workload_id",
+            "route_id",
+            "affordance_snapshot_digest",
+            "cwd",
+            "resource_policy_digest",
+            "environment_policy_digest",
+            "result_root",
+            "output_path",
+            "inputs"
+          ],
+          "type": "object"
+        },
+        "output_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "fallback_performed": {
+              "const": false
+            },
+            "formal_compute_requested": {
+              "const": true
+            },
+            "raw_shell": {
+              "const": false
+            },
+            "state": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "task_finished": {
+              "const": false
+            },
+            "workload_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "workload_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "workload_id",
+            "workload_digest",
+            "state",
+            "formal_compute_requested",
+            "raw_shell",
+            "fallback_performed",
+            "task_finished"
+          ],
+          "type": "object"
+        },
+        "required_authorities": [
+          "external_compute"
+        ],
+        "schema_version": "openzyme_tool_spec@1",
+        "tool_name": "enzymedesign.hmmer.build"
+      },
+      "owner_plugin_id": "enzymedesign.hmmer",
+      "requirements": [
+        {
+          "capability_id": "openzyme.execution.revision-job",
+          "contract_spec": "@1",
+          "kind": "extension",
+          "operations": [
+            "observe",
+            "submit"
+          ],
+          "same_target_as": null,
+          "version_spec": null
+        },
+        {
+          "capability_id": "software.hmmer",
+          "contract_spec": "@1",
+          "kind": "resource",
+          "operations": [
+            "hmmbuild",
+            "hmmsearch"
+          ],
+          "same_target_as": "openzyme.execution.revision-job",
+          "version_spec": ">=3.3,<4"
+        }
+      ],
+      "requires_explicit_route": true,
+      "requires_workspace": true,
+      "runtime_id": "enzymedesign.hmmer.build-runtime@1"
+    },
+    {
+      "contract": {
+        "approval_policy_id": null,
+        "description": "Compile one formal hmmsearch request against an explicit qualified route. The Plugin never probes or dispatches the target itself.",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "affordance_snapshot_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "cwd": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "environment_policy_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "inputs": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "commit": {
+                    "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+                    "type": "string"
+                  },
+                  "content_digest": {
+                    "pattern": "^sha256:[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "path": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "revision_id": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "tree": {
+                    "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "revision_id",
+                  "commit",
+                  "tree",
+                  "path",
+                  "content_digest"
+                ],
+                "type": "object"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            "output_path": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "resource_policy_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "result_root": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "route_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "workload_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "workload_id",
+            "route_id",
+            "affordance_snapshot_digest",
+            "cwd",
+            "resource_policy_digest",
+            "environment_policy_digest",
+            "result_root",
+            "output_path",
+            "inputs"
+          ],
+          "type": "object"
+        },
+        "output_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "fallback_performed": {
+              "const": false
+            },
+            "formal_compute_requested": {
+              "const": true
+            },
+            "raw_shell": {
+              "const": false
+            },
+            "state": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "task_finished": {
+              "const": false
+            },
+            "workload_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "workload_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "workload_id",
+            "workload_digest",
+            "state",
+            "formal_compute_requested",
+            "raw_shell",
+            "fallback_performed",
+            "task_finished"
+          ],
+          "type": "object"
+        },
+        "required_authorities": [
+          "external_compute"
+        ],
+        "schema_version": "openzyme_tool_spec@1",
+        "tool_name": "enzymedesign.hmmer.search"
+      },
+      "owner_plugin_id": "enzymedesign.hmmer",
+      "requirements": [
+        {
+          "capability_id": "openzyme.execution.revision-job",
+          "contract_spec": "@1",
+          "kind": "extension",
+          "operations": [
+            "observe",
+            "submit"
+          ],
+          "same_target_as": null,
+          "version_spec": null
+        },
+        {
+          "capability_id": "software.hmmer",
+          "contract_spec": "@1",
+          "kind": "resource",
+          "operations": [
+            "hmmbuild",
+            "hmmsearch"
+          ],
+          "same_target_as": "openzyme.execution.revision-job",
+          "version_spec": ">=3.3,<4"
+        }
+      ],
+      "requires_explicit_route": true,
+      "requires_workspace": true,
+      "runtime_id": "enzymedesign.hmmer.search-runtime@1"
+    }
+  ],
+  "transaction_participants": [],
+  "ui_renderers": [],
+  "workers": []
+}

@@ -1,0 +1,133 @@
+{
+  "schema_id": "openzyme_table_owner_manifest@1",
+  "source_migration": "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/migrations/001_file_workspace_final.sql",
+  "owner_migration_catalog": "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/manifests/migration-catalog.json",
+  "physical_store_owner": "openzyme.store.sqlite",
+  "physical_table_rename_policy": "retain_names_in_this_change",
+  "expected_object_counts": {
+    "tables": 147,
+    "indexes": 134,
+    "triggers": 674,
+    "foreign_keys": 422
+  },
+  "table_owner_digest": "sha256:7c432ca2af823bbee03725bd1b7223dbad25045e0f5436441bf230d557fb8334",
+  "semantic_owner_rules": [
+    {
+      "rule_id": "kernel-control-plane",
+      "target_owner": "openzyme.kernel",
+      "prefixes": [
+        "agent_capability_lease_",
+        "agent_retirement_",
+        "controlled_operation_",
+        "failure_",
+        "file_workspace_",
+        "lane_lifecycle_",
+        "mutation_",
+        "project_repository_",
+        "protocol_file_",
+        "quiescence_",
+        "session_repository_",
+        "task_",
+        "verified_workspace_",
+        "workspace_generation_",
+        "workspace_publication_"
+      ],
+      "exact_names": [
+        "agent_members",
+        "agent_runtime_signals",
+        "approval_requests",
+        "command_receipt_records",
+        "continuation_state_records",
+        "durable_event_records",
+        "engine_documents",
+        "engine_invocations",
+        "inbox_messages",
+        "lanes",
+        "memory_entries",
+        "private_diagnostic_records",
+        "published_revisions",
+        "repository_binding_mapping_receipts",
+        "revision_path_verification_records",
+        "revision_path_refs",
+        "runtime_command_records",
+        "runtime_continuation_intent_records",
+        "runtime_outcome_consumption_records",
+        "runtime_settlement_intent_records",
+        "runtime_turn_command_records",
+        "session_access_records",
+        "session_runtime_leases",
+        "sessions",
+        "tasks",
+        "workspace_runtime_binding_records"
+      ]
+    },
+    {
+      "rule_id": "git-lfs-workspace-mechanism",
+      "target_owner": "openzyme.workspace.git.lfs",
+      "prefixes": [
+        "agent_workspace_",
+        "git_lfs_"
+      ],
+      "exact_names": [
+        "agent_git_workspace_records",
+        "repository_credential_issuance_records",
+        "repository_private_namespace_holds",
+        "repository_private_namespace_records",
+        "repository_private_namespace_retirement_receipts",
+        "repository_provision_credential_records"
+      ]
+    },
+    {
+      "rule_id": "sqlite-deployment-governance",
+      "target_owner": "openzyme.store.sqlite",
+      "prefixes": ["legacy_removal_"],
+      "exact_names": ["deployment_schema_state"]
+    },
+    {
+      "rule_id": "podman-process-runtime",
+      "target_owner": "openzyme.process.podman",
+      "prefixes": ["sandbox_"],
+      "exact_names": []
+    },
+    {
+      "rule_id": "research-plugin-state",
+      "target_owner": "openzyme.research",
+      "prefixes": ["session_research_"],
+      "exact_names": ["research_file_index_records"]
+    },
+    {
+      "rule_id": "reporting-plugin-state",
+      "target_owner": "openzyme.reporting",
+      "prefixes": ["session_report_"],
+      "exact_names": []
+    },
+    {
+      "rule_id": "science-plugin-state",
+      "target_owner": "openzyme.science",
+      "prefixes": ["scientific_"],
+      "exact_names": []
+    },
+    {
+      "rule_id": "compute-plugin-state",
+      "target_owner": "openzyme.compute",
+      "prefixes": [
+        "compute_source_",
+        "workspace_external_",
+        "workspace_job_cancellation_",
+        "workspace_job_dispatch_",
+        "workspace_job_result_",
+        "workspace_revision_"
+      ],
+      "exact_names": ["session_run_records", "workspace_job_results"]
+    },
+    {
+      "rule_id": "hpc-plugin-state",
+      "target_owner": "openzyme.hpc",
+      "prefixes": ["executor_hpc_", "openzyme_hpc_"],
+      "exact_names": [
+        "scheduler_credential_occurrences",
+        "workspace_job_target_qualifications"
+      ]
+    }
+  ]
+}

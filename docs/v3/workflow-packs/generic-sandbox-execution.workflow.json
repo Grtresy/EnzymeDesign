@@ -1,9 +1,18 @@
 {
   "workflow_id": "generic-sandbox-execution",
   "version": "1.0.0",
-  "content_sha256": "sha256:e6f97407fa3d176ab370dabbd47aa863d7401fa0279d1a072dac317369caebfc",
+  "content_sha256": "sha256:4dd33a80f8d9fd188587668ffc1c0c635c0253fe1b7e6487349960f9bcbff7e8",
   "title": "Generic revision-bound execution",
   "summary": "Domain-neutral native workspace authoring and Host-supervised revision job workflow.",
+  "public_contract": "file_workspace_public@2",
+  "required_runtime_identities": [
+    "release_digest",
+    "extension_bundle_digest",
+    "declared_tool_catalog_digest",
+    "capability_binding_digest",
+    "affordance_snapshot_digest",
+    "workspace_backend_digest"
+  ],
   "capability_requirements": [
     "role:executor",
     "engine:execution"
@@ -23,7 +32,7 @@
     {
       "doc_id": "sdk-overview",
       "version": "v3",
-      "content_sha256": "sha256:6c9091db12681a37676a4a1fc7c120bf9d4b345a9faaa449b835da2fe5ba7eae"
+      "content_sha256": "sha256:7279956ae4e472d560c7267f6bc42d79a6f4a3455c3af2ec53c86eba36c36732"
     }
   ]
 }

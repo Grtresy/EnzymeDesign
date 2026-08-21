@@ -1,23 +1,23 @@
 # Opaque run_id caller audit
 
-Audit date: 2026-07-16
+Audit date: 2026-08-21
 
 ## Current in-repository production path
 
 The active path found in this checkout is:
 
-1. `openzyme-tools` compiles an execution request containing `tool_name` and a
-   RunSpec without `run_id`.
-2. `openzyme-engines.ExecutionEngine` submits through its `ExecutionRunner`
-   boundary, verifies the invocation belongs to the active session, and uses
-   only `runner_run_id` for poll/fetch/cancel.
-3. `openzyme-host-api.V3ExecutionRunnerAdapter` forwards only `run_id` to the
-   configured execution adapter and projects the legacy location field as
-   `opaque://<run_id>`.
-4. `openzyme-execution.HpcRunnerExecutionAdapter` invokes `job.status`,
-   `job.fetch_artifacts`, and `job.cancel` with exactly `{"run_id": ...}`.
-5. `openzyme-host-api.foundation` is the production composition root that
-   constructs `MCPHpcServer` and injects it into the adapter.
+1. `openzyme-compute` 是 revision-bound execution request、dispatch/observe/
+   reconcile/cancel 与 result lifecycle 的唯一语义 owner；它只依赖 Kernel
+   application services 和 provider-neutral route Port。
+2. `openzyme-hpc` 提供 target、remote workspace 和 inventory capability；
+   `openzyme-hpc-slurm`/`openzyme-hpc-ssh` 是显式选择的 Adapter/Driver，不被
+   Compute Plugin 直接 import。
+3. 通用 `openzyme-host-api` 不构造 `MCPHpcServer`，也不依赖 runner、Compute、
+   HPC 或 Slurm。启用这些能力必须由 EnzymeDesign Distribution 的 exact
+   manifest/mount 完成；安装 wheel 或发现 entry point 不会 ambient activate。
+4. 独立部署的 `mcp-hpc-runner` 只依赖 `openzyme-contracts` 与
+   `openzyme-execution-contracts`，不会接收 Kernel、Science、Host 或
+   EnzymeDesign 对象。它通过 closed wire contract 返回并消费 opaque `run_id`。
 
 The standalone `mcp-hpc-runner` CLI is another in-repository entry point. Its
 `call-tool` command now enforces the same exact public argument shapes as stdio
@@ -29,34 +29,30 @@ MCP calls.
   `job_id` and `remote_run_dir` for the SSH/Slurm implementation.
 - `<artifact_root>/<run_id>/metadata/job_handle.json` and `runspec.json` are the
   restart recovery authority. They are never returned by public tools.
-- The generic engine `RunRecord.remote_run_dir` column remains for non-HPC
-  backends; the active Host adapter stores only `opaque://<run_id>` for HPC.
-- `openzyme_execution.ExecutionOutcome.remote_run_dir` and `job_id` remain as
-  compatibility-only optional DTO fields. The active HPC adapter stores only
-  `opaque://<run_id>`, leaves `job_id` empty, and lifecycle method signatures no
-  longer accept either raw value.
+- `openzyme_compute.ExecutionOutcome.remote_run_dir` and `job_id` remain only in
+  the retained private persistence row shape. They are not part of the `@2`
+  public projection, route identity, tool result or runner lifecycle request.
 
 Direct `SSHRunner`/`SlurmRunner` integration tests intentionally exercise the
 internal classes and may inspect raw handles. They are not evidence of a public
 caller using the retired MCP shape.
 
-The runner tool response remains a trusted-Host internal DTO. The Host adapter
-removes its artifact storage map (plus any defensive raw handle keys) from
-agent-facing `raw_result`; typed artifact records carry the storage reference
-until the normal public artifact projection strips it.
+The runner tool response remains an internal execution-wire DTO. Compute/HPC
+projection contributors expose only the opaque provider handle and safe typed
+identity/digest fields; raw storage maps, scheduler handles and remote locators
+are rejected from Agent-facing output.
 
 ## Search evidence and limitation
 
-The audit searched production Python sources for `MCPHpcServer`,
-`HpcRunnerExecutionAdapter`, `job.status`, `job.logs`, `job.cancel`,
-`job.fetch_artifacts`, `get_execution_status`, `fetch_execution_artifacts`, and
-`cancel_execution`. The only production lifecycle chain found is the one above.
-Runner, adapter, engine, and Host tests cover the same path plus negative raw
-argument and restart cases.
+The audit searched production Python sources for `MCPHpcServer`, old
+`openzyme_execution` imports, raw `job_id`/`remote_run_dir` lifecycle arguments,
+runner construction in generic Host and retired fetch/status methods. No online
+in-repository caller of the retired shape remains; wheel qualification also proves
+the runner-only closure excludes Kernel, Host and product packages. The project has
+confirmed there are no out-of-repository consumers, so no release compatibility
+window or online translation path is retained.
 
-This repository audit cannot establish that separately deployed MCP clients,
-shell scripts, notebooks, or downstream packages do not call the old shape.
-Consumers outside this checkout must migrate as follows:
+Any historical offline material inspected during a future authorized cutover must:
 
 - remove `RunSpec.run_id` from submit requests;
 - persist the runner-returned opaque `run_id`;

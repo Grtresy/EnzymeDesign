@@ -1,0 +1,26 @@
+{
+  "configuration_schema_digest": "sha256:eb3c70144452ee9167f812cc98e939ef074108e36c6f6810912cbc135a28654a",
+  "identity": {
+    "build_digest": "sha256:2e3acad36dc58a944d179bcfe846f9db2235bde0d4a6d279fa6ce7683b539824",
+    "component_id": "enzymedesign.bio-provider-http",
+    "component_kind": "adapter",
+    "component_version": "0.1.0",
+    "contract_digest": "sha256:e41ae43da14bdcdff61d8dc5c0353c9ec1dca49c1a1aa0cc374e28fc849e3de1",
+    "distribution_name": "enzymedesign-bio-provider-adapters",
+    "distribution_version": "0.1.0"
+  },
+  "port_contracts": [
+    {
+      "contract_digest": "sha256:d3b248fbb4da61f7ef0944b11aa0296934a2b5a670fa77648f2cd8c74d219f24",
+      "contribution_id": "enzymedesign.bio-provider@1"
+    }
+  ],
+  "preflight_contract_digest": "sha256:76cdc409fda7c59ede11e120c34878bd4be0b7f541fabbed4b91077f19543f76",
+  "required_contracts": [
+    "enzymedesign.bio-provider@1",
+    "openzyme.contracts@1",
+    "openzyme.extension-spi@1"
+  ],
+  "schema_version": "openzyme_adapter_manifest@1",
+  "target_scoped": false
+}

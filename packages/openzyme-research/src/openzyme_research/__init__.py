@@ -1,23 +1,30 @@
-from .adapters import MissingTavilyApiKeyError
-from .adapters import MissingTavilyDependencyError
+"""Provider-neutral Research Plugin contracts and runtime contributions."""
+
+from .contracts import RESEARCH_INVOCATION_SCHEMA_VERSION
+from .contracts import RESEARCH_PROVIDER_RECEIPT_SCHEMA_VERSION
+from .contracts import RESEARCH_PROVIDER_DESCRIPTOR_SCHEMA_VERSION
+from .contracts import RESEARCH_PROVIDER_CONTRACT_DIGEST
+from .contracts import RESEARCH_REQUEST_SCHEMA_VERSION
+from .contracts import ResearchEvidence
+from .contracts import ResearchGap
+from .contracts import ResearchInvocationRecord
+from .contracts import ResearchInvocationStatus
+from .contracts import ResearchProviderReceipt
+from .contracts import ResearchProviderDescriptor
+from .contracts import ResearchProviderKind
+from .contracts import ResearchProviderRequest
+from .contracts import ResearchProviderSource
+from .contracts import ResearchRequest
+from .contracts import ResearchSourceRef
+from .contracts import ResearchSummary
+from .contracts import ResearchSummaryStatus
+from .contracts import ResearchUnitSpec
+from .contracts import SourceRefKind
 from .adapters import ResearchAdapter
 from .adapters import ResearchFinding
 from .adapters import ResearchSource
 from .adapters import ResearchUnit
 from .adapters import ResearchUnitResult
-from .adapters import TavilyResearchAdapter
-from .bio import AnnotationRecord
-from .bio import BioResearchService
-from .bio import DefaultBioResearchService
-from .bio import DeterministicBioResearchService
-from .bio import DownloadedResearchAsset
-from .bio import LiteratureHit
-from .bio import SequenceRecord
-from .bio import StructureHit
-from .bio import asset_manifest
-from .bio import literature_hits_to_findings
-from .bio import safe_literature_evidence_payload
-from .bio import structure_hits_to_findings
 from .observations import ResearchFileManifest
 from .observations import ResearchObservation
 from .provider_runtime import BoundedCallableClient
@@ -36,26 +43,26 @@ from .provider_runtime import failed_result
 from .provider_runtime import provider_identity_digest
 from .provider_runtime import provider_schema_error
 from .provider_runtime import safe_public_locator
-from .quorum import EvidenceQuorumMember
-from .quorum import EvidenceQuorumResult
-from .quorum import EvidenceQuorumStatus
-from .quorum import EvidenceRequirement
-from .quorum import evaluate_literature_quorum
+from .runtime import RESEARCH_START_TOOL_SPEC
+from .runtime import RESEARCH_PROJECTION_CONTRACT_DIGEST
+from .runtime import ResearchPluginRuntimeSurfaces
+from .runtime import ResearchProjection
+from .runtime import ResearchStartToolRuntime
+from .runtime import ResearchWorker
+from .runtime import build_research_plugin_runtime_surfaces
+from .services import InMemoryResearchRepository
+from .services import RESEARCH_PLUGIN_ID
+from .services import RESEARCH_PROVIDER_CAPABILITY
+from .services import RESEARCH_PROVIDER_CONTRACT
+from .services import ResearchContextFactory
+from .services import ResearchOrchestrationService
+from .services import ResearchProviderPort
+from .services import ResearchRepository
 
 __all__ = [
-    "AnnotationRecord",
-    "asset_manifest",
-    "BioResearchService",
     "BoundedCallableClient",
     "BoundedHttpClient",
-    "DefaultBioResearchService",
-    "DeterministicBioResearchService",
-    "DownloadedResearchAsset",
-    "EvidenceQuorumMember",
-    "EvidenceQuorumResult",
-    "EvidenceQuorumStatus",
-    "EvidenceRequirement",
-    "LiteratureHit",
+    "InMemoryResearchRepository",
     "ProviderAttempt",
     "ProviderCallResult",
     "ProviderFailure",
@@ -63,27 +70,52 @@ __all__ = [
     "ProviderOutcome",
     "ProviderProvenance",
     "ProviderRequestError",
-    "combine_provenance",
-    "evaluate_literature_quorum",
-    "literature_hits_to_findings",
-    "MissingTavilyApiKeyError",
-    "MissingTavilyDependencyError",
+    "RESEARCH_INVOCATION_SCHEMA_VERSION",
+    "RESEARCH_PLUGIN_ID",
+    "RESEARCH_PROVIDER_CAPABILITY",
+    "RESEARCH_PROVIDER_CONTRACT",
+    "RESEARCH_PROVIDER_CONTRACT_DIGEST",
+    "RESEARCH_PROVIDER_DESCRIPTOR_SCHEMA_VERSION",
+    "RESEARCH_PROVIDER_RECEIPT_SCHEMA_VERSION",
+    "RESEARCH_REQUEST_SCHEMA_VERSION",
+    "RESEARCH_PROJECTION_CONTRACT_DIGEST",
+    "RESEARCH_START_TOOL_SPEC",
+    "ResearchContextFactory",
     "ResearchAdapter",
+    "ResearchEvidence",
     "ResearchFileManifest",
-    "ResearchFinding",
+    "ResearchGap",
+    "ResearchInvocationRecord",
+    "ResearchInvocationStatus",
     "ResearchObservation",
+    "ResearchPluginRuntimeSurfaces",
+    "ResearchOrchestrationService",
+    "ResearchProjection",
+    "ResearchProviderPort",
+    "ResearchProviderDescriptor",
+    "ResearchProviderKind",
+    "ResearchProviderReceipt",
+    "ResearchProviderRequest",
+    "ResearchProviderSource",
+    "ResearchRepository",
+    "ResearchRequest",
+    "ResearchFinding",
     "ResearchSource",
+    "ResearchSourceRef",
+    "ResearchStartToolRuntime",
+    "ResearchSummary",
+    "ResearchSummaryStatus",
+    "ResearchUnitSpec",
     "ResearchUnit",
     "ResearchUnitResult",
-    "safe_literature_evidence_payload",
-    "SequenceRecord",
-    "StructureHit",
-    "structure_hits_to_findings",
+    "ResearchWorker",
+    "SourceRefKind",
+    "combine_provenance",
     "completed_result",
     "degraded_result",
     "failed_result",
     "provider_identity_digest",
     "provider_schema_error",
     "safe_public_locator",
-    "TavilyResearchAdapter",
+    "build_research_plugin_runtime_surfaces",
 ]
