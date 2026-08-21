@@ -13,8 +13,10 @@ Kernel control store 的 SQLite Adapter。
 - 短 `BEGIN IMMEDIATE` Unit of Work，以及同一事务内的 event/outbox；
 - namespace-confined `ExtensionStateStore` 与 SQLite authorizer；
 - bounded `ExtensionTransactionParticipant` prepare/apply/result；
-- immutable Extension bundle、catalog identity、Session capability binding、resource capability fact
-  和 workspace operation receipt 的持久化。
+- immutable Extension bundle、catalog identity、Session capability binding、resource capability fact，以及
+  Workspace effect 的 reserve/settle ledger。ledger 使用 exact provider/operation/intent/session/workspace
+  generation identity、CAS `ledger_version` 和 content-bound receipt；它是 Adapter persistence mechanism，
+  不成为 Plugin state 或新的 canonical Task/Science 真值。
 - `verify_session_composition_state_read_only()` 对每个 Session pin、连续 binding revision、固定
   Extension/route catalog 与 adopted target inventory reference 做零写入闭包，orphan 或 drift
   直接拒绝。
@@ -116,8 +118,8 @@ identity；该模块不在 normal startup、Kernel 或 Agent tool surface 中。
 现行单体 SQL 同时保留为 compatibility bootstrap，并由
 `scripts/partition-openzyme-sqlite-schema.py` 确定性生成 25 个 owner/phase bundles。生成顺序固定为所有 owner
 tables → indexes → triggers → Store finalize；`migration-catalog.json` 绑定每个资源、owner、object closure 与
-digest。`--check` 会在内存中分别重放单体与分区 assets，要求 `sqlite_master`、`user_version`、147 tables、
-134 indexes、674 triggers 和 422 foreign keys 完全相同。分区没有重命名 DDL，也不是 production cutover。
+digest。`--check` 会在内存中分别重放单体与分区 assets，要求 `sqlite_master`、`user_version`、150 tables、
+134 indexes、679 triggers 和 422 foreign keys 完全相同。分区没有重命名 DDL，也不是 production cutover。
 
 ## Connection 与 migration 边界
 
@@ -153,7 +155,7 @@ Plugin；缺失、多余、跨 epoch 或 payload drift 均零 mutation fail clos
 preflight、locator、import 或 normal startup 调用；现有路径一律 fail closed，也不会删除失败 occurrence
 留下的文件。无参数调用只服务 legacy-full fixture；目标 Distribution 必须传入 closed profile：Standard
 创建 98 tables/104 indexes/449 triggers/300 foreign keys，且没有 Research/Reporting/Science/Compute/HPC
-或 legacy-removal tables；EnzymeDesign 创建 144 tables/134 indexes/674 triggers/421 foreign keys，并包含
+或 legacy-removal tables；EnzymeDesign 创建 147 tables/134 indexes/679 triggers/421 foreign keys，并包含
 所选通用 Plugin owner。两者 proof 的
 profile/schema digest 必须不同，拿错 profile 以 unexpected-object 失败。
 
@@ -167,6 +169,11 @@ connection。authorizer 在 participant 的整个 `prepare`/`apply` 调用期间
 事务顺序固定为：Kernel 先完成 authority/admission 和所有外部 I/O → `BEGIN IMMEDIATE` → Core mutation
 → typed participant → durable event/outbox → commit。participant、CAS、budget 或 identity 任一失败都回滚
 整个 occurrence；Store 不重试、不跳过 participant，也不把 receipt 推断成 Task/scientific terminal。
+
+`RevisionPathVerificationReceipt` 没有伪造的 `session_id`；它通过 canonical `publication_id` 外键属于一次
+publication。因此通用 `list_for_session()` 不会返回这类记录。需要验证 formal Compute 输入时，composition root
+注入只读 `SQLiteRevisionPathVerificationQuery.list_for_publication()`，按 publication foreign key 读取并重新校验
+closed receipt digest。Product Plugin 只消费该窄 query Port，不接触 raw SQL 或 Store 私有 repository。
 
 ## Authority 兼容映射
 
@@ -187,6 +194,6 @@ tuple、target 排序、lifecycle、immutable fingerprint 与 canonical digest�
 
 映射规则的机器可检验来源是
 [`authority-store-mapping.json`](../../docs/v3/architecture/authority-store-mapping.json)。连接/UoW/provider、
-Kernel repository implementation、32/32 production codecs 与 147-table owner schema 均由 Store 拥有；
+Kernel repository implementation、32/32 production codecs 与 150-table owner schema 均由 Store 拥有；
 Standard 的 `@2` composition 使用该唯一 writer。历史数据库 adoption 与真实 deployment cutover 仍只允许由
 离线 operator 流程在明确授权后执行。

@@ -3,11 +3,11 @@
   "finish_validators": [],
   "http_routes": [],
   "identity": {
-    "build_digest": "sha256:cd9f4bf5833e4045dfc0fd7d92cd0283172594a1f5bd2d00498c97c85be493ee",
+    "build_digest": "sha256:f1e239d8c8985fb79ee8c623d7265a907e836350ab591de1779713ef27ac1520",
     "component_id": "enzymedesign.vina",
     "component_kind": "plugin",
     "component_version": "0.1.0",
-    "contract_digest": "sha256:b8196dc83fa847a94c50f3b6d4baa917fc094228ebf661daa6395e3296700126",
+    "contract_digest": "sha256:0212c3844847261ef4299e55644e5f6f4d9613316df4c09cd856c36a50062c3d",
     "distribution_name": "enzymedesign-vina",
     "distribution_version": "0.1.0"
   },
@@ -217,11 +217,19 @@
         "output_schema": {
           "additionalProperties": false,
           "properties": {
+            "execution_id": {
+              "minLength": 1,
+              "type": "string"
+            },
             "fallback_performed": {
               "const": false
             },
             "formal_compute_requested": {
               "const": true
+            },
+            "operation_id": {
+              "minLength": 1,
+              "type": "string"
             },
             "raw_shell": {
               "const": false
@@ -243,6 +251,8 @@
             }
           },
           "required": [
+            "execution_id",
+            "operation_id",
             "workload_id",
             "workload_digest",
             "state",

@@ -26,6 +26,20 @@ Compute/HPC 分别拥有自己的 namespaced state；SQLite Adapter 实现所有
 但不因此获得这些语义的决策权。Plugin 只能通过 narrow application service 和受限 transaction participant
 参与写入，不能访问 Core 私有表或 raw connection。
 
+Compute 的当前在线 execution record 是这一通用机制的参考实现：`openzyme.compute` 只提交闭合
+`upsert_execution` command，Kernel admission 通过后由 SQLite extension transaction coordinator 写入
+`openzyme_compute/execution` namespaced record。该 record 保存 invocation/request、exact route、opaque handle、
+route receipt 与 result；effect certainty 仍只在 Kernel ControlledOperation，owner wakeup 仍只在 Kernel
+Continuation。真实 SQLite restart 回归证明两类真值可分别恢复且不会重复外部 dispatch。
+
+Workspace filesystem/process/transfer 的 Adapter occurrence 使用独立 Store-private ledger，而不是 Plugin
+namespaced state 或 Core canonical table。`WorkspaceOperationIdentity` 固定 provider、operation kind/id、intent、
+Session、workspace generation/state version；Adapter 必须先 reserve 再 effect，并以 CAS ledger version 写回
+bounded receipt。Standard 和 EnzymeDesign 的 composition root 都把 target SQLite ledger 注入 Podman runtime；
+SSH runtime 同样只消费抽象 Port。跨 Host/Adapter epoch 的 duplicate 不重新 dispatch，terminal receipt 直接恢复，
+uncertain occurrence 只允许 reconcile 原 identity。ledger success 只证明机制回执，不产生 publication、handoff、
+Science adoption 或 Task terminal。
+
 当前通用 control-plane、repository-binding、reliability/failure 纯契约已经从 `openzyme-domain`
 迁到 `openzyme-contracts`。`Session`、`Task`、`Lane`、`AgentMember`、Inbox/Approval、runtime signal/lease、
 `ControlledOperation`、`ContinuationState`、`ProjectRepositoryBinding` 与
@@ -443,7 +457,7 @@ adoption 成功写 `offline_removal_complete`。old、unknown 或 `offline_remov
 final schema 中保留 `legacy_removal_ledger/items` 只用于证明 deployment removal 完成与幂等重试，
 它们不提供旧领域读取、写入、投影或 tool surface。
 
-当前 schema 可在内存 SQLite 中重算出 147 张业务表、134 个索引、674 个触发器和 422 个外键；每个 index/
+当前 schema 可在内存 SQLite 中重算出 150 张业务表、134 个索引、679 个触发器和 422 个外键；每个 index/
 trigger/FK 通过 origin table 继承唯一 semantic owner。运行
 `scripts/partition-openzyme-sqlite-schema.py` 会按 owner 与 tables/indexes/triggers/finalize phase 生成 25 个
 closed migration bundles；`--check` 必须证明分区重放后的 `sqlite_master`、`user_version` 与全部 FK 数量同

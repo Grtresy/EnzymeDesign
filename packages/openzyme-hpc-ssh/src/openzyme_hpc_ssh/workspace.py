@@ -13,6 +13,9 @@ from openzyme_contracts import WorkspaceExecRequest
 from openzyme_contracts import WorkspaceFilesystemMutation
 from openzyme_contracts import WorkspaceObservation
 from openzyme_contracts import WorkspaceObservationRequest
+from openzyme_contracts import WorkspaceOperationIdentity
+from openzyme_contracts import WorkspaceOperationLedgerError
+from openzyme_contracts import WorkspaceOperationLedgerPort
 from openzyme_contracts import WorkspaceOperationReceipt
 from openzyme_contracts import WorkspacePortError
 from openzyme_contracts import WorkspaceRuntimeBinding
@@ -24,6 +27,26 @@ from openzyme_contracts import require_identifier
 
 SSH_WORKSPACE_PROVIDER_ID = "openzyme.hpc.ssh"
 SSH_WORKSPACE_PROVIDER_CONTRACT = "openzyme.hpc.ssh.workspace@1"
+REMOTE_WORKSPACE_HELPER_CAPABILITY_ID = "software.openzyme-workspace-runtime"
+REMOTE_WORKSPACE_HELPER_VERSION = "1.0.0"
+REMOTE_WORKSPACE_HELPER_PATH = "/usr/local/libexec/openzyme-workspace-runtime"
+REMOTE_WORKSPACE_HELPER_BUILD_DIGEST = canonical_sha256_digest(
+    {
+        "software_capability_id": REMOTE_WORKSPACE_HELPER_CAPABILITY_ID,
+        "version": REMOTE_WORKSPACE_HELPER_VERSION,
+        "path": REMOTE_WORKSPACE_HELPER_PATH,
+        "private_request_schema": "ssh_workspace_private_envelope@1",
+        "private_response_schema": "ssh_workspace_private_response@1",
+        "operations": [
+            "reconcile",
+            "rsync.transfer",
+            "sftp.mutate",
+            "sftp.observe",
+            "ssh.exec",
+        ],
+        "occurrence_marker": "exact_operation_request_digest",
+    }
+)
 SSH_WORKSPACE_PROVIDER_CONTRACT_DIGEST = canonical_sha256_digest(
     {
         "contract": SSH_WORKSPACE_PROVIDER_CONTRACT,
@@ -36,6 +59,17 @@ SSH_WORKSPACE_PROVIDER_CONTRACT_DIGEST = canonical_sha256_digest(
         "path_policy": "workspace_relative_private_root_resolution",
         "process_policy": "bounded_foreground_argv",
         "reconcile_policy": "same_occurrence_no_redispatch",
+        "helper": {
+            "capability_id": REMOTE_WORKSPACE_HELPER_CAPABILITY_ID,
+            "version": REMOTE_WORKSPACE_HELPER_VERSION,
+            "build_digest": REMOTE_WORKSPACE_HELPER_BUILD_DIGEST,
+            "qualification_binding": [
+                "target_id",
+                "target_inventory_generation",
+                "target_inventory_digest",
+                "helper_qualification_digest",
+            ],
+        },
         "scheduler_authority": False,
         "fallback": False,
     }
@@ -50,7 +84,13 @@ class PrivateRemoteWorkspaceLocator:
     generation: int
     state_version: int
     target_id: str
+    target_inventory_generation: int
+    target_inventory_digest: str
     target_qualification_digest: str
+    helper_capability_id: str
+    helper_version: str
+    helper_build_digest: str
+    helper_qualification_digest: str
     root_identity_digest: str
     remote_root: str
     credential_claim_id: str
@@ -62,15 +102,30 @@ class PrivateRemoteWorkspaceLocator:
             "owner_member_id",
             "target_id",
             "credential_claim_id",
+            "helper_capability_id",
+            "helper_version",
         ):
             require_identifier(getattr(self, field_name), field_name=field_name)
         for field_name in (
             "target_qualification_digest",
+            "target_inventory_digest",
+            "helper_build_digest",
+            "helper_qualification_digest",
             "root_identity_digest",
         ):
             require_digest(getattr(self, field_name), field_name=field_name)
-        if self.generation < 1 or self.state_version < 1:
+        if (
+            self.generation < 1
+            or self.state_version < 1
+            or self.target_inventory_generation < 1
+        ):
             raise ValueError("remote locator generations must be positive")
+        if (
+            self.helper_capability_id != REMOTE_WORKSPACE_HELPER_CAPABILITY_ID
+            or self.helper_version != REMOTE_WORKSPACE_HELPER_VERSION
+            or self.helper_build_digest != REMOTE_WORKSPACE_HELPER_BUILD_DIGEST
+        ):
+            raise ValueError("remote workspace helper identity is not the exact build")
         if (
             not isinstance(self.remote_root, str)
             or not self.remote_root.startswith("/")
@@ -253,10 +308,12 @@ class SubprocessSshCommandExecutor:
 class SshJsonCommandTransport:
     credential_resolver: PrivateSshCredentialResolver
     executor: SshCommandExecutor
-    wrapper_path: str = "/usr/local/libexec/openzyme-workspace-runtime"
+    wrapper_path: str = REMOTE_WORKSPACE_HELPER_PATH
     ssh_binary: str = "/usr/bin/ssh"
 
     def __post_init__(self) -> None:
+        if self.wrapper_path != REMOTE_WORKSPACE_HELPER_PATH:
+            raise ValueError("wrapper_path must name the qualified helper resource")
         for field_name in ("wrapper_path", "ssh_binary"):
             value = PurePosixPath(getattr(self, field_name))
             if not value.is_absolute() or value.as_posix() != getattr(
@@ -337,7 +394,13 @@ class SshJsonCommandTransport:
             "workspace_generation": locator.generation,
             "workspace_state_version": locator.state_version,
             "target_id": locator.target_id,
+            "target_inventory_generation": locator.target_inventory_generation,
+            "target_inventory_digest": locator.target_inventory_digest,
             "target_qualification_digest": locator.target_qualification_digest,
+            "helper_capability_id": locator.helper_capability_id,
+            "helper_version": locator.helper_version,
+            "helper_build_digest": locator.helper_build_digest,
+            "helper_qualification_digest": locator.helper_qualification_digest,
             "root_identity_digest": locator.root_identity_digest,
             "remote_root": locator.remote_root,
             "operation_kind": operation_kind,
@@ -450,6 +513,8 @@ def _json_bytes(value: object) -> bytes:
 class SshWorkspaceAdapter:
     locator_resolver: PrivateRemoteWorkspaceLocatorResolver
     transport: RemoteWorkspaceTransport
+    operation_ledger: WorkspaceOperationLedgerPort
+    provider_id: str = SSH_WORKSPACE_PROVIDER_ID
 
     def observe(self, request: WorkspaceObservationRequest) -> WorkspaceObservation:
         locator = self._locator(request.binding)
@@ -562,6 +627,23 @@ class SshWorkspaceAdapter:
         self,
         request: WorkspaceFilesystemMutation | WorkspaceExecRequest | WorkspaceTransferRequest,
     ) -> WorkspaceOperationReceipt:
+        identity = self._operation_identity(request)
+        prior = self._read_ledger(identity)
+        if prior is None:
+            return WorkspaceOperationReceipt.create(
+                operation_id=request.operation_id,
+                workspace_id=request.binding.workspace_id,
+                generation=request.binding.generation,
+                state_version=request.binding.state_version,
+                effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+                mutation_applied=False,
+                diagnostic_id="diagnostic-remote-occurrence-not-reserved",
+            )
+        if prior.receipt is not None and (
+            prior.receipt.effect_certainty
+            is not ExternalEffectCertainty.DISPATCH_IN_DOUBT
+        ):
+            return prior.receipt
         locator = self._locator(request.binding)
         outcome = self.transport.reconcile(
             locator=locator,
@@ -573,7 +655,16 @@ class SshWorkspaceAdapter:
             operation_id=request.operation_id,
             request_digest=request.intent_digest,
         )
-        return self._receipt(request, outcome)
+        receipt = self._receipt(request, outcome)
+        if (
+            prior.receipt is not None
+            and prior.receipt.effect_certainty
+            is ExternalEffectCertainty.DISPATCH_IN_DOUBT
+            and receipt.effect_certainty
+            is ExternalEffectCertainty.DISPATCH_IN_DOUBT
+        ):
+            return prior.receipt
+        return self.operation_ledger.settle(identity, receipt).receipt or receipt
 
     def _dispatch_mutation(
         self,
@@ -584,22 +675,115 @@ class SshWorkspaceAdapter:
         timeout_seconds: int,
         max_output_bytes: int,
     ) -> WorkspaceOperationReceipt:
+        identity = self._operation_identity(request, operation_kind=operation_kind)
+        prior = self._read_ledger(identity)
+        if prior is not None:
+            return self._recorded_or_pending(identity, prior.receipt)
         locator = self._locator(request.binding)
-        outcome = self.transport.dispatch(
-            locator=locator,
-            operation_id=request.operation_id,
-            request_digest=request.intent_digest,
-            operation_kind=operation_kind,
-            payload=payload,
-            timeout_seconds=timeout_seconds,
-            max_output_bytes=max_output_bytes,
-        )
+        if not self.operation_ledger.reserve(identity):
+            concurrent = self._read_ledger(identity)
+            if concurrent is None:
+                raise RuntimeError("reserved remote workspace occurrence disappeared")
+            return self._recorded_or_pending(identity, concurrent.receipt)
+        try:
+            outcome = self.transport.dispatch(
+                locator=locator,
+                operation_id=request.operation_id,
+                request_digest=request.intent_digest,
+                operation_kind=operation_kind,
+                payload=payload,
+                timeout_seconds=timeout_seconds,
+                max_output_bytes=max_output_bytes,
+            )
+        except Exception as exc:
+            pending = WorkspaceOperationReceipt.create(
+                operation_id=request.operation_id,
+                workspace_id=request.binding.workspace_id,
+                generation=request.binding.generation,
+                state_version=request.binding.state_version,
+                effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
+                mutation_applied=None,
+                diagnostic_id="diagnostic-remote-dispatch-response-lost",
+            )
+            self.operation_ledger.settle(identity, pending)
+            raise WorkspacePortError(
+                "remote_workspace_dispatch_unclassified",
+                "remote workspace dispatch outcome is uncertain",
+                effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
+                mutation_applied=None,
+                diagnostic_id=pending.diagnostic_id,
+            ) from exc
         self._require_identity(
             outcome,
             operation_id=request.operation_id,
             request_digest=request.intent_digest,
         )
-        return self._receipt(request, outcome)
+        receipt = self._receipt(request, outcome)
+        self.operation_ledger.settle(identity, receipt)
+        return receipt
+
+    def _operation_identity(
+        self,
+        request: WorkspaceFilesystemMutation | WorkspaceExecRequest | WorkspaceTransferRequest,
+        *,
+        operation_kind: str | None = None,
+    ) -> WorkspaceOperationIdentity:
+        return WorkspaceOperationIdentity(
+            provider_id=self.provider_id,
+            operation_kind=operation_kind or self._request_operation_kind(request),
+            operation_id=request.operation_id,
+            intent_digest=request.intent_digest,
+            session_id=request.binding.session_id,
+            workspace_id=request.binding.workspace_id,
+            generation=request.binding.generation,
+            state_version=request.binding.state_version,
+        )
+
+    def _read_ledger(self, identity: WorkspaceOperationIdentity):  # noqa: ANN202
+        try:
+            return self.operation_ledger.read(identity)
+        except WorkspaceOperationLedgerError as exc:
+            collision = exc.phase == "identity"
+            raise WorkspacePortError(
+                (
+                    "workspace_operation_identity_collision"
+                    if collision
+                    else "workspace_operation_ledger_rejected"
+                ),
+                "operation identity was already used for another remote intent"
+                if collision
+                else "workspace occurrence ledger rejected the operation",
+                effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+                mutation_applied=False,
+            ) from exc
+
+    @staticmethod
+    def _request_operation_kind(
+        request: WorkspaceFilesystemMutation | WorkspaceExecRequest | WorkspaceTransferRequest,
+    ) -> str:
+        if isinstance(request, WorkspaceFilesystemMutation):
+            return "sftp.mutate"
+        if isinstance(request, WorkspaceExecRequest):
+            return "ssh.exec"
+        return "rsync.transfer"
+
+    def _recorded_or_pending(
+        self,
+        identity: WorkspaceOperationIdentity,
+        receipt: WorkspaceOperationReceipt | None,
+    ) -> WorkspaceOperationReceipt:
+        if receipt is not None:
+            return receipt
+        pending = WorkspaceOperationReceipt.create(
+            operation_id=identity.operation_id,
+            workspace_id=identity.workspace_id,
+            generation=identity.generation,
+            state_version=identity.state_version,
+            effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
+            mutation_applied=None,
+            diagnostic_id="diagnostic-remote-reconciliation-pending",
+        )
+        return self.operation_ledger.settle(identity, pending).receipt or pending
 
     def _locator(
         self,
@@ -667,6 +851,10 @@ __all__ = [
     "PrivateSshCredentialResolver",
     "RemoteWorkspaceTransport",
     "RemoteWorkspaceTransportOutcome",
+    "REMOTE_WORKSPACE_HELPER_BUILD_DIGEST",
+    "REMOTE_WORKSPACE_HELPER_CAPABILITY_ID",
+    "REMOTE_WORKSPACE_HELPER_PATH",
+    "REMOTE_WORKSPACE_HELPER_VERSION",
     "SSH_WORKSPACE_PROVIDER_CONTRACT",
     "SSH_WORKSPACE_PROVIDER_CONTRACT_DIGEST",
     "SSH_WORKSPACE_PROVIDER_ID",

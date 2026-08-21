@@ -104,7 +104,7 @@ def test_route_identity_binds_exact_inventory_generation_and_qualification() -> 
     route = ExecutionRouteIdentity.from_dict(
         {
             "schema_version": "execution_route_identity@1",
-            "route_id": "hpc.primary.hmmer",
+            "route_id": "enzymedesign.hmmer.hpc-primary@1",
             "target_id": "hpc:primary",
             "provider_id": "openzyme.hpc.slurm",
             "inventory_generation": 7,
@@ -113,6 +113,7 @@ def test_route_identity_binds_exact_inventory_generation_and_qualification() -> 
         }
     )
 
+    assert route.route_id == "enzymedesign.hmmer.hpc-primary@1"
     assert route.inventory_generation == 7
 
 

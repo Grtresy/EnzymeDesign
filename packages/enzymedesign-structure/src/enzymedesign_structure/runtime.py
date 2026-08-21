@@ -4,6 +4,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
+from enzymedesign_core import ExactProductCapabilityRouteRuntime
+from enzymedesign_core import ProductCapabilityRouteApplication
 from openzyme_contracts import ToolInvocation
 from openzyme_contracts import ToolResult
 from openzyme_contracts import ToolSpec
@@ -187,11 +189,50 @@ class FpocketToolRuntime:
         )
 
 
+FPOCKET_ROUTE_BINDINGS = (
+    ("enzymedesign.fpocket.hpc-primary@1", "enzymedesign.fpocket.hpc"),
+    ("enzymedesign.fpocket.local@1", "enzymedesign.fpocket.local"),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class StructurePluginRuntimeSurfaces:
+    tools: tuple[FpocketToolRuntime, ...]
+    capability_routes: tuple[ExactProductCapabilityRouteRuntime, ...]
+
+
+def build_structure_plugin_runtime_surfaces(
+    *,
+    application: FpocketToolApplication,
+    route_application: ProductCapabilityRouteApplication,
+) -> StructurePluginRuntimeSurfaces:
+    return StructurePluginRuntimeSurfaces(
+        tools=(FpocketToolRuntime(application),),
+        capability_routes=tuple(
+            ExactProductCapabilityRouteRuntime(
+                route_id=route_id,
+                owner_plugin_id=STRUCTURE_PLUGIN_ID,
+                driver_id=driver_id,
+                capability_ids=(
+                    STRUCTURE_PLUGIN_ID,
+                    "openzyme.execution.revision-job",
+                    "software.fpocket",
+                ),
+                application=route_application,
+            )
+            for route_id, driver_id in FPOCKET_ROUTE_BINDINGS
+        ),
+    )
+
+
 __all__ = [
     "FPOCKET_COMPUTE_REQUIREMENT",
     "FPOCKET_QUALIFICATION_SPEC",
+    "FPOCKET_ROUTE_BINDINGS",
     "FPOCKET_SOFTWARE_REQUIREMENT",
     "FPOCKET_TOOL_SPEC",
     "FpocketToolApplication",
     "FpocketToolRuntime",
+    "StructurePluginRuntimeSurfaces",
+    "build_structure_plugin_runtime_surfaces",
 ]

@@ -71,7 +71,7 @@ target_id = "hpc-primary"
 component_id = "openzyme.hpc.ssh"
 distribution_name = "openzyme-hpc-ssh"
 distribution_version = "0.1.0"
-manifest_digest = "sha256:7e7555d39077b2f0b7709198d4515a0d35be6b3fe9e1d2e7fc32e0fa79c5ca4a"
+manifest_digest = "sha256:b4d7585e601203032932881b0ac92f6bb9f699761c26216b31bbdda251878f42"
 
 [[adapters]]
 slot = "hpc.scheduler"
@@ -79,7 +79,7 @@ target_id = "hpc-primary"
 component_id = "openzyme.hpc.slurm"
 distribution_name = "openzyme-hpc-slurm"
 distribution_version = "0.1.0"
-manifest_digest = "sha256:573f7473b929113afcc3c261fae35883605d3861e296e66a28d9d09a47f930a2"
+manifest_digest = "sha256:36e534f2219b3ed9b78a215a93f8cb1572bff30ca6ff3c379eb46835c41eb103"
 
 [plugins]
 required = [
@@ -88,9 +88,9 @@ required = [
   { component_id = "openzyme.science", distribution_name = "openzyme-science", distribution_version = "0.1.0", manifest_digest = "sha256:fbac0d99e210ab373c3ed027959ea82b482144be60815f1c7e6f60712f5cca70" },
   { component_id = "openzyme.science-research", distribution_name = "openzyme-science-research", distribution_version = "0.1.0", manifest_digest = "sha256:fc91b346c744afeee1bfd4b7103ec5a991a974902584fff242a6cc35d205aba9" },
   { component_id = "openzyme.compute", distribution_name = "openzyme-compute", distribution_version = "0.1.0", manifest_digest = "sha256:a7d6817f2817bef188d0e0256d2a45e168995a0f45fb072061e882b2ffa3415a" },
-  { component_id = "openzyme.hpc", distribution_name = "openzyme-hpc", distribution_version = "0.1.0", manifest_digest = "sha256:0c498d6072fe1e3d6dfb146a64dfcf6c2710e8232238e11612e2e8962d3cea49" },
+  { component_id = "openzyme.hpc", distribution_name = "openzyme-hpc", distribution_version = "0.1.0", manifest_digest = "sha256:0c8ac4ad5753c9829c10163ebeb6bf71bd5343063865f112556034c48292b16e" },
   { component_id = "enzymedesign.bio-providers", distribution_name = "enzymedesign-bio-providers", distribution_version = "0.1.0", manifest_digest = "sha256:fade33a29b2af8e5ce9fc30c48482c10b159295886c4d78a8de0d9e2919858e6" },
-  { component_id = "enzymedesign.hmmer", distribution_name = "enzymedesign-hmmer", distribution_version = "0.1.0", manifest_digest = "sha256:5f023f299ce35cee254a3617d85bf057885b31a71249bcf1b9455bff5b288f7f" },
+  { component_id = "enzymedesign.hmmer", distribution_name = "enzymedesign-hmmer", distribution_version = "0.1.0", manifest_digest = "sha256:b4d17c9506035ee37f08620e0404e8ba80bd74a5cd1057efc19898f2efd02efd" },
   { component_id = "enzymedesign.sequence.toolpack", distribution_name = "enzymedesign-sequence-toolpack", distribution_version = "0.1.0", manifest_digest = "sha256:ea39f8dc2931ef343823e9e30259183d8282cfda7b8f081d022c2ba6079ad319" },
   { component_id = "enzymedesign.aox", distribution_name = "enzymedesign-aox", distribution_version = "0.1.0", manifest_digest = "sha256:6eebd9bceaaceb812e45b14b2c5d3511b0edfd68b54ec1b3c1af21d6789d708b" },
 ]
@@ -98,7 +98,7 @@ optional = [
   { component_id = "enzymedesign.alphafold", distribution_name = "enzymedesign-alphafold", distribution_version = "0.1.0", manifest_digest = "sha256:9575ac56ea3a66b6353691d9b9bcc2210856419ea2081c90b23a53d265ea610f" },
   { component_id = "enzymedesign.docking.preprocess", distribution_name = "enzymedesign-docking-preprocess", distribution_version = "0.1.0", manifest_digest = "sha256:d6d25c26c6afdd6bed95d22672784769458abe309bf7ed8c996eab7c9c179ea0" },
   { component_id = "enzymedesign.structure", distribution_name = "enzymedesign-structure", distribution_version = "0.1.0", manifest_digest = "sha256:a865e9ee8ef3f7f2b3ffd36cfe8da45b557c9db410915a3d5db91a5a016d9235" },
-  { component_id = "enzymedesign.vina", distribution_name = "enzymedesign-vina", distribution_version = "0.1.0", manifest_digest = "sha256:efeef50cf55127e9396ca82879363ac63c52ae1c82f57b001af32725c25dca79" },
+  { component_id = "enzymedesign.vina", distribution_name = "enzymedesign-vina", distribution_version = "0.1.0", manifest_digest = "sha256:cc033b5d96d31b6554dc67640ae1e39e249b4b98fc54edcfd9864c8d11e0302f" },
 ]
 
 [[drivers]]

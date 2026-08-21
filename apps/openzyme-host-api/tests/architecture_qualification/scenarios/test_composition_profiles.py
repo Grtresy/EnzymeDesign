@@ -62,14 +62,26 @@ def test_standard_profile_is_plugin_free_and_restartable() -> None:
 
 
 @pytest.mark.architecture_qualification_scenario(
-    scenario_id="wire-contract.enzymedesign-profile",
+    scenario_id="wire-contract.enzymedesign-catalog",
     family="wire-contract",
     selections=("full", "premerge_subset"),
 )
-def test_enzymedesign_profile_mounts_exact_plugins_and_drivers() -> None:
+def test_enzymedesign_profile_resolves_exact_component_catalogs() -> None:
     _record_profile_satisfied(
-        "wire-contract.enzymedesign-profile",
-        "enzymedesign-composition",
+        "wire-contract.enzymedesign-catalog",
+        "enzymedesign-catalog",
+    )
+
+
+@pytest.mark.architecture_qualification_scenario(
+    scenario_id="identity-semantics.enzymedesign-product-cross-layer",
+    family="identity-semantics",
+    selections=("full", "premerge_subset"),
+)
+def test_enzymedesign_product_runs_real_non_live_cross_layer_path() -> None:
+    _record_profile_satisfied(
+        "identity-semantics.enzymedesign-product-cross-layer",
+        "enzymedesign-product-cross-layer",
     )
 
 

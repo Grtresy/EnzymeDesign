@@ -35,7 +35,7 @@ provenance。场景和不变量各自声明 `profile_ids`；Science/HPC/EnzymeDe
 ## 当前 registry
 
 `invariant-registry.json` 使用
-`openzyme_v3_architecture_invariant_registry@3`。当前 closed registry 包含 27 个不变量、27 个场景和
+`openzyme_v3_architecture_invariant_registry@3`。当前 closed registry 包含 28 个不变量、28 个场景和
 十二个 family：
 
 - authority composition、wire contract、identity semantics；
@@ -50,7 +50,10 @@ boundary relation drift、skip、xfail、timeout 或不完整 effect ledger 都�
 
 除原有十四个基础场景和五个 cutover 场景外，当前还固定八个 composition profile 场景：
 
-- 三个剖面各自的真实闭包：Kernel fake、Plugin-free Standard、EnzymeDesign Plugin/Driver；
+- 三个剖面各自的真实闭包：Kernel fake、Plugin-free Standard、EnzymeDesign exact component catalog；
+- EnzymeDesign 另有真实 non-live 产品跨层场景，从 generic Host、Session pin、authority、immutable
+  publication、adopted inventory 与 affordance/route，经 mounted HMMER/Vina Drivers 和 durable Compute 到
+  声明式 fake runner，再验证 result、owner continuation、Science validator 与 Task 非自动终态；
 - dependency/pyproject/wheel content/fresh import/archive exposure；
 - Plugin activation 的 add/remove/missing/degraded/drift/collision/cycle/namespace/Session pin 负例；
 - capability inventory、qualification、declared/effective catalog、affordance 与 route stale 负例；

@@ -5,12 +5,12 @@
   "physical_store_owner": "openzyme.store.sqlite",
   "physical_table_rename_policy": "retain_names_in_this_change",
   "expected_object_counts": {
-    "tables": 147,
+    "tables": 150,
     "indexes": 134,
-    "triggers": 674,
+    "triggers": 679,
     "foreign_keys": 422
   },
-  "table_owner_digest": "sha256:7c432ca2af823bbee03725bd1b7223dbad25045e0f5436441bf230d557fb8334",
+  "table_owner_digest": "sha256:7fb0d7f66afe1b0350d34d6ba494c2f2dd03b6efe70e6ca6ba71fccaf60c0638",
   "semantic_owner_rules": [
     {
       "rule_id": "kernel-control-plane",

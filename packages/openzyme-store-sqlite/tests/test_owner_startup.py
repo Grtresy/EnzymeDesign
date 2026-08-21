@@ -27,9 +27,9 @@ def test_owner_partitioned_startup_proof_is_read_only_and_plugin_free() -> None:
 
     proof = verify_owner_partitioned_schema_read_only(connection)
 
-    assert proof.table_count == 147
+    assert proof.table_count == 150
     assert proof.index_count == 134
-    assert proof.trigger_count == 674
+    assert proof.trigger_count == 679
     assert proof.foreign_key_count == 422
     assert proof.mutation_applied is False
     assert proof.plugin_import_performed is False
@@ -86,9 +86,9 @@ def test_fresh_standard_and_enzymedesign_profiles_install_only_selected_owners()
     assert standard_proof.schema_profile_digest == (
         OPENZYME_STANDARD_OWNER_SCHEMA_PROFILE.profile_digest
     )
-    assert enzymedesign_proof.table_count == 144
+    assert enzymedesign_proof.table_count == 147
     assert enzymedesign_proof.index_count == 134
-    assert enzymedesign_proof.trigger_count == 674
+    assert enzymedesign_proof.trigger_count == 679
     assert enzymedesign_proof.foreign_key_count == 421
     assert enzymedesign_proof.schema_profile_digest == (
         ENZYMEDESIGN_OWNER_SCHEMA_PROFILE.profile_digest
@@ -111,10 +111,12 @@ def test_fresh_standard_and_enzymedesign_profiles_install_only_selected_owners()
     }
     assert "scientific_attempt_records" not in standard_tables
     assert "executor_hpc_workspace_records" not in standard_tables
+    assert "openzyme_hpc_scheduler_occurrences" not in standard_tables
     assert "session_report_draft_records" not in standard_tables
     assert "legacy_removal_ledger" not in standard_tables
     assert "scientific_attempt_records" in enzyme_tables
     assert "executor_hpc_workspace_records" in enzyme_tables
+    assert "openzyme_hpc_scheduler_occurrences" in enzyme_tables
     assert "session_report_draft_records" in enzyme_tables
     assert "legacy_removal_ledger" not in enzyme_tables
 

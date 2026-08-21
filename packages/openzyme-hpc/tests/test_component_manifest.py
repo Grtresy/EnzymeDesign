@@ -34,6 +34,13 @@ def test_hpc_manifest_contributes_inventory_workspace_and_compute_routes() -> No
         "hpc-primary.workspace-runtime",
     ]
     assert {route.target_id for route in manifest.routes} == {"hpc-primary"}
+    assert [item.capability_id for item in manifest.qualification_specs] == [
+        "software.openzyme-workspace-runtime"
+    ]
+    workspace_route = next(
+        route for route in manifest.routes if route.route_kind == "remote_workspace"
+    )
+    assert "software.openzyme-workspace-runtime" in workspace_route.capability_ids
     assert [item.contract.tool_name for item in manifest.tools] == [
         "hpc.workspace.exec",
         "hpc.workspace.fs.list",
@@ -46,6 +53,11 @@ def test_hpc_manifest_contributes_inventory_workspace_and_compute_routes() -> No
     ]
     assert all(item.owner_plugin_id == "openzyme.hpc" for item in manifest.tools)
     assert all(item.requires_explicit_route for item in manifest.tools)
+    assert all(
+        "software.openzyme-workspace-runtime"
+        in {requirement.capability_id for requirement in item.requirements}
+        for item in manifest.tools
+    )
     assert manifest.state_namespace == "openzyme_hpc"
     assert manifest.projections[0].contract_digest == HPC_PROJECTION_CONTRACT_DIGEST
     assert manifest.ui_renderers[0].contract_digest == HPC_RENDERER_CONTRACT_DIGEST

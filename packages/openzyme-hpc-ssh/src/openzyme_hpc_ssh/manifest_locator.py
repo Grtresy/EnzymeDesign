@@ -5,7 +5,7 @@ from openzyme_extension_spi import ExtensionManifestLocator
 
 
 SSH_COMPONENT_MANIFEST_DIGEST = (
-    "sha256:7e7555d39077b2f0b7709198d4515a0d35be6b3fe9e1d2e7fc32e0fa79c5ca4a"
+    "sha256:b4d7585e601203032932881b0ac92f6bb9f699761c26216b31bbdda251878f42"
 )
 
 

@@ -61,7 +61,12 @@ def test_final_file_architecture_registry_closes_required_families() -> None:
     assert by_id["evidence-projection.standard-profile"]["profile_ids"] == [
         "openzyme_standard_local_file_sqlite_git@1"
     ]
-    assert by_id["wire-contract.enzymedesign-profile"]["profile_ids"] == [
+    assert by_id["wire-contract.enzymedesign-catalog"]["profile_ids"] == [
+        "enzymedesign_local_single_process_file_sqlite@1"
+    ]
+    assert by_id["identity-semantics.enzymedesign-product-cross-layer"][
+        "profile_ids"
+    ] == [
         "enzymedesign_local_single_process_file_sqlite@1"
     ]
 

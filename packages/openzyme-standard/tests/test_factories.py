@@ -67,6 +67,7 @@ def test_standard_factory_composes_kernel_workspace_ports_without_dispatch() -> 
         process_isolation=object(),  # type: ignore[arg-type]
         authority=object(),  # type: ignore[arg-type]
         controlled_operations=object(),  # type: ignore[arg-type]
+        operation_ledger=object(),  # type: ignore[arg-type]
     )
 
     adapters = factory.build()
@@ -75,6 +76,7 @@ def test_standard_factory_composes_kernel_workspace_ports_without_dispatch() -> 
     assert isinstance(adapters.process, PodmanWorkspaceProcessAdapter)
     assert adapters.process.isolation is factory.process_isolation
     assert adapters.process.mount_resolver is factory.mount_resolver
+    assert adapters.process.operation_ledger is factory.operation_ledger
 
 
 def test_standard_llm_factory_constructs_selected_adapter_without_network() -> None:

@@ -50,7 +50,7 @@
     },
     {
       "migration_id": "10_hpc_tables",
-      "object_count": 9,
+      "object_count": 12,
       "object_identities": [
         "executor_hpc_credential_claims",
         "executor_hpc_target_qualifications",
@@ -60,11 +60,14 @@
         "executor_hpc_workspace_provision_receipts",
         "executor_hpc_workspace_records",
         "scheduler_credential_occurrences",
-        "workspace_job_target_qualifications"
+        "workspace_job_target_qualifications",
+        "openzyme_hpc_software_qualification_receipts",
+        "openzyme_hpc_target_toolchain_inventories",
+        "openzyme_hpc_scheduler_occurrences"
       ],
       "phase": "tables",
       "resource": "migrations/owners/10_hpc_tables.sql",
-      "resource_digest": "sha256:131f6244b445037d6852c23e5e4f14947126d699baa5e03eb93aaef9fa8afb19",
+      "resource_digest": "sha256:417e0315c349973a258d4357fa847a99728b8e9a15f51b24c4f8985b0c07571b",
       "semantic_owner": "openzyme.hpc"
     },
     {
@@ -540,7 +543,7 @@
     },
     {
       "migration_id": "30_hpc_triggers",
-      "object_count": 48,
+      "object_count": 53,
       "object_identities": [
         "executor_hpc_cleanup_intent_scope_matches",
         "executor_hpc_cleanup_intents_immutable_delete",
@@ -589,11 +592,16 @@
         "scheduler_credential_occurrences_no_delete",
         "workspace_job_target_qualification_matches",
         "workspace_job_target_qualifications_immutable_delete",
-        "workspace_job_target_qualifications_immutable_update"
+        "workspace_job_target_qualifications_immutable_update",
+        "openzyme_hpc_qualification_receipts_immutable_update",
+        "openzyme_hpc_qualification_receipts_immutable_delete",
+        "openzyme_hpc_inventories_immutable_update",
+        "openzyme_hpc_inventories_immutable_delete",
+        "openzyme_hpc_scheduler_occurrences_no_delete"
       ],
       "phase": "triggers",
       "resource": "migrations/owners/30_hpc_triggers.sql",
-      "resource_digest": "sha256:c9cd77d70895dee8bd976e06c24cf337290560bdc5ebced3a92e6433997d2f2d",
+      "resource_digest": "sha256:a84f6aaa7dd950acd0111db085c33fccdca0f06efa45e6f4b7fdfa5f25fe8a53",
       "semantic_owner": "openzyme.hpc"
     },
     {
@@ -1231,23 +1239,23 @@
       ],
       "phase": "finalize",
       "resource": "migrations/owners/40_store_finalize.sql",
-      "resource_digest": "sha256:d3bf0dd1ec8f255954ddb065d4fc6e7417077c6e021f48c34e103f98b45602ae",
+      "resource_digest": "sha256:4c352ce8b876722f5db351d5452aa899c1ee7d5a8204fc2e0a0f2b37ee886637",
       "semantic_owner": "openzyme.store.sqlite"
     }
   ],
-  "catalog_digest": "sha256:eebcb584f95c233eadc6bc9494306600f72c1f2d5104bfd3f7349dd222637cc7",
+  "catalog_digest": "sha256:76a99d310918b3dbaad5d71538def94a6a2e66b0c93e59ce34ad4a6f164875d9",
   "expected_object_counts": {
     "foreign_keys": 422,
     "indexes": 134,
-    "tables": 147,
-    "triggers": 674
+    "tables": 150,
+    "triggers": 679
   },
   "physical_store_owner": "openzyme.store.sqlite",
   "physical_table_rename_policy": "retain_names_in_this_change",
   "schema_id": "openzyme_owner_partitioned_migration_catalog@1",
   "source_migration": "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/migrations/001_file_workspace_final.sql",
-  "source_migration_digest": "sha256:adf76b1e75c5371d910f13ba5066f8155976d2a89076ac9b36141fc067a3a49e",
-  "source_schema_manifest_digest": "sha256:2a297888c9e7bed4c9a7e7b1a384cbf614931924b832b99dbbbdfb0e1bfe5cf2",
+  "source_migration_digest": "sha256:2fe848692d5cef97ac7d1a49c38f0d63b87fe38a2c0318507df9872ce56ebf1a",
+  "source_schema_manifest_digest": "sha256:b1800db95c80c1734d477f0060c8092e1824aa1eddbf5f3fc6d2bf553a66cfe6",
   "source_user_version": 2,
-  "table_owner_manifest_digest": "sha256:7c432ca2af823bbee03725bd1b7223dbad25045e0f5436441bf230d557fb8334"
+  "table_owner_manifest_digest": "sha256:7fb0d7f66afe1b0350d34d6ba494c2f2dd03b6efe70e6ca6ba71fccaf60c0638"
 }

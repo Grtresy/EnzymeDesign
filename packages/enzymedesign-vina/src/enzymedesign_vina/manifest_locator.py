@@ -5,7 +5,7 @@ from openzyme_extension_spi import ExtensionManifestLocator
 
 
 VINA_COMPONENT_MANIFEST_DIGEST = (
-    "sha256:efeef50cf55127e9396ca82879363ac63c52ae1c82f57b001af32725c25dca79"
+    "sha256:cc033b5d96d31b6554dc67640ae1e39e249b4b98fc54edcfd9864c8d11e0302f"
 )
 VINA_LOCAL_DRIVER_MANIFEST_DIGEST = (
     "sha256:715eba8841165efad30ad2ba1f78ccd2a5652dd65e3defdfc168a1aa5a333746"

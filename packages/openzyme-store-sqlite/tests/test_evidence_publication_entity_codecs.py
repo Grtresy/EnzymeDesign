@@ -50,6 +50,7 @@ from openzyme_store_sqlite import SessionRepositoryBindingPinSQLiteKernelEntityC
 from openzyme_store_sqlite import SessionSQLiteKernelEntityCodec
 from openzyme_store_sqlite import SQLiteControlStore
 from openzyme_store_sqlite import SQLiteControlStoreError
+from openzyme_store_sqlite import SQLiteRevisionPathVerificationQuery
 from openzyme_store_sqlite import TaskEvidenceSQLiteKernelEntityCodec
 from openzyme_store_sqlite import VerifiedWorkspaceCheckpointSQLiteKernelEntityCodec
 from openzyme_store_sqlite import WorkspacePublicationIntentSQLiteKernelEntityCodec
@@ -748,6 +749,15 @@ def test_checkpoint_publication_and_path_receipt_codecs_form_immutable_chain() -
                 payload=payload,
             )
         )
+
+    assert store.list_for_session(
+        entity_type="revision_path_verification",
+        session_id="session-1",
+        max_items=16,
+    ) == ()
+    assert SQLiteRevisionPathVerificationQuery(connection).list_for_publication(
+        revision.publication_id
+    ) == (verification,)
 
     with pytest.raises(SQLiteControlStoreError) as error:
         _commit(

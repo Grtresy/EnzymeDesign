@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import sqlite3
 
 import pytest
 
@@ -22,6 +23,22 @@ from openzyme_process_podman import SupervisedProcessResult
 from openzyme_process_podman import SupervisedSubprocessExecutor
 from openzyme_runtime_spi import IsolatedProcessState
 from openzyme_runtime_spi import ProcessIsolationRequest
+from openzyme_store_sqlite import SQLiteWorkspaceOperationLedger
+from openzyme_store_sqlite import install_store_schema_for_offline_migration
+
+
+class _Clock:
+    def now_iso(self) -> str:
+        return "2026-08-22T12:00:00+00:00"
+
+
+def _ledger(
+    connection: sqlite3.Connection | None = None,
+) -> SQLiteWorkspaceOperationLedger:
+    selected = connection or sqlite3.connect(":memory:")
+    if selected.execute("PRAGMA user_version").fetchone()[0] == 0:
+        install_store_schema_for_offline_migration(selected)
+    return SQLiteWorkspaceOperationLedger(selected, _Clock())
 
 
 def _digest(value: str) -> str:
@@ -274,6 +291,7 @@ def test_workspace_process_bridge_returns_content_bound_bounded_result() -> None
     bridge = PodmanWorkspaceProcessAdapter(
         isolation=isolation,
         mount_resolver=isolation.mount_resolver,
+        operation_ledger=_ledger(),
     )
     request = WorkspaceExecRequest(
         operation_id="operation-1",
@@ -303,6 +321,45 @@ def test_workspace_process_bridge_returns_content_bound_bounded_result() -> None
     )
 
 
+def test_workspace_process_bridge_recovers_terminal_receipt_after_host_restart() -> None:
+    connection = sqlite3.connect(":memory:")
+    first_executor = FakeExecutor([], stdout=b"done")
+    first_isolation = _adapter(first_executor)
+    request = WorkspaceExecRequest(
+        operation_id="operation-restart-1",
+        binding=_binding(),
+        argv=("python", "script.py"),
+        cwd="analysis",
+        timeout_seconds=30,
+        max_output_bytes=1_024,
+        idempotency_key="exec-restart-1",
+        authority_lease_id="authority-lease-1",
+        authority_generation=2,
+        authority_fence=7,
+        process_epoch=5,
+    )
+    first = PodmanWorkspaceProcessAdapter(
+        isolation=first_isolation,
+        mount_resolver=first_isolation.mount_resolver,
+        operation_ledger=_ledger(connection),
+    )
+
+    receipt = first.execute(request)
+
+    restarted_executor = FakeExecutor([])
+    restarted_isolation = _adapter(restarted_executor)
+    restarted = PodmanWorkspaceProcessAdapter(
+        isolation=restarted_isolation,
+        mount_resolver=restarted_isolation.mount_resolver,
+        operation_ledger=_ledger(connection),
+    )
+    replay = restarted.execute(request)
+
+    assert replay == receipt
+    assert len(first_executor.calls) == 1
+    assert restarted_executor.calls == []
+
+
 def test_workspace_process_bridge_preserves_no_effect_failure() -> None:
     isolation = PodmanProcessIsolationAdapter(
         mount_resolver=MappingPodmanWorkspaceMountResolver({}),
@@ -314,6 +371,7 @@ def test_workspace_process_bridge_preserves_no_effect_failure() -> None:
         mount_resolver=MappingPodmanWorkspaceMountResolver(
             {"workspace-1": _mount()}
         ),
+        operation_ledger=_ledger(),
     )
     request = WorkspaceExecRequest(
         operation_id="operation-1",
@@ -349,6 +407,7 @@ def test_workspace_process_bridge_reconciles_uncertain_receipt_without_retry() -
     bridge = PodmanWorkspaceProcessAdapter(
         isolation=isolation,
         mount_resolver=isolation.mount_resolver,
+        operation_ledger=_ledger(),
     )
     request = WorkspaceExecRequest(
         operation_id="operation-reconcile-1",
@@ -367,12 +426,11 @@ def test_workspace_process_bridge_reconciles_uncertain_receipt_without_retry() -
     with pytest.raises(WorkspacePortError) as first:
         bridge.execute(request)
     reconciled = bridge.reconcile(request)
-    with pytest.raises(WorkspacePortError) as replay:
-        bridge.execute(request)
+    replay = bridge.execute(request)
 
     assert first.value.effect_certainty is ExternalEffectCertainty.DISPATCH_IN_DOUBT
     assert reconciled.effect_certainty is ExternalEffectCertainty.DISPATCH_IN_DOUBT
-    assert replay.value.error_code == "podman_process_reconciliation_required"
+    assert replay.effect_certainty is ExternalEffectCertainty.DISPATCH_IN_DOUBT
     assert len(executor.calls) == 1
 
 

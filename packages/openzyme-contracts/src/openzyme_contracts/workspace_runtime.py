@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
 from enum import StrEnum
@@ -24,6 +26,10 @@ WORKSPACE_FILESYSTEM_MUTATION_SCHEMA_VERSION = "workspace_filesystem_mutation@1"
 WORKSPACE_EXEC_REQUEST_SCHEMA_VERSION = "workspace_exec_request@1"
 WORKSPACE_TRANSFER_REQUEST_SCHEMA_VERSION = "workspace_transfer_request@1"
 WORKSPACE_OPERATION_RECEIPT_SCHEMA_VERSION = "workspace_operation_receipt@1"
+WORKSPACE_OPERATION_IDENTITY_SCHEMA_VERSION = "workspace_operation_identity@1"
+WORKSPACE_OPERATION_LEDGER_RECORD_SCHEMA_VERSION = (
+    "workspace_operation_ledger_record@1"
+)
 
 WORKSPACE_OBSERVATION_PORT_CONTRACT = "openzyme.workspace-observation-port@1"
 WORKSPACE_FILESYSTEM_PORT_CONTRACT = "openzyme.workspace-filesystem-port@1"
@@ -857,6 +863,223 @@ class WorkspaceOperationReceipt:
     def to_dict(self) -> dict[str, Any]:
         return {**self.digest_payload(), "receipt_digest": self.receipt_digest}
 
+    def to_ledger_dict(self) -> dict[str, Any]:
+        """Encode the bounded private result bytes for durable Adapter recovery."""
+
+        return {
+            **self.to_dict(),
+            "result_payload_base64": base64.b64encode(self.result_payload).decode(
+                "ascii"
+            ),
+        }
+
+    @classmethod
+    def from_ledger_dict(cls, value: object) -> WorkspaceOperationReceipt:
+        fields = {
+            "schema_version",
+            "operation_id",
+            "workspace_id",
+            "generation",
+            "state_version",
+            "effect_certainty",
+            "mutation_applied",
+            "fallback_performed",
+            "receipt_digest",
+            "result_payload_digest",
+            "result_payload_size",
+            "result_media_type",
+            "diagnostic_id",
+            "result_payload_base64",
+        }
+        if not isinstance(value, Mapping) or set(value) != fields:
+            raise ValueError("workspace ledger receipt fields are closed")
+        if value["schema_version"] != WORKSPACE_OPERATION_RECEIPT_SCHEMA_VERSION:
+            raise ValueError("workspace ledger receipt schema drifted")
+        if value["fallback_performed"] is not False:
+            raise ValueError("workspace ledger receipt cannot contain fallback")
+        try:
+            result_payload = base64.b64decode(
+                str(value["result_payload_base64"]),
+                validate=True,
+            )
+        except (ValueError, TypeError) as exc:
+            raise ValueError("workspace ledger receipt payload is invalid") from exc
+        receipt = cls(
+            operation_id=str(value["operation_id"]),
+            workspace_id=str(value["workspace_id"]),
+            generation=int(value["generation"]),
+            state_version=int(value["state_version"]),
+            effect_certainty=ExternalEffectCertainty(str(value["effect_certainty"])),
+            mutation_applied=value["mutation_applied"],
+            fallback_performed=False,
+            receipt_digest=str(value["receipt_digest"]),
+            result_payload=result_payload,
+            result_media_type=str(value["result_media_type"]),
+            diagnostic_id=(
+                None
+                if value["diagnostic_id"] is None
+                else str(value["diagnostic_id"])
+            ),
+        )
+        if (
+            value["result_payload_digest"]
+            != _bytes_digest(receipt.result_payload)
+            or value["result_payload_size"] != len(receipt.result_payload)
+        ):
+            raise ValueError("workspace ledger receipt payload proof drifted")
+        return receipt
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceOperationIdentity:
+    provider_id: str
+    operation_kind: str
+    operation_id: str
+    intent_digest: str
+    session_id: str
+    workspace_id: str
+    generation: int
+    state_version: int
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "provider_id",
+            "operation_kind",
+            "operation_id",
+            "session_id",
+            "workspace_id",
+        ):
+            require_identifier(getattr(self, field_name), field_name=field_name)
+        require_digest(self.intent_digest, field_name="intent_digest")
+        if self.generation < 1 or self.state_version < 1:
+            raise ValueError("workspace operation identity generations must be positive")
+
+    @property
+    def identity_digest(self) -> str:
+        return canonical_sha256_digest(self.to_dict())
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": WORKSPACE_OPERATION_IDENTITY_SCHEMA_VERSION,
+            "provider_id": self.provider_id,
+            "operation_kind": self.operation_kind,
+            "operation_id": self.operation_id,
+            "intent_digest": self.intent_digest,
+            "session_id": self.session_id,
+            "workspace_id": self.workspace_id,
+            "generation": self.generation,
+            "state_version": self.state_version,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> WorkspaceOperationIdentity:
+        fields = {
+            "schema_version",
+            "provider_id",
+            "operation_kind",
+            "operation_id",
+            "intent_digest",
+            "session_id",
+            "workspace_id",
+            "generation",
+            "state_version",
+        }
+        if not isinstance(value, Mapping) or set(value) != fields:
+            raise ValueError("workspace operation identity fields are closed")
+        if value["schema_version"] != WORKSPACE_OPERATION_IDENTITY_SCHEMA_VERSION:
+            raise ValueError("workspace operation identity schema drifted")
+        return cls(
+            provider_id=str(value["provider_id"]),
+            operation_kind=str(value["operation_kind"]),
+            operation_id=str(value["operation_id"]),
+            intent_digest=str(value["intent_digest"]),
+            session_id=str(value["session_id"]),
+            workspace_id=str(value["workspace_id"]),
+            generation=int(value["generation"]),
+            state_version=int(value["state_version"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceOperationLedgerRecord:
+    identity: WorkspaceOperationIdentity
+    receipt: WorkspaceOperationReceipt | None
+    ledger_version: int
+
+    def __post_init__(self) -> None:
+        if self.ledger_version < 1:
+            raise ValueError("workspace operation ledger version must be positive")
+        if self.receipt is not None and (
+            self.receipt.operation_id != self.identity.operation_id
+            or self.receipt.workspace_id != self.identity.workspace_id
+            or self.receipt.generation != self.identity.generation
+            or self.receipt.state_version != self.identity.state_version
+        ):
+            raise ValueError("workspace operation receipt crossed its reserved identity")
+
+    @property
+    def record_digest(self) -> str:
+        return canonical_sha256_digest(self.to_dict())
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": WORKSPACE_OPERATION_LEDGER_RECORD_SCHEMA_VERSION,
+            "identity": self.identity.to_dict(),
+            "receipt": (
+                None if self.receipt is None else self.receipt.to_ledger_dict()
+            ),
+            "ledger_version": self.ledger_version,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> WorkspaceOperationLedgerRecord:
+        fields = {"schema_version", "identity", "receipt", "ledger_version"}
+        if not isinstance(value, Mapping) or set(value) != fields:
+            raise ValueError("workspace operation ledger fields are closed")
+        if value["schema_version"] != WORKSPACE_OPERATION_LEDGER_RECORD_SCHEMA_VERSION:
+            raise ValueError("workspace operation ledger schema drifted")
+        return cls(
+            identity=WorkspaceOperationIdentity.from_dict(value["identity"]),
+            receipt=(
+                None
+                if value["receipt"] is None
+                else WorkspaceOperationReceipt.from_ledger_dict(value["receipt"])
+            ),
+            ledger_version=int(value["ledger_version"]),
+        )
+
+
+class WorkspaceOperationLedgerPort(Protocol):
+    """Adapter occurrence ledger; reserve never performs the external effect."""
+
+    def read(
+        self,
+        identity: WorkspaceOperationIdentity,
+    ) -> WorkspaceOperationLedgerRecord | None: ...
+
+    def reserve(self, identity: WorkspaceOperationIdentity) -> bool: ...
+
+    def settle(
+        self,
+        identity: WorkspaceOperationIdentity,
+        receipt: WorkspaceOperationReceipt,
+    ) -> WorkspaceOperationLedgerRecord: ...
+
+
+class WorkspaceOperationLedgerError(RuntimeError):
+    """Closed persistence rejection raised before any Adapter redispatch."""
+
+    error_code = "workspace_operation_ledger_rejected"
+
+    def __init__(self, message: str, *, phase: str) -> None:
+        self.phase = require_identifier(phase, field_name="phase")
+        self.mutation_applied = False
+        self.fallback_performed = False
+        super().__init__(
+            f"{message}; phase={self.phase}; mutation_applied=false; "
+            "fallback_performed=false"
+        )
+
 
 class WorkspaceObservationPort(Protocol):
     def observe(self, request: WorkspaceObservationRequest) -> WorkspaceObservation: ...
@@ -895,6 +1118,8 @@ __all__ = [
     "WORKSPACE_FILESYSTEM_MUTATION_SCHEMA_VERSION",
     "WORKSPACE_OBSERVATION_REQUEST_SCHEMA_VERSION",
     "WORKSPACE_OPERATION_RECEIPT_SCHEMA_VERSION",
+    "WORKSPACE_OPERATION_IDENTITY_SCHEMA_VERSION",
+    "WORKSPACE_OPERATION_LEDGER_RECORD_SCHEMA_VERSION",
     "WORKSPACE_RUNTIME_BINDING_SCHEMA_VERSION",
     "WORKSPACE_TRANSFER_REQUEST_SCHEMA_VERSION",
     "WORKSPACE_STRUCTURED_OPERATION_MAX_BYTES",
@@ -916,6 +1141,10 @@ __all__ = [
     "WorkspaceObservationPort",
     "WorkspaceObservationRequest",
     "WorkspaceOperationReceipt",
+    "WorkspaceOperationIdentity",
+    "WorkspaceOperationLedgerError",
+    "WorkspaceOperationLedgerPort",
+    "WorkspaceOperationLedgerRecord",
     "WorkspacePortError",
     "WorkspaceProcessPort",
     "WorkspaceRuntimeBinding",

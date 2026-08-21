@@ -179,7 +179,8 @@
       "test_refs": [
         "packages/openzyme-compute/tests/test_compute_contracts.py",
         "packages/openzyme-compute/tests/test_compute_lifecycle.py",
-        "packages/openzyme-compute/tests/test_component_manifest.py"
+        "packages/openzyme-compute/tests/test_component_manifest.py",
+        "packages/openzyme-compute/tests/test_sqlite_restart_reconciliation.py"
       ]
     },
     {
@@ -591,6 +592,31 @@
     {
       "document_refs": [
         "docs/OpenZyme架构设计.md",
+        "docs/v3/02-control-plane.md",
+        "packages/openzyme-store-sqlite/README.md",
+        "packages/openzyme-process-podman/README.md",
+        "packages/openzyme-hpc-ssh/README.md"
+      ],
+      "owner": "openzyme.store.sqlite",
+      "seam_id": "workspace-operation-occurrence-ledger",
+      "source_refs": [
+        "packages/openzyme-contracts/src/openzyme_contracts/workspace_runtime.py",
+        "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/workspace_operation_ledger.py",
+        "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/migrations/001_composition_state.sql",
+        "packages/openzyme-standard/src/openzyme_standard/application_runtime.py",
+        "packages/enzymedesign-distribution/src/enzymedesign_distribution/application_runtime.py"
+      ],
+      "test_refs": [
+        "packages/openzyme-store-sqlite/tests/test_workspace_operation_ledger.py",
+        "packages/openzyme-process-podman/tests/test_filesystem_adapter.py",
+        "packages/openzyme-process-podman/tests/test_process_adapter.py",
+        "packages/openzyme-process-podman/tests/test_transfer_adapter.py",
+        "packages/openzyme-hpc-ssh/tests/test_workspace_adapter.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
         "docs/v3/01-target-architecture.md",
         "docs/v3/deployment-composition-operator-guide.md"
       ],
@@ -752,7 +778,7 @@
         "owner",
         "persistence"
       ],
-      "document_bundle_digest": "sha256:ef217ae017a200caf80960a2b4dd146342e5a4ad7d1de11771cfadaac69a227c",
+      "document_bundle_digest": "sha256:d0f4f5988301b6c8a99921958566f861aa2b128c98ff09441263ed0f7b68c0eb",
       "document_refs": [
         "docs/OpenZyme架构设计.md",
         "docs/v3/architecture-qualification/README.md",
@@ -761,7 +787,7 @@
       ],
       "owner": "openzyme.host.api",
       "seam_id": "three-profile-architecture-qualification",
-      "source_bundle_digest": "sha256:7aea8955586468577e74c2193a1cec843026fb32bc5400f8c4e853fa60cfb7af",
+      "source_bundle_digest": "sha256:b72a20c931a22b92db6ec77e0c416e7c60e4ede786f5e85c8cfd13e83e569175",
       "source_refs": [
         "apps/openzyme-host-api/src/openzyme_host_api/architecture_qualification.py",
         "apps/openzyme-host-api/src/openzyme_host_api/architecture_qualification_report.py",
@@ -769,7 +795,7 @@
         "scripts/architecture_qualification_runner.py",
         "scripts/v3_architecture_qualification.py"
       ],
-      "test_bundle_digest": "sha256:b20531cb54c2f034d2f5ce05a66566853800a0f831e74519d3a83fac7a4500c5",
+      "test_bundle_digest": "sha256:9735857aa4494b4ca12faff07cf64f42b2c649f49b43994095ac61e9299d5c0e",
       "test_refs": [
         "apps/openzyme-host-api/tests/architecture_qualification/test_final_harness.py",
         "apps/openzyme-host-api/tests/architecture_qualification/scenarios/test_composition_profiles.py"

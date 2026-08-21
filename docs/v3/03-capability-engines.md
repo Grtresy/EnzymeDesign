@@ -174,7 +174,9 @@ Plugin 精确实现；`openzyme.hpc@1` bounded projection、只读 renderer cont
 manifest 注册。Host 的窄 bridge 对每次调用重验 opaque workspace owner、local/remote generation、target、
 qualification 和 operation authority。完整 lifecycle application 与 SQLite workspace repository 已由 Plugin
 唯一实现，只消费窄 Kernel facts Port 和显式 UoW；Host 不再拥有第二套 service/writer。manifest/runtime
-存在仍不等于某个 Distribution/Session 已激活；`@2` projection 只从 exact mounted surfaces 读取。SSH 与 Slurm Adapter 只实现对应 Port，
+存在仍不等于某个 Distribution/Session 已激活；EnzymeDesign 的 non-live application root 已 exact mount 这些
+surfaces，但每个 Session 仍须 pin bundle/binding，工具仍须通过逐 turn affordance。`@2` projection 只从 exact
+mounted surfaces 读取。SSH 与 Slurm Adapter 只实现对应 Port，
 不能成为上述语义 owner。
 
 ## HMMER 调用 HPC
@@ -251,17 +253,17 @@ manifest-bound catalog 才可被读取，因此安装残留不能形成 ambient 
   PubMed、Semantic Scholar 与 literature quorum
   的 owner 是 `openzyme-science-research`；基础 Host/Runtime 已不再构造这些能力。UniProt/RCSB/InterPro
   的 DTO/Port、capability/route 和 HTTP mechanism 已依次归属 `enzymedesign-core`、
-  `enzymedesign-bio-providers` 和 `enzymedesign-bio-provider-adapters`，但尚未由 EnzymeDesign
-  Distribution 选择并通过 exact mount 才可激活。详见
+  `enzymedesign-bio-providers` 和 `enzymedesign-bio-provider-adapters`；EnzymeDesign non-live application root
+  已按 exact Distribution 选择并 mount，它们仍须经过 Session binding/authority/route admission 才能调用。详见
   [Research Extension](research-extension.md)。
 - Reporting Plugin 拥有 draft/render/format/validation/projection/finish validator；report 文件仍通过发布修订
   共享，任何 draft/render/publication 都不自动完成 Task。`openzyme-reporting` 现已实现 exact manifest、四个
   tool runtimes、namespace transaction participant、bounded projection/HTTP route、render worker、UI renderer
   contract 和只读 finish validator；它不 import Core repository、Store implementation、Host、Git 或 process
   Adapter。Core 已移除旧 descriptor/function handler、restore/prompt 注入、report evidence 解析和 repository
-  writer；`@1` 历史 collection 固定为空。当前状态是 `target_implemented_host_mount_pending`：Standard
-  不选择它；选择它的 Distribution 必须从 verified Plugin mount 装配这些 surfaces，不能把源码存在当作
-  deployment activation。详见
+  writer；`@1` 历史 collection 固定为空。当前状态是 `target_implemented_not_cutover`：Standard
+  不选择它；EnzymeDesign non-live application root 已从 verified Plugin mount 装配这些 surfaces，但这不等于
+  当前最终 source 已真实 deployment cutover。详见
   [Reporting Extension](reporting-extension.md)。
 - Science Plugin 拥有 attempt/selection/occurrence/disposition/adoption/deliverable/closure；validator 只返回
   read-only result，只有 Task owner 的显式 `task.finish` 写终态。`openzyme-science` 已实现 exact manifest、
@@ -292,13 +294,25 @@ status/stat/list/read/hash 是 query-only。mutation/exec/transfer 在 dispatch 
 `openzyme-hpc-ssh` 现在实现上述四个 remote Workspace Runtime Ports。Adapter 通过私有 locator resolver 将
 opaque workspace binding 解析为 exact owner root 和 credential claim；公开 DTO 永不携带 hostname、login alias、
 remote root 或 credential。SFTP CRUD、SSH argv 和 rsync transfer 都回绑 operation/request digest；
-`reconcile()` 只查询同一 occurrence，不调用 dispatch，也不获得 Slurm/scheduler authority。该 Adapter 尚未由
-Distribution 激活，因此实现存在不等于 Session 获得 remote workspace 能力。
+`reconcile()` 只查询同一 occurrence，不调用 dispatch，也不获得 Slurm/scheduler authority。远端 helper 以
+`software.openzyme-workspace-runtime == 1.0.0` resource capability 建模，exact build、qualification receipt 与
+target inventory generation/digest 同时进入私有 locator；缺失事实时工具为 `blocked_qualification`。EnzymeDesign
+已 selected 并 identity-mounted 该 Adapter，但真实 target 上的 helper 安装/qualification 和 live cutover 未执行。
 
 `openzyme-hpc-slurm` 单独实现 `openzyme.hpc.scheduler-port@1`。它只接受 Compute admission 创建的 exact
 scheduler occurrence credential；login/file credential 在类型与 resolver 上均不满足 submit。raw Slurm job id
-只保存在 Adapter 私有 ledger，公开层只有 opaque handle。submit/cancel 丢响应时分别调用
+只保存在 HPC-owned 持久 SQLite occurrence ledger，公开层只有 opaque handle。submit/cancel 在 effect 前原子
+reserve provider/kind/operation/request；丢响应时，新 Adapter epoch 分别调用
 `reconcile_submit`/`reconcile_cancel` 观察同一 occurrence，禁止重新提交、重新取消、换 scheduler 或换 route。
+EnzymeDesign application root 只在 startup proof、exact Adapter set 与 Plugin mount 通过后，才用显式 backend、
+credential resolver 和该 ledger 构造 selected Slurm runtime；这不代表真实 Slurm 已 cut over。
+
+HMMER/Vina 的正式产品 binding 同样在 writer 暴露前一次性完成。它不接受工具参数自报的 authority、workspace、
+revision 或 target truth，而是读取 canonical `PublishedRevision`、publication-owned path verification、ready owner
+workspace、当前 authority lease 和 adopted Session capability binding；submit 前重新核对 route、inventory
+generation/digest 与 capability proof。当前 non-live 产品资格场景通过通用 Host 和真实内部 composition 运行这条
+链，只把 Agent-turn、Git-shaped revision backend 与 external Compute runner 明确替换为测试 Port，并证明
+terminal result 只生成 owner continuation，Task 不自动完成。该证明不提升为真实 HPC/Slurm cutover 或 live。
 
 ## 错误与策略自由
 

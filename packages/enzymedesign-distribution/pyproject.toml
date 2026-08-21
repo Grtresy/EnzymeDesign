@@ -17,16 +17,19 @@ dependencies = [
   "enzymedesign-vina",
   "openzyme-compute",
   "openzyme-contracts",
+  "openzyme-execution-contracts",
   "openzyme-extension-spi",
   "openzyme-hpc",
   "openzyme-hpc-slurm",
   "openzyme-hpc-ssh",
+  "openzyme-host-api",
   "openzyme-kernel",
   "openzyme-process-podman",
   "openzyme-reporting",
   "openzyme-research",
   "openzyme-research-tavily",
   "openzyme-runtime-llm",
+  "openzyme-runtime-spi",
   "openzyme-science",
   "openzyme-science-research",
   "openzyme-store-sqlite",
@@ -46,8 +49,8 @@ packages = ["src/enzymedesign_distribution"]
 [tool.openzyme.component]
 component_id = "enzymedesign"
 component_kind = "distribution"
-migration_state = "target_distribution_activatable"
-current_composition_owner = "uncomposed"
+migration_state = "target_implemented_not_cutover"
+current_composition_owner = "enzymedesign"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

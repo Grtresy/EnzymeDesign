@@ -280,7 +280,7 @@ def test_continuation_codec_separates_target_state_from_legacy_links() -> None:
         "continuation_id": "continuation-1",
         "session_id": "session-1",
         "owner_actor_id": "agent-1",
-        "source_version": "source-v1",
+        "source_version": 1,
         "source_ref": "operation-1",
         "source_digest": canonical_sha256_digest({"source": "operation-1"}),
         "recipient_actor_id": "agent-1",

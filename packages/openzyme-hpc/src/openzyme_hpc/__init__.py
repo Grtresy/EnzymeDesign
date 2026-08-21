@@ -16,6 +16,8 @@ from .scheduler import *  # noqa: F403
 from .scheduler import __all__ as _scheduler_exports
 from .sqlite_inventory import *  # noqa: F403
 from .sqlite_inventory import __all__ as _sqlite_inventory_exports
+from .sqlite_scheduler_ledger import *  # noqa: F403
+from .sqlite_scheduler_ledger import __all__ as _sqlite_scheduler_ledger_exports
 from .sqlite_workspace_repository import *  # noqa: F403
 from .sqlite_workspace_repository import __all__ as _sqlite_workspace_repository_exports
 from .workspace_lifecycle import *  # noqa: F403
@@ -45,6 +47,7 @@ __all__ = [
     *_runtime_contribution_exports,
     *_scheduler_exports,
     *_sqlite_inventory_exports,
+    *_sqlite_scheduler_ledger_exports,
     *_sqlite_workspace_repository_exports,
     *_workspace_lifecycle_exports,
     *_workspace_application_port_exports,

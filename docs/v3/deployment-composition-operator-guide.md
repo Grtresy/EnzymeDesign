@@ -2,16 +2,31 @@
 
 本文说明目标 `@2` composition 的启动、Session 固定和 Plugin 变更操作。当前
 `distributions/openzyme-standard` 与 `distributions/enzymedesign` 均为结构上可激活的 `active` manifest；
-纯 factory 与 isolated fresh SQLite proof 已通过，但尚未授权真实部署 cutover。manifest active 不会自行打开
-writer、route、worker、runtime 或外部效果。
+application composition root 和 isolated fresh SQLite proof 已通过，EnzymeDesign 还有真实内部、明确 fake 外部
+Ports 的 non-live 产品级场景。manifest active 不会自行打开 writer、route、worker、runtime 或外部效果。
+
+状态词必须按下表使用：
+
+| 状态 | 操作含义 |
+| --- | --- |
+| `selected` | 当前 Distribution manifest 精确选择该组件 |
+| `runtime_mounted` | startup proof 后已构造并核对 exact runtime surface |
+| `qualified` | exact target/provider 有当前有效 qualification receipt |
+| `cutover` | 真实部署已采用该 composition/Adapter/configuration |
+| `live` | 某次明确授权的真实 Provider/SSH/Slurm/HPC/容器调用实际发生 |
+
+这些状态不蕴含后继状态。2026-08-21 的设备 fresh reset 是绑定提交
+`5548ca85b0b581584379b4810e0777a6d97683b6` 的独立已完成 occurrence；其后 source/schema 继续变化，因此该
+receipt 不能证明当前最终 source 已 cut over，也不能由文档或测试静默重做。当前 change 的外部
+Provider/SSH/Slurm/HPC/容器仍未 live 执行。
 
 SQLite Store 的目标 Adapter 已实现 owner-profile schema、composition state 与 Store-owned
 `002_deployment_proof.sql`。fresh seed 可原子生成 deterministic `@2` bootstrap receipt 和 tagged deployment
 state，重启 verifier 可零 mutation 复算；offline cutover planner、单事务 adoption 和 post-commit read-only
 verifier 已在 isolated SQLite 中闭合 exact inventory、backup、Session disposition、authority mapping、
-item/error/byte closure。旧 Core repository callers 与 Host production factory 尚未 adoption，
-所以两个 Distribution 目前可做结构 activation、isolated fresh proof 和 isolated offline adoption proof，不可由旧
-Host 开放 production surface。
+item/error/byte closure。旧 Core repository callers 与旧 Host factory 已删除；新 Standard/EnzymeDesign
+composition root 只在 read-only proof、exact Adapter/Plugin mount 全部通过后构造 writer。当前 source 的再次真实
+部署 adoption 仍须独立 quiescent cutover 授权，不能由 non-live runtime mount 推断。
 
 ## 启动前置条件
 

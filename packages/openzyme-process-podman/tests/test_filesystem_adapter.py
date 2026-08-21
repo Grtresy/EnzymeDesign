@@ -6,6 +6,7 @@ import hashlib
 from importlib import resources
 import json
 from pathlib import Path
+import sqlite3
 import subprocess
 
 import pytest
@@ -24,6 +25,22 @@ from openzyme_process_podman import PodmanWorkspaceFilesystemAdapter
 from openzyme_process_podman import PodmanWorkspaceMount
 from openzyme_process_podman import SupervisedProcessRequest
 from openzyme_process_podman import SupervisedProcessResult
+from openzyme_store_sqlite import SQLiteWorkspaceOperationLedger
+from openzyme_store_sqlite import install_store_schema_for_offline_migration
+
+
+class _Clock:
+    def now_iso(self) -> str:
+        return "2026-08-22T12:00:00+00:00"
+
+
+def _ledger(
+    connection: sqlite3.Connection | None = None,
+) -> SQLiteWorkspaceOperationLedger:
+    selected = connection or sqlite3.connect(":memory:")
+    if selected.execute("PRAGMA user_version").fetchone()[0] == 0:
+        install_store_schema_for_offline_migration(selected)
+    return SQLiteWorkspaceOperationLedger(selected, _Clock())
 
 
 def _digest_bytes(value: bytes) -> str:
@@ -288,10 +305,12 @@ class LocalHelperExecutor:
 
 def _adapter(tmp_path: Path) -> tuple[PodmanWorkspaceFilesystemAdapter, LocalHelperExecutor]:
     executor = LocalHelperExecutor(tmp_path, [])
+    connection = sqlite3.connect(tmp_path / "workspace-operation-ledger.sqlite3")
     adapter = PodmanWorkspaceFilesystemAdapter(
         mount_resolver=MappingPodmanWorkspaceMountResolver(
             {"workspace-1": _mount()}
         ),
+        operation_ledger=_ledger(connection),
         executor=executor,
     )
     return adapter, executor
@@ -333,7 +352,7 @@ def test_filesystem_adapter_executes_and_replays_exact_mutation(tmp_path: Path) 
     )
     payload = json.loads(observation.bounded_payload)
 
-    assert receipt is replay
+    assert receipt == replay
     assert len(executor.calls) == 2
     assert (tmp_path / "data.txt").read_bytes() == b"hello"
     assert base64.b64decode(payload["content_base64"]) == b"hello"
@@ -352,11 +371,10 @@ def test_filesystem_reconciliation_never_redispatches_mutation(
     restarted, restarted_executor = _adapter(tmp_path)
     pending = restarted.reconcile(request)
 
-    assert reconciled is receipt
+    assert reconciled == receipt
     assert len(executor.calls) == 1
     assert restarted_executor.calls == []
-    assert pending.effect_certainty is ExternalEffectCertainty.DISPATCH_IN_DOUBT
-    assert pending.mutation_applied is None
+    assert pending == receipt
     assert (tmp_path / "data.txt").read_bytes() == b"hello"
 
 

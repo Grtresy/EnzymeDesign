@@ -12,8 +12,8 @@ from openzyme_contracts import require_digest
 from openzyme_contracts import require_identifier
 
 
-STORE_SCHEMA_GENERATION = "openzyme_store_sqlite_composite@3"
-STORE_SCHEMA_USER_VERSION = 3
+STORE_SCHEMA_GENERATION = "openzyme_store_sqlite_composite@4"
+STORE_SCHEMA_USER_VERSION = 4
 _RESOURCE_PACKAGE = "openzyme_store_sqlite.migrations"
 _OBJECT_NAME = re.compile(
     r"\b(?:TABLE|INDEX|TRIGGER|VIEW)\s+(?:IF\s+NOT\s+EXISTS\s+)?"

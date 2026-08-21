@@ -14,10 +14,10 @@ MIGRATION_IDS: tuple[str, ...] = ("001_file_workspace_final",)
 CURRENT_SQLITE_SCHEMA_VERSION = 2
 FINAL_SCHEMA_GENERATION = "openzyme_file_workspace_final@2"
 FINAL_SCHEMA_MANIFEST_DIGEST = (
-    "sha256:3ec76b8485c1aa102609b00b676f5047b1f1aea11281bf08c76e6e576a778497"
+    "sha256:042166dc38007b1345efdec5f0e87a983abaacf93f1824271dbdc83223c2d680"
 )
 FRESH_INSTALL_BOOTSTRAP_RECEIPT_DIGEST = (
-    "sha256:1c97cad746b1e5335f3c2135cede98355a302bd18996d87603a8b2658ca58e63"
+    "sha256:32897934dfe44919ca3cbf5e0302cbf22eb8808e16ad3a91476eb732fbe2d1a6"
 )
 _COMPLETE_REMOVAL_STATES = frozenset(
     {"fresh_install_complete", "offline_removal_complete"}

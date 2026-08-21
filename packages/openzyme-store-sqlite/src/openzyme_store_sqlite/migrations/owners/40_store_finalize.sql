@@ -2,6 +2,6 @@
 -- semantic_owner: openzyme.store.sqlite
 -- phase: finalize
 
-INSERT INTO deployment_schema_state (singleton, schema_generation, removal_state, removal_receipt_digest, manifest_digest, updated_at) VALUES (1, 'openzyme_file_workspace_final@2', 'fresh_install_complete', 'sha256:1c97cad746b1e5335f3c2135cede98355a302bd18996d87603a8b2658ca58e63', 'sha256:3ec76b8485c1aa102609b00b676f5047b1f1aea11281bf08c76e6e576a778497', '1970-01-01T00:00:00+00:00');
+INSERT INTO deployment_schema_state (singleton, schema_generation, removal_state, removal_receipt_digest, manifest_digest, updated_at) VALUES (1, 'openzyme_file_workspace_final@2', 'fresh_install_complete', 'sha256:32897934dfe44919ca3cbf5e0302cbf22eb8808e16ad3a91476eb732fbe2d1a6', 'sha256:042166dc38007b1345efdec5f0e87a983abaacf93f1824271dbdc83223c2d680', '1970-01-01T00:00:00+00:00');
 
 PRAGMA user_version = 2;

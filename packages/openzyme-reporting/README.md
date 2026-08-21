@@ -10,7 +10,7 @@ immutable revision/path、generic evidence 和显式 Task finish，不拥有报�
 report version 默认值。仓内生产 caller 已直接 import `openzyme_reporting`；旧 Domain/Core compatibility
 module、mixed revision aggregate 与 `ReportRef` 重导出均已删除。
 
-当前包是 `target_implemented_host_mount_pending`。它已经提供 exact component manifest/locator、四个
+当前包是 `target_implemented_not_cutover`。它已经提供 exact component manifest/locator、四个
 `report*` ToolSpec/runtime、bounded projection、只读 HTTP extension route、render worker、finish validator、
 `openzyme_reporting` transaction participant、logical migration bundle、UI renderer contract，以及
 file-native report/render/validation DTO。导入包或 locator 不会打开 SQLite、运行 renderer、创建表或暴露工具。
@@ -25,7 +25,8 @@ Kernel 不注册 `report_draft.*`/`report.publish`，基础 restore/prompt/world
 Reporting 状态；旧 Core package 与 `openzyme_core.report_drafts` 已删除，不存在第二 writer。
 `session_report_*` 物理表仍由 Store schema 为 offline historical adoption 保留，旧 `@1` shape 的 report 字段固定为空，
 不得作为 current Reporting projection。Host 只可从 verified mounted surfaces 装配本 Plugin；Standard
-明确不选它，EnzymeDesign 是否启用由 exact Distribution 决定。真实 offline adoption/cutover 未获授权，且
+明确不选它，EnzymeDesign non-live application root 已按 exact Distribution 选择并 mount。当前最终 source 的
+真实 offline adoption/cutover 未获授权，且
 任何 wheel 都不能 ambient 激活。
 
 ## 目标通信与状态边界

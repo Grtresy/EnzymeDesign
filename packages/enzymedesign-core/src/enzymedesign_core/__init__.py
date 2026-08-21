@@ -1,5 +1,7 @@
 """EnzymeDesign public product contracts and composition contributions."""
 
+from .capability_routes import ExactProductCapabilityRouteRuntime
+from .capability_routes import ProductCapabilityRouteApplication
 from .provider_contracts import BIO_PROVIDER_PORT_CONTRACT
 from .provider_contracts import BIO_PROVIDER_PORT_CONTRACT_DIGEST
 from .provider_contracts import BIO_PROVIDER_PORT_ID
@@ -22,9 +24,11 @@ __all__ = [
     "COMPONENT_ID",
     "COMPONENT_KIND",
     "DownloadedProviderAsset",
+    "ExactProductCapabilityRouteRuntime",
     "MIGRATION_STATE",
     "ProteinAnnotationRecord",
     "ProteinMetadataRecord",
+    "ProductCapabilityRouteApplication",
     "SequenceProviderApplication",
     "StructureMetadataRecord",
 ]

@@ -71,3 +71,50 @@ mutation 前生成完整 `device_fresh_install_reset_inventory@2` 与逐路径 d
 该正式 receipt 只覆盖后续空数据库替换，不能追认最初已删除的旧 repository 子项；本文件也不能转化为那次
 原始删除的 receipt。最终 fresh-bootstrap/deployment proof 与后续数据库 reset receipt 有效且可独立复算，但完整
 原始 device reset receipt 仍未证明，task 18.9 保持未勾选。
+
+## 第二次正式 `@2` reset 闭环
+
+在提交 `5548ca85b0b581584379b4810e0777a6d97683b6` 固化全部实现、配置、规格和文档后，用户再次明确授权执行
+一次不可恢复的正式 reset。该次操作不追认前述历史删除，而是把当时的空数据库和空 repository-service
+重新作为完整、可预先冻结的新 reset occurrence 处理。执行期工作根为
+`/tmp/openzyme-device-reset-20260821-5548ca8`；JSON、逐项 occurrence log 和 exact wheelhouse 已逐字节复核后
+持久化到 owner-only 的
+`/home/grtresy/.local/state/openzyme/reset-evidence/20260821-5548ca8`，隔离 venv 不作为证据保存。
+
+删除前证明为：SQLite `quick_check=ok`，Session、publication/composition pin、operation row 均为零；
+repository-service 只包含 owner-only 的空 `git`/`lfs` 目录；WAL/SHM 不存在；目标没有打开句柄，也没有
+Host、runtime、Plugin worker、runner、UI、SQLite 或 Git writer 进程。quiescence receipt 为
+`sha256:276c17f039baa1a2bded6e65ea428b11bac3de1edb025534323f7388ea2342da`。
+
+Store-owned `openzyme_store_sqlite.device_fresh_reset` 在 mutation 前生成并验证
+`device_fresh_install_reset_inventory@2`：
+
+- inventory：`sha256:1df0d0a25ec30561f7362eda98431811f1b438f42db8f08aa7e2c3fe16a3ceb8`；
+- 删除 occurrence：4，分别对应数据库、repository-service、`git` 和 `lfs`；
+- permission adjustment：0；
+- 每项均在删除前重验 device/inode/type/mode/content identity，并在删除后记录
+  `post_delete_absent=true`、`recoverable=false`；
+- 源码、`.git`、OpenSpec 历史和下一 repository truth generation 显式排除。
+
+随后使用隔离环境中仅从本地 wheelhouse 安装的 31 个 EnzymeDesign 组件，在原数据库路径执行 fresh bootstrap，
+并重新创建空的 canonical repository-service 根。关键 identity 为：
+
+- source：`sha256:d685f2dd34218dc41dddfc4a8adde3c99a4d2b01e6e6be1d855d6079b8a9f884`；
+- wheel set：`sha256:5f1edff60dbd14f76b00ecccda733eeb83ec19d14b12555942878e587ea26e96`；
+- documentation set：`sha256:0bd6f312920f71dbc28999fdb5f4a838433b18cde17d7c0a963d2874a6f5e5ac`；
+- composition bundle：`sha256:8b8171791501fef6891239cc3a98a6b2d4c503e36b50936c2883738ea176a38a`；
+- fresh bootstrap receipt：`sha256:d8ef69c4125e6b42f85ec8fbea884a842e118d9fef6b86303352c41b82b084aa`；
+- fresh database identity：`sha256:92d5c82215f4ca2bbfca941b1c393a925b8d72af482ffe492bfdef7d875d3409`；
+- zero scan：`sha256:c696c36a6831562a98b27e6e7a019555f8fe30640d0d07cd40add75999491857`；
+- 最终 reset receipt：`sha256:f523f08d26b928395c2d9269163b699f7feba954cce089a0045ea60544d20bcc`。
+
+独立只读启动进程重新构造同一 seed，激活 epoch `enzymedesign_fresh_20260821_4`，得到
+`quick_check=ok`、零外键错误、零非元数据行、零 Session 和 `query_only_total_changes=0`。zero scan 明确记录
+文件系统复用了旧 inode；freshness 因而只由原 deletion occurrence、不同数据库 content digest、独立 bootstrap
+receipt、空 repository preflight 和当前 generation identity 共同证明，未把 inode 变化当作必要或充分条件。
+
+最终执行的 focused reset/distribution 测试为 `12 passed`；架构 owner/import/catalog 检查、strict OpenSpec
+validation 和完整 non-live mainline authority 均通过。mainline receipt 为
+`sha256:c71f2119dd7057c21170e1e21e9ea711dbe7f3a40cde1fea8e5ac861f5a93194`。没有执行 Provider、SSH、Slurm、
+HPC、容器、浏览器或 live campaign。至此 task 18.9 由这次新的完整 reset occurrence 关闭；第一轮缺失日志的
+历史边界仍按原文保留。

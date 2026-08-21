@@ -1,19 +1,38 @@
 # Requirement evidence audit
 
-本文件把本 change 的全部 162 个 delta requirements 映射到当前代码、owner-local
-测试和文档。映射单位是 spec owner bundle：同一小节列出的每条 requirement 都必须同时由该小节的
-source、test 和 document 三类直接证据支持；任一引用缺失或最终 gate 失败，该小节全部恢复为
-`unproven`。场景级跨层证明另由本文末尾的 architecture qualification family closure 提供。
+本文件把本 change 的全部 162 个 delta requirements 映射到当前代码、owner-local 测试和文档。映射单位是
+spec owner bundle：同一小节列出的每条 requirement 都必须同时由该小节的 source、test 和 document 三类
+直接证据支持；任一引用缺失或最终 gate 失败，该小节全部恢复为 `unproven`。当前清单是证据索引，不是
+全量通过声明；bundle 状态以各小节的 `Status` 为准。场景级跨层证明另由本文末尾的 architecture
+qualification family closure 提供。
 
-2026-08-21 的单独授权覆盖本机旧空部署删除与 EnzymeDesign fresh activation；证据见
-`operator/device-fresh-install-20260821.md`。删除前缺少完整 `@2` 逐路径 inventory/occurrence log，正式 reset
-receipt 不能追认，`18.9` 仍未勾选。Provider、SSH、Slurm、HPC、容器和 live campaign 未执行。
+2026-08-21 的第二次单独授权覆盖一个新的完整 Store-owned `@2` reset occurrence 与 EnzymeDesign fresh
+activation；证据见 `operator/device-fresh-install-20260821.md`，正式 reset receipt 为
+`sha256:f523f08d26b928395c2d9269163b699f7feba954cce089a0045ea60544d20bcc`，`18.9` 保持完成。第一次删除
+缺失逐路径 occurrence 的历史事实没有被补造。Provider、SSH、Slurm、HPC、容器和 live campaign 未执行。
+
+当前审计状态：`enzymedesign-product-composition` 已由当前 source 的 focused 产品场景直接证明；
+`openzyme-layered-qualification` 已由 28/28 clean-source admission report 和独立 verifier 证明；
+`file-workspace-cutover-assurance` 已由 19.12 的 exact clean-source completion/admission 证明，并要求包含本索引的
+最终 evidence seal commit 再执行一次相同外部门禁后才可归档。
+Workspace Adapter restart reconciliation 已由 19.6 的 durable
+ledger 与跨 epoch 测试直接证明；Slurm opaque-handle recovery、remote helper qualification 与
+target-generation binding 已由 19.7 的持久 ledger、selected factory composition、helper manifest/locator 和
+affordance 负例直接证明；真实产品跨层场景、三 profile 行为资格与 clean-source admission 现已闭合。详见
+`implementation-gap-audit-20260822.md`。
 
 ## enzymedesign-product-composition
+
+Status: `proven on focused current source`。Manifest/catalog、package ownership、exact Plugin runtime mount、37-tool runtime closure、
+generic Host 注入和真实 Kernel Session bootstrap 已证明；formal HMMER/Vina → subordinate Driver → Compute
+ControlledOperation → declared runner Port 的 application bridge 已有直接 non-live 证明。Compute 的
+SQLite-backed namespaced state、result/continuation restart recovery 与 zero redispatch 已有直接证明；新的完整
+product-level cross-layer 场景已从 generic Host 运行到 result/continuation/Science validator，并证明 Task 不自动完成。
 
 直接证据：
 
 - source：`packages/enzymedesign-distribution/src/enzymedesign_distribution/composition.py`、
+  `application_runtime.py`、`runtime_mount.py`、
   `distributions/enzymedesign/openzyme-composition.toml`、`packages/enzymedesign-aox/`、
   `packages/enzymedesign-hmmer/`、`packages/enzymedesign-vina/`、
   `packages/enzymedesign-docking-preprocess/` 与 `packages/enzymedesign-aox-executor/`；
@@ -23,7 +42,7 @@ receipt 不能追认，`18.9` 仍未勾选。Provider、SSH、Slurm、HPC、容�
 - docs：`docs/v3/enzymedesign-distribution.md`、`docs/v3/01-target-architecture.md` 和
   `docs/OpenZyme架构设计.md`。
 
-Requirements proven：
+Evidence currently covers：
 
 1. EnzymeDesign is a distinct explicit product Distribution.
 2. Enzyme-specific scientific contracts belong to EnzymeDesign.
@@ -32,10 +51,21 @@ Requirements proven：
 5. Generic pipeline SDK and AOX calculation code are physically separated.
 6. Vertical Host, worker, route and UI surfaces register through manifests.
 7. EnzymeDesign consumes only public OpenZyme seams.
-8. EnzymeDesign has product-level non-live qualification.
+8. Exact selected Adapter/Plugin runtime graph is mounted before writer enablement and injected into the generic Host.
 9. EnzymeDesign code and documentation form one product boundary.
 
+Formal HMMER/Vina invocation 的 application 层要求由
+`test_formal_product_tools_compile_driver_and_enter_compute_lifecycle` 证明；完整组合要求由
+`test_real_product_composition_runs_hmmer_and_vina_through_one_pinned_graph` 与资格场景
+`identity-semantics.enzymedesign-product-cross-layer` 证明。19.12 的 full clean-source report 是最终 archive
+gate，不能由 focused green 替代；最终 evidence seal commit 必须重复该外部门禁。
+
 ## file-workspace-cutover-assurance
+
+Status: `proven by clean-source admission, pending only post-seal repetition`。真实 product composition 已有
+focused 直接证据，
+Workspace Adapter restart/reconcile 已由 19.6 单独闭合，Slurm occurrence 与 remote-helper resource
+qualification 已由 19.7 闭合；18.9 reset receipt 独立有效。
 
 直接证据：
 
@@ -48,7 +78,7 @@ Requirements proven：
 - docs：`docs/v3/architecture-qualification/README.md`、`docs/v3/test-gate.md` 和本 change
   `tasks.md`/`completion-evidence.md`。
 
-Requirements proven：
+Requirements proven by the clean-source completion chain：
 
 1. Change completion markers follow current authoritative evidence.
 2. Qualification covers current behavior and forbidden outcomes.
@@ -144,7 +174,7 @@ Requirements proven：
   `runtime_contributions.py`、`workspace_revision_executions.py`，以及
   `packages/openzyme-execution-contracts/`、`packages/openzyme-execution-sdk/`；
 - tests：`packages/openzyme-compute/tests/test_compute_lifecycle.py`、
-  `test_compute_contracts.py`、`test_component_manifest.py`、
+  `test_sqlite_restart_reconciliation.py`、`test_compute_contracts.py`、`test_component_manifest.py`、
   `apps/mcp-hpc-runner/tests/test_workspace_revision_job_wire.py`；
 - docs：`packages/openzyme-compute/README.md`、
   `docs/v3/execution-pipeline-docs/workspace-revision-jobs.md`。
@@ -267,6 +297,14 @@ Requirements proven：
 
 ## openzyme-layered-qualification
 
+Status: `proven in clean-source admission`。Kernel、Plugin-free Standard 与 EnzymeDesign 三 profile 已在同一
+28-scenario closed registry 中完整运行；EnzymeDesign profile 分别验证 exact catalog 与真实 product cross-layer。
+clean candidate 上运行。正式 report payload
+`sha256:266a718d119ff4e535ee54fbccf559dcca6a3e0fcbb6b29c1553827b1eb9e85d` 为 28/28 scenario、28/28 invariant
+`satisfied`、零 not-run、`run_failure=null`；独立 verifier 记录 `admission_eligible=true`、`valid=true`、零
+rejection，并绑定 commit `ba10837dc233a09617d0b1b3da18a481f5ad709d`。包含本证据索引的最终 seal commit 必须
+重复相同 admission，最终 SHA/report/digest 只记录在 checkout 外交付说明中，避免仓内自引用。
+
 直接证据：
 
 - source：`docs/v3/architecture-qualification/invariant-registry.json`、
@@ -277,7 +315,7 @@ Requirements proven：
 - docs：`docs/v3/architecture-qualification/README.md`、
   `docs/v3/architecture/source-document-traceability.json`。
 
-Requirements proven：
+Requirements proven by the diagnostic report and direct evidence：
 
 1. Qualification has three closed composition profiles.
 2. Kernel qualification uses only fake infrastructure Ports.
@@ -436,20 +474,33 @@ Requirements proven：
 
 ## openzyme-workspace-runtime
 
+Status: `proven for Workspace runtime`。契约、路径安全、authority、response-loss 与跨 Adapter epoch 的 durable
+occurrence/receipt recovery 均有直接证据。Slurm 使用独立的 HPC-owned scheduler occurrence ledger，remote helper
+使用 target resource qualification；二者已由 19.7 闭合，但仍不改变 Workspace operation ledger 与 scheduler
+authority 永久分离的边界。
+
 直接证据：
 
 - source：`packages/openzyme-contracts/src/openzyme_contracts/workspace_runtime.py`、
   `packages/openzyme-kernel/src/openzyme_kernel/workspace_operations.py`、`workspace_tools.py`、
   `packages/openzyme-process-podman/src/openzyme_process_podman/filesystem.py`、`process.py`、
+  `transfer.py`、`packages/openzyme-store-sqlite/src/openzyme_store_sqlite/workspace_operation_ledger.py`、
   `packages/openzyme-hpc/src/openzyme_hpc/workspace_application.py`、
-  `packages/openzyme-hpc-ssh/src/`；
+  `packages/openzyme-hpc/src/openzyme_hpc/sqlite_scheduler_ledger.py`、
+  `packages/openzyme-hpc-ssh/src/`、`packages/openzyme-hpc-slurm/src/`、
+  `packages/openzyme-standard/src/openzyme_standard/application_runtime.py`、
+  `packages/enzymedesign-distribution/src/enzymedesign_distribution/application_runtime.py`；
 - tests：`packages/openzyme-kernel/tests/test_workspace_operations.py`、`test_workspace_tools.py`、
   `packages/openzyme-process-podman/tests/test_filesystem_adapter.py`、`test_process_adapter.py`、
+  `test_transfer_adapter.py`、`packages/openzyme-store-sqlite/tests/test_workspace_operation_ledger.py`、
   `packages/openzyme-hpc/tests/test_workspace_application.py`、`test_workspace_tools.py`、
-  `packages/openzyme-hpc-ssh/tests/test_workspace_adapter.py`；
+  `packages/openzyme-hpc/tests/test_sqlite_scheduler_ledger.py`、
+  `packages/openzyme-hpc-ssh/tests/test_workspace_adapter.py`、
+  `packages/openzyme-hpc-slurm/tests/test_scheduler_adapter.py`、
+  `packages/enzymedesign-distribution/tests/test_distribution.py`；
 - docs：`docs/v3/03-capability-engines.md`、`docs/v3/07-runtime-hpc-reliability.md`。
 
-Requirements proven：
+Evidence currently covers：
 
 1. Workspace runtime contracts are Kernel-owned and provider-neutral.
 2. Local and HPC workspace lifecycles remain distinct.
@@ -462,10 +513,12 @@ Requirements proven：
 9. HPC login/file operations never grant scheduler authority.
 10. Raw workspace results remain private and non-terminal.
 11. Workspace runtime documentation matches adapters and tools.
+12. Exact terminal receipts survive Host/Adapter restart; uncertain occurrences only reconcile the original identity and
+    never redispatch or fall back.
 
 ## Scenario-family closure
 
-`docs/v3/architecture-qualification/invariant-registry.json` 固定 12 个 family、27 个 required
+`docs/v3/architecture-qualification/invariant-registry.json` 固定 12 个 family、28 个 required
 scenario；完整 diagnostic qualification 必须全部执行且每个 scenario/invariant 都为 `satisfied`：
 
 | family | required scenarios |
@@ -474,7 +527,7 @@ scenario；完整 diagnostic qualification 必须全部执行且每个 scenario/
 | boundary-scale | 2 |
 | bounded-terminal-convergence | 1 |
 | evidence-projection | 3 |
-| identity-semantics | 3 |
+| identity-semantics | 4 |
 | operator-retirement | 3 |
 | reconciliation | 2 |
 | restart-fencing | 1 |
@@ -483,6 +536,11 @@ scenario；完整 diagnostic qualification 必须全部执行且每个 scenario/
 | wire-contract | 2 |
 | world-fidelity | 3 |
 
-最终 completion evidence 必须记录：27/27 scenario pass、27/27 invariant satisfied、零 skip/xfail、
-零 undeclared external effect、零 not-run，以及独立 verifier 对同一 payload digest 的验证结果。mainline、
-wheel、static architecture 与 strict OpenSpec 均为必要的互补证据，不能彼此替代。
+旧 27/27 结果只保留为历史 component-level diagnostic evidence，不能证明真实 EnzymeDesign product runtime。
+当前 registry 已把 catalog-only 场景如实改为 `wire-contract.enzymedesign-catalog`，并新增
+`identity-semantics.enzymedesign-product-cross-layer`：后者运行 generic Host、Session pin、authority、immutable
+publication、adopted inventory、affordance/route、mounted HMMER/Vina Drivers、durable Compute、声明式 fake
+runner、result/continuation 与 Science validator，同时证明 Task 不自动完成。最终 completion evidence 仍必须在
+19.12 记录 28/28 scenario/invariant satisfied、零 skip/xfail、零 undeclared external effect、零 not-run，以及
+独立 verifier 对同一 payload digest 的验证结果。mainline、wheel、static architecture 与 strict OpenSpec 均为必要的
+互补证据，不能彼此替代。

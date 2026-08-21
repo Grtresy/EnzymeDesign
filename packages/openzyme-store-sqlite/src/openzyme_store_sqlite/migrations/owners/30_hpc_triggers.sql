@@ -595,3 +595,23 @@ BEGIN SELECT RAISE(ABORT, 'workspace job target qualification is immutable'); EN
 CREATE TRIGGER workspace_job_target_qualifications_immutable_update
 BEFORE UPDATE ON workspace_job_target_qualifications
 BEGIN SELECT RAISE(ABORT, 'workspace job target qualification is immutable'); END;
+
+CREATE TRIGGER openzyme_hpc_qualification_receipts_immutable_update
+BEFORE UPDATE ON openzyme_hpc_software_qualification_receipts
+BEGIN SELECT RAISE(ABORT, 'HPC qualification receipts are immutable'); END;
+
+CREATE TRIGGER openzyme_hpc_qualification_receipts_immutable_delete
+BEFORE DELETE ON openzyme_hpc_software_qualification_receipts
+BEGIN SELECT RAISE(ABORT, 'HPC qualification receipts are append-only'); END;
+
+CREATE TRIGGER openzyme_hpc_inventories_immutable_update
+BEFORE UPDATE ON openzyme_hpc_target_toolchain_inventories
+BEGIN SELECT RAISE(ABORT, 'HPC inventories are immutable'); END;
+
+CREATE TRIGGER openzyme_hpc_inventories_immutable_delete
+BEFORE DELETE ON openzyme_hpc_target_toolchain_inventories
+BEGIN SELECT RAISE(ABORT, 'HPC inventories are append-only'); END;
+
+CREATE TRIGGER openzyme_hpc_scheduler_occurrences_no_delete
+BEFORE DELETE ON openzyme_hpc_scheduler_occurrences
+BEGIN SELECT RAISE(ABORT, 'HPC scheduler occurrences are durable'); END;

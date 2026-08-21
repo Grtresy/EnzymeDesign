@@ -24,6 +24,11 @@ inventory closure 可以投影为 Kernel `ResourceCapabilityFact`，但 health �
 `toolchain_digest` 已从 target qualification、Compute source manifest、runner config/wire 中移除；这些边界
 现在同时携带 positive `inventory_generation` 和 exact `inventory_digest`，后者是结构化 inventory 的 closure。
 
+同一 namespace 还保存 `openzyme_hpc_scheduler_occurrences`：它是 submit/cancel occurrence 与私有 raw
+scheduler handle 的持久账本，允许 uncertain → known/terminal 的单向结算，禁止 terminal replacement 和 delete。
+EnzymeDesign fresh owner schema 会离线安装 inventory、qualification 与 scheduler occurrence 三张表；正常 Host
+启动只读验证，不 opportunistically 建表。
+
 `TargetQualificationWorkflow` 只允许 operator/admin，使用一个必须由 Kernel
 `ControlledOperation` 支撑的 Adapter Port 执行 version query 与 deterministic smoke；
 `dispatch_in_doubt` 只 reconcile 同一 occurrence，未闭合时不发布 inventory。Agent/import/turn
@@ -40,9 +45,16 @@ Host 的 concrete provisioner/credential provider 已直接消费这些 contract
 事实翻译到该 Port，Plugin 不 import Core repository。Host 的 tool bridge 会在每个 opaque-ID 调用重新读取
 owner、local/remote generation、target qualification 和 operation authority，再调用注入的 Workspace Runtime
 Port；Shell admission 明确拒绝 scheduler 命令，raw receipt 永不声称 publication、scientific evidence 或
-Task finish。组件标记为 `target_implemented_not_cutover`；EnzymeDesign 可按 exact manifest/mounted surfaces
+Task finish。远端 helper 是 exact `software.openzyme-workspace-runtime == 1.0.0` resource requirement；没有绑定
+build/qualification/inventory generation 的事实时，remote workspace route 不进入有效工具目录。组件标记为
+`target_implemented_not_cutover`；EnzymeDesign 可按 exact manifest/mounted surfaces
 选择它，但不得仅因 wheel 已安装就把它视为某个 Session 已激活。SSH/SFTP/rsync 与 Slurm 分别位于
 `openzyme-hpc-ssh`、`openzyme-hpc-slurm` Adapter；真实 target 仍需独立 qualification 和 live 授权。
+
+这里的状态必须分开：manifest `selected` 只表示产品选择；`runtime_mounted` 只表示 exact Plugin/Adapter
+surface 已构造；`qualified` 必须有 exact target receipt；`cutover` 必须有真实部署 adoption；`live` 必须有单次
+外部调用授权。当前 non-live 产品级场景采用 frozen qualified inventory fixture 来验证 capability resolution，
+不会 SSH、提交 Slurm 或把 fixture 冒充真实 target qualification。
 
 ## 目标边界
 

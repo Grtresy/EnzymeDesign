@@ -9,6 +9,7 @@ from enzymedesign_alphafold import ALPHAFOLD_DRIVER_REQUEST_CONTRACT_DIGEST
 from enzymedesign_alphafold import ALPHAFOLD_HPC_DRIVER_MANIFEST_DIGEST
 from enzymedesign_alphafold import ALPHAFOLD_TOOL_SPEC
 from enzymedesign_alphafold import AlphaFoldHpcDriver
+from enzymedesign_alphafold import build_alphafold_plugin_runtime_surfaces
 from enzymedesign_alphafold import locate_component_manifest
 from enzymedesign_alphafold import locate_hpc_driver_manifest
 from openzyme_extension_spi import DriverInvocationRequest
@@ -18,6 +19,14 @@ from openzyme_extension_spi import parse_component_manifest_json
 
 
 DIGEST = "sha256:" + "1" * 64
+
+
+class _RuntimeApplication:
+    def request(self, *, invocation):
+        return {"workload_id": "workload-af3", "workload_digest": DIGEST, "state": "admitted"}
+
+    def invoke_route(self, *, invocation, driver_id):
+        return {"state": "compiled", "driver_id": driver_id}
 
 
 def _manifest(locator):
@@ -48,6 +57,19 @@ def test_alphafold_manifest_binds_software_assets_database_and_gpu() -> None:
         for item in plugin.requires
         if item.capability_id != "openzyme.execution.revision-job"
     )
+
+
+def test_alphafold_runtime_surfaces_match_the_declared_hpc_route() -> None:
+    application = _RuntimeApplication()
+    surfaces = build_alphafold_plugin_runtime_surfaces(
+        application=application,
+        route_application=application,
+    )
+
+    assert len(surfaces.tools) == 1
+    assert [item.route_id for item in surfaces.capability_routes] == [
+        "enzymedesign.alphafold.hpc-primary@1"
+    ]
 
 
 def _request(**extra):

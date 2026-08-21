@@ -12,6 +12,7 @@ from openzyme_contracts import canonical_sha256_digest
 from openzyme_contracts import require_digest
 from openzyme_contracts import require_identifier
 from openzyme_contracts.identity import JsonValue
+from openzyme_contracts.identity import json_compatible
 from openzyme_execution_contracts import ExecutionResultReceipt
 from openzyme_execution_contracts import ExecutionRouteIdentity
 from openzyme_execution_contracts import ExecutionWorkloadSpec
@@ -23,6 +24,9 @@ from openzyme_extension_spi import ControlledOperationApplicationService
 from openzyme_extension_spi import ControlledOperationCommandKind
 from openzyme_extension_spi import KernelCommandContext
 from openzyme_extension_spi import KernelMutationReceipt
+from openzyme_extension_spi import ExtensionStateApplicationService
+from openzyme_extension_spi import ExtensionStateCommand
+from openzyme_extension_spi import ExtensionStateRecord
 
 
 COMPUTE_EXECUTION_REQUEST_SCHEMA = "openzyme_compute_execution_request@1"
@@ -378,14 +382,83 @@ class ComputeExecutionRecord:
             "task_finished": False,
         }
 
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": COMPUTE_EXECUTION_RECORD_SCHEMA,
+            "session_id": self.request.session_id,
+            "request": self.request.to_dict(),
+            "admission_proof_digest": self.admission_proof_digest,
+            "controlled_operation_admission_receipt_digest": (
+                self.controlled_operation_admission_receipt_digest
+            ),
+            "provider_handle": self.provider_handle,
+            "route_receipt_digest": self.route_receipt_digest,
+            "result": None if self.result is None else self.result.to_dict(),
+            "state_version": self.state_version,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> ComputeExecutionRecord:
+        fields = {
+            "schema_version",
+            "session_id",
+            "request",
+            "admission_proof_digest",
+            "controlled_operation_admission_receipt_digest",
+            "provider_handle",
+            "route_receipt_digest",
+            "result",
+            "state_version",
+        }
+        if not isinstance(value, Mapping) or set(value) != fields:
+            raise ValueError("Compute execution record fields are closed")
+        if value["schema_version"] != COMPUTE_EXECUTION_RECORD_SCHEMA:
+            raise ValueError("unsupported Compute execution record schema")
+        result = value["result"]
+        request = ComputeExecutionRequest.from_dict(json_compatible(value["request"]))
+        if value["session_id"] != request.session_id:
+            raise ValueError("Compute execution record Session identity mismatch")
+        return cls(
+            request=request,
+            admission_proof_digest=str(value["admission_proof_digest"]),
+            controlled_operation_admission_receipt_digest=str(
+                value["controlled_operation_admission_receipt_digest"]
+            ),
+            provider_handle=(
+                None
+                if value["provider_handle"] is None
+                else str(value["provider_handle"])
+            ),
+            route_receipt_digest=(
+                None
+                if value["route_receipt_digest"] is None
+                else str(value["route_receipt_digest"])
+            ),
+            result=(
+                None
+                if result is None
+                else ExecutionResultReceipt.from_dict(json_compatible(result))
+            ),
+            state_version=int(value["state_version"]),
+        )
+
 
 class ComputeExecutionRepository(Protocol):
-    def get(self, execution_id: str) -> ComputeExecutionRecord | None: ...
+    def get(
+        self,
+        session_id: str,
+        execution_id: str,
+    ) -> ComputeExecutionRecord | None: ...
 
-    def save_once(self, record: ComputeExecutionRecord) -> ComputeExecutionRecord: ...
+    def save_once(
+        self,
+        context: KernelCommandContext,
+        record: ComputeExecutionRecord,
+    ) -> ComputeExecutionRecord: ...
 
     def bind_route_outcome(
         self,
+        context: KernelCommandContext,
         execution_id: str,
         *,
         expected_state_version: int,
@@ -397,13 +470,19 @@ class InMemoryComputeExecutionRepository:
     def __init__(self) -> None:
         self._records: dict[str, ComputeExecutionRecord] = {}
 
-    def get(self, execution_id: str) -> ComputeExecutionRecord | None:
-        return self._records.get(execution_id)
+    def get(self, session_id: str, execution_id: str) -> ComputeExecutionRecord | None:
+        record = self._records.get(execution_id)
+        return record if record is not None and record.request.session_id == session_id else None
 
-    def save_once(self, record: ComputeExecutionRecord) -> ComputeExecutionRecord:
+    def save_once(
+        self,
+        context: KernelCommandContext,
+        record: ComputeExecutionRecord,
+    ) -> ComputeExecutionRecord:
+        del context
         existing = self._records.get(record.request.execution_id)
         if existing is not None:
-            if existing != record:
+            if not _same_compute_admission(existing, record):
                 raise ComputeLifecycleError(
                     "compute_execution_identity_conflict",
                     "execution identity already belongs to a different request",
@@ -414,60 +493,225 @@ class InMemoryComputeExecutionRepository:
 
     def bind_route_outcome(
         self,
+        context: KernelCommandContext,
         execution_id: str,
         *,
         expected_state_version: int,
         outcome: ComputeRouteOutcome,
     ) -> ComputeExecutionRecord:
+        del context
         current = self._records[execution_id]
-        if current.state_version != expected_state_version:
-            raise ComputeLifecycleError(
-                "compute_execution_state_stale",
-                "Compute execution state changed before settlement",
-            )
-        if current.route_receipt_digest == outcome.receipt_digest:
-            if (
-                outcome.route_id != current.request.route.route_id
-                or outcome.operation_id != current.request.operation_id
-                or outcome.provider_handle not in {None, current.provider_handle}
-                or outcome.terminal_result != current.result
-            ):
-                raise ComputeLifecycleError(
-                    "compute_route_receipt_identity_conflict",
-                    "route receipt identity was reused for a different outcome",
-                    effect_certainty=outcome.effect_certainty,
-                    mutation_applied=outcome.mutation_applied,
-                )
-            return current
-        if outcome.route_id != current.request.route.route_id or outcome.operation_id != current.request.operation_id:
-            raise ComputeLifecycleError(
-                "compute_route_outcome_identity_mismatch",
-                "route outcome belongs to another operation or route",
-                effect_certainty=outcome.effect_certainty,
-                mutation_applied=outcome.mutation_applied,
-            )
-        if current.provider_handle is not None and outcome.provider_handle not in {
-            None,
-            current.provider_handle,
-        }:
-            raise ComputeLifecycleError(
-                "compute_provider_handle_replaced",
-                "provider handle replacement is forbidden",
-                effect_certainty=outcome.effect_certainty,
-                mutation_applied=outcome.mutation_applied,
-            )
-        result = outcome.terminal_result or current.result
-        if result is not None:
-            _validate_terminal_result(current.request, outcome.provider_handle or current.provider_handle, result)
-        updated = replace(
+        updated = _bind_route_outcome(
             current,
-            provider_handle=outcome.provider_handle or current.provider_handle,
-            route_receipt_digest=outcome.receipt_digest,
-            result=result,
-            state_version=current.state_version + 1,
+            expected_state_version=expected_state_version,
+            outcome=outcome,
         )
         self._records[execution_id] = updated
         return updated
+
+
+class ComputeExtensionStateQueryPort(Protocol):
+    """Read only the activated Compute namespace through an Adapter-owned query."""
+
+    def get_session_record(
+        self,
+        *,
+        namespace: str,
+        session_id: str,
+        entity_kind: str,
+        entity_id: str,
+    ) -> ExtensionStateRecord | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ExtensionStateComputeExecutionRepository:
+    """Durable Compute repository over Kernel-admitted namespaced extension state."""
+
+    mutations: ExtensionStateApplicationService
+    query: ComputeExtensionStateQueryPort
+
+    def get(
+        self,
+        session_id: str,
+        execution_id: str,
+    ) -> ComputeExecutionRecord | None:
+        stored = self.query.get_session_record(
+            namespace="openzyme_compute",
+            session_id=session_id,
+            entity_kind="execution",
+            entity_id=execution_id,
+        )
+        if stored is None:
+            return None
+        record = ComputeExecutionRecord.from_dict(stored.payload)
+        if (
+            record.request.session_id != session_id
+            or record.request.execution_id != execution_id
+            or record.state_version != stored.state_version
+        ):
+            raise ComputeLifecycleError(
+                "compute_extension_state_identity_mismatch",
+                "durable Compute state differs from its namespace key",
+            )
+        return record
+
+    def save_once(
+        self,
+        context: KernelCommandContext,
+        record: ComputeExecutionRecord,
+    ) -> ComputeExecutionRecord:
+        existing = self.get(
+            record.request.session_id,
+            record.request.execution_id,
+        )
+        if existing is not None:
+            if not _same_compute_admission(existing, record):
+                raise ComputeLifecycleError(
+                    "compute_execution_identity_conflict",
+                    "execution identity already belongs to a different request",
+                )
+            return existing
+        return self._upsert(context, record, expected_state_version=None)
+
+    def bind_route_outcome(
+        self,
+        context: KernelCommandContext,
+        execution_id: str,
+        *,
+        expected_state_version: int,
+        outcome: ComputeRouteOutcome,
+    ) -> ComputeExecutionRecord:
+        current = self.get(context.session_id, execution_id)
+        if current is None:
+            raise ComputeLifecycleError(
+                "compute_execution_not_found",
+                "Compute execution does not exist",
+            )
+        updated = _bind_route_outcome(
+            current,
+            expected_state_version=expected_state_version,
+            outcome=outcome,
+        )
+        if updated == current:
+            return current
+        return self._upsert(
+            context,
+            updated,
+            expected_state_version=expected_state_version,
+        )
+
+    def _upsert(
+        self,
+        context: KernelCommandContext,
+        record: ComputeExecutionRecord,
+        *,
+        expected_state_version: int | None,
+    ) -> ComputeExecutionRecord:
+        result = self.mutations.execute(
+            ExtensionStateCommand(
+                context=context,
+                participant_id="openzyme.compute.transaction@1",
+                namespace="openzyme_compute",
+                operation="upsert_execution",
+                payload={
+                    "execution_id": record.request.execution_id,
+                    "expected_state_version": expected_state_version,
+                    "record": json_compatible(record.to_dict()),
+                },
+            )
+        )
+        changed = tuple(
+            item
+            for item in result.changed_records
+            if item.namespace == "openzyme_compute"
+            and item.entity_kind == "execution"
+            and item.entity_id == record.request.execution_id
+        )
+        if not result.mutation_applied or len(changed) != 1:
+            raise ComputeLifecycleError(
+                "compute_extension_state_receipt_mismatch",
+                "Compute state mutation returned no exact durable receipt",
+            )
+        stored = ComputeExecutionRecord.from_dict(changed[0].payload)
+        if stored != record or stored.state_version != changed[0].state_version:
+            raise ComputeLifecycleError(
+                "compute_extension_state_receipt_mismatch",
+                "Compute state mutation receipt differs from the intended record",
+            )
+        return stored
+
+
+def _bind_route_outcome(
+    current: ComputeExecutionRecord,
+    *,
+    expected_state_version: int,
+    outcome: ComputeRouteOutcome,
+) -> ComputeExecutionRecord:
+    if current.state_version != expected_state_version:
+        raise ComputeLifecycleError(
+            "compute_execution_state_stale",
+            "Compute execution state changed before settlement",
+        )
+    if current.route_receipt_digest == outcome.receipt_digest:
+        if (
+            outcome.route_id != current.request.route.route_id
+            or outcome.operation_id != current.request.operation_id
+            or outcome.provider_handle not in {None, current.provider_handle}
+            or outcome.terminal_result != current.result
+        ):
+            raise ComputeLifecycleError(
+                "compute_route_receipt_identity_conflict",
+                "route receipt identity was reused for a different outcome",
+                effect_certainty=outcome.effect_certainty,
+                mutation_applied=outcome.mutation_applied,
+            )
+        return current
+    if (
+        outcome.route_id != current.request.route.route_id
+        or outcome.operation_id != current.request.operation_id
+    ):
+        raise ComputeLifecycleError(
+            "compute_route_outcome_identity_mismatch",
+            "route outcome belongs to another operation or route",
+            effect_certainty=outcome.effect_certainty,
+            mutation_applied=outcome.mutation_applied,
+        )
+    if current.provider_handle is not None and outcome.provider_handle not in {
+        None,
+        current.provider_handle,
+    }:
+        raise ComputeLifecycleError(
+            "compute_provider_handle_replaced",
+            "provider handle replacement is forbidden",
+            effect_certainty=outcome.effect_certainty,
+            mutation_applied=outcome.mutation_applied,
+        )
+    result = outcome.terminal_result or current.result
+    if result is not None:
+        _validate_terminal_result(
+            current.request,
+            outcome.provider_handle or current.provider_handle,
+            result,
+        )
+    return replace(
+        current,
+        provider_handle=outcome.provider_handle or current.provider_handle,
+        route_receipt_digest=outcome.receipt_digest,
+        result=result,
+        state_version=current.state_version + 1,
+    )
+
+
+def _same_compute_admission(
+    existing: ComputeExecutionRecord,
+    proposed: ComputeExecutionRecord,
+) -> bool:
+    return (
+        existing.request == proposed.request
+        and existing.admission_proof_digest == proposed.admission_proof_digest
+        and existing.controlled_operation_admission_receipt_digest
+        == proposed.controlled_operation_admission_receipt_digest
+    )
 
 
 @dataclass(slots=True)
@@ -507,6 +751,7 @@ class ComputeExecutionApplicationService:
             certainty=ExternalEffectCertainty.NO_EFFECT,
         )
         record = self.repository.save_once(
+            context,
             ComputeExecutionRecord(
                 request=request,
                 admission_proof_digest=proof.proof_digest,
@@ -646,6 +891,7 @@ class ComputeExecutionApplicationService:
             certainty=outcome.effect_certainty,
         )
         updated = self.repository.bind_route_outcome(
+            context,
             record.request.execution_id,
             expected_state_version=record.state_version,
             outcome=outcome,
@@ -720,7 +966,7 @@ class ComputeExecutionApplicationService:
         context: KernelCommandContext,
         execution_id: str,
     ) -> ComputeExecutionRecord:
-        record = self.repository.get(execution_id)
+        record = self.repository.get(context.session_id, execution_id)
         if record is None:
             raise ComputeLifecycleError(
                 "compute_execution_not_found",
@@ -904,5 +1150,7 @@ __all__ = [
     "ComputeLifecycleError",
     "ComputeRouteOutcome",
     "ComputeRoutePort",
+    "ComputeExtensionStateQueryPort",
+    "ExtensionStateComputeExecutionRepository",
     "InMemoryComputeExecutionRepository",
 ]

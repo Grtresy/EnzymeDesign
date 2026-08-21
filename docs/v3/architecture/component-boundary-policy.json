@@ -81,8 +81,10 @@
     ],
     "distribution": [
       "contracts",
+      "capability_contracts",
       "extension_spi",
       "kernel",
+      "adapter_spi",
       "adapter",
       "plugin",
       "product_plugin",

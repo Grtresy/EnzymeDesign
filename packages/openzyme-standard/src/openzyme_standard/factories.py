@@ -6,6 +6,7 @@ from typing import Any
 from collections.abc import Iterable
 
 from openzyme_contracts import ProjectRepositoryBinding
+from openzyme_contracts import WorkspaceOperationLedgerPort
 from openzyme_extension_spi import AuthorityApplicationService
 from openzyme_extension_spi import ControlledOperationApplicationService
 from openzyme_kernel import WorkspaceOperationCoordinator
@@ -87,6 +88,7 @@ class StandardLocalWorkspaceRuntimeFactory:
     process_isolation: ProcessIsolationPort
     authority: AuthorityApplicationService
     controlled_operations: ControlledOperationApplicationService
+    operation_ledger: WorkspaceOperationLedgerPort
     workspace_provider_id: str = "openzyme.workspace.git-lfs"
     podman_binary: str = "/usr/bin/podman"
 
@@ -100,11 +102,13 @@ class StandardLocalWorkspaceRuntimeFactory:
     def build(self) -> StandardLocalWorkspaceRuntimeAdapters:
         filesystem = PodmanWorkspaceFilesystemAdapter(
             mount_resolver=self.mount_resolver,
+            operation_ledger=self.operation_ledger,
             podman_binary=self.podman_binary,
         )
         process = PodmanWorkspaceProcessAdapter(
             isolation=self.process_isolation,
             mount_resolver=self.mount_resolver,
+            operation_ledger=self.operation_ledger,
         )
         coordinator = WorkspaceOperationCoordinator(
             authority=self.authority,

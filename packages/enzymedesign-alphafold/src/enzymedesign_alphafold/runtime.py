@@ -4,6 +4,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
+from enzymedesign_core import ExactProductCapabilityRouteRuntime
+from enzymedesign_core import ProductCapabilityRouteApplication
 from openzyme_contracts import ToolInvocation
 from openzyme_contracts import ToolResult
 from openzyme_contracts import ToolSpec
@@ -215,11 +217,49 @@ class AlphaFoldToolRuntime:
         )
 
 
+ALPHAFOLD_ROUTE_BINDINGS = (
+    ("enzymedesign.alphafold.hpc-primary@1", "enzymedesign.alphafold.hpc"),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class AlphaFoldPluginRuntimeSurfaces:
+    tools: tuple[AlphaFoldToolRuntime, ...]
+    capability_routes: tuple[ExactProductCapabilityRouteRuntime, ...]
+
+
+def build_alphafold_plugin_runtime_surfaces(
+    *,
+    application: AlphaFoldToolApplication,
+    route_application: ProductCapabilityRouteApplication,
+) -> AlphaFoldPluginRuntimeSurfaces:
+    return AlphaFoldPluginRuntimeSurfaces(
+        tools=(AlphaFoldToolRuntime(application),),
+        capability_routes=tuple(
+            ExactProductCapabilityRouteRuntime(
+                route_id=route_id,
+                owner_plugin_id=ALPHAFOLD_PLUGIN_ID,
+                driver_id=driver_id,
+                capability_ids=(
+                    ALPHAFOLD_PLUGIN_ID,
+                    "openzyme.execution.revision-job",
+                    "software.alphafold3",
+                ),
+                application=route_application,
+            )
+            for route_id, driver_id in ALPHAFOLD_ROUTE_BINDINGS
+        ),
+    )
+
+
 __all__ = [
     "ALPHAFOLD_COMPUTE_REQUIREMENT",
     "ALPHAFOLD_QUALIFICATION_SPEC",
+    "ALPHAFOLD_ROUTE_BINDINGS",
     "ALPHAFOLD_RESOURCE_REQUIREMENTS",
     "ALPHAFOLD_TOOL_SPEC",
     "AlphaFoldToolApplication",
+    "AlphaFoldPluginRuntimeSurfaces",
     "AlphaFoldToolRuntime",
+    "build_alphafold_plugin_runtime_surfaces",
 ]

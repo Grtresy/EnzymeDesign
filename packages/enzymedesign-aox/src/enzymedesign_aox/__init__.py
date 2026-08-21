@@ -12,6 +12,8 @@ from .finalization_handler import *  # noqa: F403
 from .finalization_handler import __all__ as _finalization_handler_exports
 from .manifest_locator import AOX_COMPONENT_MANIFEST_DIGEST
 from .manifest_locator import locate_component_manifest
+from .runtime import *  # noqa: F403
+from .runtime import __all__ as _runtime_exports
 from .workflow_contracts import *  # noqa: F403
 from .workflow_contracts import __all__ as _workflow_contract_exports
 
@@ -30,5 +32,6 @@ __all__ = [
     *_file_bundle_exports,
     *_file_bundle_finalizer_exports,
     *_finalization_handler_exports,
+    *_runtime_exports,
     *_workflow_contract_exports,
 ]

@@ -13,6 +13,7 @@ from enzymedesign_structure import FPOCKET_TOOL_SPEC
 from enzymedesign_structure import STRUCTURE_COMPONENT_MANIFEST_DIGEST
 from enzymedesign_structure import FpocketDriver
 from enzymedesign_structure import FpocketToolRuntime
+from enzymedesign_structure import build_structure_plugin_runtime_surfaces
 from enzymedesign_structure import locate_component_manifest
 from enzymedesign_structure import locate_hpc_driver_manifest
 from enzymedesign_structure import locate_local_driver_manifest
@@ -124,6 +125,23 @@ class _Application:
             "workload_digest": DIGEST,
             "state": "admitted",
         }
+
+    def invoke_route(self, *, invocation, driver_id):
+        return {"state": "compiled", "driver_id": driver_id}
+
+
+def test_structure_runtime_surfaces_match_both_declared_routes() -> None:
+    application = _Application()
+    surfaces = build_structure_plugin_runtime_surfaces(
+        application=application,
+        route_application=application,
+    )
+
+    assert len(surfaces.tools) == 1
+    assert {item.route_id for item in surfaces.capability_routes} == {
+        "enzymedesign.fpocket.hpc-primary@1",
+        "enzymedesign.fpocket.local@1",
+    }
 
 
 def test_fpocket_tool_requires_route_and_raw_shell_is_not_formal() -> None:

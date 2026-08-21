@@ -13,6 +13,7 @@ from enzymedesign_vina import VINA_RESULT_SCHEMA_DIGEST
 from enzymedesign_vina import VINA_TOOL_SPEC
 from enzymedesign_vina import VinaDriver
 from enzymedesign_vina import VinaToolRuntime
+from enzymedesign_vina import build_vina_plugin_runtime_surfaces
 from enzymedesign_vina import locate_component_manifest
 from enzymedesign_vina import locate_hpc_driver_manifest
 from enzymedesign_vina import locate_local_driver_manifest
@@ -22,10 +23,19 @@ from openzyme_extension_spi import CapabilityRequirementKind
 from openzyme_extension_spi import DriverInvocationRequest
 from openzyme_extension_spi import DriverManifest
 from openzyme_extension_spi import PluginManifest
+from openzyme_extension_spi import ToolDispatchBinding
 from openzyme_extension_spi import parse_component_manifest_json
 
 
 DIGEST = "sha256:" + "2" * 64
+
+
+class _RuntimeApplication:
+    def request(self, *, invocation):
+        return {"workload_id": "workload-vina", "workload_digest": DIGEST, "state": "admitted"}
+
+    def invoke_route(self, *, invocation, driver_id):
+        return {"state": "compiled", "driver_id": driver_id}
 
 
 def _manifest(locator):
@@ -58,6 +68,20 @@ def test_vina_manifest_declares_compute_and_same_target_software_requirement() -
         all(name not in requirement for name in ("openzyme-core", "openzyme-hpc", "slurm", "ssh"))
         for requirement in requirements
     )
+
+
+def test_vina_runtime_surfaces_match_both_declared_routes() -> None:
+    application = _RuntimeApplication()
+    surfaces = build_vina_plugin_runtime_surfaces(
+        application=application,
+        route_application=application,
+    )
+
+    assert len(surfaces.tools) == 1
+    assert {item.route_id for item in surfaces.capability_routes} == {
+        "enzymedesign.vina.hpc-primary@1",
+        "enzymedesign.vina.local@1",
+    }
 
 
 def _input(path: str, revision_id: str):
@@ -131,12 +155,18 @@ def test_vina_driver_rejects_caller_argv_and_private_path(extra) -> None:
 
 def test_vina_tool_and_result_keep_raw_shell_non_formal() -> None:
     class Application:
-        def request(self, *, invocation):
-            return {"workload_id": "vina-workload-1", "workload_digest": DIGEST, "state": "admitted"}
+        def request(self, *, invocation, dispatch):
+            del invocation, dispatch
+            return {
+                "execution_id": "execution-1",
+                "operation_id": "operation-1",
+                "workload_id": "vina-workload-1",
+                "workload_digest": DIGEST,
+                "state": "admitted",
+            }
 
     runtime = VinaToolRuntime(Application())
-    accepted = runtime.invoke(
-        ToolInvocation(
+    invocation = ToolInvocation(
             call_id="call-1",
             tool_name=VINA_TOOL_SPEC.tool_name,
             arguments={},
@@ -146,6 +176,29 @@ def test_vina_tool_and_result_keep_raw_shell_non_formal() -> None:
             route_id="hpc-primary.revision-job",
             affordance_snapshot_digest=DIGEST,
         )
+    accepted = runtime.invoke_admitted(
+        invocation,
+        ToolDispatchBinding(
+            tool_name=VINA_TOOL_SPEC.tool_name,
+            tool_contract_digest=VINA_TOOL_SPEC.contract_digest,
+            affordance_snapshot_digest=DIGEST,
+            capability_binding_digest=DIGEST,
+            extension_bundle_digest=DIGEST,
+            authority_lease_id="lease-1",
+            authority_lease_digest=DIGEST,
+            authority_generation=1,
+            authority_fence=1,
+            workspace_generation=1,
+            route_id="hpc-primary.revision-job",
+            route_digest=DIGEST,
+            provider_component_id="enzymedesign.vina",
+            driver_id="enzymedesign.vina.hpc",
+            target_id="hpc-primary",
+            inventory_generation=1,
+            inventory_digest=DIGEST,
+            qualification_digest=DIGEST,
+            capability_proof_digest=DIGEST,
+        ),
     )
     assert accepted.payload["formal_compute_requested"] is True
     assert accepted.payload["raw_shell"] is False

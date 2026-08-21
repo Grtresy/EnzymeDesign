@@ -5,6 +5,7 @@ description = "AOX workflow、规则与验收插件"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+  "enzymedesign-core",
   "openzyme-contracts",
   "openzyme-extension-spi",
   "openzyme-science",

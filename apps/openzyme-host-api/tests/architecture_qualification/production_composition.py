@@ -67,11 +67,17 @@ _PYTEST_SELECTIONS: dict[str, tuple[str, ...]] = {
         "packages/openzyme-kernel/tests/test_publication_application.py::test_publication_reconciles_original_uncertain_effect_after_revoke",
         "packages/openzyme-process-podman/tests/test_container_lifecycle.py",
     ),
-    "enzymedesign-composition": (
+    "enzymedesign-catalog": (
         "packages/enzymedesign-distribution/tests/test_distribution.py",
+        "-k",
+        "not test_real_product_composition_runs_hmmer_and_vina_through_one_pinned_graph",
         "packages/enzymedesign-hmmer/tests/test_hmmer_plugin.py",
         "packages/openzyme-hpc/tests/test_component_manifest.py",
         "packages/openzyme-hpc/tests/test_workspace_tools.py",
+    ),
+    "enzymedesign-product-cross-layer": (
+        "packages/enzymedesign-distribution/tests/test_distribution.py::"
+        "test_real_product_composition_runs_hmmer_and_vina_through_one_pinned_graph",
     ),
     "kernel-fake-adapters": (
         "packages/openzyme-kernel/tests/test_testing_fakes.py",

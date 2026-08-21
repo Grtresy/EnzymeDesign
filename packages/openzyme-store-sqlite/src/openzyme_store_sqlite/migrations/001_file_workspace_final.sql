@@ -3866,7 +3866,7 @@ CREATE TABLE "workspace_revision_execution_requests" ("request_id" TEXT PRIMARY 
 
 CREATE TABLE deployment_schema_state (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), schema_generation TEXT NOT NULL CHECK (schema_generation = 'openzyme_file_workspace_final@2'), removal_state TEXT NOT NULL CHECK (removal_state IN ('fresh_install_complete', 'offline_removal_complete', 'offline_removal_incomplete')), removal_receipt_digest TEXT NOT NULL, manifest_digest TEXT NOT NULL, updated_at TEXT NOT NULL);
 
-INSERT INTO deployment_schema_state (singleton, schema_generation, removal_state, removal_receipt_digest, manifest_digest, updated_at) VALUES (1, 'openzyme_file_workspace_final@2', 'fresh_install_complete', 'sha256:1c97cad746b1e5335f3c2135cede98355a302bd18996d87603a8b2658ca58e63', 'sha256:3ec76b8485c1aa102609b00b676f5047b1f1aea11281bf08c76e6e576a778497', '1970-01-01T00:00:00+00:00');
+INSERT INTO deployment_schema_state (singleton, schema_generation, removal_state, removal_receipt_digest, manifest_digest, updated_at) VALUES (1, 'openzyme_file_workspace_final@2', 'fresh_install_complete', 'sha256:32897934dfe44919ca3cbf5e0302cbf22eb8808e16ad3a91476eb732fbe2d1a6', 'sha256:042166dc38007b1345efdec5f0e87a983abaacf93f1824271dbdc83223c2d680', '1970-01-01T00:00:00+00:00');
 
 CREATE TABLE legacy_removal_ledger (receipt_id TEXT PRIMARY KEY, schema_generation TEXT NOT NULL CHECK (schema_generation = 'openzyme_file_workspace_final@2'), manifest_digest TEXT NOT NULL, historical_receipt_digest TEXT NOT NULL, database_backup_digest TEXT NOT NULL, storage_backup_digest TEXT NOT NULL, quiescence_receipt_digest TEXT NOT NULL, expected_object_set_digest TEXT NOT NULL, removed_object_set_digest TEXT NOT NULL, already_absent_set_digest TEXT NOT NULL, root_identity_set_digest TEXT NOT NULL, error_object_set_digest TEXT NOT NULL, expected_byte_total INTEGER NOT NULL CHECK (expected_byte_total >= 0), removed_byte_total INTEGER NOT NULL CHECK (removed_byte_total >= 0), state TEXT NOT NULL CHECK (state IN ('incomplete','complete')), created_at TEXT NOT NULL, completed_at TEXT, receipt_digest TEXT NOT NULL UNIQUE);
 
@@ -12367,5 +12367,68 @@ WHEN NEW.scientific_attempt_id IS NOT NULL AND NOT EXISTS (
 BEGIN
     SELECT RAISE(ABORT, 'workspace revision scientific basis mismatch');
 END;
+
+CREATE TABLE openzyme_hpc_software_qualification_receipts (
+    receipt_id TEXT PRIMARY KEY,
+    target_id TEXT NOT NULL,
+    capability_id TEXT NOT NULL,
+    receipt_digest TEXT NOT NULL UNIQUE,
+    receipt_json TEXT NOT NULL CHECK (json_valid(receipt_json))
+);
+
+CREATE TABLE openzyme_hpc_target_toolchain_inventories (
+    target_id TEXT NOT NULL,
+    generation INTEGER NOT NULL CHECK (generation > 0),
+    target_profile_digest TEXT NOT NULL,
+    previous_inventory_digest TEXT,
+    inventory_digest TEXT NOT NULL UNIQUE,
+    valid_until TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    published_by_actor_id TEXT NOT NULL,
+    published_at TEXT NOT NULL,
+    generation_digest TEXT NOT NULL UNIQUE,
+    inventory_json TEXT NOT NULL CHECK (json_valid(inventory_json)),
+    PRIMARY KEY (target_id, generation),
+    UNIQUE (target_id, previous_inventory_digest)
+);
+
+CREATE TABLE openzyme_hpc_scheduler_occurrences (
+    provider_id TEXT NOT NULL,
+    operation_kind TEXT NOT NULL CHECK (operation_kind IN ('submit', 'cancel')),
+    operation_id TEXT NOT NULL,
+    request_digest TEXT NOT NULL,
+    ledger_version INTEGER NOT NULL CHECK (ledger_version > 0),
+    opaque_handle_id TEXT,
+    raw_scheduler_id TEXT,
+    record_digest TEXT NOT NULL UNIQUE,
+    record_json TEXT NOT NULL CHECK (json_valid(record_json)),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (provider_id, operation_id),
+    UNIQUE (provider_id, opaque_handle_id),
+    CHECK (
+        (opaque_handle_id IS NULL AND raw_scheduler_id IS NULL)
+        OR (operation_kind = 'submit' AND opaque_handle_id IS NOT NULL AND raw_scheduler_id IS NOT NULL)
+    )
+);
+
+CREATE TRIGGER openzyme_hpc_qualification_receipts_immutable_update
+BEFORE UPDATE ON openzyme_hpc_software_qualification_receipts
+BEGIN SELECT RAISE(ABORT, 'HPC qualification receipts are immutable'); END;
+
+CREATE TRIGGER openzyme_hpc_qualification_receipts_immutable_delete
+BEFORE DELETE ON openzyme_hpc_software_qualification_receipts
+BEGIN SELECT RAISE(ABORT, 'HPC qualification receipts are append-only'); END;
+
+CREATE TRIGGER openzyme_hpc_inventories_immutable_update
+BEFORE UPDATE ON openzyme_hpc_target_toolchain_inventories
+BEGIN SELECT RAISE(ABORT, 'HPC inventories are immutable'); END;
+
+CREATE TRIGGER openzyme_hpc_inventories_immutable_delete
+BEFORE DELETE ON openzyme_hpc_target_toolchain_inventories
+BEGIN SELECT RAISE(ABORT, 'HPC inventories are append-only'); END;
+
+CREATE TRIGGER openzyme_hpc_scheduler_occurrences_no_delete
+BEFORE DELETE ON openzyme_hpc_scheduler_occurrences
+BEGIN SELECT RAISE(ABORT, 'HPC scheduler occurrences are durable'); END;
 
 PRAGMA user_version = 2;

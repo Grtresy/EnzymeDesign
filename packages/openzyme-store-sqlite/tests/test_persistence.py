@@ -4,17 +4,20 @@ import sqlite3
 
 import pytest
 
+from openzyme_contracts import ExternalEffectCertainty
 from openzyme_contracts import ResourceCapabilityFact
 from openzyme_contracts import ResourceCapabilityKind
 from openzyme_contracts import SessionCapabilityBindingRevision
 from openzyme_contracts import TargetInventoryBinding
+from openzyme_contracts import WorkspaceOperationIdentity
+from openzyme_contracts import WorkspaceOperationReceipt
 from openzyme_contracts import canonical_sha256_digest
 from openzyme_store_sqlite import SQLiteCompositionIdentityRepository
 from openzyme_store_sqlite import SQLitePersistenceError
 from openzyme_store_sqlite import SQLiteResourceCapabilityFactRepository
 from openzyme_store_sqlite import SQLiteSessionCapabilityBindingRepository
 from openzyme_store_sqlite import SQLiteUnitOfWork
-from openzyme_store_sqlite import SQLiteWorkspaceOperationReceiptRepository
+from openzyme_store_sqlite import SQLiteWorkspaceOperationLedger
 from openzyme_store_sqlite import install_store_schema_for_offline_migration
 
 
@@ -23,6 +26,11 @@ def _database() -> sqlite3.Connection:
     install_store_schema_for_offline_migration(connection)
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
+
+
+class _Clock:
+    def now_iso(self) -> str:
+        return "2026-08-20T00:01:00Z"
 
 
 def _binding(revision: int, *, generation: int) -> SessionCapabilityBindingRevision:
@@ -69,7 +77,7 @@ def test_stable_bundle_catalog_fact_and_receipt_persist_without_health() -> None
     connection = _database()
     identities = SQLiteCompositionIdentityRepository(connection)
     facts = SQLiteResourceCapabilityFactRepository(connection)
-    receipts = SQLiteWorkspaceOperationReceiptRepository(connection)
+    receipts = SQLiteWorkspaceOperationLedger(connection, _Clock())
     bundle = {"extensions": ["openzyme.science@1"]}
     catalog = {"tools": ["scientific.attempt.create"]}
     fact = ResourceCapabilityFact(
@@ -99,19 +107,34 @@ def test_stable_bundle_catalog_fact_and_receipt_persist_without_health() -> None
             created_at="2026-08-20T00:00:00Z",
         )
         facts.append(fact, created_at="2026-08-20T00:00:00Z")
-        receipt_digest = receipts.append(
-            operation_id="operation-1",
-            workspace_id="workspace-1",
-            workspace_generation=1,
-            operation_kind="workspace.process.exec",
-            effect_certainty="settled",
-            receipt={"exit_code": 0, "mutation_applied": True},
-            settled_at="2026-08-20T00:01:00Z",
-        )
         unit.commit()
 
+    occurrence = WorkspaceOperationIdentity(
+        provider_id="openzyme.process.podman",
+        operation_kind="workspace.process.exec",
+        operation_id="operation-1",
+        intent_digest=canonical_sha256_digest({"command": "test"}),
+        session_id="session-1",
+        workspace_id="workspace-1",
+        generation=1,
+        state_version=1,
+    )
+    assert receipts.reserve(occurrence) is True
+    settled = receipts.settle(
+        occurrence,
+        WorkspaceOperationReceipt.create(
+            operation_id="operation-1",
+            workspace_id="workspace-1",
+            generation=1,
+            state_version=1,
+            effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+            mutation_applied=True,
+            result_payload=b'{"exit_code":0}',
+        ),
+    )
+
     assert facts.list_generation(target_id="hpc-primary", inventory_generation=1) == (fact,)
-    assert receipt_digest.startswith("sha256:")
+    assert settled.record_digest.startswith("sha256:")
     stored_bundle = connection.execute(
         "SELECT bundle_json FROM openzyme_store_extension_bundle_records"
     ).fetchone()[0]

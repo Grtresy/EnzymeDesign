@@ -23,6 +23,7 @@ from openzyme_extension_spi import CapabilityRequirementKind
 from openzyme_extension_spi import DriverInvocationRequest
 from openzyme_extension_spi import DriverManifest
 from openzyme_extension_spi import PluginManifest
+from openzyme_extension_spi import ToolDispatchBinding
 from openzyme_extension_spi import parse_component_manifest_json
 
 
@@ -166,14 +167,49 @@ def test_hmmer_driver_rejects_private_or_caller_compiled_fields(extra) -> None:
 class _ToolApplication:
     calls: int = 0
 
-    def request(self, *, invocation):
+    def request(self, *, invocation, dispatch):
+        del invocation, dispatch
         self.calls += 1
-        return {"workload_id": "workload-1", "workload_digest": DIGEST, "state": "admitted"}
+        return {
+            "execution_id": "execution-1",
+            "operation_id": "operation-1",
+            "workload_id": "workload-1",
+            "workload_digest": DIGEST,
+            "state": "admitted",
+        }
+
+
+def _dispatch(runtime, *, route_id="hpc-primary.revision-job"):
+    return ToolDispatchBinding(
+        tool_name=runtime.contract.tool_name,
+        tool_contract_digest=runtime.contract.contract_digest,
+        affordance_snapshot_digest=DIGEST,
+        capability_binding_digest=DIGEST,
+        extension_bundle_digest=DIGEST,
+        authority_lease_id="lease-1",
+        authority_lease_digest=DIGEST,
+        authority_generation=1,
+        authority_fence=1,
+        workspace_generation=1,
+        route_id=route_id,
+        route_digest=DIGEST,
+        provider_component_id="enzymedesign.hmmer",
+        driver_id="enzymedesign.hmmer.hpc",
+        target_id="hpc-primary",
+        inventory_generation=1,
+        inventory_digest=DIGEST,
+        qualification_digest=DIGEST,
+        capability_proof_digest=DIGEST,
+    )
 
 
 def test_hmmer_tool_requires_explicit_route_and_never_falls_back_or_finishes_task() -> None:
     application = _ToolApplication()
-    runtime = build_hmmer_plugin_runtime_surfaces(application=application).tools[0]
+    surfaces = build_hmmer_plugin_runtime_surfaces(
+        application=application,
+        route_application=application,
+    )
+    runtime = surfaces.tools[0]
     rejected = runtime.invoke(
         ToolInvocation(
             call_id="call-1",
@@ -184,8 +220,7 @@ def test_hmmer_tool_requires_explicit_route_and_never_falls_back_or_finishes_tas
             task_id="task-1",
         )
     )
-    accepted = runtime.invoke(
-        ToolInvocation(
+    admitted = ToolInvocation(
             call_id="call-2",
             tool_name=runtime.contract.tool_name,
             arguments={},
@@ -195,7 +230,7 @@ def test_hmmer_tool_requires_explicit_route_and_never_falls_back_or_finishes_tas
             route_id="hpc-primary.revision-job",
             affordance_snapshot_digest=DIGEST,
         )
-    )
+    accepted = runtime.invoke_admitted(admitted, _dispatch(runtime))
 
     assert rejected.error_code == "hmmer_route_or_tool_identity_invalid"
     assert rejected.payload["mutation_applied"] is False
@@ -204,6 +239,10 @@ def test_hmmer_tool_requires_explicit_route_and_never_falls_back_or_finishes_tas
     assert accepted.payload["fallback_performed"] is False
     assert accepted.payload["task_finished"] is False
     assert application.calls == 1
+    assert {item.route_id for item in surfaces.capability_routes} == {
+        "enzymedesign.hmmer.hpc-primary@1",
+        "enzymedesign.hmmer.local@1",
+    }
 
 
 def test_hmmer_result_validator_rejects_raw_shell_receipt() -> None:

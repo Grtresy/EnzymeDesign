@@ -1,8 +1,37 @@
 {
   "schema_id": "openzyme_source_bound_architecture_baseline@1",
-  "component_inventory_digest": "sha256:beeee89137dfa6590ca7de6d27a19bec9c923da68d57a61c7e6988c38ca3c8a7",
-  "import_graph_digest": "sha256:6554ed007f306d1b2a30a2bce661bacad5ab3d4886bd857dd8d303ba07b293d2",
+  "component_inventory_digest": "sha256:23c7a2be71cab136fbf1277029238a2e21f1705551accf9d6968938d550bc47f",
+  "import_graph_digest": "sha256:be4252b8c30e0c6f9c9a098eb3c2e881c0a26681b6fad92a04b2ffdef593c5a5",
   "accepted_import_graph_transitions": [
+    {
+      "phase": "19_4_enzymedesign_formal_compute_bridge",
+      "added_edges": [
+        {
+          "source": "enzymedesign",
+          "target": "openzyme-execution-contracts",
+          "reason": "The product Distribution compiles admitted HMMER and Vina Drivers into provider-neutral ExecutionWorkloadSpec and ExecutionRouteIdentity values"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "distribution_to_public_execution_contracts; no_product_plugin_to_hpc_ssh_or_slurm_implementation"
+    },
+    {
+      "phase": "19_2_19_3_enzymedesign_exact_runtime_composition",
+      "added_edges": [
+        {
+          "source": "enzymedesign",
+          "target": "openzyme-host-api",
+          "reason": "The product Distribution injects its verified application runtime into the generic Host delivery Adapter"
+        },
+        {
+          "source": "enzymedesign",
+          "target": "openzyme-runtime-spi",
+          "reason": "The product Distribution binds its exact selected AgentTurn and process-isolation Ports without depending on Standard"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "distribution_to_selected_delivery_and_port_contracts; no_host_or_standard_reverse_dependency"
+    },
     {
       "phase": "18_retire_legacy_authority_packages",
       "added_edges": [],

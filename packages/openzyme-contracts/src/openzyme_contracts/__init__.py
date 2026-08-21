@@ -226,6 +226,8 @@ from .workspace_runtime import WORKSPACE_FILESYSTEM_MUTATION_SCHEMA_VERSION
 from .workspace_runtime import WORKSPACE_OBSERVATION_PORT_CONTRACT
 from .workspace_runtime import WORKSPACE_OBSERVATION_PORT_CONTRACT_DIGEST
 from .workspace_runtime import WORKSPACE_OBSERVATION_REQUEST_SCHEMA_VERSION
+from .workspace_runtime import WORKSPACE_OPERATION_IDENTITY_SCHEMA_VERSION
+from .workspace_runtime import WORKSPACE_OPERATION_LEDGER_RECORD_SCHEMA_VERSION
 from .workspace_runtime import WORKSPACE_OPERATION_RECEIPT_SCHEMA_VERSION
 from .workspace_runtime import WORKSPACE_PROCESS_PORT_CONTRACT
 from .workspace_runtime import WORKSPACE_PROCESS_PORT_CONTRACT_DIGEST
@@ -243,6 +245,10 @@ from .workspace_runtime import WorkspaceObservation
 from .workspace_runtime import WorkspaceObservationKind
 from .workspace_runtime import WorkspaceObservationPort
 from .workspace_runtime import WorkspaceObservationRequest
+from .workspace_runtime import WorkspaceOperationIdentity
+from .workspace_runtime import WorkspaceOperationLedgerError
+from .workspace_runtime import WorkspaceOperationLedgerPort
+from .workspace_runtime import WorkspaceOperationLedgerRecord
 from .workspace_runtime import WorkspaceOperationReceipt
 from .workspace_runtime import WorkspacePortError
 from .workspace_runtime import WorkspaceProcessPort
@@ -311,6 +317,8 @@ __all__ = [
     "WORKSPACE_OBSERVATION_PORT_CONTRACT",
     "WORKSPACE_OBSERVATION_PORT_CONTRACT_DIGEST",
     "WORKSPACE_OBSERVATION_REQUEST_SCHEMA_VERSION",
+    "WORKSPACE_OPERATION_IDENTITY_SCHEMA_VERSION",
+    "WORKSPACE_OPERATION_LEDGER_RECORD_SCHEMA_VERSION",
     "WORKSPACE_OPERATION_RECEIPT_SCHEMA_VERSION",
     "WORKSPACE_PROCESS_PORT_CONTRACT",
     "WORKSPACE_PROCESS_PORT_CONTRACT_DIGEST",
@@ -484,6 +492,10 @@ __all__ = [
     "WorkspaceObservationKind",
     "WorkspaceObservationPort",
     "WorkspaceObservationRequest",
+    "WorkspaceOperationIdentity",
+    "WorkspaceOperationLedgerError",
+    "WorkspaceOperationLedgerPort",
+    "WorkspaceOperationLedgerRecord",
     "WorkspaceOperationReceipt",
     "WorkspacePortError",
     "WorkspaceProcessPort",

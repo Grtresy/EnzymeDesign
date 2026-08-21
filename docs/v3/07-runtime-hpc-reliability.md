@@ -29,6 +29,11 @@ opaque workspace ID，并重新验证 owner、local/remote generation、target q
 authority。SSH/SFTP/rsync Adapter 执行具体 I/O；Plugin import、Agent turn 和 tool visibility 计算均不得临时
 SSH/`which` 探测软件。远端 response loss 进入同一 ControlledOperation reconcile，不自动重发。
 
+远端 transport 只允许调用 exact `/usr/local/libexec/openzyme-workspace-runtime` helper。它必须作为
+`software.openzyme-workspace-runtime == 1.0.0` 出现在 adopted target inventory 中，并由 qualification receipt
+绑定 build digest、target generation 与 environment；缺失或版本漂移时 remote workspace tools 为
+`blocked_qualification`，Adapter 不临时 SSH 探测或自动安装。
+
 普通 login Shell 与 scheduler 永远分开：`hpc.workspace.exec` 不能调用/模拟 `sbatch`、`scancel` 或 runner
 API；formal occurrence credential 只由 Compute admission 为 exact workload/route 签发。
 
@@ -51,6 +56,17 @@ execution identity 和 absolute deadline。formal scientific job 还绑定 attem
 
 admission 后 Host 发放一次 scheduler occurrence credential。runner 从 revision 构造 compute source manifest；
 payload 不携带 `.git`、repository credential、LFS endpoint、object-store locator 或 Host path。
+
+Slurm Adapter 在首次 submit/cancel effect 前，将 exact provider/kind/operation/request identity 原子写入
+`openzyme_hpc_scheduler_occurrences`。raw Slurm id 只存在该 HPC-owned 私有账本；公开 receipt 只返回 opaque
+handle。EnzymeDesign application root 通过 selected `SlurmSchedulerAdapterFactory` 显式注入 backend、credential
+resolver 与同一 SQLite 账本，不允许 ambient backend 或 in-memory production fallback。
+
+产品级 formal Compute 的 source/admission 也必须可重建：HMMER/Vina 输入引用一个 immutable
+`PublishedRevision`，每个 path 有 publication-owned verification receipt；owner workspace generation、authority
+generation/fence、Session capability binding、target inventory generation/digest 与 exact route 在 dispatch 前重验。
+这些 facts 不从 Driver 或模型参数推断。当前 non-live qualification 使用声明式 fake external runner 验证完整内部
+链和 continuation/Task 终态分离；它不声称真实 SSH/Slurm backend 已可达。
 
 ## Runner lifecycle
 
@@ -79,8 +95,10 @@ result digest 和 lifecycle receipt；不得创建占位文件、自动 fetch/co
 
 ## Restart
 
-restart 从 durable dispatch intent、handle、observation、deadline 和 fence 恢复，不重新 submit。lease expiry
-只允许另一个 worker 认领同一 occurrence。absolute deadline 不因 restart 重置。
+restart 从 durable dispatch intent、handle、observation、deadline 和 fence 恢复，不重新 submit。Workspace
+operation receipt 与 Slurm submit/cancel occurrence 都跨 Adapter epoch 保留；unknown response 只能调用原
+provider 的 reconcile 方法，terminal receipt 不能被替换。lease expiry 只允许另一个 worker 认领同一
+occurrence。absolute deadline 不因 restart 重置。
 
 ## Mutation quiescence
 

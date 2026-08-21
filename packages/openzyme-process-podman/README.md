@@ -36,6 +36,10 @@ content-bound bounded receipt。当前基础本地桥不接受 SSH/HPC credentia
 absolute/parent/symlink escape、交互/后台/无界进程、未知 effect 自动重试以及从
 process/transfer success 推导 publication、formal Compute、Science adoption 或 Task completion。
 
+Standard/EnzymeDesign manifest 可以把该 Adapter 标为 `selected`，application root 也可以在 non-live 图中核对其
+`runtime_mounted` identity；二者都不表示本机 Podman 已 `qualified`、真实部署已 `cutover` 或某次容器调用已
+`live` 执行。产品级 HMMER/Vina non-live 场景不会调用 Podman。
+
 Session 固定 process Adapter bundle 与 workspace generation。替换 Adapter 或 image contract 不热切换既有
 Session；stale generation/fence、image mismatch、lost process response 或 cleanup uncertainty 必须显式失败或
 reconcile，不能静默回退到 native process。
@@ -61,10 +65,13 @@ command、subprocess executor、exact-volume process runner 与 bounded control-
 qualification 成功不创建 workspace、authority、runtime command、publication 或 Task terminal；mutable base、
 mutable output tag、Host mount 和 credential persistence 一律拒绝。
 
-Filesystem、Process 与 Transfer Adapter 均实现只观察式 `reconcile(original_request)`。同一 Adapter epoch
-已有 exact terminal receipt 时返回该 receipt；没有可验证 receipt 时保持 `dispatch_in_doubt`。reconcile 不调用
-filesystem/transfer helper、不启动 Podman process，也不利用 content-compatible mutation 冒充原 effect；若要
-恢复到 terminal，后续 durable Store/Adapter ledger 必须提供同一 operation/intent 的真实证明。
+Filesystem、Process 与 Transfer Adapter 现在都要求注入 `WorkspaceOperationLedgerPort`。首次 effect 前必须以
+`provider_id + operation_id + intent_digest + session/workspace generation/state_version` 在 Store 中原子 reserve；
+只有 reserve 成功的调用可以 dispatch。terminal、`no_effect` 或 `dispatch_in_doubt` receipt 随后写回同一
+occurrence。Host/Adapter 重启后，重复 execute/mutate/transfer 只返回 ledger 中的 exact receipt；reserved 或
+uncertain occurrence 只能走 `reconcile(original_request)`，不能重新调用 filesystem/transfer helper、启动替代
+Podman process，或利用 content-compatible mutation 冒充原 effect。Standard 与 EnzymeDesign composition root
+都绑定同一 target SQLite ledger，单元回归覆盖 filesystem、process、transfer 的跨 Adapter epoch terminal recovery。
 
 Observation 只执行 read-only helper，不创建 canonical ControlledOperation；filesystem mutation 与 transfer
 由 Kernel 在调用本 Adapter 前完成 durable admission。Transfer request 同时绑定 authority、workspace

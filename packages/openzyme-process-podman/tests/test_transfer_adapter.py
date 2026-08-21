@@ -6,6 +6,7 @@ from importlib import resources
 import json
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 
 import pytest
@@ -26,6 +27,22 @@ from openzyme_process_podman import PodmanWorkspaceMount
 from openzyme_process_podman import PodmanWorkspaceTransferAdapter
 from openzyme_process_podman import SupervisedProcessRequest
 from openzyme_process_podman import SupervisedProcessResult
+from openzyme_store_sqlite import SQLiteWorkspaceOperationLedger
+from openzyme_store_sqlite import install_store_schema_for_offline_migration
+
+
+class _Clock:
+    def now_iso(self) -> str:
+        return "2026-08-22T12:00:00+00:00"
+
+
+def _ledger(
+    connection: sqlite3.Connection | None = None,
+) -> SQLiteWorkspaceOperationLedger:
+    selected = connection or sqlite3.connect(":memory:")
+    if selected.execute("PRAGMA user_version").fetchone()[0] == 0:
+        install_store_schema_for_offline_migration(selected)
+    return SQLiteWorkspaceOperationLedger(selected, _Clock())
 
 
 def _digest(value: str) -> str:
@@ -229,6 +246,9 @@ def _adapter(
     mount: PodmanTransferObjectMount,
 ) -> tuple[PodmanWorkspaceTransferAdapter, LocalTransferExecutor]:
     executor = LocalTransferExecutor(workspace_root, transfer_root, [])
+    connection = sqlite3.connect(
+        workspace_root.parent / "workspace-operation-ledger.sqlite3"
+    )
     adapter = PodmanWorkspaceTransferAdapter(
         workspace_mount_resolver=MappingPodmanWorkspaceMountResolver(
             {"workspace-1": _workspace_mount()}
@@ -236,6 +256,7 @@ def _adapter(
         transfer_mount_resolver=MappingPodmanTransferMountResolver(
             {mount.transfer_ref: mount}
         ),
+        operation_ledger=_ledger(connection),
         executor=executor,
     )
     return adapter, executor
@@ -270,17 +291,17 @@ def test_download_is_content_verified_create_only_and_restart_replayable(
     restarted, restarted_executor = _adapter(workspace, transfer, mount)
     replay = restarted.transfer(request)
 
-    assert receipt is cached
+    assert receipt == cached
     assert workspace.joinpath("imports/model.bin").read_bytes() == content
     assert len(executor.calls) == 1
-    assert len(restarted_executor.calls) == 1
+    assert restarted_executor.calls == []
     assert "src=transfer-volume-1,dst=/openzyme-transfer,ro" in " ".join(
         executor.calls[0].argv
     )
     assert str(tmp_path) not in " ".join(executor.calls[0].argv)
     assert "transfer:model-1" not in " ".join(executor.calls[0].argv)
     assert receipt.effect_certainty is ExternalEffectCertainty.TERMINAL_KNOWN
-    assert json.loads(replay.result_payload)["replayed"] is True
+    assert replay == receipt
 
 
 def test_transfer_reconciliation_observes_receipt_without_copy_replay(
@@ -312,11 +333,10 @@ def test_transfer_reconciliation_observes_receipt_without_copy_replay(
     restarted, restarted_executor = _adapter(workspace, transfer, mount)
     pending = restarted.reconcile(request)
 
-    assert reconciled is receipt
+    assert reconciled == receipt
     assert len(executor.calls) == 1
     assert restarted_executor.calls == []
-    assert pending.effect_certainty is ExternalEffectCertainty.DISPATCH_IN_DOUBT
-    assert pending.mutation_applied is None
+    assert pending == receipt
     assert workspace.joinpath("imports/model.bin").read_bytes() == content
 
 

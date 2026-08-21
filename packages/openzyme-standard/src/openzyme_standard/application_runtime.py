@@ -28,6 +28,7 @@ from openzyme_process_podman import PodmanWorkspaceMountResolver
 from openzyme_runtime_spi import AgentRuntimeAdapter
 from openzyme_runtime_spi import ProcessIsolationPort
 from openzyme_store_sqlite import SQLiteControlStore
+from openzyme_store_sqlite import SQLiteWorkspaceOperationLedger
 
 from .composition import StandardDeploymentStartup
 from .composition import StandardPluginFreeCapabilityRegistryResolver
@@ -106,11 +107,13 @@ def build_standard_operational_runtime_ports(
         clock=clock,
         ids=ids,
     )
+    operation_ledger = SQLiteWorkspaceOperationLedger(store.connection, clock)
     workspace = StandardLocalWorkspaceRuntimeFactory(
         mount_resolver=selection.workspace_mounts,
         process_isolation=selection.process_isolation,
         authority=authority,
         controlled_operations=controlled_operations,
+        operation_ledger=operation_ledger,
         workspace_provider_id=selection.workspace_provider_id,
         podman_binary=selection.podman_binary,
     ).build()

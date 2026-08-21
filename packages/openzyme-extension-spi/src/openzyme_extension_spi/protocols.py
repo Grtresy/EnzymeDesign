@@ -48,6 +48,102 @@ class ToolRuntimeContribution(Protocol):
     def invoke(self, invocation: ToolInvocation) -> ToolResult: ...
 
 
+@dataclass(frozen=True, slots=True)
+class ToolDispatchBinding:
+    """Kernel-admitted facts passed to a route-bound Plugin runtime.
+
+    This is deliberately an SPI value rather than a repository handle.  A Plugin
+    receives the exact authority, workspace and capability-route proof that the
+    Kernel revalidated immediately before dispatch, but it cannot inspect or
+    mutate Kernel storage through this object.
+    """
+
+    tool_name: str
+    tool_contract_digest: str
+    affordance_snapshot_digest: str
+    capability_binding_digest: str
+    extension_bundle_digest: str
+    authority_lease_id: str
+    authority_lease_digest: str
+    authority_generation: int
+    authority_fence: int
+    workspace_generation: int
+    route_id: str | None
+    route_digest: str | None
+    provider_component_id: str | None
+    driver_id: str | None
+    target_id: str | None
+    inventory_generation: int | None
+    inventory_digest: str | None
+    qualification_digest: str | None
+    capability_proof_digest: str | None
+
+    def __post_init__(self) -> None:
+        require_identifier(self.tool_name, field_name="tool_name")
+        for field_name in (
+            "tool_contract_digest",
+            "affordance_snapshot_digest",
+            "capability_binding_digest",
+            "extension_bundle_digest",
+            "authority_lease_digest",
+        ):
+            require_digest(getattr(self, field_name), field_name=field_name)
+        require_identifier(self.authority_lease_id, field_name="authority_lease_id")
+        for field_name in (
+            "authority_generation",
+            "authority_fence",
+            "workspace_generation",
+        ):
+            value = getattr(self, field_name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(f"{field_name} must be a positive integer")
+        route_values = (
+            self.route_id,
+            self.route_digest,
+            self.provider_component_id,
+            self.driver_id,
+            self.target_id,
+            self.inventory_generation,
+            self.inventory_digest,
+            self.qualification_digest,
+            self.capability_proof_digest,
+        )
+        if all(value is None for value in route_values):
+            return
+        if any(value is None for value in route_values):
+            raise ValueError("route-bound dispatch facts must be supplied together")
+        for field_name in (
+            "route_id",
+            "provider_component_id",
+            "driver_id",
+            "target_id",
+        ):
+            require_identifier(getattr(self, field_name), field_name=field_name)
+        for field_name in (
+            "route_digest",
+            "inventory_digest",
+            "qualification_digest",
+            "capability_proof_digest",
+        ):
+            require_digest(getattr(self, field_name), field_name=field_name)
+        if (
+            not isinstance(self.inventory_generation, int)
+            or isinstance(self.inventory_generation, bool)
+            or self.inventory_generation < 1
+        ):
+            raise ValueError("inventory_generation must be a positive integer")
+
+
+class AdmittedToolRuntimeContribution(ToolRuntimeContribution, Protocol):
+    """Optional exact-admission surface for route-bound formal tools."""
+
+    def invoke_admitted(
+        self,
+        invocation: ToolInvocation,
+        dispatch: ToolDispatchBinding,
+    ) -> ToolResult: ...
+
+
 class CapabilityProvider(Protocol):
     def provided_capabilities(self) -> tuple[CapabilityProvision, ...]: ...
 
@@ -303,6 +399,7 @@ class ExtensionTransactionParticipantProvider(Protocol):
 
 
 __all__ = [
+    "AdmittedToolRuntimeContribution",
     "CapabilityRouteInvocation",
     "CapabilityRouteRuntimeContribution",
     "CapabilityProvider",
@@ -322,6 +419,7 @@ __all__ = [
     "RouteProvider",
     "TaskEvidenceValidator",
     "ToolRuntimeContribution",
+    "ToolDispatchBinding",
     "WorkerClaim",
     "WorkerClaimRequest",
     "WorkerContributor",

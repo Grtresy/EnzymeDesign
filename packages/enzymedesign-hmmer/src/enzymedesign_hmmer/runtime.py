@@ -4,6 +4,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
+from enzymedesign_core import ExactProductCapabilityRouteRuntime
+from enzymedesign_core import ProductCapabilityRouteApplication
 from openzyme_contracts import ToolInvocation
 from openzyme_contracts import ToolResult
 from openzyme_contracts import ToolSpec
@@ -11,6 +13,7 @@ from openzyme_contracts.identity import JsonValue
 from openzyme_extension_spi import CapabilityRequirement
 from openzyme_extension_spi import CapabilityRequirementKind
 from openzyme_extension_spi import QualificationSpec
+from openzyme_extension_spi import ToolDispatchBinding
 
 from .contracts import HMMER_BUILD_TOOL
 from .contracts import HMMER_PLUGIN_ID
@@ -36,6 +39,8 @@ _OUTPUT = {
     "type": "object",
     "additionalProperties": False,
     "required": [
+        "execution_id",
+        "operation_id",
         "workload_id",
         "workload_digest",
         "state",
@@ -45,6 +50,8 @@ _OUTPUT = {
         "task_finished",
     ],
     "properties": {
+        "execution_id": _ID,
+        "operation_id": _ID,
         "workload_id": _ID,
         "workload_digest": _DIGEST,
         "state": _ID,
@@ -141,7 +148,12 @@ HMMER_QUALIFICATION_SPEC = QualificationSpec(
 
 
 class HmmerToolApplication(Protocol):
-    def request(self, *, invocation: ToolInvocation) -> Mapping[str, JsonValue]: ...
+    def request(
+        self,
+        *,
+        invocation: ToolInvocation,
+        dispatch: ToolDispatchBinding,
+    ) -> Mapping[str, JsonValue]: ...
 
 
 @dataclass(slots=True)
@@ -157,21 +169,45 @@ class HmmerToolRuntime:
 
     def invoke(self, invocation: ToolInvocation) -> ToolResult:
         if invocation.tool_name != self.contract.tool_name or invocation.route_id is None:
-            return ToolResult(
-                call_id=invocation.call_id,
-                tool_name=invocation.tool_name,
-                ok=False,
-                status="rejected",
-                summary="HMMER requires its exact tool and explicit route identity.",
-                payload={
-                    "mutation_applied": False,
-                    "fallback_performed": False,
-                    "task_finished": False,
-                },
-                error_code="hmmer_route_or_tool_identity_invalid",
+            return self._rejected(
+                invocation,
+                "hmmer_route_or_tool_identity_invalid",
+                "HMMER requires its exact tool and explicit route identity.",
+            )
+        return self._rejected(
+            invocation,
+            "hmmer_dispatch_binding_missing",
+            "Formal HMMER invocation requires the Kernel-admitted route proof.",
+        )
+
+    def invoke_admitted(
+        self,
+        invocation: ToolInvocation,
+        dispatch: ToolDispatchBinding,
+    ) -> ToolResult:
+        if invocation.tool_name != self.contract.tool_name or invocation.route_id is None:
+            return self._rejected(
+                invocation,
+                "hmmer_route_or_tool_identity_invalid",
+                "HMMER requires its exact tool and explicit route identity.",
+            )
+        if (
+            dispatch.tool_name != invocation.tool_name
+            or dispatch.tool_contract_digest != self.contract.contract_digest
+            or dispatch.route_id != invocation.route_id
+            or dispatch.affordance_snapshot_digest
+            != invocation.affordance_snapshot_digest
+            or dispatch.driver_id is None
+        ):
+            return self._rejected(
+                invocation,
+                "hmmer_dispatch_binding_stale",
+                "HMMER dispatch facts differ from the exact admitted route.",
             )
         try:
-            payload = dict(self.application.request(invocation=invocation))
+            payload = dict(
+                self.application.request(invocation=invocation, dispatch=dispatch)
+            )
         except (KeyError, TypeError, ValueError) as exc:
             return ToolResult(
                 call_id=invocation.call_id,
@@ -203,23 +239,67 @@ class HmmerToolRuntime:
             payload=payload,
         )
 
+    @staticmethod
+    def _rejected(
+        invocation: ToolInvocation,
+        error_code: str,
+        summary: str,
+    ) -> ToolResult:
+        return ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=False,
+            status="rejected",
+            summary=summary,
+            payload={
+                "mutation_applied": False,
+                "fallback_performed": False,
+                "task_finished": False,
+            },
+            error_code=error_code,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class HmmerPluginRuntimeSurfaces:
     tools: tuple[HmmerToolRuntime, ...]
+    capability_routes: tuple[ExactProductCapabilityRouteRuntime, ...]
+
+
+HMMER_ROUTE_BINDINGS = (
+    ("enzymedesign.hmmer.hpc-primary@1", "enzymedesign.hmmer.hpc"),
+    ("enzymedesign.hmmer.local@1", "enzymedesign.hmmer.local"),
+)
 
 
 def build_hmmer_plugin_runtime_surfaces(
-    *, application: HmmerToolApplication
+    *,
+    application: HmmerToolApplication,
+    route_application: ProductCapabilityRouteApplication,
 ) -> HmmerPluginRuntimeSurfaces:
     return HmmerPluginRuntimeSurfaces(
-        tools=tuple(HmmerToolRuntime(spec, application) for spec in HMMER_TOOL_SPECS)
+        tools=tuple(HmmerToolRuntime(spec, application) for spec in HMMER_TOOL_SPECS),
+        capability_routes=tuple(
+            ExactProductCapabilityRouteRuntime(
+                route_id=route_id,
+                owner_plugin_id=HMMER_PLUGIN_ID,
+                driver_id=driver_id,
+                capability_ids=(
+                    HMMER_PLUGIN_ID,
+                    "openzyme.execution.revision-job",
+                    "software.hmmer",
+                ),
+                application=route_application,
+            )
+            for route_id, driver_id in HMMER_ROUTE_BINDINGS
+        ),
     )
 
 
 __all__ = [
     "HMMER_COMPUTE_REQUIREMENT",
     "HMMER_QUALIFICATION_SPEC",
+    "HMMER_ROUTE_BINDINGS",
     "HMMER_SOFTWARE_REQUIREMENT",
     "HMMER_TOOL_SPECS",
     "HmmerToolApplication",

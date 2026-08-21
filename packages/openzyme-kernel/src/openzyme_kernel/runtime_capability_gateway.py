@@ -10,6 +10,7 @@ from openzyme_contracts import ToolResult
 from openzyme_contracts import ToolSpec
 from openzyme_contracts import canonical_sha256_digest
 from openzyme_extension_spi import ToolRuntimeContribution
+from openzyme_extension_spi import ToolDispatchBinding
 from openzyme_runtime_spi import RuntimeCapabilityGateway
 from openzyme_runtime_spi import RuntimeToolRequest
 
@@ -292,8 +293,69 @@ class MountedRuntimeCapabilityGateway(RuntimeCapabilityGateway):
                 code="tool_runtime_not_mounted",
                 summary="The exact admitted tool runtime is not mounted.",
             )
+        route = next(
+            (
+                item
+                for item in scope.current_context.capability_registry.route_refs
+                if item.route_id == admission.route_id
+            ),
+            None,
+        )
+        if admission.route_id is not None and (
+            route is None
+            or route.route_digest != admission.route_digest
+            or route.driver_id != admission.driver_id
+            or route.target_id != admission.target_id
+            or route.inventory_generation != admission.inventory_generation
+            or route.capability_proof_digest != admission.capability_proof_digest
+        ):
+            return self._rejected(
+                invocation.call_id,
+                invocation.tool_name,
+                code="tool_affordance_stale",
+                summary="The admitted route proof changed before Plugin dispatch.",
+            )
         try:
-            result = runtime.invoke(invocation)
+            admitted_invoke = getattr(runtime, "invoke_admitted", None)
+            if callable(admitted_invoke):
+                dispatch = ToolDispatchBinding(
+                    tool_name=admission.tool_name,
+                    tool_contract_digest=admission.tool_contract_digest,
+                    affordance_snapshot_digest=admission.snapshot_digest,
+                    capability_binding_digest=admission.capability_binding_digest,
+                    extension_bundle_digest=(
+                        scope.current_context.capability_binding.extension_bundle_digest
+                    ),
+                    authority_lease_id=scope.current_context.authority_lease.lease_id,
+                    authority_lease_digest=admission.authority_lease_digest,
+                    authority_generation=(
+                        scope.current_context.authority_lease.generation
+                    ),
+                    authority_fence=scope.current_context.authority_lease.fence,
+                    workspace_generation=admission.workspace_generation,
+                    route_id=None if route is None else route.route_id,
+                    route_digest=None if route is None else route.route_digest,
+                    provider_component_id=(
+                        None if route is None else route.provider_component_id
+                    ),
+                    driver_id=None if route is None else route.driver_id,
+                    target_id=None if route is None else route.target_id,
+                    inventory_generation=(
+                        None if route is None else route.inventory_generation
+                    ),
+                    inventory_digest=(
+                        None if route is None else route.inventory_digest
+                    ),
+                    qualification_digest=(
+                        None if route is None else route.capability_proof_digest
+                    ),
+                    capability_proof_digest=(
+                        None if route is None else route.capability_proof_digest
+                    ),
+                )
+                result = admitted_invoke(invocation, dispatch)
+            else:
+                result = runtime.invoke(invocation)
         except Exception:
             return ToolResult(
                 call_id=invocation.call_id,

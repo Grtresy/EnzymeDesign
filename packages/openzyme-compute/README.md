@@ -16,7 +16,7 @@ contract，不能泄露为 Host locator 或被当成 formal result proof。
 
 Plugin 现在提供纯 locator、`openzyme_plugin_manifest@1`、3 个
 `workspace_revision_job.*` ToolSpec/runtime、`openzyme.compute@1` 安全投影、bounded worker、
-`openzyme_compute` transaction participant、namespaced migration，以及 provider-neutral
+`openzyme_compute` transaction participant、namespaced schema/migration，以及 provider-neutral
 `ComputeExecutionApplicationService`。application service 通过窄的 admission verifier、
 `ControlledOperationApplicationService`、route port 和 continuation service 工作，不 import
 HPC、SSH、Slurm、Host、Science 或 EnzymeDesign。
@@ -31,9 +31,23 @@ idempotency 和 absolute deadline。Plugin repository 只保存 request、opaque
 替换 handle。terminal result 通过 closed continuation payload 只声明 source、recipient 与 resume strategy，
 process epoch 由 Kernel 从 canonical AgentMember 固定。
 
+正式 execution record 不由 Plugin 直接写 SQLite，也不写 Core table。Distribution 注入
+`ExtensionStateKernelApplicationService` 与 Store-owned query/coordinator 后，
+`ExtensionStateComputeExecutionRepository` 只向 `openzyme_compute/execution` namespace 提交闭合
+`upsert_execution` command；Kernel 先重验 Session pin、capability binding、Plugin owner、authority
+generation/fence，再由 Store 在短事务中执行 CAS。持久 payload 顶层固定 `session_id`，同时保存完整
+invocation/request、exact route、opaque provider handle、route receipt 与 terminal result。
+
+SQLite restart qualification 已证明：首次 dispatch 后 record 为 state version 2；重新构造 Kernel service、
+query、repository 和 route wrapper 后，同一 request 只重复 admission 校验并返回既有 record，external
+dispatch count 保持 1；随后使用原 handle 观察到 terminal result，写入 version 3 和 Kernel-owned durable
+continuation；再次重启仍可读回两者。不同 request 复用同一 execution identity 会在任何新 dispatch 前拒绝。
+
 通用 Host 不硬编码 Compute writer；Compute 只在选择它的 Distribution 通过 exact mount 后可用。本包状态是
-`target_implemented_not_cutover`：目标生命周期可独立 qualification，但安装 wheel 或发现 entry point 不会
-创建表、启动 worker、暴露工具或授权真实历史 deployment cutover。
+`target_implemented_not_cutover`：目标生命周期和 SQLite restart recovery 可独立 qualification，但安装 wheel 或发现 entry point 不会
+创建表、启动 worker、暴露工具或授权真实历史 deployment cutover。EnzymeDesign non-live 产品图已将它
+`selected + runtime_mounted`，并以声明式 fake external runner 运行 HMMER/Vina 正式路径；这不表示真实 runner、
+SSH/Slurm target 已 `qualified`、`cutover` 或 `live`。
 
 目标请求必须绑定 immutable source revision/tree/LFS closure、exact route/inventory、authority fence、
 idempotency 与 absolute deadline。未知 dispatch 保持 `dispatch_in_doubt`，禁止重放或换 target。job terminal

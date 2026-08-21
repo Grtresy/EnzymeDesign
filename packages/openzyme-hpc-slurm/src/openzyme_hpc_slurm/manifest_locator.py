@@ -5,7 +5,7 @@ from openzyme_extension_spi import ExtensionManifestLocator
 
 
 SLURM_COMPONENT_MANIFEST_DIGEST = (
-    "sha256:573f7473b929113afcc3c261fae35883605d3861e296e66a28d9d09a47f930a2"
+    "sha256:36e534f2219b3ed9b78a215a93f8cb1572bff30ca6ff3c379eb46835c41eb103"
 )
 
 

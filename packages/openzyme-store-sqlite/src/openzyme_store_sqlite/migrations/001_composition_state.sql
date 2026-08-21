@@ -52,14 +52,19 @@ CREATE TABLE openzyme_store_resource_capability_fact_records (
 ) STRICT;
 
 CREATE TABLE openzyme_store_workspace_operation_receipts (
-    operation_id TEXT PRIMARY KEY,
+    provider_id TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
     workspace_id TEXT NOT NULL,
     workspace_generation INTEGER NOT NULL CHECK (workspace_generation >= 1),
+    workspace_state_version INTEGER NOT NULL CHECK (workspace_state_version >= 1),
     operation_kind TEXT NOT NULL,
-    effect_certainty TEXT NOT NULL,
-    receipt_digest TEXT NOT NULL UNIQUE,
-    receipt_json TEXT NOT NULL,
-    settled_at TEXT NOT NULL
+    intent_digest TEXT NOT NULL,
+    ledger_version INTEGER NOT NULL CHECK (ledger_version >= 1),
+    record_digest TEXT NOT NULL UNIQUE,
+    record_json TEXT NOT NULL CHECK (json_valid(record_json)),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (provider_id, operation_id)
 ) STRICT;
 
 -- CAS metadata only. Canonical payload remains in the explicitly mapped owner table;

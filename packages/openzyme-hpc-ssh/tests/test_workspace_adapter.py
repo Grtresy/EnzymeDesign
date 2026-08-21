@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from dataclasses import replace
 import base64
 import json
+import sqlite3
 
 import pytest
 
@@ -19,14 +20,33 @@ from openzyme_contracts import WorkspaceTransferRequest
 from openzyme_hpc_ssh import PrivateRemoteWorkspaceLocator
 from openzyme_hpc_ssh import PrivateSshCredentialMaterial
 from openzyme_hpc_ssh import RemoteWorkspaceTransportOutcome
+from openzyme_hpc_ssh import REMOTE_WORKSPACE_HELPER_BUILD_DIGEST
+from openzyme_hpc_ssh import REMOTE_WORKSPACE_HELPER_CAPABILITY_ID
+from openzyme_hpc_ssh import REMOTE_WORKSPACE_HELPER_VERSION
 from openzyme_hpc_ssh import SSH_WORKSPACE_PROVIDER_ID
 from openzyme_hpc_ssh import SshWorkspaceAdapter
 from openzyme_hpc_ssh import SshCommandError
 from openzyme_hpc_ssh import SshCommandResult
 from openzyme_hpc_ssh import SshJsonCommandTransport
+from openzyme_store_sqlite import SQLiteWorkspaceOperationLedger
+from openzyme_store_sqlite import install_store_schema_for_offline_migration
 
 
 DIGEST = "sha256:" + "a" * 64
+
+
+class _Clock:
+    def now_iso(self) -> str:
+        return "2026-08-22T12:00:00+00:00"
+
+
+def _ledger(
+    connection: sqlite3.Connection | None = None,
+) -> SQLiteWorkspaceOperationLedger:
+    selected = connection or sqlite3.connect(":memory:")
+    if selected.execute("PRAGMA user_version").fetchone()[0] == 0:
+        install_store_schema_for_offline_migration(selected)
+    return SQLiteWorkspaceOperationLedger(selected, _Clock())
 
 
 def _binding(*, generation: int = 2) -> WorkspaceRuntimeBinding:
@@ -52,7 +72,13 @@ def _locator() -> PrivateRemoteWorkspaceLocator:
         generation=2,
         state_version=3,
         target_id="hpc:primary",
+        target_inventory_generation=7,
+        target_inventory_digest=DIGEST,
         target_qualification_digest=DIGEST,
+        helper_capability_id=REMOTE_WORKSPACE_HELPER_CAPABILITY_ID,
+        helper_version=REMOTE_WORKSPACE_HELPER_VERSION,
+        helper_build_digest=REMOTE_WORKSPACE_HELPER_BUILD_DIGEST,
+        helper_qualification_digest=DIGEST,
         root_identity_digest=DIGEST,
         remote_root="/srv/openzyme/workspaces/member-1",
         credential_claim_id="claim_1",
@@ -131,7 +157,7 @@ def test_exec_uses_private_locator_and_preserves_bounded_argv_without_scheduler(
         mutation_applied=True,
         result_payload=b'{"exit_code":0}',
     )
-    adapter = SshWorkspaceAdapter(_Resolver(_locator()), transport)
+    adapter = SshWorkspaceAdapter(_Resolver(_locator()), transport, _ledger())
 
     receipt = adapter.execute(request)
 
@@ -162,7 +188,7 @@ def test_lost_exec_response_reconciles_same_occurrence_without_redispatch() -> N
         mutation_applied=True,
         result_payload=b'{"exit_code":0}',
     )
-    adapter = SshWorkspaceAdapter(_Resolver(_locator()), transport)
+    adapter = SshWorkspaceAdapter(_Resolver(_locator()), transport, _ledger())
 
     uncertain = adapter.execute(request)
     settled = adapter.reconcile(request)
@@ -179,10 +205,81 @@ def test_lost_exec_response_reconciles_same_occurrence_without_redispatch() -> N
     ]
 
 
+def test_terminal_remote_receipt_survives_host_restart_without_redispatch() -> None:
+    connection = sqlite3.connect(":memory:")
+    request = _exec()
+    first_transport = _Transport()
+    first_transport.dispatch_outcome = RemoteWorkspaceTransportOutcome(
+        operation_id=request.operation_id,
+        request_digest=request.intent_digest,
+        effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+        mutation_applied=True,
+        result_payload=b'{"exit_code":0}',
+    )
+    first = SshWorkspaceAdapter(
+        _Resolver(_locator()),
+        first_transport,
+        _ledger(connection),
+    )
+    receipt = first.execute(request)
+
+    restarted_transport = _Transport()
+    restarted = SshWorkspaceAdapter(
+        _Resolver(_locator()),
+        restarted_transport,
+        _ledger(connection),
+    )
+    replay = restarted.execute(request)
+
+    assert replay == receipt
+    assert len(first_transport.dispatch_calls) == 1
+    assert restarted_transport.dispatch_calls == []
+
+
+def test_uncertain_remote_occurrence_reconciles_after_restart_without_redispatch() -> None:
+    connection = sqlite3.connect(":memory:")
+    request = _exec()
+    first_transport = _Transport()
+    first_transport.dispatch_outcome = RemoteWorkspaceTransportOutcome(
+        operation_id=request.operation_id,
+        request_digest=request.intent_digest,
+        effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
+        mutation_applied=None,
+        diagnostic_id="diagnostic_1",
+    )
+    first = SshWorkspaceAdapter(
+        _Resolver(_locator()),
+        first_transport,
+        _ledger(connection),
+    )
+    uncertain = first.execute(request)
+
+    restarted_transport = _Transport()
+    restarted_transport.reconcile_outcome = RemoteWorkspaceTransportOutcome(
+        operation_id=request.operation_id,
+        request_digest=request.intent_digest,
+        effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+        mutation_applied=True,
+        result_payload=b'{"exit_code":0}',
+    )
+    restarted = SshWorkspaceAdapter(
+        _Resolver(_locator()),
+        restarted_transport,
+        _ledger(connection),
+    )
+    duplicate = restarted.execute(request)
+    settled = restarted.reconcile(request)
+
+    assert duplicate == uncertain
+    assert settled.effect_certainty is ExternalEffectCertainty.TERMINAL_KNOWN
+    assert restarted_transport.dispatch_calls == []
+    assert len(restarted_transport.reconcile_calls) == 1
+
+
 def test_stale_workspace_generation_fails_before_transport() -> None:
     request = replace(_exec(), binding=_binding(generation=3))
     transport = _Transport()
-    adapter = SshWorkspaceAdapter(_Resolver(_locator()), transport)
+    adapter = SshWorkspaceAdapter(_Resolver(_locator()), transport, _ledger())
 
     with pytest.raises(WorkspacePortError) as caught:
         adapter.execute(request)
@@ -274,6 +371,12 @@ def test_command_transport_uses_exact_ssh_argv_and_closed_private_envelope() -> 
     )
     envelope = json.loads(call["stdin"])
     assert envelope["remote_root"] == _locator().remote_root
+    assert envelope["target_inventory_generation"] == 7
+    assert envelope["target_inventory_digest"] == DIGEST
+    assert envelope["helper_capability_id"] == REMOTE_WORKSPACE_HELPER_CAPABILITY_ID
+    assert envelope["helper_version"] == REMOTE_WORKSPACE_HELPER_VERSION
+    assert envelope["helper_build_digest"] == REMOTE_WORKSPACE_HELPER_BUILD_DIGEST
+    assert envelope["helper_qualification_digest"] == DIGEST
     assert envelope["payload"]["argv"][0] == "hmmbuild"
     assert "sbatch" not in str(call).lower()
 

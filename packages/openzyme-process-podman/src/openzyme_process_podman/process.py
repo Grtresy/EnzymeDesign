@@ -23,6 +23,9 @@ from openzyme_contracts import FailureObservation
 from openzyme_contracts import FailureRecoverability
 from openzyme_contracts import RetryEligibility
 from openzyme_contracts import WorkspaceExecRequest
+from openzyme_contracts import WorkspaceOperationIdentity
+from openzyme_contracts import WorkspaceOperationLedgerError
+from openzyme_contracts import WorkspaceOperationLedgerPort
 from openzyme_contracts import WorkspaceOperationReceipt
 from openzyme_contracts import WorkspacePortError
 from openzyme_contracts import WorkspaceRuntimeBinding
@@ -778,43 +781,24 @@ class PodmanProcessIsolationAdapter(ProcessIsolationPort):
 class PodmanWorkspaceProcessAdapter:
     isolation: ProcessIsolationPort
     mount_resolver: PodmanWorkspaceMountResolver
-    _receipts: dict[str, tuple[str, WorkspaceOperationReceipt]] = field(
-        default_factory=dict
-    )
-    _lock: threading.Lock = field(default_factory=threading.Lock)
+    operation_ledger: WorkspaceOperationLedgerPort
+    provider_id: str = PODMAN_PROCESS_PROVIDER_ID
 
     def execute(self, request: WorkspaceExecRequest) -> WorkspaceOperationReceipt:
-        with self._lock:
-            prior = self._receipts.get(request.operation_id)
+        identity = self._operation_identity(request)
+        prior = self._read_ledger(identity)
         if prior is not None:
-            if prior[0] != request.intent_digest:
-                raise WorkspacePortError(
-                    "workspace_operation_identity_collision",
-                    "operation identity was already used for another process intent",
-                    effect_certainty=ExternalEffectCertainty.NO_EFFECT,
-                    mutation_applied=False,
-                )
-            if (
-                prior[1].effect_certainty
-                is ExternalEffectCertainty.DISPATCH_IN_DOUBT
-            ):
-                raise WorkspacePortError(
-                    "podman_process_reconciliation_required",
-                    "the original process remains uncertain and was not redispatched",
-                    effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
-                    mutation_applied=None,
-                    diagnostic_id=prior[1].diagnostic_id,
-                )
-            return prior[1]
+            return self._recorded_or_pending(identity, prior.receipt)
         isolation_request = self._isolation_request(request)
+        if not self.operation_ledger.reserve(identity):
+            concurrent = self._read_ledger(identity)
+            if concurrent is None:
+                raise RuntimeError("reserved process occurrence disappeared")
+            return self._recorded_or_pending(identity, concurrent.receipt)
         receipt = self.isolation.execute(isolation_request)
         _validate_process_receipt(receipt, request, isolation_request)
         workspace_receipt = _workspace_process_receipt(request, receipt)
-        with self._lock:
-            self._receipts[request.operation_id] = (
-                request.intent_digest,
-                workspace_receipt,
-            )
+        self.operation_ledger.settle(identity, workspace_receipt)
         if receipt.state is IsolatedProcessState.FAILED:
             mutation_applied = (
                 False
@@ -844,20 +828,26 @@ class PodmanWorkspaceProcessAdapter:
     def reconcile(self, request: WorkspaceExecRequest) -> WorkspaceOperationReceipt:
         """Observe the original process identity without executing argv again."""
 
-        with self._lock:
-            prior = self._receipts.get(request.operation_id)
-        if prior is not None:
-            if prior[0] != request.intent_digest:
-                raise WorkspacePortError(
-                    "workspace_operation_identity_collision",
-                    "operation identity was already used for another process intent",
-                    effect_certainty=ExternalEffectCertainty.NO_EFFECT,
-                    mutation_applied=False,
-                )
-            return prior[1]
+        identity = self._operation_identity(request)
+        prior = self._read_ledger(identity)
+        if prior is None:
+            return WorkspaceOperationReceipt.create(
+                operation_id=request.operation_id,
+                workspace_id=request.binding.workspace_id,
+                generation=request.binding.generation,
+                state_version=request.binding.state_version,
+                effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+                mutation_applied=False,
+                diagnostic_id="diagnostic-process-occurrence-not-reserved",
+            )
+        if prior.receipt is not None and (
+            prior.receipt.effect_certainty
+            is not ExternalEffectCertainty.DISPATCH_IN_DOUBT
+        ):
+            return prior.receipt
         mount = self.mount_resolver.resolve(request.binding)
         if mount is None:
-            return WorkspaceOperationReceipt.create(
+            pending = WorkspaceOperationReceipt.create(
                 operation_id=request.operation_id,
                 workspace_id=request.binding.workspace_id,
                 generation=request.binding.generation,
@@ -866,6 +856,7 @@ class PodmanWorkspaceProcessAdapter:
                 mutation_applied=None,
                 diagnostic_id="diagnostic-process-reconciliation-pending",
             )
+            return self._settle_progress(identity, prior.receipt, pending)
         isolation_request = self._isolation_request(request)
         try:
             receipt = self.isolation.reconcile(isolation_request)
@@ -885,12 +876,72 @@ class PodmanWorkspaceProcessAdapter:
             ) from exc
         _validate_process_receipt(receipt, request, isolation_request)
         workspace_receipt = _workspace_process_receipt(request, receipt)
-        with self._lock:
-            self._receipts[request.operation_id] = (
-                request.intent_digest,
-                workspace_receipt,
-            )
-        return workspace_receipt
+        return self._settle_progress(identity, prior.receipt, workspace_receipt)
+
+    def _operation_identity(
+        self,
+        request: WorkspaceExecRequest,
+    ) -> WorkspaceOperationIdentity:
+        return WorkspaceOperationIdentity(
+            provider_id=self.provider_id,
+            operation_kind="process",
+            operation_id=request.operation_id,
+            intent_digest=request.intent_digest,
+            session_id=request.binding.session_id,
+            workspace_id=request.binding.workspace_id,
+            generation=request.binding.generation,
+            state_version=request.binding.state_version,
+        )
+
+    def _read_ledger(self, identity: WorkspaceOperationIdentity):  # noqa: ANN202
+        try:
+            return self.operation_ledger.read(identity)
+        except WorkspaceOperationLedgerError as exc:
+            collision = exc.phase == "identity"
+            raise WorkspacePortError(
+                (
+                    "workspace_operation_identity_collision"
+                    if collision
+                    else "workspace_operation_ledger_rejected"
+                ),
+                "operation identity was already used for another process intent"
+                if collision
+                else "workspace occurrence ledger rejected the operation",
+                effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+                mutation_applied=False,
+            ) from exc
+
+    def _recorded_or_pending(
+        self,
+        identity: WorkspaceOperationIdentity,
+        receipt: WorkspaceOperationReceipt | None,
+    ) -> WorkspaceOperationReceipt:
+        if receipt is not None:
+            return receipt
+        pending = WorkspaceOperationReceipt.create(
+            operation_id=identity.operation_id,
+            workspace_id=identity.workspace_id,
+            generation=identity.generation,
+            state_version=identity.state_version,
+            effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
+            mutation_applied=None,
+            diagnostic_id="diagnostic-process-reconciliation-pending",
+        )
+        return self.operation_ledger.settle(identity, pending).receipt or pending
+
+    def _settle_progress(
+        self,
+        identity: WorkspaceOperationIdentity,
+        prior: WorkspaceOperationReceipt | None,
+        observed: WorkspaceOperationReceipt,
+    ) -> WorkspaceOperationReceipt:
+        if (
+            prior is not None
+            and prior.effect_certainty is ExternalEffectCertainty.DISPATCH_IN_DOUBT
+            and observed.effect_certainty is ExternalEffectCertainty.DISPATCH_IN_DOUBT
+        ):
+            return prior
+        return self.operation_ledger.settle(identity, observed).receipt or observed
 
     def _isolation_request(
         self,

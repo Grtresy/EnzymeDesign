@@ -89,10 +89,10 @@ compute destination。它只接受 regular published files，拒绝 symlink/gitl
 digest，不含 destination locator、credential 或 remote。response loss 后 `observe()` 只重验既有树，不重新
 fetch/materialize。
 
-这仍不表示整个 Adapter 已可由 Standard 激活：完整 workspace lifecycle/recovery、transfer result path、LFS pin/GC writer、
-统一 Store writer 与 Distribution activation proof
-尚未闭合。
-安装 wheel 不产生 ambient capability，composition manifest 继续 fail closed。
+Standard 与 EnzymeDesign application roots 已在 read-only startup proof 后将该 Adapter exact
+`selected + runtime_mounted`，并通过 Kernel Workspace/Publication Ports 使用其 identity；完整 owner-local
+workspace lifecycle/recovery、revision backend、LFS 与 compute-tree tests 均保留。安装 wheel 仍不产生 ambient
+capability，non-live mount 也不证明当前最终 source 已部署 cutover 或某次真实 Git/LFS effect 已获 live 授权。
 
 本包只能实现 Contracts 已定义的 Port，不能拥有 Session/Task/publication canonical state，不能从
 Git push、LFS receipt 或 workspace clean 状态推断文件已发布或 Task 已完成。

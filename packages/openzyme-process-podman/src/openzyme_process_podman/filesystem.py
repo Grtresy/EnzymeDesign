@@ -6,13 +6,15 @@ from dataclasses import field
 import hashlib
 from importlib import resources
 import json
-import threading
 from typing import Any
 
 from openzyme_contracts import ExternalEffectCertainty
 from openzyme_contracts import WorkspaceFilesystemMutation
 from openzyme_contracts import WorkspaceObservation
 from openzyme_contracts import WorkspaceObservationRequest
+from openzyme_contracts import WorkspaceOperationIdentity
+from openzyme_contracts import WorkspaceOperationLedgerError
+from openzyme_contracts import WorkspaceOperationLedgerPort
 from openzyme_contracts import WorkspaceOperationReceipt
 from openzyme_contracts import WorkspacePortError
 from openzyme_contracts import canonical_sha256_digest
@@ -79,16 +81,13 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
 @dataclass(slots=True)
 class PodmanWorkspaceFilesystemAdapter:
     mount_resolver: PodmanWorkspaceMountResolver
+    operation_ledger: WorkspaceOperationLedgerPort
     executor: PodmanCommandExecutor = field(default_factory=SupervisedSubprocessExecutor)
     podman_binary: str = "/usr/bin/podman"
     runtime_uid: int = 10_001
     runtime_gid: int = 10_001
     provider_id: str = PODMAN_FILESYSTEM_PROVIDER_ID
     provider_contract_digest: str = PODMAN_FILESYSTEM_PROVIDER_CONTRACT_DIGEST
-    _receipts: dict[str, tuple[str, WorkspaceOperationReceipt]] = field(
-        default_factory=dict
-    )
-    _lock: threading.Lock = field(default_factory=threading.Lock)
     _verified_helper_source: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -159,18 +158,16 @@ class PodmanWorkspaceFilesystemAdapter:
         self,
         request: WorkspaceFilesystemMutation,
     ) -> WorkspaceOperationReceipt:
-        with self._lock:
-            prior = self._receipts.get(request.operation_id)
-            if prior is not None:
-                if prior[0] != request.intent_digest:
-                    raise WorkspacePortError(
-                        "workspace_operation_identity_collision",
-                        "operation identity was already used for another intent",
-                        effect_certainty=ExternalEffectCertainty.NO_EFFECT,
-                        mutation_applied=False,
-                    )
-                return prior[1]
+        identity = self._operation_identity(request)
+        prior = self._read_ledger(identity)
+        if prior is not None:
+            return self._recorded_or_pending(identity, prior.receipt)
         mount = self._require_mount(request.binding)
+        if not self.operation_ledger.reserve(identity):
+            concurrent = self._read_ledger(identity)
+            if concurrent is None:
+                raise RuntimeError("reserved filesystem occurrence disappeared")
+            return self._recorded_or_pending(identity, concurrent.receipt)
         helper_request = {
             "schema_version": PODMAN_FILESYSTEM_HELPER_SCHEMA,
             "mode": "mutation",
@@ -190,26 +187,35 @@ class PodmanWorkspaceFilesystemAdapter:
             "authority_generation": request.authority_generation,
             "authority_fence": request.authority_fence,
         }
-        response = self._invoke(
-            mount=mount,
-            process_identity=(
-                "ozfsm-" + request.intent_digest.removeprefix("sha256:")[:24]
-            ),
-            process_epoch=request.authority_generation,
-            authority_fence=request.authority_fence,
-            helper_request=helper_request,
-            timeout_seconds=60,
-            max_output_bytes=65_536,
-            mutating=True,
-        )
+        try:
+            response = self._invoke(
+                mount=mount,
+                process_identity=(
+                    "ozfsm-" + request.intent_digest.removeprefix("sha256:")[:24]
+                ),
+                process_epoch=request.authority_generation,
+                authority_fence=request.authority_fence,
+                helper_request=helper_request,
+                timeout_seconds=60,
+                max_output_bytes=65_536,
+                mutating=True,
+            )
+        except WorkspacePortError as exc:
+            self.operation_ledger.settle(
+                identity,
+                self._error_receipt(request, exc),
+            )
+            raise
         result = response.get("result")
         if not isinstance(result, dict):
-            raise WorkspacePortError(
+            error = WorkspacePortError(
                 "workspace_helper_result_invalid",
                 "filesystem helper returned an invalid mutation result",
                 effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
                 mutation_applied=None,
             )
+            self.operation_ledger.settle(identity, self._error_receipt(request, error))
+            raise error
         receipt = WorkspaceOperationReceipt.create(
             operation_id=request.operation_id,
             workspace_id=request.binding.workspace_id,
@@ -219,8 +225,7 @@ class PodmanWorkspaceFilesystemAdapter:
             mutation_applied=True,
             result_payload=_json_bytes(result),
         )
-        with self._lock:
-            self._receipts[request.operation_id] = (request.intent_digest, receipt)
+        self.operation_ledger.settle(identity, receipt)
         return receipt
 
     def reconcile(
@@ -229,17 +234,10 @@ class PodmanWorkspaceFilesystemAdapter:
     ) -> WorkspaceOperationReceipt:
         """Return observed receipt state without invoking the mutation helper."""
 
-        with self._lock:
-            prior = self._receipts.get(request.operation_id)
+        identity = self._operation_identity(request)
+        prior = self._read_ledger(identity)
         if prior is not None:
-            if prior[0] != request.intent_digest:
-                raise WorkspacePortError(
-                    "workspace_operation_identity_collision",
-                    "operation identity was already used for another intent",
-                    effect_certainty=ExternalEffectCertainty.NO_EFFECT,
-                    mutation_applied=False,
-                )
-            return prior[1]
+            return self._recorded_or_pending(identity, prior.receipt)
         return WorkspaceOperationReceipt.create(
             operation_id=request.operation_id,
             workspace_id=request.binding.workspace_id,
@@ -248,6 +246,72 @@ class PodmanWorkspaceFilesystemAdapter:
             effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
             mutation_applied=None,
             diagnostic_id="diagnostic-filesystem-reconciliation-pending",
+        )
+
+    def _operation_identity(
+        self,
+        request: WorkspaceFilesystemMutation,
+    ) -> WorkspaceOperationIdentity:
+        return WorkspaceOperationIdentity(
+            provider_id=self.provider_id,
+            operation_kind="filesystem",
+            operation_id=request.operation_id,
+            intent_digest=request.intent_digest,
+            session_id=request.binding.session_id,
+            workspace_id=request.binding.workspace_id,
+            generation=request.binding.generation,
+            state_version=request.binding.state_version,
+        )
+
+    def _read_ledger(self, identity: WorkspaceOperationIdentity):  # noqa: ANN202
+        try:
+            return self.operation_ledger.read(identity)
+        except WorkspaceOperationLedgerError as exc:
+            collision = exc.phase == "identity"
+            raise WorkspacePortError(
+                (
+                    "workspace_operation_identity_collision"
+                    if collision
+                    else "workspace_operation_ledger_rejected"
+                ),
+                "operation identity was already used for another intent"
+                if collision
+                else "workspace occurrence ledger rejected the operation",
+                effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+                mutation_applied=False,
+            ) from exc
+
+    def _recorded_or_pending(
+        self,
+        identity: WorkspaceOperationIdentity,
+        receipt: WorkspaceOperationReceipt | None,
+    ) -> WorkspaceOperationReceipt:
+        if receipt is not None:
+            return receipt
+        pending = WorkspaceOperationReceipt.create(
+            operation_id=identity.operation_id,
+            workspace_id=identity.workspace_id,
+            generation=identity.generation,
+            state_version=identity.state_version,
+            effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
+            mutation_applied=None,
+            diagnostic_id="diagnostic-filesystem-reconciliation-pending",
+        )
+        return self.operation_ledger.settle(identity, pending).receipt or pending
+
+    @staticmethod
+    def _error_receipt(
+        request: WorkspaceFilesystemMutation,
+        error: WorkspacePortError,
+    ) -> WorkspaceOperationReceipt:
+        return WorkspaceOperationReceipt.create(
+            operation_id=request.operation_id,
+            workspace_id=request.binding.workspace_id,
+            generation=request.binding.generation,
+            state_version=request.binding.state_version,
+            effect_certainty=error.effect_certainty,
+            mutation_applied=error.mutation_applied,
+            diagnostic_id=error.diagnostic_id,
         )
 
     def _require_mount(self, binding: Any) -> PodmanWorkspaceMount:

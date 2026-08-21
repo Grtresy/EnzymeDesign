@@ -384,76 +384,9 @@ class SQLiteResourceCapabilityFactRepository:
         return fact
 
 
-class SQLiteWorkspaceOperationReceiptRepository:
-    """Persists immutable operation facts, never inferred scientific/Task state."""
-
-    _CERTAINTIES = frozenset({"no_effect", "dispatch_in_doubt", "settled"})
-
-    def __init__(self, connection: sqlite3.Connection) -> None:
-        self.connection = connection
-
-    def append(
-        self,
-        *,
-        operation_id: str,
-        workspace_id: str,
-        workspace_generation: int,
-        operation_kind: str,
-        effect_certainty: str,
-        receipt: dict[str, Any],
-        settled_at: str,
-    ) -> str:
-        if not self.connection.in_transaction:
-            raise SQLitePersistenceError(
-                "workspace receipt write requires an active Unit of Work",
-                phase="transaction_admission",
-            )
-        if effect_certainty not in self._CERTAINTIES:
-            raise SQLitePersistenceError(
-                "effect certainty is not in the closed set",
-                phase="workspace_receipt_admission",
-                observed=effect_certainty,
-            )
-        if workspace_generation < 1:
-            raise SQLitePersistenceError(
-                "workspace generation must be positive",
-                phase="workspace_receipt_admission",
-                observed=workspace_generation,
-            )
-        receipt_digest = canonical_sha256_digest(receipt)
-        try:
-            self.connection.execute(
-                """
-                INSERT INTO openzyme_store_workspace_operation_receipts (
-                    operation_id, workspace_id, workspace_generation,
-                    operation_kind, effect_certainty, receipt_digest,
-                    receipt_json, settled_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    operation_id,
-                    workspace_id,
-                    workspace_generation,
-                    operation_kind,
-                    effect_certainty,
-                    receipt_digest,
-                    _json(receipt),
-                    settled_at,
-                ),
-            )
-        except sqlite3.IntegrityError as exc:
-            raise SQLitePersistenceError(
-                "workspace receipt identity conflicted",
-                phase="workspace_receipt_write",
-                observed=exc.__class__.__qualname__,
-            ) from exc
-        return receipt_digest
-
-
 __all__ = [
     "SQLiteCompositionIdentityRepository",
     "SQLitePersistenceError",
     "SQLiteResourceCapabilityFactRepository",
     "SQLiteSessionCapabilityBindingRepository",
-    "SQLiteWorkspaceOperationReceiptRepository",
 ]

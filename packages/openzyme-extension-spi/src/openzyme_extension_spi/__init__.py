@@ -39,6 +39,7 @@ from .manifest_codec import MAX_COMPONENT_MANIFEST_BYTES
 from .manifest_codec import parse_component_manifest_json
 from .manifest_codec import read_located_component_manifest
 from .manifest_codec import verify_located_component_manifest
+from .protocols import AdmittedToolRuntimeContribution
 from .protocols import CapabilityProvider
 from .protocols import CapabilityRequirementProvider
 from .protocols import CapabilityRouteInvocation
@@ -58,6 +59,7 @@ from .protocols import QualificationSpecProvider
 from .protocols import RouteProvider
 from .protocols import TaskEvidenceValidator
 from .protocols import ToolRuntimeContribution
+from .protocols import ToolDispatchBinding
 from .protocols import WorkerClaim
 from .protocols import WorkerClaimRequest
 from .protocols import WorkerContributor
@@ -87,6 +89,7 @@ __all__ = [
     "KERNEL_QUERY_CONTEXT_SCHEMA_VERSION",
     "MAX_COMPONENT_MANIFEST_BYTES",
     "AdapterManifest",
+    "AdmittedToolRuntimeContribution",
     "AdapterSelection",
     "ApprovalApplicationCommand",
     "AdapterRequirementMode",
@@ -178,6 +181,7 @@ __all__ = [
     "TaskEvidenceValidation",
     "TaskEvidenceValidator",
     "ToolContribution",
+    "ToolDispatchBinding",
     "ToolRuntimeContribution",
     "WorkerClaim",
     "WorkerClaimRequest",

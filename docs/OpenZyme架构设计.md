@@ -78,6 +78,16 @@ Kernel + Adapters + Plugins + Drivers + delivery surfaces = Distribution
 Plugin 集合为空；EnzymeDesign 可以把通用或垂直 Plugin 标为产品必需，但不能把 Standard 当作源码层
 依赖或隐式继承能力。
 
+manifest 选择、runtime mount、target qualification、真实部署 cutover 与一次 live 外部调用是五个不同事实：
+
+| 状态 | 含义 |
+| --- | --- |
+| `selected` | exact manifest 选择组件，尚不保证实例已构造 |
+| `runtime_mounted` | exact runtime identity 和 surface 已装配，尚不保证外部 target 可用 |
+| `qualified` | exact target/provider 的当前 receipt 满足要求，尚不表示 Session 已采用或流量已切换 |
+| `cutover` | 真实部署已经采用该实现，尚不授权某次 live effect |
+| `live` | 一次明确授权的外部调用实际发生；成功仍不自动形成 publication、Science adoption 或 Task terminal |
+
 | 类别 | 职责 | 禁止事项 |
 |---|---|---|
 | Kernel | collaboration truth、authority、runtime coordination、revision/handoff、controlled effect、extension/capability/affordance resolution | import 具体 Adapter、Research、Science、HPC、AOX/HMMER/Vina |
@@ -203,7 +213,24 @@ canonical Plugin/Kernel surfaces；旧 function handler/repository/writer packag
   Adapters、通用/产品 Plugins 与 Drivers，不依赖 `openzyme-standard` 作为语义层。repository 与 packaged
   composition exact 相等，30 个 manifest locator、8 Adapter、14 Plugin、8 Driver、32 个 Plugin tool 加 5 个
   Kernel workspace base tool（合计 37 个）的 catalog 全部
-  闭合，并能生成 EnzymeDesign fresh seed；真实历史 deployment 未完成离线 cutover时仍 fail closed；
+  闭合，并能生成 EnzymeDesign fresh seed；typed runtime surface set 还能在 read-only startup gate 后通过
+  Kernel exact mount 闭合 32 Plugin tools、13 capability routes、2 HTTP routes、5 projections、5 workers、
+  2 finish validators 和 3 transaction participants，缺失或多余 surface 会在 mount 前失败。产品
+  `build_enzymedesign_application_runtime()` 还会精确核对 8 个 selected Adapter runtime binding，闭合 5 个
+  Kernel 与 32 个 Plugin tool runtime 后才构造 SQLite writer、Kernel command/runtime gateway 与公共投影；
+  通用 Host 入口已从该 graph 完成真实 Session bootstrap，且不依赖 `openzyme-standard`。这证明
+  `runtime_mounted`；Distribution 另以 `ToolDispatchBinding` 将 Kernel 重验后的 authority fence、workspace
+  generation、route/driver/target/inventory proof 传给 HMMER/Vina 正式 application bridge，再由 subordinate Driver
+  编译 typed workload 并进入 Compute ControlledOperation/声明式 runner Port。formal binding 在 writer 可达前
+  一次性绑定，并只从 canonical PublishedRevision、publication-owned path verification、ready owner workspace、
+  当前 authority 与 adopted capability binding 推导 admission。该 bridge 已有 non-live 直接证明，
+  Compute execution record 现通过 Kernel-admitted extension state、Store-owned SQLite coordinator/query 与
+  `openzyme_compute` namespace 做 CAS 持久化；产品组合根同时构造 Kernel continuation service。SQLite restart
+  回归证明同一 invocation/route/opaque handle 不 redispatch，terminal result 与 continuation 在第二次重启后仍可恢复。
+  真实 non-live 产品场景还从通用 Host、Session pin、authority、immutable publication、adopted inventory 和
+  affordance/route，经 mounted HMMER/Vina Drivers 与 Compute 到声明式 fake runner，再验证 terminal result、
+  owner continuation、Science finish validator 以及 Task 保持 `todo`。这证明内部产品组合闭合，不等于真实
+  HPC/Slurm target qualified、cutover 或 live；
 - `openzyme-workspace-git-lfs` 已成为 `AgentGitWorkspace` identity/observation/restore 与 Git-LFS
   policy/pointer/closure/verification/receipt 机制 DTO 的唯一代码 owner；旧 Domain shim 已删除，仓内生产
   caller 使用 Adapter namespace。private/public ref 与 immutable-byte backend、
@@ -245,6 +272,12 @@ canonical Plugin/Kernel surfaces；旧 function handler/repository/writer packag
   ControlledOperation admission，response loss 进入 reconcile 且不 retry、fallback 或切换 route；三个
   effectful Port 均用原请求执行只观察式 reconcile，Kernel 固定 `redispatch_performed=false`，无 Adapter
   terminal proof 时保持同一 operation 为 `dispatch_in_doubt`；
+- Workspace effect 的 Adapter-private occurrence 已从进程内缓存迁入 Store-owned SQLite ledger：Contracts
+  固定 `WorkspaceOperationIdentity`、reserve/read/settle Port 和 content-bound receipt codec；Podman filesystem、
+  process、transfer 与 SSH Adapter 都必须先以 provider/operation/intent/session/workspace generation 原子
+  reserve，随后才可 dispatch。Standard 与 EnzymeDesign composition root 注入同一 target ledger；Host 重启后
+  exact duplicate 只返回持久 receipt，uncertain occurrence 只 reconcile 原 transport identity，零 redispatch、
+  零 target/provider fallback。该 ledger 是机制事实，不会自动 checkpoint、publish、adopt 或完成 Task；
 - 新 Kernel 已实现 `RuntimeTurnCoordinator`：从 claimed signal、Session runtime lease、layered release、
   exact capability binding/affordance snapshot 与 selected runtime Adapter 构造 immutable bounded command，
   对 outcome 的 Session/member/signal/fence/epoch/budget 做 closed validation，并通过 repository Port 原子
@@ -482,6 +515,8 @@ qualification receipt、software/hardware/data capability facts、predecessor、
 runner config/wire 都绑定同一 positive `inventory_generation` 与 exact `inventory_digest`。后者只能是结构化
 `TargetToolchainInventory` 的 closure，不能由 Runner 或领域 Plugin 从无结构字符串推断软件可用性。
 这些 `openzyme_hpc_*` 表只由显式 offline migration 安装，Host 正常启动不得 opportunistically 建表。
+EnzymeDesign fresh profile 现已把 qualification receipt、target inventory 和 scheduler occurrence 三张
+HPC-owned 表纳入 exact owner schema；Standard profile 不安装它们。
 Runner 的 closed `runner_effective_config@2` 也不接受 `[adapters.*]` 领域 catalog；修改
 TOML 不能替代 Distribution 选择、Plugin/Driver contract、target qualification 或 Session inventory adoption。
 
@@ -492,20 +527,29 @@ submit 权限。
 `ExecutorHpcWorkspace`、provision/cleanup intent+receipt、credential claim 和旧 target qualification DTO
 现在由 `openzyme-hpc` 唯一实现，旧 Domain 路径只作临时重导出。完整 application service、SQLite workspace
 repository、Plugin manifest/tool/route runtime 和 Host 重验证 gateway 已实现；Core 不再保留 HPC service、
-repository 或静态 tool writer。生产 Distribution mount、`@2` projection 及 SSH/Slurm Adapter activation 仍未
-完成；因此不能仅据此向
-Agent 暴露 `hpc.workspace.*` 或形成 ResourceCapabilityFact。
+repository 或静态 tool writer。EnzymeDesign non-live application root 已完成 exact Distribution mount、`@2`
+projection 及 SSH/Slurm Adapter identity/runtime factory 绑定；Agent 是否看到 `hpc.workspace.*` 仍由 Session
+binding、authority、workspace readiness、target inventory 与 helper qualification 求交决定。真实 target
+qualification、credential 配置和 live cutover 未在本 change 执行。
 
 `openzyme-hpc-ssh` 已实现 target-scoped Observation/Filesystem/Process/Transfer Ports，使用私有 locator
 解析 exact owner root、credential claim、workspace generation 与 target qualification。公开请求只含 opaque
 workspace binding 和 root-relative path；hostname、login alias、remote root、credential 不越过 Adapter 边界。
 lost response 保持 `dispatch_in_doubt`，reconcile 只观察同一 occurrence，且该 Adapter 永不携带 scheduler
-authority。它尚未进入 Distribution activation，因此不是当前 Session 的 ambient capability。
+authority。它消费 Store-owned durable Workspace occurrence ledger；terminal receipt 可跨 Adapter epoch 恢复，
+uncertain receipt 只能经远端 wrapper 查询原 operation/request digest。它已被 EnzymeDesign exact composition
+identity-mounted。`/usr/local/libexec/openzyme-workspace-runtime` 现以 exact
+`software.openzyme-workspace-runtime == 1.0.0` resource capability 建模，私有 locator 同时绑定 helper build、
+qualification receipt、target inventory generation/digest；缺失该事实时 remote tools 为
+`blocked_qualification`。本 change 没有在真实 target 上安装或探测 helper，因此仍不是 ambient 或 live
+capability。
 
 `openzyme-hpc-slurm` 实现独立 `openzyme.hpc.scheduler-port@1`：只有 Compute admission 创建的一次性 formal
 occurrence credential 可进入 submit/cancel；login/file credential 在类型和 resolver 上都被拒绝。raw Slurm id
-只留在 Adapter 私有 ledger，公开层只持有 opaque handle；lost response 只 reconcile 同一 occurrence，不重新
-submit/cancel，也不替换 scheduler、target 或 route。该 Adapter 同样尚未被 Distribution 激活。
+只留在 HPC-owned SQLite occurrence ledger，公开层只持有 opaque handle；submit/cancel 在首次 effect 前原子
+reserve exact identity，lost response 只 reconcile 同一 occurrence，不重新 submit/cancel，也不替换 scheduler、
+target 或 route。EnzymeDesign 已把显式注入 backend/credential resolver/durable ledger 的 factory 绑定到 selected
+Slurm Adapter 并在 proof 后构造 runtime；这不等于真实 Slurm target cutover 或 live 证明。
 
 计算提交使用 `workspace_revision_execution_request@1`，必须绑定：
 
@@ -536,24 +580,18 @@ metadata/receipt。draft、workspace publication、render、validation、busines
 已有 validation，不执行 render/publication 或任何写入。renderer/schema/authority/ref drift 均 fail closed，禁止
 自动提交、发布、格式/renderer fallback 或从报告存在推导 Task 完成。
 
-当前状态是 `target_implemented_host_mount_pending`：Core 已删除同名 tool 注册、restore/prompt 注入、
+当前状态是 `target_implemented_not_cutover`：Core 已删除同名 tool 注册、restore/prompt 注入、
 report-specific evidence 解析和 legacy repository writer；`session_report_*` rows 只为 offline historical adoption
-保留，`@1` 历史 report collection 固定为空。Host mounted surface 与真实离线采用仍未完成，因此目标 manifest
-尚未成为 active deployment authority。详见
+保留，`@1` 历史 report collection 固定为空。EnzymeDesign non-live application root 已在 startup proof 后 exact
+mount Reporting surfaces；当前最终 source 的真实离线采用仍未执行，因此不能提升为 deployment authority。详见
 [Reporting Extension](v3/reporting-extension.md)。
 
-SQLite 的机制 owner 已先完成一段依赖倒置：`openzyme-store-sqlite` 现在独占文件创建、connection
-configuration、WAL、repository scope、短事务 commit/rollback 和 legacy bootstrap；旧 Core 已移除
-`SQLiteRepositoryProvider`、`CoreUnitOfWork`、`CoreRepositoryConnectionScope` exports。Host 仍以一个显式、
-ledger-bound wrapper 把历史 `CoreRepositories` 聚合注入该 Store mechanism。当前已迁 Kernel repository class
-由 Store 唯一实现，旧 Core 对它们仅作 compatibility export，并把 capability admission、terminal projection
-和 fence validator 作为窄 callback 注入；旧 capability/retirement row decoding 则经 migration-only codec
-注入。project binding、revision/path handoff 已归 Store，Agent Git workspace repository 已归 Git/LFS Adapter；
-aggregate 只继续组合待后续阶段迁出的 Podman、Research、Science、Compute/HPC legacy owners。这个 wrapper
-不是 target
-Standard Store，也不改变 production writer authority；只有其余语义 repository 迁到 Kernel codec 或所属
-Plugin participant、production codec closure 完整且 offline activation proof 通过后，SQLite writer cutover
-才成立。
+SQLite 机制由 `openzyme-store-sqlite` 独占：文件/connection/WAL、短事务 UoW、Kernel codecs、owner-partitioned
+schema、Plugin transaction participants、deployment proof 和 legacy-only migration readers 都在 Store。旧 Core
+repository provider/UoW/compat exports 与 `CoreRepositories` 聚合已经删除。Kernel canonical mutation 只经
+`SQLiteControlStore` 和 application services；Plugin state 只经 namespaced participant；Git workspace mechanism
+由 Git/LFS Adapter 拥有。Standard/EnzymeDesign composition root 只在 read-only proof 与 exact mount 后构造同一
+writer。上述 source/runtime closure 不等于当前最终 source 已真实 offline cutover。
 
 ## 8. Science extension 与 scientific file contract
 

@@ -11,11 +11,12 @@ catalog identities。Python entry point 只返回 locator；只有显式 Distrib
 验证和 deployment activation 成功后，Kernel 才能 mount runtime bundle。环境中可 import 的包不会成为 ambient
 capability，既有 Session 也不热切换 Plugin 或 renderer。
 
-当前源码状态是 `target_implemented_host_mount_pending`：目标 runtime surfaces 和 tests 已存在，Core 已停止
-注册旧 report tools、注入 restore/prompt facts、解析 report evidence 或持有 legacy repository writer；但 Host
-尚未从 verified Plugin mount 装配这些 surfaces，`session_report_*` rows 也尚未 offline adoption。旧
+当前源码状态是 `target_implemented_not_cutover`：目标 runtime surfaces 和 tests 已存在，Core 已停止
+注册旧 report tools、注入 restore/prompt facts、解析 report evidence 或持有 legacy repository writer；
+EnzymeDesign non-live application root 已在 read-only startup proof 后 exact mount 这些 surfaces。`session_report_*`
+rows 仍只作为 offline historical adoption 输入。旧
 `file_workspace_public@1` 仅保留历史 closed shape，report collection 固定为空，不是 current projection。
-因此当前生产组合不得 ambient 激活目标 manifest。两张旧物理表只由 Store schema 和 Reporting 内的
+因此安装 wheel 仍不得 ambient 激活目标 manifest。两张旧物理表只由 Store schema 和 Reporting 内的
 legacy-only reader/repository 为 migration proof 保留，Core 不再注入或调用它们，也不会与 target participant
 双写。
 

@@ -43,44 +43,13 @@ from openzyme_kernel import select_distribution_manifest_locators
 from openzyme_process_podman.manifest_locator import locate_component_manifest as podman_locator
 from openzyme_runtime_llm.manifest_locator import locate_component_manifest as llm_locator
 from openzyme_store_sqlite.manifest_locator import locate_component_manifest as sqlite_locator
-from openzyme_store_sqlite import AgentAuthorityLeaseSQLiteKernelEntityCodec
-from openzyme_store_sqlite import AgentMemberSQLiteKernelEntityCodec
-from openzyme_store_sqlite import AgentRuntimeSignalSQLiteKernelEntityCodec
-from openzyme_store_sqlite import ApprovalRequestSQLiteKernelEntityCodec
 from openzyme_store_sqlite import CompositeSQLiteStartupProof
-from openzyme_store_sqlite import ConversationMessageSQLiteKernelEntityCodec
-from openzyme_store_sqlite import ContinuationSQLiteKernelEntityCodec
-from openzyme_store_sqlite import ControlledOperationSQLiteKernelEntityCodec
-from openzyme_store_sqlite import FailureObservationSQLiteKernelEntityCodec
 from openzyme_store_sqlite import FreshInstallCompositionSeed
-from openzyme_store_sqlite import InboxMessageSQLiteKernelEntityCodec
-from openzyme_store_sqlite import KernelCommandReceiptSQLiteKernelEntityCodec
-from openzyme_store_sqlite import LaneSQLiteKernelEntityCodec
-from openzyme_store_sqlite import MemorySQLiteKernelEntityCodec
 from openzyme_store_sqlite import MigrationSourceIdentity
 from openzyme_store_sqlite import OPENZYME_STANDARD_OWNER_SCHEMA_PROFILE
-from openzyme_store_sqlite import PublishedRevisionSQLiteKernelEntityCodec
-from openzyme_store_sqlite import ProjectRepositoryBindingHeadSQLiteKernelEntityCodec
-from openzyme_store_sqlite import ProjectRepositoryBindingSQLiteKernelEntityCodec
-from openzyme_store_sqlite import ProtocolRecordSQLiteKernelEntityCodec
-from openzyme_store_sqlite import RevisionPathVerificationSQLiteKernelEntityCodec
-from openzyme_store_sqlite import RuntimeContinuationIntentSQLiteKernelEntityCodec
-from openzyme_store_sqlite import RuntimeOutcomeConsumptionSQLiteKernelEntityCodec
-from openzyme_store_sqlite import RuntimeSettlementIntentSQLiteKernelEntityCodec
-from openzyme_store_sqlite import RuntimeTurnCommandSQLiteKernelEntityCodec
-from openzyme_store_sqlite import SessionCapabilityBindingSQLiteKernelEntityCodec
-from openzyme_store_sqlite import SessionCompositionPinSQLiteKernelEntityCodec
-from openzyme_store_sqlite import SessionRepositoryBindingPinSQLiteKernelEntityCodec
-from openzyme_store_sqlite import SessionRuntimeLeaseSQLiteKernelEntityCodec
 from openzyme_store_sqlite import SQLiteControlStore
 from openzyme_store_sqlite import SQLiteKernelEntityCodec
-from openzyme_store_sqlite import SessionSQLiteKernelEntityCodec
-from openzyme_store_sqlite import TaskSQLiteKernelEntityCodec
-from openzyme_store_sqlite import TaskEvidenceSQLiteKernelEntityCodec
-from openzyme_store_sqlite import VerifiedWorkspaceCheckpointSQLiteKernelEntityCodec
-from openzyme_store_sqlite import WorkspaceGenerationSQLiteKernelEntityCodec
-from openzyme_store_sqlite import WorkspacePublicationIntentSQLiteKernelEntityCodec
-from openzyme_store_sqlite import WorkspaceRuntimeBindingSQLiteKernelEntityCodec
+from openzyme_store_sqlite import kernel_entity_codecs
 from openzyme_store_sqlite import STORE_MIGRATIONS
 from openzyme_store_sqlite import FreshInstallDeploymentProof
 from openzyme_store_sqlite import SessionCompositionStateProof
@@ -180,40 +149,7 @@ class StandardKernelStoreCodecCoverage:
 def standard_kernel_entity_codecs() -> tuple[SQLiteKernelEntityCodec, ...]:
     """Return only implemented production codecs; never synthesize placeholders."""
 
-    return (
-        AgentAuthorityLeaseSQLiteKernelEntityCodec(),
-        AgentMemberSQLiteKernelEntityCodec(),
-        AgentRuntimeSignalSQLiteKernelEntityCodec(),
-        ApprovalRequestSQLiteKernelEntityCodec(),
-        ConversationMessageSQLiteKernelEntityCodec(),
-        ContinuationSQLiteKernelEntityCodec(),
-        ControlledOperationSQLiteKernelEntityCodec(),
-        FailureObservationSQLiteKernelEntityCodec(),
-        InboxMessageSQLiteKernelEntityCodec(),
-        KernelCommandReceiptSQLiteKernelEntityCodec(),
-        LaneSQLiteKernelEntityCodec(),
-        MemorySQLiteKernelEntityCodec(),
-        PublishedRevisionSQLiteKernelEntityCodec(),
-        ProjectRepositoryBindingHeadSQLiteKernelEntityCodec(),
-        ProjectRepositoryBindingSQLiteKernelEntityCodec(),
-        ProtocolRecordSQLiteKernelEntityCodec(),
-        RevisionPathVerificationSQLiteKernelEntityCodec(),
-        RuntimeContinuationIntentSQLiteKernelEntityCodec(),
-        RuntimeOutcomeConsumptionSQLiteKernelEntityCodec(),
-        RuntimeSettlementIntentSQLiteKernelEntityCodec(),
-        RuntimeTurnCommandSQLiteKernelEntityCodec(),
-        SessionCapabilityBindingSQLiteKernelEntityCodec(),
-        SessionCompositionPinSQLiteKernelEntityCodec(),
-        SessionRepositoryBindingPinSQLiteKernelEntityCodec(),
-        SessionRuntimeLeaseSQLiteKernelEntityCodec(),
-        SessionSQLiteKernelEntityCodec(),
-        TaskSQLiteKernelEntityCodec(),
-        TaskEvidenceSQLiteKernelEntityCodec(),
-        VerifiedWorkspaceCheckpointSQLiteKernelEntityCodec(),
-        WorkspaceGenerationSQLiteKernelEntityCodec(),
-        WorkspacePublicationIntentSQLiteKernelEntityCodec(),
-        WorkspaceRuntimeBindingSQLiteKernelEntityCodec(),
-    )
+    return kernel_entity_codecs()
 
 
 def inspect_standard_kernel_store_codec_coverage(

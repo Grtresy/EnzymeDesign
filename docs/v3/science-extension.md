@@ -15,8 +15,9 @@ wheel 可 import、entry point 可发现或 EnzymeDesign manifest 引用它都�
 当前源码状态是 `target_implemented_not_cutover`。目标 manifest/runtime surfaces 已实现，通用 workflow
 contract registry、attempt lifecycle、文件采用、deliverable finalization 和 offline verifier 由 Science 拥有。
 旧 mixed Host wiring、在线 `file_workspace_public@1` scientific writer 和包内 raw-SQLite repository 已删除；
-旧物理表只属于 Store 的离线 migration/proof 输入。当前仓库没有执行真实 deployment activation，因此不能把源码
-收口解释为生产 cutover，也不得同时注册旧、新同名工具或双写状态。
+旧物理表只属于 Store 的离线 migration/proof 输入。EnzymeDesign non-live application root 已在 startup proof 后
+exact mount Science tools/worker/projection/validator/participant；这仍不是当前最终 source 的真实 deployment
+cutover，不能把源码收口解释为生产 adoption，也不得同时注册旧、新同名工具或双写状态。
 
 ## 生命周期和文件边界
 

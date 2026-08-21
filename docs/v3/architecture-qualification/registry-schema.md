@@ -65,6 +65,11 @@ profile 使用 `file_sqlite`/`single_process`。Standard 必须声明 Plugin-fre
 Drivers，但 non-live profile 只允许已登记的 test-process port，并明确排除真实 Provider、SSH/Slurm/HPC、Chrome
 和 container effect。
 
+EnzymeDesign 的 component catalog 场景与 product runtime 场景必须分开：前者只能证明 exact manifest/catalog
+解析，不能使用“已 mount”措辞；后者必须运行真实内部 composition，并且只能在明确的 Port 上替换 non-live
+Agent-turn、revision mechanism 和 external runner。测试内 Port replacement 不产生真实外部 effect；资格 harness
+唯一跨进程边界仍是已登记的 `non-live-test-process`。
+
 ## External ports and P0 triggers
 
 An external-port record has exactly `port_id`, `production_seams`,

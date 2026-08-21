@@ -2,8 +2,12 @@
 
 `enzymedesign-hmmer` 是 EnzymeDesign 的 HMMER Product Plugin 与 subordinate Driver 包，不属于 OpenZyme
 Kernel、Compute 或 HPC。exact Plugin manifest、local/HPC Driver manifests、tool runtimes、qualification spec、
-typed workload compiler 和 non-live tests 已实现，并由 EnzymeDesign Distribution 精确选择。当前不可生产激活是
-整体 `file_workspace_public@2`/offline cutover 尚未完成，不是 HMMER 仍由旧 Pipeline 拥有。
+typed workload compiler 和 non-live tests 已实现，并由 EnzymeDesign Distribution 精确选择。Plugin runtime
+bundle 现在同时提供两个 tool runtimes 和与 manifest/Driver 一一对应的 local/HPC capability route runtimes，
+可通过 Kernel exact mount。EnzymeDesign Distribution 的 `EnzymeDesignFormalComputeToolApplication` 已把
+Kernel-admitted dispatch proof、subordinate Driver 和 `ComputeExecutionApplicationService` 接通；声明式 runner
+Port 仍由 composition 注入，HMMER 不接触其实现。durable repository、result/continuation restart 与 non-live
+产品级跨层 qualification 已证明；真实外部 cutover/live 未执行。
 
 ## 跨插件通信
 
@@ -29,6 +33,15 @@ Driver 不 dispatch、不持有 credential、不选 target、不自动 fallback�
 显式选择的 exact route 执行；HPC Plugin/Adapters 只提供合格 route 与远端机制。直接 `hpc.workspace.exec` 运行
 HMMER 是允许的 exploratory Shell，但其 receipt 固定不能通过 HMMER formal result validation，也不能成为
 Science adoption、publication 或 Task finish evidence。
+
+route runtime 只接受 manifest 声明的 exact route、capability 与 subordinate Driver identity。Kernel gateway
+在调用前把 revalidated affordance、authority generation/fence、workspace generation、route/driver/target 与
+inventory proof 封装为 `ToolDispatchBinding`；缺失该 binding 的直接 runtime 调用 fail closed。Distribution bridge
+据此编译 workload，并只向原 route 对应的 Compute runner Port dispatch；不会探测或替换 target。正式
+result validation、durable restart recovery 与产品级跨层证明已经闭合：真实 non-live 产品场景从 generic Host、
+immutable publication 与 adopted inventory 进入 exact HMMER route，验证 terminal result、owner continuation 和
+Task 不自动完成。该证明使用声明式 fake external runner，不表示真实 HMMER/HPC target 已 qualified、cutover 或
+live。
 
 ## 失败与迁移
 

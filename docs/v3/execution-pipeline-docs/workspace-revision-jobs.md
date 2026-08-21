@@ -46,6 +46,13 @@ ControlledOperation。Compute namespaced state只保存 request、opaque provide
 不得复制 effect certainty、retry eligibility 或 cancel truth。取消响应丢失后只观察同一 provider handle，
 不再发 cancel，也不改 route。
 
+Compute 的在线 repository 使用 Store-owned `openzyme_store_extension_state_records`，但写入必须先经过
+`ExtensionStateKernelApplicationService` 对 Session pin、capability binding、Plugin owner 与 authority
+generation/fence 的重验，再由 `openzyme.compute.transaction@1` 在 `openzyme_compute/execution` namespace
+执行单记录 CAS。Plugin 不持有 SQLite connection。Host restart 后重新构造同一 query/repository/service，
+相同 request identity 返回已持久化 occurrence，不重新 dispatch；后续 observe 只能使用原 route 和 opaque
+provider handle。terminal settlement 与 Kernel-owned continuation 都必须在再次重启后可读。
+
 ## Results
 
 terminal result 包含 effect certainty、state、result digest 和可选 result revision link。consumer 若需要

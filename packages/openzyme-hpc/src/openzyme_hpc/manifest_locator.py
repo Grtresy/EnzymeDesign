@@ -5,7 +5,7 @@ from openzyme_extension_spi import ExtensionManifestLocator
 
 
 HPC_COMPONENT_MANIFEST_DIGEST = (
-    "sha256:0c498d6072fe1e3d6dfb146a64dfcf6c2710e8232238e11612e2e8962d3cea49"
+    "sha256:0c8ac4ad5753c9829c10163ebeb6bf71bd5343063865f112556034c48292b16e"
 )
 
 

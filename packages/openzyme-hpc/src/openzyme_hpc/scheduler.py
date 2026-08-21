@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from dataclasses import field
 from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
@@ -24,6 +26,26 @@ HPC_SCHEDULER_PORT_CONTRACT_DIGEST = canonical_sha256_digest(
         ],
         "credential": "one_formal_occurrence_only",
         "public_handle": "opaque_no_raw_scheduler_id",
+        "fallback": False,
+    }
+)
+
+HPC_SCHEDULER_OCCURRENCE_LEDGER_CONTRACT = (
+    "openzyme.hpc.scheduler-occurrence-ledger@1"
+)
+HPC_SCHEDULER_OCCURRENCE_LEDGER_CONTRACT_DIGEST = canonical_sha256_digest(
+    {
+        "contract": HPC_SCHEDULER_OCCURRENCE_LEDGER_CONTRACT,
+        "identity": [
+            "provider_id",
+            "operation_kind",
+            "operation_id",
+            "request_digest",
+        ],
+        "operations": ["read", "reserve", "settle", "get_handle"],
+        "private_fields": ["raw_scheduler_id"],
+        "restart_reconciliation": "same_occurrence_only",
+        "redispatch": False,
         "fallback": False,
     }
 )
@@ -166,6 +188,45 @@ class SchedulerDispatchReceipt:
             "diagnostic_id": self.diagnostic_id,
         }
 
+    def to_dict(self) -> dict[str, object]:
+        return {**self.identity_payload, "receipt_digest": self.receipt_digest}
+
+    @classmethod
+    def from_dict(cls, value: object) -> SchedulerDispatchReceipt:
+        fields = {
+            "schema_version",
+            "operation_id",
+            "request_digest",
+            "effect_certainty",
+            "opaque_handle_id",
+            "accepted",
+            "fallback_performed",
+            "diagnostic_id",
+            "receipt_digest",
+        }
+        if not isinstance(value, Mapping) or set(value) != fields:
+            raise ValueError("scheduler receipt fields are closed")
+        if value["schema_version"] != "scheduler_dispatch_receipt@1":
+            raise ValueError("scheduler receipt schema drifted")
+        return cls(
+            operation_id=str(value["operation_id"]),
+            request_digest=str(value["request_digest"]),
+            effect_certainty=ExternalEffectCertainty(str(value["effect_certainty"])),
+            opaque_handle_id=(
+                None
+                if value["opaque_handle_id"] is None
+                else str(value["opaque_handle_id"])
+            ),
+            accepted=value["accepted"],
+            fallback_performed=value["fallback_performed"] is True,
+            receipt_digest=str(value["receipt_digest"]),
+            diagnostic_id=(
+                None
+                if value["diagnostic_id"] is None
+                else str(value["diagnostic_id"])
+            ),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class SchedulerObservation:
@@ -245,6 +306,168 @@ class SchedulerCancelRequest:
         }
 
 
+class SchedulerOccurrenceKind(StrEnum):
+    SUBMIT = "submit"
+    CANCEL = "cancel"
+
+
+@dataclass(frozen=True, slots=True)
+class SchedulerOccurrenceIdentity:
+    provider_id: str
+    operation_kind: SchedulerOccurrenceKind
+    operation_id: str
+    request_digest: str
+
+    def __post_init__(self) -> None:
+        require_identifier(self.provider_id, field_name="provider_id")
+        require_identifier(self.operation_id, field_name="operation_id")
+        require_digest(self.request_digest, field_name="request_digest")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": "scheduler_occurrence_identity@1",
+            "provider_id": self.provider_id,
+            "operation_kind": self.operation_kind.value,
+            "operation_id": self.operation_id,
+            "request_digest": self.request_digest,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> SchedulerOccurrenceIdentity:
+        fields = {
+            "schema_version",
+            "provider_id",
+            "operation_kind",
+            "operation_id",
+            "request_digest",
+        }
+        if not isinstance(value, Mapping) or set(value) != fields:
+            raise ValueError("scheduler occurrence identity fields are closed")
+        if value["schema_version"] != "scheduler_occurrence_identity@1":
+            raise ValueError("scheduler occurrence identity schema drifted")
+        return cls(
+            provider_id=str(value["provider_id"]),
+            operation_kind=SchedulerOccurrenceKind(str(value["operation_kind"])),
+            operation_id=str(value["operation_id"]),
+            request_digest=str(value["request_digest"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PrivateSchedulerHandleRecord:
+    opaque_handle_id: str
+    operation_id: str
+    request_digest: str
+    raw_scheduler_id: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        require_identifier(self.opaque_handle_id, field_name="opaque_handle_id")
+        require_identifier(self.operation_id, field_name="operation_id")
+        require_digest(self.request_digest, field_name="request_digest")
+        require_identifier(self.raw_scheduler_id, field_name="raw_scheduler_id")
+
+
+@dataclass(frozen=True, slots=True)
+class SchedulerOccurrenceRecord:
+    identity: SchedulerOccurrenceIdentity
+    receipt: SchedulerDispatchReceipt | None
+    raw_scheduler_id: str | None = field(default=None, repr=False)
+    ledger_version: int = 1
+
+    def __post_init__(self) -> None:
+        if self.ledger_version < 1:
+            raise ValueError("scheduler ledger version must be positive")
+        if self.receipt is not None and (
+            self.receipt.operation_id != self.identity.operation_id
+            or self.receipt.request_digest != self.identity.request_digest
+        ):
+            raise ValueError("scheduler receipt crossed its occurrence identity")
+        if self.raw_scheduler_id is not None:
+            require_identifier(self.raw_scheduler_id, field_name="raw_scheduler_id")
+            if (
+                self.identity.operation_kind is not SchedulerOccurrenceKind.SUBMIT
+                or self.receipt is None
+                or self.receipt.accepted is not True
+                or self.receipt.opaque_handle_id is None
+            ):
+                raise ValueError("private scheduler handle requires an accepted submit")
+
+    @property
+    def record_digest(self) -> str:
+        return canonical_sha256_digest(self.to_dict())
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": "scheduler_occurrence_record@1",
+            "identity": self.identity.to_dict(),
+            "receipt": None if self.receipt is None else self.receipt.to_dict(),
+            "raw_scheduler_id": self.raw_scheduler_id,
+            "ledger_version": self.ledger_version,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> SchedulerOccurrenceRecord:
+        fields = {
+            "schema_version",
+            "identity",
+            "receipt",
+            "raw_scheduler_id",
+            "ledger_version",
+        }
+        if not isinstance(value, Mapping) or set(value) != fields:
+            raise ValueError("scheduler occurrence fields are closed")
+        if value["schema_version"] != "scheduler_occurrence_record@1":
+            raise ValueError("scheduler occurrence schema drifted")
+        return cls(
+            identity=SchedulerOccurrenceIdentity.from_dict(value["identity"]),
+            receipt=(
+                None
+                if value["receipt"] is None
+                else SchedulerDispatchReceipt.from_dict(value["receipt"])
+            ),
+            raw_scheduler_id=(
+                None
+                if value["raw_scheduler_id"] is None
+                else str(value["raw_scheduler_id"])
+            ),
+            ledger_version=int(value["ledger_version"]),
+        )
+
+    def private_handle(self) -> PrivateSchedulerHandleRecord | None:
+        if self.raw_scheduler_id is None or self.receipt is None:
+            return None
+        assert self.receipt.opaque_handle_id is not None
+        return PrivateSchedulerHandleRecord(
+            opaque_handle_id=self.receipt.opaque_handle_id,
+            operation_id=self.identity.operation_id,
+            request_digest=self.identity.request_digest,
+            raw_scheduler_id=self.raw_scheduler_id,
+        )
+
+
+class SchedulerOccurrenceLedger(Protocol):
+    def read(
+        self,
+        identity: SchedulerOccurrenceIdentity,
+    ) -> SchedulerOccurrenceRecord | None: ...
+
+    def reserve(self, identity: SchedulerOccurrenceIdentity) -> bool: ...
+
+    def settle(
+        self,
+        identity: SchedulerOccurrenceIdentity,
+        receipt: SchedulerDispatchReceipt,
+        *,
+        raw_scheduler_id: str | None = None,
+    ) -> SchedulerOccurrenceRecord: ...
+
+    def get_handle(
+        self,
+        provider_id: str,
+        opaque_handle_id: str,
+    ) -> PrivateSchedulerHandleRecord | None: ...
+
+
 class HpcSchedulerPort(Protocol):
     def submit(self, request: SchedulerDispatchRequest) -> SchedulerDispatchReceipt: ...
 
@@ -269,6 +492,8 @@ class HpcSchedulerPort(Protocol):
 
 
 __all__ = [
+    "HPC_SCHEDULER_OCCURRENCE_LEDGER_CONTRACT",
+    "HPC_SCHEDULER_OCCURRENCE_LEDGER_CONTRACT_DIGEST",
     "HPC_SCHEDULER_PORT_CONTRACT",
     "HPC_SCHEDULER_PORT_CONTRACT_DIGEST",
     "HpcSchedulerPort",
@@ -277,4 +502,9 @@ __all__ = [
     "SchedulerDispatchRequest",
     "SchedulerJobState",
     "SchedulerObservation",
+    "PrivateSchedulerHandleRecord",
+    "SchedulerOccurrenceIdentity",
+    "SchedulerOccurrenceKind",
+    "SchedulerOccurrenceLedger",
+    "SchedulerOccurrenceRecord",
 ]

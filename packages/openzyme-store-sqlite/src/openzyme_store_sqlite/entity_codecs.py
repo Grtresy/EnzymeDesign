@@ -34,6 +34,7 @@ from openzyme_contracts.identity import JsonValue
 from openzyme_contracts.identity import json_compatible
 
 from .control_store import SQLiteControlStoreError
+from .control_store import SQLiteKernelEntityCodec
 
 
 def _canonical_json(value: JsonValue) -> str:
@@ -1049,6 +1050,14 @@ class ContinuationSQLiteKernelEntityCodec:
         payload: dict[str, JsonValue] = {
             field: row[index] for index, field in enumerate(self._FIELDS)
         }
+        try:
+            payload["source_version"] = int(row[3])
+        except (TypeError, ValueError) as exc:
+            raise SQLiteControlStoreError(
+                "sqlite_continuation_source_version_invalid",
+                "Continuation source version is not an integer",
+                phase="entity_decode",
+            ) from exc
         payload["task_transition_performed"] = bool(row[16])
         self._validate_payload(payload, entity_id=entity_id)
         snapshot = KernelRecordSnapshot.create(
@@ -1155,6 +1164,10 @@ class ContinuationSQLiteKernelEntityCodec:
             )
         attempt = payload["delivery_attempt"]
         if (
+            not isinstance(payload["source_version"], int)
+            or isinstance(payload["source_version"], bool)
+            or payload["source_version"] < 1
+            or
             not isinstance(attempt, int)
             or isinstance(attempt, bool)
             or attempt < 0
@@ -5783,6 +5796,50 @@ class RevisionPathVerificationSQLiteKernelEntityCodec:
             ) from exc
 
 
+def kernel_entity_codecs() -> tuple[SQLiteKernelEntityCodec, ...]:
+    """Return the complete implemented Kernel-to-owner-table codec set.
+
+    The concrete catalog belongs to the SQLite Adapter. Distributions may
+    require a narrower or equal closed entity set, but must not copy this
+    construction or depend on another Distribution to obtain it.
+    """
+
+    return (
+        AgentAuthorityLeaseSQLiteKernelEntityCodec(),
+        AgentMemberSQLiteKernelEntityCodec(),
+        AgentRuntimeSignalSQLiteKernelEntityCodec(),
+        ApprovalRequestSQLiteKernelEntityCodec(),
+        ConversationMessageSQLiteKernelEntityCodec(),
+        ContinuationSQLiteKernelEntityCodec(),
+        ControlledOperationSQLiteKernelEntityCodec(),
+        FailureObservationSQLiteKernelEntityCodec(),
+        InboxMessageSQLiteKernelEntityCodec(),
+        KernelCommandReceiptSQLiteKernelEntityCodec(),
+        LaneSQLiteKernelEntityCodec(),
+        MemorySQLiteKernelEntityCodec(),
+        PublishedRevisionSQLiteKernelEntityCodec(),
+        ProjectRepositoryBindingHeadSQLiteKernelEntityCodec(),
+        ProjectRepositoryBindingSQLiteKernelEntityCodec(),
+        ProtocolRecordSQLiteKernelEntityCodec(),
+        RevisionPathVerificationSQLiteKernelEntityCodec(),
+        RuntimeContinuationIntentSQLiteKernelEntityCodec(),
+        RuntimeOutcomeConsumptionSQLiteKernelEntityCodec(),
+        RuntimeSettlementIntentSQLiteKernelEntityCodec(),
+        RuntimeTurnCommandSQLiteKernelEntityCodec(),
+        SessionCapabilityBindingSQLiteKernelEntityCodec(),
+        SessionCompositionPinSQLiteKernelEntityCodec(),
+        SessionRepositoryBindingPinSQLiteKernelEntityCodec(),
+        SessionRuntimeLeaseSQLiteKernelEntityCodec(),
+        SessionSQLiteKernelEntityCodec(),
+        TaskSQLiteKernelEntityCodec(),
+        TaskEvidenceSQLiteKernelEntityCodec(),
+        VerifiedWorkspaceCheckpointSQLiteKernelEntityCodec(),
+        WorkspaceGenerationSQLiteKernelEntityCodec(),
+        WorkspacePublicationIntentSQLiteKernelEntityCodec(),
+        WorkspaceRuntimeBindingSQLiteKernelEntityCodec(),
+    )
+
+
 __all__ = [
     "AgentAuthorityLeaseSQLiteKernelEntityCodec",
     "AgentMemberSQLiteKernelEntityCodec",
@@ -5816,4 +5873,5 @@ __all__ = [
     "WorkspaceGenerationSQLiteKernelEntityCodec",
     "WorkspaceRuntimeBindingSQLiteKernelEntityCodec",
     "WorkspacePublicationIntentSQLiteKernelEntityCodec",
+    "kernel_entity_codecs",
 ]

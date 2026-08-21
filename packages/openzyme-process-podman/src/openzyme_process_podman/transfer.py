@@ -8,10 +8,12 @@ import hashlib
 from importlib import resources
 import json
 import re
-import threading
 from typing import Protocol
 
 from openzyme_contracts import ExternalEffectCertainty
+from openzyme_contracts import WorkspaceOperationIdentity
+from openzyme_contracts import WorkspaceOperationLedgerError
+from openzyme_contracts import WorkspaceOperationLedgerPort
 from openzyme_contracts import WorkspaceOperationReceipt
 from openzyme_contracts import WorkspacePortError
 from openzyme_contracts import WorkspaceTransferDirection
@@ -376,16 +378,13 @@ class MappingPodmanTransferMountResolver:
 class PodmanWorkspaceTransferAdapter:
     workspace_mount_resolver: PodmanWorkspaceMountResolver
     transfer_mount_resolver: PodmanTransferMountResolver
+    operation_ledger: WorkspaceOperationLedgerPort
     executor: PodmanCommandExecutor = field(default_factory=SupervisedSubprocessExecutor)
     podman_binary: str = "/usr/bin/podman"
     runtime_uid: int = 10_001
     runtime_gid: int = 10_001
     provider_id: str = PODMAN_TRANSFER_PROVIDER_ID
     provider_contract_digest: str = PODMAN_TRANSFER_PROVIDER_CONTRACT_DIGEST
-    _receipts: dict[str, tuple[str, WorkspaceOperationReceipt]] = field(
-        default_factory=dict
-    )
-    _lock: threading.Lock = field(default_factory=threading.Lock)
     _verified_helper_source: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -406,17 +405,10 @@ class PodmanWorkspaceTransferAdapter:
         self._verified_helper_source = helper_source
 
     def transfer(self, request: WorkspaceTransferRequest) -> WorkspaceOperationReceipt:
-        with self._lock:
-            prior = self._receipts.get(request.operation_id)
-            if prior is not None:
-                if prior[0] != request.intent_digest:
-                    raise WorkspacePortError(
-                        "workspace_operation_identity_collision",
-                        "operation identity was already used for another transfer",
-                        effect_certainty=ExternalEffectCertainty.NO_EFFECT,
-                        mutation_applied=False,
-                    )
-                return prior[1]
+        identity = self._operation_identity(request)
+        prior = self._read_ledger(identity)
+        if prior is not None:
+            return self._recorded_or_pending(identity, prior.receipt)
         workspace_mount = self.workspace_mount_resolver.resolve(request.binding)
         transfer_mount = self.transfer_mount_resolver.resolve(request)
         if workspace_mount is None or transfer_mount is None:
@@ -426,6 +418,11 @@ class PodmanWorkspaceTransferAdapter:
                 effect_certainty=ExternalEffectCertainty.NO_EFFECT,
                 mutation_applied=False,
             )
+        if not self.operation_ledger.reserve(identity):
+            concurrent = self._read_ledger(identity)
+            if concurrent is None:
+                raise RuntimeError("reserved transfer occurrence disappeared")
+            return self._recorded_or_pending(identity, concurrent.receipt)
         helper_request: dict[str, object] = {
             "schema_version": PODMAN_TRANSFER_HELPER_SCHEMA,
             "operation_id": request.operation_id,
@@ -445,20 +442,29 @@ class PodmanWorkspaceTransferAdapter:
                 else transfer_mount.revision_identity.to_dict()
             ),
         }
-        response = self._invoke(
-            request=request,
-            workspace_mount=workspace_mount,
-            transfer_mount=transfer_mount,
-            helper_request=helper_request,
-        )
+        try:
+            response = self._invoke(
+                request=request,
+                workspace_mount=workspace_mount,
+                transfer_mount=transfer_mount,
+                helper_request=helper_request,
+            )
+        except WorkspacePortError as exc:
+            self.operation_ledger.settle(
+                identity,
+                self._error_receipt(request, exc),
+            )
+            raise
         result = response.get("result")
         if not isinstance(result, dict):
-            raise WorkspacePortError(
+            error = WorkspacePortError(
                 "workspace_transfer_result_invalid",
                 "transfer helper returned an invalid result",
                 effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
                 mutation_applied=None,
             )
+            self.operation_ledger.settle(identity, self._error_receipt(request, error))
+            raise error
         self._validate_result(request, transfer_mount, result)
         result_payload = _json_bytes(
             {
@@ -475,8 +481,7 @@ class PodmanWorkspaceTransferAdapter:
             mutation_applied=True,
             result_payload=result_payload,
         )
-        with self._lock:
-            self._receipts[request.operation_id] = (request.intent_digest, receipt)
+        self.operation_ledger.settle(identity, receipt)
         return receipt
 
     def reconcile(
@@ -485,17 +490,10 @@ class PodmanWorkspaceTransferAdapter:
     ) -> WorkspaceOperationReceipt:
         """Observe an exact transfer receipt without copying bytes again."""
 
-        with self._lock:
-            prior = self._receipts.get(request.operation_id)
+        identity = self._operation_identity(request)
+        prior = self._read_ledger(identity)
         if prior is not None:
-            if prior[0] != request.intent_digest:
-                raise WorkspacePortError(
-                    "workspace_operation_identity_collision",
-                    "operation identity was already used for another transfer",
-                    effect_certainty=ExternalEffectCertainty.NO_EFFECT,
-                    mutation_applied=False,
-                )
-            return prior[1]
+            return self._recorded_or_pending(identity, prior.receipt)
         return WorkspaceOperationReceipt.create(
             operation_id=request.operation_id,
             workspace_id=request.binding.workspace_id,
@@ -504,6 +502,72 @@ class PodmanWorkspaceTransferAdapter:
             effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
             mutation_applied=None,
             diagnostic_id="diagnostic-transfer-reconciliation-pending",
+        )
+
+    def _operation_identity(
+        self,
+        request: WorkspaceTransferRequest,
+    ) -> WorkspaceOperationIdentity:
+        return WorkspaceOperationIdentity(
+            provider_id=self.provider_id,
+            operation_kind="transfer",
+            operation_id=request.operation_id,
+            intent_digest=request.intent_digest,
+            session_id=request.binding.session_id,
+            workspace_id=request.binding.workspace_id,
+            generation=request.binding.generation,
+            state_version=request.binding.state_version,
+        )
+
+    def _read_ledger(self, identity: WorkspaceOperationIdentity):  # noqa: ANN202
+        try:
+            return self.operation_ledger.read(identity)
+        except WorkspaceOperationLedgerError as exc:
+            collision = exc.phase == "identity"
+            raise WorkspacePortError(
+                (
+                    "workspace_operation_identity_collision"
+                    if collision
+                    else "workspace_operation_ledger_rejected"
+                ),
+                "operation identity was already used for another transfer"
+                if collision
+                else "workspace occurrence ledger rejected the operation",
+                effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+                mutation_applied=False,
+            ) from exc
+
+    def _recorded_or_pending(
+        self,
+        identity: WorkspaceOperationIdentity,
+        receipt: WorkspaceOperationReceipt | None,
+    ) -> WorkspaceOperationReceipt:
+        if receipt is not None:
+            return receipt
+        pending = WorkspaceOperationReceipt.create(
+            operation_id=identity.operation_id,
+            workspace_id=identity.workspace_id,
+            generation=identity.generation,
+            state_version=identity.state_version,
+            effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
+            mutation_applied=None,
+            diagnostic_id="diagnostic-transfer-reconciliation-pending",
+        )
+        return self.operation_ledger.settle(identity, pending).receipt or pending
+
+    @staticmethod
+    def _error_receipt(
+        request: WorkspaceTransferRequest,
+        error: WorkspacePortError,
+    ) -> WorkspaceOperationReceipt:
+        return WorkspaceOperationReceipt.create(
+            operation_id=request.operation_id,
+            workspace_id=request.binding.workspace_id,
+            generation=request.binding.generation,
+            state_version=request.binding.state_version,
+            effect_certainty=error.effect_certainty,
+            mutation_applied=error.mutation_applied,
+            diagnostic_id=error.diagnostic_id,
         )
 
     def _invoke(

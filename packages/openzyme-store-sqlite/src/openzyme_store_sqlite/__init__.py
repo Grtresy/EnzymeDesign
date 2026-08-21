@@ -39,6 +39,9 @@ from .composite_startup import verify_composite_store_schema_read_only
 from .extension_state import ExtensionStateStore
 from .extension_state import ExtensionStateStoreError
 from .extension_state import SQLiteExtensionStateProjectionQuery
+from .workspace_operation_ledger import SQLiteWorkspaceOperationLedger
+from .workspace_operation_ledger import SQLiteWorkspaceOperationLedgerError
+from .revision_path_queries import SQLiteRevisionPathVerificationQuery
 from .entity_codecs import AgentAuthorityLeaseSQLiteKernelEntityCodec
 from .entity_codecs import AgentMemberSQLiteKernelEntityCodec
 from .entity_codecs import AgentRuntimeSignalSQLiteKernelEntityCodec
@@ -71,6 +74,7 @@ from .entity_codecs import VerifiedWorkspaceCheckpointSQLiteKernelEntityCodec
 from .entity_codecs import WorkspaceGenerationSQLiteKernelEntityCodec
 from .entity_codecs import WorkspacePublicationIntentSQLiteKernelEntityCodec
 from .entity_codecs import WorkspaceRuntimeBindingSQLiteKernelEntityCodec
+from .entity_codecs import kernel_entity_codecs
 from .migration_catalog import ClosedSQLiteMigrationCatalog
 from .migration_catalog import SQLiteMigrationCatalogError
 from .migration_catalog import SQLiteMigrationDescriptor
@@ -144,7 +148,6 @@ from .persistence import SQLiteCompositionIdentityRepository
 from .persistence import SQLitePersistenceError
 from .persistence import SQLiteResourceCapabilityFactRepository
 from .persistence import SQLiteSessionCapabilityBindingRepository
-from .persistence import SQLiteWorkspaceOperationReceiptRepository
 from .startup import SQLiteStartupSchemaProof
 from .startup import SQLiteStartupVerificationError
 from .startup import STORE_OBJECT_OWNER
@@ -265,6 +268,7 @@ __all__ = [
     "WorkspaceGenerationSQLiteKernelEntityCodec",
     "WorkspacePublicationIntentSQLiteKernelEntityCodec",
     "WorkspaceRuntimeBindingSQLiteKernelEntityCodec",
+    "kernel_entity_codecs",
     "SQLiteSchemaMismatchError",
     "SQLiteStartupSchemaProof",
     "SQLiteStartupCompositionExpectation",
@@ -276,7 +280,9 @@ __all__ = [
     "SQLiteStorePreflightObservation",
     "SQLiteUnitOfWork",
     "SQLiteUnitOfWorkError",
-    "SQLiteWorkspaceOperationReceiptRepository",
+    "SQLiteWorkspaceOperationLedger",
+    "SQLiteWorkspaceOperationLedgerError",
+    "SQLiteRevisionPathVerificationQuery",
     "SESSION_CUTOVER_DISPOSITION_SCHEMA_VERSION",
     "SessionCutoverDisposition",
     "SessionCutoverDispositionKind",

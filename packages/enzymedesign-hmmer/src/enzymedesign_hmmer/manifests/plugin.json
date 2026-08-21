@@ -3,11 +3,11 @@
   "finish_validators": [],
   "http_routes": [],
   "identity": {
-    "build_digest": "sha256:821fe0d377e1982d37308b6232c269162e9be7dd25091757c3d281339e065e2f",
+    "build_digest": "sha256:e99dcd640a79c5c63cbc7663c13e2d368461f325561165e304be18a9408798c1",
     "component_id": "enzymedesign.hmmer",
     "component_kind": "plugin",
     "component_version": "0.1.0",
-    "contract_digest": "sha256:4360fbe63e007a56f351eefcba2ed699def0c494de672aee06ee8a0c3896ca4f",
+    "contract_digest": "sha256:69d5f9d43fe315a926039eeefd6ffd1bdba1750d17e8263dcf4aefd50e03de7b",
     "distribution_name": "enzymedesign-hmmer",
     "distribution_version": "0.1.0"
   },
@@ -213,11 +213,19 @@
         "output_schema": {
           "additionalProperties": false,
           "properties": {
+            "execution_id": {
+              "minLength": 1,
+              "type": "string"
+            },
             "fallback_performed": {
               "const": false
             },
             "formal_compute_requested": {
               "const": true
+            },
+            "operation_id": {
+              "minLength": 1,
+              "type": "string"
             },
             "raw_shell": {
               "const": false
@@ -239,6 +247,8 @@
             }
           },
           "required": [
+            "execution_id",
+            "operation_id",
             "workload_id",
             "workload_digest",
             "state",
@@ -378,11 +388,19 @@
         "output_schema": {
           "additionalProperties": false,
           "properties": {
+            "execution_id": {
+              "minLength": 1,
+              "type": "string"
+            },
             "fallback_performed": {
               "const": false
             },
             "formal_compute_requested": {
               "const": true
+            },
+            "operation_id": {
+              "minLength": 1,
+              "type": "string"
             },
             "raw_shell": {
               "const": false
@@ -404,6 +422,8 @@
             }
           },
           "required": [
+            "execution_id",
+            "operation_id",
             "workload_id",
             "workload_digest",
             "state",

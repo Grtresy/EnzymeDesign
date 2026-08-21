@@ -4,6 +4,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
+from enzymedesign_core import ExactProductCapabilityRouteRuntime
+from enzymedesign_core import ProductCapabilityRouteApplication
 from openzyme_contracts import ToolInvocation
 from openzyme_contracts import ToolResult
 from openzyme_contracts import ToolSpec
@@ -11,6 +13,7 @@ from openzyme_contracts.identity import JsonValue
 from openzyme_extension_spi import CapabilityRequirement
 from openzyme_extension_spi import CapabilityRequirementKind
 from openzyme_extension_spi import QualificationSpec
+from openzyme_extension_spi import ToolDispatchBinding
 
 from .contracts import VINA_DOCK_TOOL
 from .contracts import VINA_PLUGIN_ID
@@ -74,6 +77,8 @@ VINA_TOOL_SPEC = ToolSpec(
         "type": "object",
         "additionalProperties": False,
         "required": [
+            "execution_id",
+            "operation_id",
             "workload_id",
             "workload_digest",
             "state",
@@ -83,6 +88,8 @@ VINA_TOOL_SPEC = ToolSpec(
             "task_finished",
         ],
         "properties": {
+            "execution_id": _ID,
+            "operation_id": _ID,
             "workload_id": _ID,
             "workload_digest": _DIGEST,
             "state": _ID,
@@ -131,7 +138,12 @@ VINA_QUALIFICATION_SPEC = QualificationSpec(
 
 
 class VinaToolApplication(Protocol):
-    def request(self, *, invocation: ToolInvocation) -> Mapping[str, JsonValue]: ...
+    def request(
+        self,
+        *,
+        invocation: ToolInvocation,
+        dispatch: ToolDispatchBinding,
+    ) -> Mapping[str, JsonValue]: ...
 
 
 @dataclass(slots=True)
@@ -143,17 +155,45 @@ class VinaToolRuntime:
 
     def invoke(self, invocation: ToolInvocation) -> ToolResult:
         if invocation.tool_name != self.contract.tool_name or invocation.route_id is None:
-            return ToolResult(
-                call_id=invocation.call_id,
-                tool_name=invocation.tool_name,
-                ok=False,
-                status="rejected",
-                summary="Vina requires its exact tool and explicit route identity.",
-                payload={"mutation_applied": False, "fallback_performed": False, "task_finished": False},
-                error_code="vina_route_or_tool_identity_invalid",
+            return self._rejected(
+                invocation,
+                "vina_route_or_tool_identity_invalid",
+                "Vina requires its exact tool and explicit route identity.",
+            )
+        return self._rejected(
+            invocation,
+            "vina_dispatch_binding_missing",
+            "Formal Vina invocation requires the Kernel-admitted route proof.",
+        )
+
+    def invoke_admitted(
+        self,
+        invocation: ToolInvocation,
+        dispatch: ToolDispatchBinding,
+    ) -> ToolResult:
+        if invocation.tool_name != self.contract.tool_name or invocation.route_id is None:
+            return self._rejected(
+                invocation,
+                "vina_route_or_tool_identity_invalid",
+                "Vina requires its exact tool and explicit route identity.",
+            )
+        if (
+            dispatch.tool_name != invocation.tool_name
+            or dispatch.tool_contract_digest != self.contract.contract_digest
+            or dispatch.route_id != invocation.route_id
+            or dispatch.affordance_snapshot_digest
+            != invocation.affordance_snapshot_digest
+            or dispatch.driver_id is None
+        ):
+            return self._rejected(
+                invocation,
+                "vina_dispatch_binding_stale",
+                "Vina dispatch facts differ from the exact admitted route.",
             )
         try:
-            payload = dict(self.application.request(invocation=invocation))
+            payload = dict(
+                self.application.request(invocation=invocation, dispatch=dispatch)
+            )
         except (KeyError, TypeError, ValueError) as exc:
             return ToolResult(
                 call_id=invocation.call_id,
@@ -181,12 +221,71 @@ class VinaToolRuntime:
             payload=payload,
         )
 
+    @staticmethod
+    def _rejected(
+        invocation: ToolInvocation,
+        error_code: str,
+        summary: str,
+    ) -> ToolResult:
+        return ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=False,
+            status="rejected",
+            summary=summary,
+            payload={
+                "mutation_applied": False,
+                "fallback_performed": False,
+                "task_finished": False,
+            },
+            error_code=error_code,
+        )
+
+
+VINA_ROUTE_BINDINGS = (
+    ("enzymedesign.vina.hpc-primary@1", "enzymedesign.vina.hpc"),
+    ("enzymedesign.vina.local@1", "enzymedesign.vina.local"),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class VinaPluginRuntimeSurfaces:
+    tools: tuple[VinaToolRuntime, ...]
+    capability_routes: tuple[ExactProductCapabilityRouteRuntime, ...]
+
+
+def build_vina_plugin_runtime_surfaces(
+    *,
+    application: VinaToolApplication,
+    route_application: ProductCapabilityRouteApplication,
+) -> VinaPluginRuntimeSurfaces:
+    return VinaPluginRuntimeSurfaces(
+        tools=(VinaToolRuntime(application),),
+        capability_routes=tuple(
+            ExactProductCapabilityRouteRuntime(
+                route_id=route_id,
+                owner_plugin_id=VINA_PLUGIN_ID,
+                driver_id=driver_id,
+                capability_ids=(
+                    VINA_PLUGIN_ID,
+                    "openzyme.execution.revision-job",
+                    "software.autodock-vina",
+                ),
+                application=route_application,
+            )
+            for route_id, driver_id in VINA_ROUTE_BINDINGS
+        ),
+    )
+
 
 __all__ = [
     "VINA_COMPUTE_REQUIREMENT",
     "VINA_QUALIFICATION_SPEC",
+    "VINA_ROUTE_BINDINGS",
     "VINA_SOFTWARE_REQUIREMENT",
     "VINA_TOOL_SPEC",
     "VinaToolApplication",
+    "VinaPluginRuntimeSurfaces",
     "VinaToolRuntime",
+    "build_vina_plugin_runtime_surfaces",
 ]
