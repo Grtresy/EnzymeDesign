@@ -13,8 +13,8 @@ activation；证据见 `operator/device-fresh-install-20260821.md`，正式 rese
 
 当前审计状态：`enzymedesign-product-composition` 已由当前 source 的 focused 产品场景直接证明；
 `openzyme-layered-qualification` 已由 28/28 clean-source admission report 和独立 verifier 证明；
-`file-workspace-cutover-assurance` 已由 19.12 的 exact clean-source completion/admission 证明，并要求包含本索引的
-最终 evidence seal commit 再执行一次相同外部门禁后才可归档。
+`file-workspace-cutover-assurance` 已由 19.12 的 exact clean-source completion/admission 证明；包含本索引的
+最终 seal SHA 仍以 checkout 外同序门禁为归档 authority，其 SHA、report 路径和 digest 只记录在交付说明中。
 Workspace Adapter restart reconciliation 已由 19.6 的 durable
 ledger 与跨 epoch 测试直接证明；Slurm opaque-handle recovery、remote helper qualification 与
 target-generation binding 已由 19.7 的持久 ledger、selected factory composition、helper manifest/locator 和
@@ -64,8 +64,7 @@ gate，不能由 focused green 替代；最终 evidence seal commit 必须重复
 
 ## file-workspace-cutover-assurance
 
-Status: `reopened for correctness fixes; final clean-source admission pending`。mounted product formal slice 已有
-focused 直接证据，
+Status: `proven by exact clean-source closure`。mounted product formal slice 已有 focused 直接证据，
 Workspace Adapter restart/reconcile 已由 19.6 单独闭合，Slurm occurrence 与 remote-helper resource
 qualification 已由 19.7 闭合；18.9 reset receipt 独立有效。
 
@@ -544,7 +543,7 @@ scenario；完整 diagnostic qualification 必须全部执行且每个 scenario/
 publication、adopted inventory、affordance/route、mounted HMMER/Vina Drivers、durable Compute、声明式 fake
 runner、exact Driver result validator、continuation 与 Science validator，同时证明 Task 不自动完成。它是
 mounted product graph 的 formal HMMER/Vina slice，不是全部 Plugin application 或真实 external route 的 E2E。
-最终 completion evidence 仍必须在
-19.12 记录 28/28 scenario/invariant satisfied、零 skip/xfail、零 undeclared external effect、零 not-run，以及
+最终 completion evidence 由
+19.12 的 checkout 外报告记录 28/28 scenario/invariant satisfied、零 skip/xfail、零 undeclared external effect、零 not-run，以及
 独立 verifier 对同一 payload digest 的验证结果。mainline、wheel、static architecture 与 strict OpenSpec 均为必要的
 互补证据，不能彼此替代。

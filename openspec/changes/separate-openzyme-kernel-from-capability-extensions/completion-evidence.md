@@ -49,7 +49,7 @@ non-live runtime evidence，不证明真实 target cutover。详细映射见
 因此旧 27/27 结果仍只保留为历史组件级 diagnostic evidence；当前 closed registry 已变为 28 个 scenario/
 invariant。20.1—20.6 已修复无 handle uncertain dispatch、SSH/Slurm reconcile certainty、runtime gateway
 effect truth、Driver terminal result validation 与 Adapter runtime identity 双通道；20.7 的声明收窄已进入文档，
-但仍须与 18.10、19.12 一起由最终 clean-source closure 证明。仓内索引只记录历史 candidate 证据和封口规则；
+并与 18.10、19.12 一起由最终 clean-source closure 证明。仓内索引只记录历史 candidate 证据和封口规则；
 最终 clean SHA、最终 report path 与 digest 必须由封口后的外部运行产生并记录在交付说明中，不写回仓库造成自引用。
 
 ## 2026-08-22 历史 clean candidate 与封口验证
@@ -161,7 +161,8 @@ owner bundle 索引；product composition、restart/reconcile、完整 layered q
 
 ## Archive condition
 
-tasks 19.2—19.11 与 20.1—20.6 已完成；tasks `18.10`、`19.12`、`20.7` 的最终成立仍以包含本索引与
-correctness 修复的 clean source 在 checkout 外生成并经独立 verifier 验证的整组 evidence 为条件。本 change 不因为
-OpenSpec artifacts 为 `done`、单一绿色 gate 或旧 receipt 而提前宣称完成。task `18.9` 的第二次正式 reset 已完整
-执行并验证；它不证明后续 product runtime implementation closure，也不会因后续代码修复而被倒推改写。
+全部 implementation tasks 已完成；tasks `18.10`、`19.12`、`20.7` 的最终 authority 是包含本索引与 correctness
+修复的 clean seal source 在 checkout 外生成并经独立 verifier 验证的整组 evidence，其 SHA、路径和 digest 只记录在
+交付说明中。本 change 不因为 OpenSpec artifacts 为 `done`、单一绿色 gate 或旧 receipt 而提前宣称完成。task
+`18.9` 的第二次正式 reset 已完整执行并验证；它不证明后续 product runtime implementation closure，也不会因后续
+代码修复而被倒推改写。
