@@ -59,6 +59,10 @@ Every filesystem mutation, process execution and transfer MUST create a durable 
 - **WHEN** Kernel asks the selected effectful Port to reconcile the complete original request
 - **THEN** the Adapter only observes the same operation/intent receipt, reports `redispatch_performed=false`, and keeps `dispatch_in_doubt` if terminal proof is unavailable
 
+#### Scenario: Reconciliation credential or locator is temporarily unavailable
+- **WHEN** a durable workspace occurrence is already `dispatch_in_doubt` but the current Adapter epoch cannot resolve its credential, locator or qualification
+- **THEN** reconciliation returns or preserves the original uncertainty with `mutation_applied=null`, performs no dispatch, and MUST NOT settle the occurrence as `no_effect`
+
 ### Requirement: Workspace transfer references are opaque and manifest-bound
 Upload, download and revision sync MUST accept only an opaque `transfer_ref`, exact transfer manifest digest, root-relative workspace path, byte budget, deadline and authority/generation/fence identity. Public requests and receipts MUST NOT expose or accept Host paths, URLs, remote roots, transfer-volume names or credentials. A transfer MUST use a separately reserved source/sink and MUST remain distinct from bounded small-file CRUD, Git publication and workspace lifecycle cleanup.
 

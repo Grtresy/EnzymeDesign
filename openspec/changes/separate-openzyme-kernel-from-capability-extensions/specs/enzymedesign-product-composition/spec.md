@@ -96,6 +96,10 @@ The EnzymeDesign composition MUST run its real manifest/Host/extension/migration
 - **WHEN** product qualification observes an undeclared network, SSH, scheduler, container or browser effect
 - **THEN** the scenario fails immediately and no live result is accepted as a substitute
 
+#### Scenario: Only the mounted formal-compute slice is executed
+- **WHEN** qualification mounts the full EnzymeDesign Distribution but executes only HMMER/Vina through Compute while other product application services or lifecycle prerequisites are deterministic substitutes or seeded facts
+- **THEN** evidence names it as a real mounted product graph with a formal HMMER/Vina cross-layer slice and does not claim all Plugins or external systems are end-to-end verified
+
 ### Requirement: EnzymeDesign code and documentation form one product boundary
 EnzymeDesign package READMEs, product/deployment docs, main architecture, relevant `docs/v3/` extension references and qualification inventory MUST match the actual vertical imports, manifests, tools, routes, resources and setup commands. Generic OpenZyme docs MUST clearly distinguish optional examples from Kernel/Standard ownership.
 

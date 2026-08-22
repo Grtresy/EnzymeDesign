@@ -209,12 +209,6 @@ class SlurmSchedulerAdapter:
     provider_id: str = SLURM_ADAPTER_ID
 
     def submit(self, request: SchedulerDispatchRequest) -> SchedulerDispatchReceipt:
-        credential = self._credential(
-            request.credential_occurrence_id,
-            request.credential_digest,
-        )
-        if credential is None:
-            return self._no_effect(request.operation_id, request.request_digest)
         identity = self._identity(
             SchedulerOccurrenceKind.SUBMIT,
             request.operation_id,
@@ -223,6 +217,12 @@ class SlurmSchedulerAdapter:
         prior = self.ledger.read(identity)
         if prior is not None:
             return self._recorded_or_pending(identity, prior)
+        credential = self._credential(
+            request.credential_occurrence_id,
+            request.credential_digest,
+        )
+        if credential is None:
+            return self._no_effect(request.operation_id, request.request_digest)
         if not self.ledger.reserve(identity):
             concurrent = self.ledger.read(identity)
             if concurrent is None:
@@ -238,12 +238,6 @@ class SlurmSchedulerAdapter:
         self,
         request: SchedulerDispatchRequest,
     ) -> SchedulerDispatchReceipt:
-        credential = self._credential(
-            request.credential_occurrence_id,
-            request.credential_digest,
-        )
-        if credential is None:
-            return self._no_effect(request.operation_id, request.request_digest)
         identity = self._identity(
             SchedulerOccurrenceKind.SUBMIT,
             request.operation_id,
@@ -257,6 +251,12 @@ class SlurmSchedulerAdapter:
             is not ExternalEffectCertainty.DISPATCH_IN_DOUBT
         ):
             return prior.receipt
+        credential = self._credential(
+            request.credential_occurrence_id,
+            request.credential_digest,
+        )
+        if credential is None:
+            return self._recorded_or_pending(identity, prior)
         return self._settle_dispatch(
             identity,
             request,
@@ -310,12 +310,6 @@ class SlurmSchedulerAdapter:
         reconcile: bool,
     ) -> SchedulerDispatchReceipt:
         record = self._record(request.opaque_handle_id)
-        credential = self._credential(
-            request.credential_occurrence_id,
-            request.credential_digest,
-        )
-        if credential is None:
-            return self._no_effect(request.operation_id, request.request_digest)
         identity = self._identity(
             SchedulerOccurrenceKind.CANCEL,
             request.operation_id,
@@ -332,7 +326,15 @@ class SlurmSchedulerAdapter:
                 return prior.receipt
         elif prior is not None:
             return self._recorded_or_pending(identity, prior)
-        elif not self.ledger.reserve(identity):
+        credential = self._credential(
+            request.credential_occurrence_id,
+            request.credential_digest,
+        )
+        if credential is None:
+            if prior is not None:
+                return self._recorded_or_pending(identity, prior)
+            return self._no_effect(request.operation_id, request.request_digest)
+        if not reconcile and not self.ledger.reserve(identity):
             concurrent = self.ledger.read(identity)
             if concurrent is None:
                 raise RuntimeError("reserved Slurm cancel occurrence disappeared")

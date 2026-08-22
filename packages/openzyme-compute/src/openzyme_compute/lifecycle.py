@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import replace
 from datetime import datetime
+from enum import StrEnum
 import re
 from typing import Protocol
 
@@ -12,6 +13,7 @@ from openzyme_contracts import canonical_sha256_digest
 from openzyme_contracts import require_digest
 from openzyme_contracts import require_identifier
 from openzyme_contracts.identity import JsonValue
+from openzyme_contracts.identity import freeze_json
 from openzyme_contracts.identity import json_compatible
 from openzyme_execution_contracts import ExecutionResultReceipt
 from openzyme_execution_contracts import ExecutionRouteIdentity
@@ -29,8 +31,10 @@ from openzyme_extension_spi import ExtensionStateCommand
 from openzyme_extension_spi import ExtensionStateRecord
 
 
-COMPUTE_EXECUTION_REQUEST_SCHEMA = "openzyme_compute_execution_request@1"
-COMPUTE_EXECUTION_RECORD_SCHEMA = "openzyme_compute_execution_record@1"
+COMPUTE_EXECUTION_REQUEST_SCHEMA = "openzyme_compute_execution_request@2"
+COMPUTE_EXECUTION_RECORD_SCHEMA = "openzyme_compute_execution_record@2"
+_LEGACY_COMPUTE_EXECUTION_REQUEST_SCHEMA = "openzyme_compute_execution_request@1"
+_LEGACY_COMPUTE_EXECUTION_RECORD_SCHEMA = "openzyme_compute_execution_record@1"
 COMPUTE_RESULT_PROJECTION_SCHEMA = "openzyme.compute@1"
 _GIT_OID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 
@@ -58,6 +62,113 @@ class ComputeLifecycleError(RuntimeError):
         super().__init__(message)
 
 
+class ComputeDispatchState(StrEnum):
+    NOT_STARTED = "not_started"
+    RECONCILE_REQUIRED = "reconcile_required"
+    DISPATCHED = "dispatched"
+    SETTLED = "settled"
+
+
+@dataclass(frozen=True, slots=True)
+class ComputeResultValidatorBinding:
+    driver_id: str
+    owning_plugin_id: str
+    route_id: str
+    validator_id: str
+    workload_contract_digest: str
+    result_contract_digest: str
+    compiled_workload: Mapping[str, JsonValue]
+    compiled_workload_digest: str
+
+    @classmethod
+    def create(cls, **values: object) -> ComputeResultValidatorBinding:
+        compiled_workload = json_compatible(values["compiled_workload"])
+        if not isinstance(compiled_workload, Mapping):
+            raise ValueError("compiled_workload must be a closed JSON object")
+        return cls(
+            driver_id=str(values["driver_id"]),
+            owning_plugin_id=str(values["owning_plugin_id"]),
+            route_id=str(values["route_id"]),
+            validator_id=str(values["validator_id"]),
+            workload_contract_digest=str(values["workload_contract_digest"]),
+            result_contract_digest=str(values["result_contract_digest"]),
+            compiled_workload=compiled_workload,
+            compiled_workload_digest=canonical_sha256_digest(compiled_workload),
+        )
+
+    def __post_init__(self) -> None:
+        for field_name in ("driver_id", "owning_plugin_id", "route_id", "validator_id"):
+            require_identifier(getattr(self, field_name), field_name=field_name)
+        for field_name in (
+            "workload_contract_digest",
+            "result_contract_digest",
+            "compiled_workload_digest",
+        ):
+            require_digest(getattr(self, field_name), field_name=field_name)
+        compiled = freeze_json(self.compiled_workload, field_name="compiled_workload")
+        if not isinstance(compiled, Mapping):
+            raise ValueError("compiled_workload must be a closed JSON object")
+        object.__setattr__(self, "compiled_workload", compiled)
+        if self.compiled_workload_digest != canonical_sha256_digest(
+            json_compatible(compiled)
+        ):
+            raise ValueError("compiled workload digest mismatch")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": "openzyme_compute_result_validator_binding@1",
+            "driver_id": self.driver_id,
+            "owning_plugin_id": self.owning_plugin_id,
+            "route_id": self.route_id,
+            "validator_id": self.validator_id,
+            "workload_contract_digest": self.workload_contract_digest,
+            "result_contract_digest": self.result_contract_digest,
+            "compiled_workload": json_compatible(self.compiled_workload),
+            "compiled_workload_digest": self.compiled_workload_digest,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> ComputeResultValidatorBinding:
+        fields = {
+            "schema_version",
+            "driver_id",
+            "owning_plugin_id",
+            "route_id",
+            "validator_id",
+            "workload_contract_digest",
+            "result_contract_digest",
+            "compiled_workload",
+            "compiled_workload_digest",
+        }
+        if not isinstance(value, Mapping) or set(value) != fields:
+            raise ValueError("Compute result validator binding fields are closed")
+        if value["schema_version"] != "openzyme_compute_result_validator_binding@1":
+            raise ValueError("unsupported Compute result validator binding schema")
+        compiled = json_compatible(value["compiled_workload"])
+        if not isinstance(compiled, Mapping):
+            raise ValueError("compiled_workload must be a closed JSON object")
+        return cls(
+            driver_id=str(value["driver_id"]),
+            owning_plugin_id=str(value["owning_plugin_id"]),
+            route_id=str(value["route_id"]),
+            validator_id=str(value["validator_id"]),
+            workload_contract_digest=str(value["workload_contract_digest"]),
+            result_contract_digest=str(value["result_contract_digest"]),
+            compiled_workload=compiled,
+            compiled_workload_digest=str(value["compiled_workload_digest"]),
+        )
+
+
+class ComputeTerminalResultValidatorPort(Protocol):
+    def validate(
+        self,
+        *,
+        request: ComputeExecutionRequest,
+        binding: ComputeResultValidatorBinding,
+        result: ExecutionResultReceipt,
+    ) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ComputeExecutionRequest:
     invocation_id: str
@@ -83,6 +194,7 @@ class ComputeExecutionRequest:
     absolute_deadline: str
     created_at: str
     request_digest: str
+    result_validator: ComputeResultValidatorBinding | None = None
     schema_version: str = COMPUTE_EXECUTION_REQUEST_SCHEMA
 
     @classmethod
@@ -98,7 +210,7 @@ class ComputeExecutionRequest:
 
     @classmethod
     def from_dict(cls, value: object) -> ComputeExecutionRequest:
-        fields = {
+        legacy_fields = {
             "schema_version",
             "invocation_id",
             "execution_id",
@@ -124,7 +236,16 @@ class ComputeExecutionRequest:
             "created_at",
             "request_digest",
         }
-        if not isinstance(value, Mapping) or set(value) != fields:
+        current_fields = legacy_fields | {"result_validator"}
+        if not isinstance(value, Mapping):
+            raise ValueError("Compute execution request fields are closed")
+        schema_version = value.get("schema_version")
+        expected_fields = (
+            legacy_fields
+            if schema_version == _LEGACY_COMPUTE_EXECUTION_REQUEST_SCHEMA
+            else current_fields
+        )
+        if set(value) != expected_fields:
             raise ValueError("Compute execution request fields are closed")
         data = dict(value)
         return cls(
@@ -152,11 +273,26 @@ class ComputeExecutionRequest:
             absolute_deadline=str(data["absolute_deadline"]),
             created_at=str(data["created_at"]),
             request_digest=str(data["request_digest"]),
+            result_validator=(
+                None
+                if data.get("result_validator") is None
+                else ComputeResultValidatorBinding.from_dict(
+                    json_compatible(data["result_validator"])
+                )
+            ),
         )
 
     def __post_init__(self) -> None:
-        if self.schema_version != COMPUTE_EXECUTION_REQUEST_SCHEMA:
+        if self.schema_version not in {
+            COMPUTE_EXECUTION_REQUEST_SCHEMA,
+            _LEGACY_COMPUTE_EXECUTION_REQUEST_SCHEMA,
+        }:
             raise ValueError("unsupported Compute execution request schema")
+        if (
+            self.schema_version == _LEGACY_COMPUTE_EXECUTION_REQUEST_SCHEMA
+            and self.result_validator is not None
+        ):
+            raise ValueError("legacy Compute request cannot carry a result validator")
         for field_name in (
             "invocation_id",
             "execution_id",
@@ -200,6 +336,16 @@ class ComputeExecutionRequest:
             require_digest(getattr(self, field_name), field_name=field_name)
         if self.route.route_id == "" or not self.workload.inputs:
             raise ValueError("Compute request requires an explicit route and revision input")
+        if self.result_validator is not None and (
+            self.result_validator.route_id != self.route.route_id
+            or canonical_sha256_digest(
+                json_compatible(
+                    self.result_validator.compiled_workload.get("workload")
+                )
+            )
+            != canonical_sha256_digest(self.workload.to_dict())
+        ):
+            raise ValueError("Compute result validator does not bind the exact route/workload")
         if any(
             item.revision_id != self.source_revision_id
             or item.commit != self.source_commit
@@ -214,7 +360,7 @@ class ComputeExecutionRequest:
 
     @property
     def identity_payload(self) -> dict[str, object]:
-        return {
+        payload = {
             "schema_version": self.schema_version,
             "invocation_id": self.invocation_id,
             "execution_id": self.execution_id,
@@ -239,6 +385,11 @@ class ComputeExecutionRequest:
             "absolute_deadline": self.absolute_deadline,
             "created_at": self.created_at,
         }
+        if self.schema_version == COMPUTE_EXECUTION_REQUEST_SCHEMA:
+            payload["result_validator"] = (
+                None if self.result_validator is None else self.result_validator.to_dict()
+            )
+        return payload
 
     def to_dict(self) -> dict[str, object]:
         return {**self.identity_payload, "request_digest": self.request_digest}
@@ -314,10 +465,33 @@ class ComputeRouteOutcome:
         if self.provider_handle is not None:
             require_identifier(self.provider_handle, field_name="provider_handle")
         require_digest(self.receipt_digest, field_name="receipt_digest")
+        if self.diagnostic_id is not None:
+            require_identifier(self.diagnostic_id, field_name="diagnostic_id")
+        if self.effect_certainty is ExternalEffectCertainty.NO_EFFECT:
+            if self.mutation_applied is not False or self.terminal_result is not None:
+                raise ValueError("no_effect Compute outcome requires no mutation/result")
+        elif self.effect_certainty is ExternalEffectCertainty.DISPATCH_IN_DOUBT:
+            if self.mutation_applied is not None or self.terminal_result is not None:
+                raise ValueError(
+                    "dispatch_in_doubt Compute outcome requires unknown mutation and no result"
+                )
+        elif self.mutation_applied is None:
+            raise ValueError("settled Compute outcome requires a mutation fact")
+        if (
+            self.terminal_result is not None
+            and self.effect_certainty is not ExternalEffectCertainty.TERMINAL_KNOWN
+        ):
+            raise ValueError("terminal Compute result requires terminal_known certainty")
 
 
 class ComputeRoutePort(Protocol):
     def dispatch(self, request: ComputeExecutionRequest) -> ComputeRouteOutcome: ...
+
+    def reconcile(
+        self,
+        request: ComputeExecutionRequest,
+        occurrence_identity: str,
+    ) -> ComputeRouteOutcome: ...
 
     def observe(
         self,
@@ -337,8 +511,10 @@ class ComputeExecutionRecord:
     request: ComputeExecutionRequest
     admission_proof_digest: str
     controlled_operation_admission_receipt_digest: str
+    dispatch_state: ComputeDispatchState = ComputeDispatchState.NOT_STARTED
+    dispatch_occurrence_id: str | None = None
+    dispatch_receipt_digest: str | None = None
     provider_handle: str | None = None
-    route_receipt_digest: str | None = None
     result: ExecutionResultReceipt | None = None
     state_version: int = 1
 
@@ -348,10 +524,33 @@ class ComputeExecutionRecord:
             self.controlled_operation_admission_receipt_digest,
             field_name="controlled_operation_admission_receipt_digest",
         )
+        if self.dispatch_occurrence_id is not None:
+            require_identifier(
+                self.dispatch_occurrence_id,
+                field_name="dispatch_occurrence_id",
+            )
+        if self.dispatch_receipt_digest is not None:
+            require_digest(
+                self.dispatch_receipt_digest,
+                field_name="dispatch_receipt_digest",
+            )
+        if self.dispatch_state is ComputeDispatchState.NOT_STARTED and (
+            self.dispatch_occurrence_id is not None
+            or self.dispatch_receipt_digest is not None
+            or self.provider_handle is not None
+            or self.result is not None
+        ):
+            raise ValueError("not-started Compute dispatch cannot carry occurrence facts")
+        if self.dispatch_state is not ComputeDispatchState.NOT_STARTED and (
+            self.dispatch_occurrence_id is None
+        ):
+            raise ValueError("started Compute dispatch requires occurrence identity")
+        if self.dispatch_state is ComputeDispatchState.SETTLED and (
+            self.dispatch_receipt_digest is None
+        ):
+            raise ValueError("settled Compute dispatch requires receipt identity")
         if self.provider_handle is not None:
             require_identifier(self.provider_handle, field_name="provider_handle")
-        if self.route_receipt_digest is not None:
-            require_digest(self.route_receipt_digest, field_name="route_receipt_digest")
         if self.state_version < 1:
             raise ValueError("state_version must be positive")
 
@@ -372,6 +571,9 @@ class ComputeExecutionRecord:
             "route_id": self.request.route.route_id,
             "target_id": self.request.route.target_id,
             "inventory_generation": self.request.route.inventory_generation,
+            "dispatch_state": self.dispatch_state.value,
+            "dispatch_occurrence_id": self.dispatch_occurrence_id,
+            "dispatch_receipt_digest": self.dispatch_receipt_digest,
             "provider_handle": self.provider_handle,
             "result_id": self.result.result_id if self.result else None,
             "result_state": self.result.state if self.result else None,
@@ -391,15 +593,17 @@ class ComputeExecutionRecord:
             "controlled_operation_admission_receipt_digest": (
                 self.controlled_operation_admission_receipt_digest
             ),
+            "dispatch_state": self.dispatch_state.value,
+            "dispatch_occurrence_id": self.dispatch_occurrence_id,
+            "dispatch_receipt_digest": self.dispatch_receipt_digest,
             "provider_handle": self.provider_handle,
-            "route_receipt_digest": self.route_receipt_digest,
             "result": None if self.result is None else self.result.to_dict(),
             "state_version": self.state_version,
         }
 
     @classmethod
     def from_dict(cls, value: object) -> ComputeExecutionRecord:
-        fields = {
+        legacy_fields = {
             "schema_version",
             "session_id",
             "request",
@@ -410,29 +614,76 @@ class ComputeExecutionRecord:
             "result",
             "state_version",
         }
-        if not isinstance(value, Mapping) or set(value) != fields:
+        current_fields = (legacy_fields - {"route_receipt_digest"}) | {
+            "dispatch_state",
+            "dispatch_occurrence_id",
+            "dispatch_receipt_digest",
+        }
+        if not isinstance(value, Mapping):
             raise ValueError("Compute execution record fields are closed")
-        if value["schema_version"] != COMPUTE_EXECUTION_RECORD_SCHEMA:
+        schema_version = value.get("schema_version")
+        expected_fields = (
+            legacy_fields
+            if schema_version == _LEGACY_COMPUTE_EXECUTION_RECORD_SCHEMA
+            else current_fields
+        )
+        if set(value) != expected_fields:
+            raise ValueError("Compute execution record fields are closed")
+        if schema_version not in {
+            COMPUTE_EXECUTION_RECORD_SCHEMA,
+            _LEGACY_COMPUTE_EXECUTION_RECORD_SCHEMA,
+        }:
             raise ValueError("unsupported Compute execution record schema")
         result = value["result"]
         request = ComputeExecutionRequest.from_dict(json_compatible(value["request"]))
         if value["session_id"] != request.session_id:
             raise ValueError("Compute execution record Session identity mismatch")
+        legacy_receipt = value.get("route_receipt_digest")
+        if schema_version == _LEGACY_COMPUTE_EXECUTION_RECORD_SCHEMA:
+            if result is not None:
+                dispatch_state = ComputeDispatchState.SETTLED
+            elif legacy_receipt is not None and value["provider_handle"] is None:
+                dispatch_state = ComputeDispatchState.RECONCILE_REQUIRED
+            elif value["provider_handle"] is not None:
+                dispatch_state = ComputeDispatchState.DISPATCHED
+            else:
+                dispatch_state = ComputeDispatchState.NOT_STARTED
+            occurrence_id = (
+                None
+                if dispatch_state is ComputeDispatchState.NOT_STARTED
+                else _dispatch_occurrence_id(request)
+            )
+        else:
+            dispatch_state = ComputeDispatchState(str(value["dispatch_state"]))
+            occurrence_id = (
+                None
+                if value["dispatch_occurrence_id"] is None
+                else str(value["dispatch_occurrence_id"])
+            )
         return cls(
             request=request,
             admission_proof_digest=str(value["admission_proof_digest"]),
             controlled_operation_admission_receipt_digest=str(
                 value["controlled_operation_admission_receipt_digest"]
             ),
+            dispatch_state=dispatch_state,
+            dispatch_occurrence_id=occurrence_id,
+            dispatch_receipt_digest=(
+                None
+                if (
+                    legacy_receipt is None
+                    and value.get("dispatch_receipt_digest") is None
+                )
+                else str(
+                    legacy_receipt
+                    if legacy_receipt is not None
+                    else value["dispatch_receipt_digest"]
+                )
+            ),
             provider_handle=(
                 None
                 if value["provider_handle"] is None
                 else str(value["provider_handle"])
-            ),
-            route_receipt_digest=(
-                None
-                if value["route_receipt_digest"] is None
-                else str(value["route_receipt_digest"])
             ),
             result=(
                 None
@@ -454,6 +705,15 @@ class ComputeExecutionRepository(Protocol):
         self,
         context: KernelCommandContext,
         record: ComputeExecutionRecord,
+    ) -> ComputeExecutionRecord: ...
+
+    def reserve_dispatch_occurrence(
+        self,
+        context: KernelCommandContext,
+        execution_id: str,
+        *,
+        expected_state_version: int,
+        occurrence_identity: str,
     ) -> ComputeExecutionRecord: ...
 
     def bind_route_outcome(
@@ -505,6 +765,24 @@ class InMemoryComputeExecutionRepository:
             current,
             expected_state_version=expected_state_version,
             outcome=outcome,
+        )
+        self._records[execution_id] = updated
+        return updated
+
+    def reserve_dispatch_occurrence(
+        self,
+        context: KernelCommandContext,
+        execution_id: str,
+        *,
+        expected_state_version: int,
+        occurrence_identity: str,
+    ) -> ComputeExecutionRecord:
+        del context
+        current = self._records[execution_id]
+        updated = _reserve_dispatch_occurrence(
+            current,
+            expected_state_version=expected_state_version,
+            occurrence_identity=occurrence_identity,
         )
         self._records[execution_id] = updated
         return updated
@@ -600,6 +878,33 @@ class ExtensionStateComputeExecutionRepository:
             expected_state_version=expected_state_version,
         )
 
+    def reserve_dispatch_occurrence(
+        self,
+        context: KernelCommandContext,
+        execution_id: str,
+        *,
+        expected_state_version: int,
+        occurrence_identity: str,
+    ) -> ComputeExecutionRecord:
+        current = self.get(context.session_id, execution_id)
+        if current is None:
+            raise ComputeLifecycleError(
+                "compute_execution_not_found",
+                "Compute execution does not exist",
+            )
+        updated = _reserve_dispatch_occurrence(
+            current,
+            expected_state_version=expected_state_version,
+            occurrence_identity=occurrence_identity,
+        )
+        if updated == current:
+            return current
+        return self._upsert(
+            context,
+            updated,
+            expected_state_version=expected_state_version,
+        )
+
     def _upsert(
         self,
         context: KernelCommandContext,
@@ -652,7 +957,12 @@ def _bind_route_outcome(
             "compute_execution_state_stale",
             "Compute execution state changed before settlement",
         )
-    if current.route_receipt_digest == outcome.receipt_digest:
+    if current.dispatch_state is ComputeDispatchState.NOT_STARTED:
+        raise ComputeLifecycleError(
+            "compute_dispatch_occurrence_not_reserved",
+            "Compute route outcome cannot settle before occurrence reservation",
+        )
+    if current.dispatch_receipt_digest == outcome.receipt_digest:
         if (
             outcome.route_id != current.request.route.route_id
             or outcome.operation_id != current.request.operation_id
@@ -693,11 +1003,50 @@ def _bind_route_outcome(
             outcome.provider_handle or current.provider_handle,
             result,
         )
+    if outcome.terminal_result is not None or (
+        outcome.effect_certainty is ExternalEffectCertainty.NO_EFFECT
+    ):
+        dispatch_state = ComputeDispatchState.SETTLED
+    elif outcome.effect_certainty is ExternalEffectCertainty.DISPATCH_IN_DOUBT:
+        dispatch_state = ComputeDispatchState.RECONCILE_REQUIRED
+    elif outcome.provider_handle is not None:
+        dispatch_state = ComputeDispatchState.DISPATCHED
+    else:
+        dispatch_state = ComputeDispatchState.RECONCILE_REQUIRED
     return replace(
         current,
+        dispatch_state=dispatch_state,
         provider_handle=outcome.provider_handle or current.provider_handle,
-        route_receipt_digest=outcome.receipt_digest,
+        dispatch_receipt_digest=outcome.receipt_digest,
         result=result,
+        state_version=current.state_version + 1,
+    )
+
+
+def _reserve_dispatch_occurrence(
+    current: ComputeExecutionRecord,
+    *,
+    expected_state_version: int,
+    occurrence_identity: str,
+) -> ComputeExecutionRecord:
+    require_identifier(occurrence_identity, field_name="occurrence_identity")
+    if current.dispatch_state is not ComputeDispatchState.NOT_STARTED:
+        if current.dispatch_occurrence_id != occurrence_identity:
+            raise ComputeLifecycleError(
+                "compute_dispatch_occurrence_identity_conflict",
+                "Compute execution is already bound to another dispatch occurrence",
+                effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
+            )
+        return current
+    if current.state_version != expected_state_version:
+        raise ComputeLifecycleError(
+            "compute_execution_state_stale",
+            "Compute execution state changed before dispatch reservation",
+        )
+    return replace(
+        current,
+        dispatch_state=ComputeDispatchState.RECONCILE_REQUIRED,
+        dispatch_occurrence_id=occurrence_identity,
         state_version=current.state_version + 1,
     )
 
@@ -721,6 +1070,7 @@ class ComputeExecutionApplicationService:
     controlled_operations: ControlledOperationApplicationService
     route: ComputeRoutePort
     continuations: ContinuationApplicationService | None = None
+    terminal_result_validator: ComputeTerminalResultValidatorPort | None = None
 
     def submit(
         self,
@@ -760,13 +1110,33 @@ class ComputeExecutionApplicationService:
                 ),
             )
         )
-        if record.provider_handle is not None or record.result is not None:
+        occurrence_identity = _dispatch_occurrence_id(request)
+        if record.dispatch_state is not ComputeDispatchState.NOT_STARTED:
+            if record.dispatch_state is ComputeDispatchState.RECONCILE_REQUIRED:
+                return self._reconcile_occurrence(context, record)
             return record
+        record = self.repository.reserve_dispatch_occurrence(
+            context,
+            request.execution_id,
+            expected_state_version=record.state_version,
+            occurrence_identity=occurrence_identity,
+        )
         try:
             outcome = self.route.dispatch(request)
         except ComputeLifecycleError as exc:
+            self._mark_dispatch_failure(context, record, exc)
             self._settle_failure(context, request, exc)
             raise
+        except Exception as exc:
+            error = ComputeLifecycleError(
+                "compute_dispatch_unclassified",
+                "Compute route dispatch outcome is uncertain",
+                effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
+                diagnostic_id="diagnostic-compute-dispatch-unclassified",
+            )
+            self._mark_dispatch_failure(context, record, error)
+            self._settle_failure(context, request, error)
+            raise error from exc
         return self._settle_outcome(context, record, outcome)
 
     def observe(
@@ -776,8 +1146,10 @@ class ComputeExecutionApplicationService:
         execution_id: str,
     ) -> ComputeExecutionRecord:
         record = self._require_record(context, execution_id)
-        if record.result is not None:
+        if record.dispatch_state is ComputeDispatchState.SETTLED:
             return record
+        if record.dispatch_state is ComputeDispatchState.RECONCILE_REQUIRED:
+            return self._reconcile_occurrence(context, record)
         if record.provider_handle is None:
             raise ComputeLifecycleError(
                 "compute_provider_handle_unavailable",
@@ -785,6 +1157,36 @@ class ComputeExecutionApplicationService:
                 effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
             )
         outcome = self.route.observe(record.request, record.provider_handle)
+        return self._settle_outcome(context, record, outcome)
+
+    def _reconcile_occurrence(
+        self,
+        context: KernelCommandContext,
+        record: ComputeExecutionRecord,
+    ) -> ComputeExecutionRecord:
+        occurrence_identity = record.dispatch_occurrence_id
+        if occurrence_identity is None:
+            raise ComputeLifecycleError(
+                "compute_dispatch_occurrence_unavailable",
+                "Compute reconciliation requires the reserved dispatch occurrence",
+                effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
+            )
+        try:
+            outcome = self.route.reconcile(record.request, occurrence_identity)
+        except ComputeLifecycleError as exc:
+            self._mark_dispatch_failure(context, record, exc)
+            self._settle_failure(context, record.request, exc)
+            raise
+        except Exception as exc:
+            error = ComputeLifecycleError(
+                "compute_reconciliation_unavailable",
+                "Compute route reconciliation is temporarily unavailable",
+                effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
+                diagnostic_id="diagnostic-compute-reconciliation-unavailable",
+            )
+            self._mark_dispatch_failure(context, record, error)
+            self._settle_failure(context, record.request, error)
+            raise error from exc
         return self._settle_outcome(context, record, outcome)
 
     def cancel(
@@ -847,6 +1249,34 @@ class ComputeExecutionApplicationService:
         record: ComputeExecutionRecord,
         outcome: ComputeRouteOutcome,
     ) -> ComputeExecutionRecord:
+        if outcome.terminal_result is not None:
+            try:
+                _validate_terminal_result(
+                    record.request,
+                    outcome.provider_handle or record.provider_handle,
+                    outcome.terminal_result,
+                )
+                binding = record.request.result_validator
+                if binding is not None:
+                    if self.terminal_result_validator is None:
+                        raise ValueError(
+                            "the exact Compute result validator is not mounted"
+                        )
+                    self.terminal_result_validator.validate(
+                        request=record.request,
+                        binding=binding,
+                        result=outcome.terminal_result,
+                    )
+            except Exception as exc:
+                error = ComputeLifecycleError(
+                    "compute_terminal_result_validation_failed",
+                    "terminal Compute result failed its exact validator",
+                    effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+                    mutation_applied=True,
+                    diagnostic_id="diagnostic-compute-terminal-validation",
+                )
+                self._settle_failure(context, record.request, error)
+                raise error from exc
         command_kind = (
             ControlledOperationCommandKind.RECONCILE
             if outcome.effect_certainty is ExternalEffectCertainty.DISPATCH_IN_DOUBT
@@ -920,6 +1350,38 @@ class ComputeExecutionApplicationService:
                 )
             )
         return updated
+
+    def _mark_dispatch_failure(
+        self,
+        context: KernelCommandContext,
+        record: ComputeExecutionRecord,
+        error: ComputeLifecycleError,
+    ) -> ComputeExecutionRecord:
+        if error.effect_certainty is not ExternalEffectCertainty.DISPATCH_IN_DOUBT:
+            return record
+        receipt_digest = canonical_sha256_digest(
+            {
+                "schema_version": "openzyme_compute_dispatch_failure_receipt@1",
+                "dispatch_occurrence_id": record.dispatch_occurrence_id,
+                "request_digest": record.request.request_digest,
+                "error_code": error.error_code,
+                "diagnostic_id": error.diagnostic_id,
+            }
+        )
+        return self.repository.bind_route_outcome(
+            context,
+            record.request.execution_id,
+            expected_state_version=record.state_version,
+            outcome=ComputeRouteOutcome(
+                route_id=record.request.route.route_id,
+                operation_id=record.request.operation_id,
+                provider_handle=record.provider_handle,
+                receipt_digest=receipt_digest,
+                effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
+                mutation_applied=None,
+                diagnostic_id=error.diagnostic_id,
+            ),
+        )
 
     def _settle_failure(
         self,
@@ -1069,6 +1531,19 @@ def _safe_operation_payload(
     }
 
 
+def _dispatch_occurrence_id(request: ComputeExecutionRequest) -> str:
+    suffix = canonical_sha256_digest(
+        {
+            "schema_version": "openzyme_compute_dispatch_occurrence@1",
+            "execution_id": request.execution_id,
+            "operation_id": request.operation_id,
+            "request_digest": request.request_digest,
+            "route_id": request.route.route_id,
+        }
+    ).removeprefix("sha256:")[:40]
+    return f"compute-dispatch-{suffix}"
+
+
 def _phase_context(
     context: KernelCommandContext,
     *,
@@ -1143,13 +1618,16 @@ __all__ = [
     "COMPUTE_RESULT_PROJECTION_SCHEMA",
     "ComputeAdmissionProof",
     "ComputeAdmissionVerifier",
+    "ComputeDispatchState",
     "ComputeExecutionApplicationService",
     "ComputeExecutionRecord",
     "ComputeExecutionRepository",
     "ComputeExecutionRequest",
     "ComputeLifecycleError",
+    "ComputeResultValidatorBinding",
     "ComputeRouteOutcome",
     "ComputeRoutePort",
+    "ComputeTerminalResultValidatorPort",
     "ComputeExtensionStateQueryPort",
     "ExtensionStateComputeExecutionRepository",
     "InMemoryComputeExecutionRepository",

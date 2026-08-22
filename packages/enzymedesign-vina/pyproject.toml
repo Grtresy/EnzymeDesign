@@ -32,7 +32,7 @@ packages = ["src/enzymedesign_vina"]
 component_id = "enzymedesign.vina"
 component_kind = "product_plugin"
 migration_state = "target_implemented_not_cutover"
-current_composition_owner = "uncomposed"
+current_composition_owner = "enzymedesign"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

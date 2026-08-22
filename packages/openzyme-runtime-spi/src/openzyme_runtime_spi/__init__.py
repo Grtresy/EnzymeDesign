@@ -18,6 +18,7 @@ from .runtime import RuntimeCapabilityGateway
 from .runtime import RuntimeMessage
 from .runtime import RuntimeMessageRole
 from .runtime import RuntimeToolRequest
+from .runtime import RuntimeToolInvocationError
 from .runtime import RuntimeTurnCommand
 from .runtime import RuntimeTurnDisposition
 from .runtime import RuntimeTurnOutcome
@@ -49,6 +50,7 @@ __all__ = [
     "RuntimeMessage",
     "RuntimeMessageRole",
     "RuntimeToolRequest",
+    "RuntimeToolInvocationError",
     "RuntimeTurnCommand",
     "RuntimeTurnDisposition",
     "RuntimeTurnOutcome",

@@ -342,9 +342,13 @@ class _ControlledOperations:
             ExternalEffectCertainty.TERMINAL_KNOWN
             if terminal
             else (
-                ExternalEffectCertainty.EFFECT_KNOWN
-                if command.operation.value == "observe"
-                else ExternalEffectCertainty.NO_EFFECT
+                ExternalEffectCertainty.DISPATCH_IN_DOUBT
+                if command.operation.value == "reconcile"
+                else (
+                    ExternalEffectCertainty.EFFECT_KNOWN
+                    if command.operation.value == "observe"
+                    else ExternalEffectCertainty.NO_EFFECT
+                )
             )
         )
         return KernelMutationReceipt.create(
@@ -360,6 +364,7 @@ class _ControlledOperations:
 @dataclass
 class _ExternalOccurrence:
     dispatch_count: int = 0
+    reconcile_count: int = 0
     terminal: bool = False
 
 
@@ -378,6 +383,15 @@ class _Route:
             mutation_applied=True,
         )
 
+    def reconcile(
+        self,
+        request: ComputeExecutionRequest,
+        occurrence_identity: str,
+    ) -> ComputeRouteOutcome:
+        assert occurrence_identity.startswith("compute-dispatch-")
+        self.occurrence.reconcile_count += 1
+        return self.observe(request, "provider_handle_1")
+
     def observe(
         self,
         request: ComputeExecutionRequest,
@@ -392,7 +406,7 @@ class _Route:
             receipt = TERMINAL_ROUTE_RECEIPT
             result = ExecutionResultReceipt.from_dict(
                 {
-                    "schema_version": "execution_result_receipt@1",
+                    "schema_version": "execution_result_receipt@2",
                     "result_id": "result_1",
                     "invocation_id": request.invocation_id,
                     "operation_id": request.operation_id,
@@ -406,6 +420,7 @@ class _Route:
                     "result_revision_id": None,
                     "result_digest": DIGEST,
                     "terminal_receipt_digest": DIGEST,
+                    "result_summary": {},
                 }
             )
         return ComputeRouteOutcome(
@@ -422,11 +437,68 @@ class _Route:
         raise AssertionError("cancel is outside this restart proof")
 
 
+@dataclass
+class _UncertainOccurrence:
+    dispatch_count: int = 0
+    reconcile_count: int = 0
+    raise_on_dispatch: bool = False
+
+
+@dataclass
+class _UncertainRoute:
+    occurrence: _UncertainOccurrence
+
+    def dispatch(self, request: ComputeExecutionRequest) -> ComputeRouteOutcome:
+        self.occurrence.dispatch_count += 1
+        if self.occurrence.raise_on_dispatch:
+            raise ComputeLifecycleError(
+                "compute_dispatch_response_lost",
+                "provider acceptance is unknown",
+                effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
+                diagnostic_id="diagnostic-compute-response-lost",
+            )
+        return self._uncertain(request, phase="dispatch")
+
+    def reconcile(
+        self,
+        request: ComputeExecutionRequest,
+        occurrence_identity: str,
+    ) -> ComputeRouteOutcome:
+        assert occurrence_identity.startswith("compute-dispatch-")
+        self.occurrence.reconcile_count += 1
+        return self._uncertain(request, phase="reconcile")
+
+    def observe(self, request, provider_handle):
+        raise AssertionError((request, provider_handle))
+
+    def cancel(self, request, provider_handle):
+        raise AssertionError((request, provider_handle))
+
+    @staticmethod
+    def _uncertain(
+        request: ComputeExecutionRequest,
+        *,
+        phase: str,
+    ) -> ComputeRouteOutcome:
+        return ComputeRouteOutcome(
+            route_id=request.route.route_id,
+            operation_id=request.operation_id,
+            provider_handle=None,
+            receipt_digest=canonical_sha256_digest(
+                {"phase": phase, "request_digest": request.request_digest}
+            ),
+            effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
+            mutation_applied=None,
+            diagnostic_id="diagnostic-compute-response-lost",
+        )
+
+
 def _service(
     connection: sqlite3.Connection,
     occurrence: _ExternalOccurrence,
     *,
     continuation_store: SQLiteControlStore | None = None,
+    route=None,  # noqa: ANN001
 ) -> tuple[ComputeExecutionApplicationService, _ControlledOperations]:
     participant = ComputeTransactionParticipant()
     plugin = SimpleNamespace(
@@ -475,7 +547,7 @@ def _service(
             repository=repository,
             admission_verifier=_AdmissionVerifier(),
             controlled_operations=controlled,
-            route=_Route(occurrence),
+            route=route or _Route(occurrence),
             continuations=(
                 None
                 if continuation_store is None
@@ -502,7 +574,7 @@ def test_compute_survives_restart_without_redispatch_and_settles_original_route(
     )
     active = first.submit(context=_context(), request=_request())
 
-    assert active.state_version == 2
+    assert active.state_version == 3
     assert active.provider_handle == "provider_handle_1"
     assert occurrence.dispatch_count == 1
     assert [item.operation.value for item in first_operations.commands] == [
@@ -527,7 +599,7 @@ def test_compute_survives_restart_without_redispatch_and_settles_original_route(
     occurrence.terminal = True
     terminal = restarted.observe(context=_context(), execution_id="execution_1")
 
-    assert terminal.state_version == 3
+    assert terminal.state_version == 4
     assert terminal.result is not None
     assert terminal.result.result_id == "result_1"
     assert occurrence.dispatch_count == 1
@@ -562,7 +634,7 @@ def test_compute_survives_restart_without_redispatch_and_settles_original_route(
           AND entity_kind = 'execution'
           AND entity_id = 'execution_1'
         """
-    ).fetchone() == (3,)
+    ).fetchone() == (4,)
 
 
 def test_reused_execution_identity_with_different_request_never_redispatches() -> None:
@@ -586,3 +658,63 @@ def test_reused_execution_identity_with_different_request_never_redispatches() -
 
     assert raised.value.error_code == "compute_execution_identity_conflict"
     assert occurrence.dispatch_count == 1
+
+
+def test_no_handle_uncertain_dispatch_reconciles_across_host_epoch_without_redispatch() -> None:
+    connection = _connection()
+    occurrence = _UncertainOccurrence()
+    first, _ = _service(
+        connection,
+        _ExternalOccurrence(),
+        route=_UncertainRoute(occurrence),
+    )
+
+    uncertain = first.submit(context=_context(), request=_request())
+
+    assert uncertain.provider_handle is None
+    assert uncertain.dispatch_state.value == "reconcile_required"
+    assert uncertain.dispatch_occurrence_id is not None
+    assert occurrence.dispatch_count == 1
+
+    restarted, _ = _service(
+        connection,
+        _ExternalOccurrence(),
+        route=_UncertainRoute(occurrence),
+    )
+    replay = restarted.submit(context=_context(), request=_request())
+
+    assert replay.dispatch_state.value == "reconcile_required"
+    assert occurrence.dispatch_count == 1
+    assert occurrence.reconcile_count == 1
+
+
+def test_raised_uncertain_dispatch_reconciles_across_host_epoch_without_redispatch() -> None:
+    connection = _connection()
+    occurrence = _UncertainOccurrence(raise_on_dispatch=True)
+    first, _ = _service(
+        connection,
+        _ExternalOccurrence(),
+        route=_UncertainRoute(occurrence),
+    )
+
+    with pytest.raises(ComputeLifecycleError) as raised:
+        first.submit(context=_context(), request=_request())
+
+    assert raised.value.effect_certainty is ExternalEffectCertainty.DISPATCH_IN_DOUBT
+    persisted = first.repository.get("session_1", "execution_1")
+    assert persisted is not None
+    assert persisted.dispatch_state.value == "reconcile_required"
+    assert persisted.dispatch_receipt_digest is not None
+    assert occurrence.dispatch_count == 1
+
+    occurrence.raise_on_dispatch = False
+    restarted, _ = _service(
+        connection,
+        _ExternalOccurrence(),
+        route=_UncertainRoute(occurrence),
+    )
+    replay = restarted.submit(context=_context(), request=_request())
+
+    assert replay.dispatch_state.value == "reconcile_required"
+    assert occurrence.dispatch_count == 1
+    assert occurrence.reconcile_count == 1

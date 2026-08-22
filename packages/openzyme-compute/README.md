@@ -21,11 +21,12 @@ Plugin 现在提供纯 locator、`openzyme_plugin_manifest@1`、3 个
 `ControlledOperationApplicationService`、route port 和 continuation service 工作，不 import
 HPC、SSH、Slurm、Host、Science 或 EnzymeDesign。
 
-正式请求使用 `openzyme_compute_execution_request@1`，组合 closed `ExecutionWorkloadSpec` 与
+正式请求使用 `openzyme_compute_execution_request@2`，组合 closed `ExecutionWorkloadSpec` 与
 `ExecutionRouteIdentity`，并绑定 exact owner/authority fence、workspace generation、Git revision/ref/
 commit/tree、LFS closure、clean observation、Session capability binding、inventory generation、
-idempotency 和 absolute deadline。Plugin repository 只保存 request、opaque provider handle、route receipt
-和 terminal result；effect certainty、retry/reconcile/cancel truth 只由 Kernel ControlledOperation 持有。
+idempotency 和 absolute deadline。Plugin repository 还在 effect 前保存 `dispatch_state`、
+`dispatch_occurrence_id`、`dispatch_receipt_digest`，并可保存 exact Driver result-validator binding；opaque
+provider handle 可以不存在。effect certainty 的控制面审计继续由 Kernel ControlledOperation 持有。
 每个 controlled phase 使用 request/route receipt 派生的独立 command/idempotency identity；Provider 返回
 `effect_known` 时 Kernel operation 保持 active，后续只能在原 route/operation 上 observe/reconcile，不能重发或
 替换 handle。terminal result 通过 closed continuation payload 只声明 source、recipient 与 resume strategy，
@@ -38,10 +39,10 @@ process epoch 由 Kernel 从 canonical AgentMember 固定。
 generation/fence，再由 Store 在短事务中执行 CAS。持久 payload 顶层固定 `session_id`，同时保存完整
 invocation/request、exact route、opaque provider handle、route receipt 与 terminal result。
 
-SQLite restart qualification 已证明：首次 dispatch 后 record 为 state version 2；重新构造 Kernel service、
-query、repository 和 route wrapper 后，同一 request 只重复 admission 校验并返回既有 record，external
-dispatch count 保持 1；随后使用原 handle 观察到 terminal result，写入 version 3 和 Kernel-owned durable
-continuation；再次重启仍可读回两者。不同 request 复用同一 execution identity 会在任何新 dispatch 前拒绝。
+SQLite restart qualification 已证明：dispatch 前先 durable reserve occurrence；有 handle、无 handle uncertain
+response，以及 typed uncertain exception 三条路径跨 Host epoch 的 external dispatch count 都保持 1。已有 handle
+走 observe，无 handle 走 `ComputeRoutePort.reconcile(request, occurrence_identity)`；terminal result 在写 record 与
+continuation 前先经 exact Driver validator。不同 request 复用同一 execution identity 会在任何新 dispatch 前拒绝。
 
 通用 Host 不硬编码 Compute writer；Compute 只在选择它的 Distribution 通过 exact mount 后可用。本包状态是
 `target_implemented_not_cutover`：目标生命周期和 SQLite restart recovery 可独立 qualification，但安装 wheel 或发现 entry point 不会

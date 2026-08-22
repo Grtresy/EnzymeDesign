@@ -24,7 +24,9 @@ wheel set 和 layered release identity 绑定。该状态不等于生产 activat
 mount gate；少一项、多一项、owner/driver/digest 漂移都会 fail closed。
 
 `build_enzymedesign_application_runtime()` 是产品 application composition root：它在 read-only proof 之后核对
-8 个 selected Adapter runtime binding，精确合并 5 个 Kernel 与 32 个 Plugin tool runtime，随后才构造 SQLite
+8 个 selected Adapter runtime binding 的 component/manifest/contract/build/slot/target identity；所有 effectful
+operational object 都从这些 binding 内的 exact runtime 派生，不再由调用者另传第二套实现。随后精确合并 5 个
+Kernel 与 32 个 Plugin tool runtime，再构造 SQLite
 writer、capability registry、bounded Agent runtime gateway、Kernel command routes、projection、worker 与 validator
 bindings。`build_enzymedesign_v2_host_app()` 把这个 runtime 注入通用 Host API；它不经过也不依赖
 `openzyme-standard`。non-live 回归已从该组合根执行真实 Kernel Session bootstrap，并证明缺少任一 Adapter 时
@@ -34,7 +36,9 @@ bindings。`build_enzymedesign_v2_host_app()` 把这个 runtime 注入通用 Hos
 application、Store-owned SQLite coordinator/query 和 `openzyme_compute/execution` namespace，并构造 Kernel
 continuation service。Plugin 不获得 raw connection，也不直接写 Core table。真实 SQLite restart 回归会重新构造
 这些 service/repository，再证明原 invocation、route、opaque handle、terminal result 与 owner continuation 可读，
-且同一 request 的 external dispatch count 始终为 1。
+且同一 request 的 external dispatch count 始终为 1。Compute 现在会在 route effect 前持久化
+`not_started -> reconcile_required` occurrence；即使 response loss 没有 provider handle，或 dispatch 抛出 typed
+uncertain error，跨 Host epoch 也只允许按 occurrence identity reconcile，不能重新 dispatch。
 
 HMMER/Vina 的正式 application bridge 由一次性
 `EnzymeDesignFormalComputeApplicationBinding` 在 runtime writer 可达前绑定：Kernel gateway 先重验 affordance
@@ -43,6 +47,9 @@ runner Port。formal source resolver 只读取 canonical `PublishedRevision`、p
 `RevisionPathVerificationReceipt`、ready owner workspace 和 adopted Session capability binding；verification receipt
 没有虚构的 Session 字段，SQLite Adapter 通过其明确的 publication foreign key 查询。submit 前还会重新验证
 authority generation/fence、workspace generation、inventory generation/digest、capability proof 与 exact route。
+compiled Driver workload、Driver/validator identity 和 result contracts 会随 Compute request 持久化；terminal
+result 只有通过 exact HMMER/Vina `validate_result()` 后才可落库并注册 owner continuation，`raw_shell=true` 不得
+进入正式结果链。
 
 Compute 自身的 durable result/continuation restart 闭环已经证明；Workspace operations 与 Slurm
 submit/cancel 也分别使用持久 SQLite ledger，跨 Adapter epoch 只 reconcile 原 occurrence。远端
@@ -59,10 +66,16 @@ submit/cancel 也分别使用持久 SQLite ledger，跨 Adapter epoch 只 reconc
 | `cutover` | 真实部署已采用该 Adapter/Plugin/configuration | 某次 live 外部调用已获授权 |
 | `live` | 一次明确授权的真实外部调用实际发生 | 结果自动成为 publication、Science adoption 或 Task terminal |
 
-当前真实 non-live 产品场景已闭合 `selected + runtime_mounted`：从通用 Host、Session composition pin、authority、
+当前 non-live 产品场景已闭合 `selected + runtime_mounted` 下的 HMMER/Vina formal cross-layer slice：从通用 Host、Session composition pin、authority、
 真实 immutable publication、adopted inventory 和 affordance/route，经 mounted HMMER/Vina Drivers、durable Compute
 lifecycle 与声明式 fake runner，到 terminal result、owner continuation 和 Science finish validator；Task 在整个
-流程后仍为 `todo`。该场景不声称真实 SSH/Slurm/HPC target `qualified`、`cutover` 或 `live`。
+流程后仍为 `todo`。场景使用 fake Git-shaped backend、fake runner、固定接受的 Science evidence reader、
+no-op Slurm/credentials 和其他 Plugin applications，并直接 seed 部分合法 canonical 前置事实；因此它不证明
+14 个 Plugin 的全部生产 application lifecycle 已由正式产品命令自然闭合，也不声称真实 SSH/Slurm/HPC target
+`qualified`、`cutover` 或 `live`。
+
+HMMER/Vina package 的 `current_composition_owner=enzymedesign` 表示当前源码确由该 Distribution mount；
+`migration_state=target_implemented_not_cutover` 则独立说明真实部署尚未切换，两者不可互相替代。
 
 ## 产品能力
 

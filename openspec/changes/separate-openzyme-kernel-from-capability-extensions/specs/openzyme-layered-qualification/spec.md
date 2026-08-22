@@ -44,6 +44,10 @@ The EnzymeDesign profile MUST activate the exact product Distribution manifest, 
 - **WHEN** a test bypasses manifest activation, seeds success directly in a repository or replaces a non-external product service
 - **THEN** it cannot satisfy the EnzymeDesign architecture claim
 
+#### Scenario: Formal HMMER and Vina cross-layer slice uses seeded canonical prerequisites
+- **WHEN** a non-live scenario uses the real mounted product graph and formal HMMER/Vina services but seeds canonical inventory, publication, path or Science evidence prerequisites or substitutes other product applications
+- **THEN** it may prove only the named cross-layer slice and MUST NOT be described as the complete EnzymeDesign product lifecycle
+
 ### Requirement: Source, pyproject and wheel gates prove dependency direction
 Qualification MUST inspect AST/import relations, every member/root `pyproject.toml`, lock metadata, built wheel `METADATA`, wheel contents and fresh-environment imports. It MUST enforce both the semantic-owner axis and Distribution composition rules plus forbidden dependency/vocabulary sets rather than relying on source directory names alone.
 

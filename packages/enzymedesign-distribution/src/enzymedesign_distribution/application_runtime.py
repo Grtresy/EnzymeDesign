@@ -84,6 +84,8 @@ class EnzymeDesignAdapterRuntimeBinding:
     slot_id: str
     component_id: str
     manifest_digest: str
+    contract_digest: str
+    build_digest: str
     runtime: object
     target_id: str | None = None
 
@@ -92,8 +94,9 @@ class EnzymeDesignAdapterRuntimeBinding:
             value = getattr(self, field_name)
             if not isinstance(value, str) or not value or value != value.strip():
                 raise ValueError(f"{field_name} must be one non-empty identifier")
-        if not self.manifest_digest.startswith("sha256:"):
-            raise ValueError("manifest_digest must be one sha256 digest")
+        for field_name in ("manifest_digest", "contract_digest", "build_digest"):
+            if not getattr(self, field_name).startswith("sha256:"):
+                raise ValueError(f"{field_name} must be one sha256 digest")
         if self.runtime is None:
             raise ValueError("selected Adapter runtime must be constructed")
 
@@ -141,6 +144,9 @@ class EnzymeDesignAdapterRuntimeSet:
             if (
                 binding.component_id != expected[key].manifest.identity.component_id
                 or binding.manifest_digest != expected[key].manifest.manifest_digest
+                or binding.contract_digest
+                != expected[key].manifest.identity.contract_digest
+                or binding.build_digest != expected[key].manifest.identity.build_digest
             )
         )
         if drifted:
@@ -169,6 +175,69 @@ class EnzymeDesignAdapterRuntimeSet:
             )
         return matches[0]
 
+    def derive_operational_selection(self) -> EnzymeDesignOperationalAdapterSelection:
+        """Derive all effectful objects from the one validated runtime graph."""
+
+        runtime_adapter = self.require_runtime(slot_id="agent.turn")
+        runtime_binding = self.require_binding(slot_id="agent.turn")
+        if (
+            getattr(runtime_adapter, "adapter_id", None) != runtime_binding.component_id
+            or getattr(runtime_adapter, "adapter_contract_digest", None)
+            != runtime_binding.contract_digest
+        ):
+            raise KernelContractError(
+                "enzymedesign_runtime_adapter_identity_drift",
+                "the selected agent runtime does not expose its exact component contract",
+            )
+        podman = self.require_runtime(slot_id="process.isolation")
+        if not isinstance(podman, EnzymeDesignPodmanOperationalRuntime):
+            raise KernelContractError(
+                "enzymedesign_process_runtime_shape_invalid",
+                "the selected process Adapter lacks its exact operational graph",
+            )
+        slurm_binding = self.require_binding(
+            slot_id="hpc.scheduler", target_id="hpc-primary"
+        )
+        slurm = slurm_binding.runtime
+        if not isinstance(slurm, EnzymeDesignSlurmOperationalRuntime):
+            raise KernelContractError(
+                "enzymedesign_scheduler_runtime_shape_invalid",
+                "the selected scheduler Adapter lacks its exact operational graph",
+            )
+        return EnzymeDesignOperationalAdapterSelection(
+            runtime_adapter=runtime_adapter,  # type: ignore[arg-type]
+            workspace_mounts=podman.workspace_mounts,
+            process_isolation=podman.process_isolation,
+            revision_backend=self.require_runtime(slot_id="workspace.backend"),  # type: ignore[arg-type]
+            slurm_factory=slurm.factory,
+            slurm_backend=slurm.backend,
+            slurm_credential_resolver=slurm.credential_resolver,
+            workspace_provider_id=self.require_binding(
+                slot_id="workspace.backend"
+            ).component_id,
+            slurm_target_id=slurm_binding.target_id or "",
+            podman_binary=podman.podman_binary,
+        )
+
+    def require_binding(
+        self,
+        *,
+        slot_id: str,
+        target_id: str | None = None,
+    ) -> EnzymeDesignAdapterRuntimeBinding:
+        matches = tuple(
+            binding
+            for binding in self.bindings
+            if binding.binding_key == (slot_id, target_id)
+        )
+        if len(matches) != 1:
+            raise KernelContractError(
+                "enzymedesign_adapter_runtime_unavailable",
+                "the exact selected Adapter runtime is unavailable",
+                details={"slot_id": slot_id, "target_id": target_id},
+            )
+        return matches[0]
+
     @property
     def runtime_digest(self) -> str:
         return canonical_sha256_digest(
@@ -180,6 +249,8 @@ class EnzymeDesignAdapterRuntimeSet:
                         "target_id": item.target_id,
                         "component_id": item.component_id,
                         "manifest_digest": item.manifest_digest,
+                        "contract_digest": item.contract_digest,
+                        "build_digest": item.build_digest,
                     }
                     for item in sorted(
                         self.bindings,
@@ -225,7 +296,7 @@ class EnzymeDesignPostMountApplicationBinding(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class EnzymeDesignOperationalAdapterSelection:
-    """Exact effect implementations selected for the product application graph."""
+    """Derived effect graph; never accepted independently by composition root."""
 
     runtime_adapter: AgentRuntimeAdapter
     workspace_mounts: PodmanWorkspaceMountResolver
@@ -237,6 +308,20 @@ class EnzymeDesignOperationalAdapterSelection:
     workspace_provider_id: str = "openzyme.workspace.git-lfs"
     slurm_target_id: str = "hpc-primary"
     podman_binary: str = "/usr/bin/podman"
+
+
+@dataclass(frozen=True, slots=True)
+class EnzymeDesignPodmanOperationalRuntime:
+    workspace_mounts: PodmanWorkspaceMountResolver
+    process_isolation: ProcessIsolationPort
+    podman_binary: str = "/usr/bin/podman"
+
+
+@dataclass(frozen=True, slots=True)
+class EnzymeDesignSlurmOperationalRuntime:
+    factory: SlurmSchedulerAdapterFactory
+    backend: SlurmBackend
+    credential_resolver: SchedulerOccurrenceCredentialResolver
 
 
 @dataclass(frozen=True, slots=True)
@@ -344,7 +429,6 @@ def build_enzymedesign_application_runtime(
     clock: ClockPort,
     ids: IdGeneratorPort,
     bootstrap_authority: EnzymeDesignSessionBootstrapAuthorityPort,
-    operational_selection: EnzymeDesignOperationalAdapterSelection,
     application_bindings: tuple[EnzymeDesignPostMountApplicationBinding, ...] = (),
 ) -> EnzymeDesignApplicationRuntime:
     """Build the writer graph only after proof, Adapter and Plugin closure pass."""
@@ -371,16 +455,7 @@ def build_enzymedesign_application_runtime(
             "application runtime composition differs from the verified startup",
         )
     adapter_runtimes.validate(composition)
-    selected_scheduler_factory = adapter_runtimes.require_runtime(
-        slot_id="hpc.scheduler",
-        target_id=operational_selection.slurm_target_id,
-    )
-    if selected_scheduler_factory is not operational_selection.slurm_factory:
-        raise KernelContractError(
-            "enzymedesign_scheduler_factory_selection_drift",
-            "the operational Slurm factory differs from the exact selected Adapter runtime",
-            details={"target_id": operational_selection.slurm_target_id},
-        )
+    operational_selection = adapter_runtimes.derive_operational_selection()
     mounted = mount_enzymedesign_extension_surfaces(
         startup=startup,
         composition=composition,
@@ -704,6 +779,8 @@ __all__ = [
     "EnzymeDesignCapabilityRegistryResolver",
     "EnzymeDesignLocalWorkspaceRuntimeAdapters",
     "EnzymeDesignOperationalAdapterSelection",
+    "EnzymeDesignPodmanOperationalRuntime",
+    "EnzymeDesignSlurmOperationalRuntime",
     "EnzymeDesignTargetInventoryQueryPort",
     "build_enzymedesign_application_runtime",
     "build_enzymedesign_v2_host_app",

@@ -5,6 +5,7 @@ from enum import StrEnum
 from typing import Any
 from typing import Protocol
 
+from openzyme_contracts import ExternalEffectCertainty
 from openzyme_contracts import FailureObservation
 from openzyme_contracts import ToolSpec
 from openzyme_contracts import ToolInvocation
@@ -56,6 +57,52 @@ class RuntimeTurnDisposition(StrEnum):
     IDLE = "idle"
     STEP_LIMIT_REACHED = "step_limit_reached"
     FAILED = "failed"
+
+
+class RuntimeToolInvocationError(RuntimeError):
+    """Typed, secret-safe effect truth emitted by a mounted tool runtime."""
+
+    def __init__(
+        self,
+        *,
+        code: str,
+        summary: str,
+        effect_certainty: ExternalEffectCertainty,
+        mutation_applied: bool | None,
+        diagnostic_id: str,
+        reconcile_required: bool,
+        status: str = "runtime_contract_failure",
+        hint: str | None = None,
+    ) -> None:
+        require_identifier(code, field_name="code")
+        require_identifier(diagnostic_id, field_name="diagnostic_id")
+        _require_bounded_text(summary, field_name="summary", maximum=16_384)
+        _require_bounded_text(status, field_name="status", maximum=128)
+        if hint is not None:
+            _require_bounded_text(hint, field_name="hint", maximum=4_096)
+        if effect_certainty is ExternalEffectCertainty.NO_EFFECT:
+            if mutation_applied is not False or reconcile_required:
+                raise ValueError(
+                    "no_effect runtime error requires mutation_applied=false "
+                    "and reconcile_required=false"
+                )
+        elif effect_certainty is ExternalEffectCertainty.DISPATCH_IN_DOUBT:
+            if mutation_applied is not None or not reconcile_required:
+                raise ValueError(
+                    "dispatch_in_doubt runtime error requires unknown mutation "
+                    "and reconciliation"
+                )
+        elif mutation_applied is None:
+            raise ValueError("settled runtime error requires a mutation fact")
+        self.code = code
+        self.summary = summary
+        self.effect_certainty = effect_certainty
+        self.mutation_applied = mutation_applied
+        self.diagnostic_id = diagnostic_id
+        self.reconcile_required = reconcile_required
+        self.status = status
+        self.hint = hint
+        super().__init__(summary)
 
 
 @dataclass(frozen=True, slots=True)
@@ -408,6 +455,7 @@ __all__ = [
     "RuntimeMessage",
     "RuntimeMessageRole",
     "RuntimeToolRequest",
+    "RuntimeToolInvocationError",
     "RuntimeTurnCommand",
     "RuntimeTurnDisposition",
     "RuntimeTurnOutcome",

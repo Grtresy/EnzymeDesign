@@ -143,7 +143,7 @@ def test_failure_has_closed_effect_certainty_without_private_diagnostics() -> No
 def test_result_receipt_is_terminal_opaque_and_path_free() -> None:
     result = ExecutionResultReceipt.from_dict(
         {
-            "schema_version": "execution_result_receipt@1",
+            "schema_version": "execution_result_receipt@2",
             "result_id": "result_1",
             "invocation_id": "invocation_1",
             "operation_id": "operation_1",
@@ -155,6 +155,7 @@ def test_result_receipt_is_terminal_opaque_and_path_free() -> None:
             "result_revision_id": "revision_2",
             "result_digest": DIGEST,
             "terminal_receipt_digest": DIGEST,
+            "result_summary": {"raw_shell": False},
         }
     )
 

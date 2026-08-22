@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field
 import hashlib
 import json
 from pathlib import PurePosixPath
@@ -12,7 +13,8 @@ from typing import Mapping
 WORKLOAD_SCHEMA = "execution_workload_spec@1"
 ROUTE_SCHEMA = "execution_route_identity@1"
 FAILURE_SCHEMA = "execution_wire_failure@1"
-RESULT_SCHEMA = "execution_result_receipt@1"
+RESULT_SCHEMA = "execution_result_receipt@2"
+_LEGACY_RESULT_SCHEMA = "execution_result_receipt@1"
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@-]{0,255}")
 _CONTRACT = re.compile(r"[a-z][a-z0-9_.-]{1,127}@[1-9][0-9]*")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
@@ -308,14 +310,20 @@ class ExecutionResultReceipt:
     result_revision_id: str | None
     result_digest: str
     terminal_receipt_digest: str
+    result_summary: Mapping[str, object] = field(default_factory=dict)
     schema_version: str = RESULT_SCHEMA
 
     @classmethod
     def from_dict(cls, value: object) -> "ExecutionResultReceipt":
-        data = _closed(
-            value,
-            fields=frozenset(
-                {
+        if not isinstance(value, Mapping):
+            raise ExecutionWireContractError(
+                "execution_wire_not_object",
+                field="result",
+                detail=f"observed_type={type(value).__name__}",
+            )
+        schema_version = value.get("schema_version")
+        legacy_fields = frozenset(
+            {
                     "schema_version",
                     "result_id",
                     "invocation_id",
@@ -328,11 +336,19 @@ class ExecutionResultReceipt:
                     "result_revision_id",
                     "result_digest",
                     "terminal_receipt_digest",
-                }
-            ),
+            }
+        )
+        fields = (
+            legacy_fields
+            if schema_version == _LEGACY_RESULT_SCHEMA
+            else legacy_fields | {"result_summary"}
+        )
+        data = _closed(
+            value,
+            fields=fields,
             label="result",
         )
-        if data["schema_version"] != RESULT_SCHEMA:
+        if data["schema_version"] not in {RESULT_SCHEMA, _LEGACY_RESULT_SCHEMA}:
             raise ExecutionWireContractError(
                 "execution_wire_schema_unsupported",
                 field="result.schema_version",
@@ -348,6 +364,33 @@ class ExecutionResultReceipt:
         revision_id = data["result_revision_id"]
         if revision_id is not None:
             revision_id = _identifier("result.result_revision_id", revision_id)
+        summary = data.get("result_summary", {})
+        if not isinstance(summary, Mapping):
+            raise ExecutionWireContractError(
+                "execution_wire_field_invalid",
+                field="result.result_summary",
+                detail="expected=bounded_json_object",
+            )
+        try:
+            encoded_summary = json.dumps(
+                summary,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError, RecursionError) as exc:
+            raise ExecutionWireContractError(
+                "execution_wire_field_invalid",
+                field="result.result_summary",
+                detail="expected=bounded_json_object",
+            ) from exc
+        if len(encoded_summary) > 65_536:
+            raise ExecutionWireContractError(
+                "execution_wire_field_invalid",
+                field="result.result_summary",
+                detail="maximum_bytes=65536",
+            )
         return cls(
             result_id=_identifier("result.result_id", data["result_id"]),
             invocation_id=_identifier("result.invocation_id", data["invocation_id"]),
@@ -364,10 +407,12 @@ class ExecutionResultReceipt:
             terminal_receipt_digest=_digest(
                 "result.terminal_receipt_digest", data["terminal_receipt_digest"]
             ),
+            result_summary=json.loads(encoded_summary),
+            schema_version=str(data["schema_version"]),
         )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload = {
             "schema_version": self.schema_version,
             "result_id": self.result_id,
             "invocation_id": self.invocation_id,
@@ -381,6 +426,9 @@ class ExecutionResultReceipt:
             "result_digest": self.result_digest,
             "terminal_receipt_digest": self.terminal_receipt_digest,
         }
+        if self.schema_version == RESULT_SCHEMA:
+            payload["result_summary"] = dict(self.result_summary)
+        return payload
 
 
 @dataclass(frozen=True, slots=True)

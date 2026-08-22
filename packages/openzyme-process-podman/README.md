@@ -72,6 +72,9 @@ occurrence。Host/Adapter 重启后，重复 execute/mutate/transfer 只返回 l
 uncertain occurrence 只能走 `reconcile(original_request)`，不能重新调用 filesystem/transfer helper、启动替代
 Podman process，或利用 content-compatible mutation 冒充原 effect。Standard 与 EnzymeDesign composition root
 都绑定同一 target SQLite ledger，单元回归覆盖 filesystem、process、transfer 的跨 Adapter epoch terminal recovery。
+外层 ledger 保证 zero redispatch，但 inner process active request/terminal receipt 仍是进程内字典；若 process 已
+启动而 Host 在 ledger settle 前硬崩溃，新 Adapter epoch 可能无法定位旧进程终态并长期保持 uncertain。这是
+liveness 缺口，不是重复执行许可，也不能表述为所有本地 process 都可自动恢复到 terminal truth。
 
 Observation 只执行 read-only helper，不创建 canonical ControlledOperation；filesystem mutation 与 transfer
 由 Kernel 在调用本 Adapter 前完成 durable admission。Transfer request 同时绑定 authority、workspace

@@ -7,6 +7,7 @@ import pytest
 
 from openzyme_contracts import AgentAuthorityLease
 from openzyme_contracts import AgentAuthorityLeaseState
+from openzyme_contracts import ExternalEffectCertainty
 from openzyme_contracts import SessionCapabilityBindingRevision
 from openzyme_contracts import ToolInvocation
 from openzyme_contracts import ToolResult
@@ -32,6 +33,7 @@ from openzyme_kernel import build_route_catalog
 from openzyme_kernel import resolve_tool_affordance_snapshot
 from openzyme_kernel import subject_policy_digest
 from openzyme_runtime_spi import RuntimeToolRequest
+from openzyme_runtime_spi import RuntimeToolInvocationError
 
 
 def _digest(value: str) -> str:
@@ -175,11 +177,14 @@ class _Runtime:
     contract: ToolSpec
     calls: int = 0
     explode: bool = False
+    typed_error: RuntimeToolInvocationError | None = None
     owner_plugin_id: str = "example.plugin"
     runtime_id: str = "example.plugin.observe@1"
 
     def invoke(self, invocation: ToolInvocation) -> ToolResult:
         self.calls += 1
+        if self.typed_error is not None:
+            raise self.typed_error
         if self.explode:
             raise RuntimeError("private provider detail")
         return ToolResult(
@@ -287,9 +292,40 @@ def test_gateway_preserves_unknown_effect_when_runtime_raises() -> None:
 
     assert result.error_code == "extension_tool_runtime_failed"
     assert result.payload["effect_certainty"] == "dispatch_in_doubt"
+    assert result.payload["mutation_applied"] is None
     assert result.payload["reconcile_required"] is True
     assert result.payload["fallback_performed"] is False
     assert runtime.calls == 1
+
+
+def test_gateway_preserves_typed_runtime_effect_truth() -> None:
+    scope = _scope()
+    runtime = _Runtime(
+        scope.catalog.entries[0].contract,
+        typed_error=RuntimeToolInvocationError(
+            code="provider_rejected_request",
+            summary="The provider rejected the bounded request.",
+            effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+            mutation_applied=False,
+            diagnostic_id="diagnostic-provider-rejected-1",
+            reconcile_required=False,
+            status="rejected",
+            hint="Correct the request before trying a new occurrence.",
+        ),
+    )
+    gateway = MountedRuntimeCapabilityGateway(
+        scopes=_Scopes(scope),
+        runtimes=((runtime.contract.tool_name, runtime),),
+    )
+
+    result = gateway.invoke(command_id="command-1", request=_request(scope))
+
+    assert result.error_code == "provider_rejected_request"
+    assert result.status == "rejected"
+    assert result.payload["effect_certainty"] == "no_effect"
+    assert result.payload["mutation_applied"] is False
+    assert result.payload["reconcile_required"] is False
+    assert result.payload["diagnostic_id"] == "diagnostic-provider-rejected-1"
 
 
 def test_gateway_fails_closed_when_visible_runtime_is_missing() -> None:

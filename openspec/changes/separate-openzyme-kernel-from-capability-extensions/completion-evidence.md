@@ -47,14 +47,14 @@ non-live runtime evidence，不证明真实 target cutover。详细映射见
 不变量、迁移 capability、明确退休 surface 与 live-gated 行为分别绑定到当前 owner-local tests/absence gates。
 
 因此旧 27/27 结果仍只保留为历史组件级 diagnostic evidence；当前 closed registry 已变为 28 个 scenario/
-invariant。tasks 14.12、14.13、16.9、17.4、17.9、18.3—18.10、19.8—19.12 已由当前代码、focused evidence、
-fresh-wheel qualification、正式 clean-source admission、authoritative mainline、eval 与 strict OpenSpec 闭合。
-仓内索引只记录提交前的 clean candidate 证据和封口规则；包含本文件的最终 clean SHA、最终 report path 与 digest
-必须由封口后的外部运行产生并记录在交付说明中，不写回仓库造成自引用。
+invariant。20.1—20.6 已修复无 handle uncertain dispatch、SSH/Slurm reconcile certainty、runtime gateway
+effect truth、Driver terminal result validation 与 Adapter runtime identity 双通道；20.7 的声明收窄已进入文档，
+但仍须与 18.10、19.12 一起由最终 clean-source closure 证明。仓内索引只记录历史 candidate 证据和封口规则；
+最终 clean SHA、最终 report path 与 digest 必须由封口后的外部运行产生并记录在交付说明中，不写回仓库造成自引用。
 
-## 2026-08-22 clean candidate 与封口验证
+## 2026-08-22 历史 clean candidate 与封口验证
 
-以下结果先证明审计修复后的实现与非 live 行为闭合；随后 clean candidate
+以下结果先证明 20.x correctness 修复之前的审计实现与非 live 行为闭合；随后 clean candidate
 `ba10837dc233a09617d0b1b3da18a481f5ad709d` 在零 source mutation 的顺序中完成正式 admission：
 
 - 受影响 owner-local 集合：`269 passed in 16.53s`；SSH/HPC/EnzymeDesign digest 修复后再次运行的 focused
@@ -84,9 +84,10 @@ clean candidate 的正式 admission 报告位于 checkout 外
 pure verifier `valid=true`；eval 仍为 `status=passed`、`external_effect_performed=false`、
 `fallback_performed=false`，strict OpenSpec authoritative JSON 仍为 `valid=true`。
 
-以上路径是本地临时证据位置，不承诺跨机器持久化。tasks/evidence 文本封口会改变 source identity，因此包含本
-文件的最终 clean SHA 仍须按 19.12 顺序整组重跑 admission/mainline/evals/strict validation；该最终外部结果必须在
-交付说明中记录，且运行后不得再修改 source、配置、文档、OpenSpec 或 manifest。
+以上路径是本地临时历史证据位置，不承诺跨机器持久化，也不证明后续 20.x source。tasks/evidence 文本封口会改变
+source identity，因此包含本文件的最终 clean SHA 仍须按 19.12 顺序整组重跑 focused tests、fresh wheels、
+qualification、mainline、evals、strict validation 与独立 verifier；该最终外部结果必须在交付说明中记录，且运行后
+不得再修改 source、配置、文档、OpenSpec 或 manifest。
 
 ## Frozen implementation surface
 
@@ -95,7 +96,7 @@ pure verifier `valid=true`；eval 仍为 `status=passed`、`external_effect_perf
 - 37 个 active components；
 - 115 条 active import edges；
 - component inventory digest
-  `sha256:23c7a2be71cab136fbf1277029238a2e21f1705551accf9d6968938d550bc47f`；
+  `sha256:45ef292313b323fb2bb7fd82266e63cad60e90e1c3c6cb616e1bd1ca96436a65`；
 - import graph digest
   `sha256:be4252b8c30e0c6f9c9a098eb3c2e881c0a26681b6fad92a04b2ffdef593c5a5`；
 - catalog digest
@@ -160,7 +161,7 @@ owner bundle 索引；product composition、restart/reconcile、完整 layered q
 
 ## Archive condition
 
-tasks 19.2—19.12 已完成；task `18.10` 的最终成立仍以包含本证据封口的 clean source 在 checkout 外生成并经
-独立 verifier 验证的整组 evidence 为条件。本 change 不因为 OpenSpec artifacts 为 `done`、单一绿色 gate 或旧
-receipt 而提前宣称完成。task `18.9` 的第二次正式 reset 已完整执行并验证；它不证明后续 product runtime
-implementation closure，也不会因后续代码修复而被倒推改写。
+tasks 19.2—19.11 与 20.1—20.6 已完成；tasks `18.10`、`19.12`、`20.7` 的最终成立仍以包含本索引与
+correctness 修复的 clean source 在 checkout 外生成并经独立 verifier 验证的整组 evidence 为条件。本 change 不因为
+OpenSpec artifacts 为 `done`、单一绿色 gate 或旧 receipt 而提前宣称完成。task `18.9` 的第二次正式 reset 已完整
+执行并验证；它不证明后续 product runtime implementation closure，也不会因后续代码修复而被倒推改写。

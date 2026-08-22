@@ -168,7 +168,10 @@ operational selection 接入该 coordinator。
 effectful Port 的 reconciliation 复用完整原请求，只允许查询同一 operation/intent 的既有 Adapter receipt；
 Kernel 不再执行 admission 或 dispatch，只记录一个 `redispatch_performed=false` 的 RECONCILE observation。
 Podman Adapter 在本 epoch 有 terminal receipt 时可结算；没有可验证 receipt 时继续报告原 operation
-`dispatch_in_doubt`，不能再次运行 argv/helper，也不能因为目标文件看似存在就推导原 effect 成功。
+`dispatch_in_doubt`，不能再次运行 argv/helper，也不能因为目标文件看似存在就推导原 effect 成功。当前
+inner process active request 与 terminal receipt 仍是进程内状态；若进程已启动而 Host 在外层 ledger settle 前
+硬崩溃，新 Adapter epoch 可能永久保持 `reconcile_required`。外层 ledger 阻止重复执行，但这不是自动恢复到
+terminal truth 的 liveness 证明。
 
 同一 Kernel 包已提供五个 base tool runtimes：`workspace.status`、`workspace.fs.read/list/mutate` 与
 `workspace.exec`。Host 的 read-only context resolver 从 exact Session/member/current AgentGitWorkspace/current

@@ -44,6 +44,10 @@ SSH process, SFTP filesystem and rsync/scp transfer mechanisms MUST live in decl
 - **WHEN** the Adapter cannot validate scheduler identity or response
 - **THEN** it preserves effect certainty and does not fabricate a job ID, retry or report success
 
+#### Scenario: Slurm reconciliation loses its occurrence credential
+- **WHEN** a durable submit or cancel occurrence is `dispatch_in_doubt` and a later Adapter epoch cannot resolve the credential
+- **THEN** the Adapter returns the prior uncertain receipt without calling the backend, changing it to `no_effect`, resubmitting or cancelling again
+
 ### Requirement: Login file credentials exclude scheduler authority
 Every HPC login/file credential MUST be scoped to one owner workspace root, target, protocol, audience, generation and expiry and MAY authorize only declared SSH/SFTP/rsync/Git/LFS/file operations. Scheduler submit/observe/cancel MUST require a separate occurrence credential created by formal Compute admission.
 

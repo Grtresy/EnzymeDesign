@@ -44,6 +44,28 @@ Dispatch, observe, reconcile, cancel and result settlement MUST use the Kernel C
 - **WHEN** cancellation may have been accepted but its response is lost
 - **THEN** observation reconciles the same cancel intent and does not issue another cancellation or workload
 
+### Requirement: Compute persists the dispatch occurrence before the external effect
+Every Compute execution MUST durably persist a Store-owned dispatch state and exact occurrence identity before invoking the selected route. The state MUST distinguish `not_started`, `reconcile_required`, `dispatched` and `settled`, and MUST retain the latest content-bound dispatch receipt digest. Once the state is not `not_started`, `submit()` MUST NOT invoke `dispatch()` again. Reconciliation MUST accept the original request plus occurrence identity and MUST NOT require a provider handle.
+
+#### Scenario: Dispatch response is lost before a handle is returned
+- **WHEN** the provider may have accepted the exact request but dispatch returns `dispatch_in_doubt` with no provider handle
+- **THEN** restart replays only `reconcile(request, occurrence_identity)`, preserves the same occurrence, and the route dispatch count remains one
+
+#### Scenario: Dispatch raises an uncertain typed failure
+- **WHEN** dispatch raises after the external request may have been accepted
+- **THEN** Compute persists `reconcile_required` plus a diagnostic-bound receipt identity before propagating the failure, and a later Host epoch never redispatches the workload
+
+### Requirement: Domain result validation precedes Compute terminal continuation
+When a formal workload carries an exact subordinate Driver result-validator binding, Compute MUST persist the Driver identity, owning Plugin, compiled workload contract/digest and validator identity with the request. A terminal provider receipt MUST pass the generic Compute identity checks and the exact Driver-owned result validator before Compute stores it as terminal or registers the owner continuation.
+
+#### Scenario: HMMER result bypasses its Driver validator
+- **WHEN** a terminal HMMER receipt has a generic Compute identity but fails the exact HMMER result contract or claims `raw_shell=true`
+- **THEN** Compute records a typed terminal-validation failure, stores no accepted terminal result and registers no owner continuation
+
+#### Scenario: Restart observes a valid terminal result
+- **WHEN** a restarted Host reconciles or observes a terminal result for a request with a persisted Driver validator binding
+- **THEN** it invokes the same exact Driver validator before the durable result and continuation are committed
+
 ### Requirement: Compute providers and routes are capability-resolved
 Compute MUST dispatch only through an exact route contributed by a compatible provider and present in the current Session capability binding. Local process, HPC and future providers MAY satisfy the same Compute capability contract; Compute MUST NOT import provider implementations or silently replace the Agent-selected route.
 

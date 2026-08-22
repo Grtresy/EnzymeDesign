@@ -57,12 +57,14 @@ Evidence currently covers：
 Formal HMMER/Vina invocation 的 application 层要求由
 `test_formal_product_tools_compile_driver_and_enter_compute_lifecycle` 证明；完整组合要求由
 `test_real_product_composition_runs_hmmer_and_vina_through_one_pinned_graph` 与资格场景
-`identity-semantics.enzymedesign-product-cross-layer` 证明。19.12 的 full clean-source report 是最终 archive
+`identity-semantics.enzymedesign-product-cross-layer` 只证明 real mounted product graph 下的 formal
+HMMER/Vina cross-layer slice；它直接 seed 部分 canonical 前置事实，并替换其他 product application/external
+Ports，不能证明完整 EnzymeDesign lifecycle。19.12 的 full clean-source report 是最终 archive
 gate，不能由 focused green 替代；最终 evidence seal commit 必须重复该外部门禁。
 
 ## file-workspace-cutover-assurance
 
-Status: `proven by clean-source admission, pending only post-seal repetition`。真实 product composition 已有
+Status: `reopened for correctness fixes; final clean-source admission pending`。mounted product formal slice 已有
 focused 直接证据，
 Workspace Adapter restart/reconcile 已由 19.6 单独闭合，Slurm occurrence 与 remote-helper resource
 qualification 已由 19.7 闭合；18.9 reset receipt 独立有效。
@@ -320,7 +322,7 @@ Requirements proven by the diagnostic report and direct evidence：
 1. Qualification has three closed composition profiles.
 2. Kernel qualification uses only fake infrastructure Ports.
 3. Standard qualification uses the real Plugin-free Distribution.
-4. EnzymeDesign qualification uses the real product Distribution.
+4. EnzymeDesign qualification mounts the real product Distribution and proves the named formal HMMER/Vina slice; full product lifecycle remains unproven.
 5. Source, pyproject and wheel gates prove dependency direction.
 6. Plugin removability and composition integrity are executable tests.
 7. Capability inventory route and affordance behavior are executable tests.
@@ -540,7 +542,9 @@ scenario；完整 diagnostic qualification 必须全部执行且每个 scenario/
 当前 registry 已把 catalog-only 场景如实改为 `wire-contract.enzymedesign-catalog`，并新增
 `identity-semantics.enzymedesign-product-cross-layer`：后者运行 generic Host、Session pin、authority、immutable
 publication、adopted inventory、affordance/route、mounted HMMER/Vina Drivers、durable Compute、声明式 fake
-runner、result/continuation 与 Science validator，同时证明 Task 不自动完成。最终 completion evidence 仍必须在
+runner、exact Driver result validator、continuation 与 Science validator，同时证明 Task 不自动完成。它是
+mounted product graph 的 formal HMMER/Vina slice，不是全部 Plugin application 或真实 external route 的 E2E。
+最终 completion evidence 仍必须在
 19.12 记录 28/28 scenario/invariant satisfied、零 skip/xfail、零 undeclared external effect、零 not-run，以及
 独立 verifier 对同一 payload digest 的验证结果。mainline、wheel、static architecture 与 strict OpenSpec 均为必要的
 互补证据，不能彼此替代。

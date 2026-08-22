@@ -11,9 +11,11 @@ login alias 和 credential claim 仅存在于私有 locator。普通进程只接
 每次 mutating dispatch 前都必须在注入的 `WorkspaceOperationLedgerPort` 中原子 reserve exact
 provider/operation/intent/workspace generation identity；transport 返回的 terminal 或 uncertain receipt 会写回
 同一持久 occurrence。响应丢失返回 `dispatch_in_doubt`；Host/Adapter 重启后，重复调用只读取原 receipt，
-`reconcile()` 只查询同一 operation/request digest，不重新发送，也不切换 target/provider。owner、local/remote
-generation、target qualification 或 root identity 漂移均在 transport 前以 `no_effect` 拒绝。SQLite restart
-测试覆盖 terminal receipt recovery 与 uncertain occurrence 在新 Adapter epoch 中的 original-route reconcile。
+`reconcile()` 只查询同一 operation/request digest，不重新发送，也不切换 target/provider。对于尚未 reserve 的
+新 dispatch，owner、local/remote generation、target qualification、root identity 或 credential 缺失可在
+transport 前以 `no_effect` 拒绝；对于 durable uncertain occurrence，同样的暂时不可用只表示无法观察，必须保留
+原 `dispatch_in_doubt + mutation_applied=null`。SQLite restart 测试覆盖 terminal receipt recovery，以及
+credential/locator 缺失时 uncertain occurrence 不被降级。
 远端唯一允许调用的 `/usr/local/libexec/openzyme-workspace-runtime` 已建模为
 `software.openzyme-workspace-runtime == 1.0.0` resource capability。其 build digest、qualification receipt、target
 inventory generation/digest 会进入私有 locator 与 transport envelope；缺失 exact resource fact 时，Kernel

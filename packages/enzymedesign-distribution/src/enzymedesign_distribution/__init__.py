@@ -4,6 +4,8 @@ from .application_runtime import EnzymeDesignApplicationRuntime
 from .application_runtime import EnzymeDesignCapabilityRegistryResolver
 from .application_runtime import EnzymeDesignLocalWorkspaceRuntimeAdapters
 from .application_runtime import EnzymeDesignOperationalAdapterSelection
+from .application_runtime import EnzymeDesignPodmanOperationalRuntime
+from .application_runtime import EnzymeDesignSlurmOperationalRuntime
 from .application_runtime import EnzymeDesignPostMountApplicationBinding
 from .application_runtime import EnzymeDesignTargetInventoryQueryPort
 from .application_runtime import build_enzymedesign_application_runtime
@@ -38,6 +40,8 @@ __all__ = [
     "EnzymeDesignCapabilityRegistryResolver",
     "EnzymeDesignLocalWorkspaceRuntimeAdapters",
     "EnzymeDesignOperationalAdapterSelection",
+    "EnzymeDesignPodmanOperationalRuntime",
+    "EnzymeDesignSlurmOperationalRuntime",
     "EnzymeDesignPostMountApplicationBinding",
     "EnzymeDesignScientificContributions",
     "EnzymeDesignSessionCompositionReader",

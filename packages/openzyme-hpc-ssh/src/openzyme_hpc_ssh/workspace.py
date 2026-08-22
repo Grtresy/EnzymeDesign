@@ -382,8 +382,17 @@ class SshJsonCommandTransport:
             return RemoteWorkspaceTransportOutcome(
                 operation_id=operation_id,
                 request_digest=request_digest,
-                effect_certainty=ExternalEffectCertainty.NO_EFFECT,
-                mutation_applied=False,
+                effect_certainty=(
+                    ExternalEffectCertainty.DISPATCH_IN_DOUBT
+                    if action == "reconcile"
+                    else ExternalEffectCertainty.NO_EFFECT
+                ),
+                mutation_applied=False if action != "reconcile" else None,
+                diagnostic_id=(
+                    "diagnostic-remote-reconciliation-credential-unavailable"
+                    if action == "reconcile"
+                    else "diagnostic-remote-dispatch-credential-unavailable"
+                ),
             )
         envelope = {
             "schema_version": "ssh_workspace_private_envelope@1",
@@ -644,7 +653,12 @@ class SshWorkspaceAdapter:
             is not ExternalEffectCertainty.DISPATCH_IN_DOUBT
         ):
             return prior.receipt
-        locator = self._locator(request.binding)
+        try:
+            locator = self._locator(request.binding)
+        except WorkspacePortError:
+            # A locator that cannot currently be resolved says nothing about
+            # whether the already-reserved remote occurrence took effect.
+            return self._recorded_or_pending(identity, prior.receipt)
         outcome = self.transport.reconcile(
             locator=locator,
             operation_id=request.operation_id,

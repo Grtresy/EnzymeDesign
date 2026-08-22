@@ -237,6 +237,90 @@ def test_sqlite_ledger_recovers_submit_handle_and_cancel_after_host_restart() ->
     assert final_backend.reconcile_cancel_calls == 1
 
 
+def test_reconcile_submit_missing_credential_preserves_uncertain_occurrence() -> None:
+    connection = sqlite3.connect(":memory:")
+    install_hpc_inventory_schema_for_offline_migration(connection)
+    request = _request()
+    first_backend = _Backend()
+    first_backend.submit_outcome = SlurmBackendOutcome(
+        operation_id=request.operation_id,
+        request_digest=request.request_digest,
+        effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
+        accepted=None,
+        diagnostic_id="diagnostic_1",
+    )
+    uncertain = SlurmSchedulerAdapter(
+        backend=first_backend,
+        credential_resolver=_Resolver(_credential()),  # type: ignore[arg-type]
+        ledger=SQLiteSchedulerOccurrenceLedger(connection, _Clock()),
+    ).submit(request)
+    restarted_backend = _Backend()
+    restarted = SlurmSchedulerAdapter(
+        backend=restarted_backend,
+        credential_resolver=_Resolver(None),  # type: ignore[arg-type]
+        ledger=SQLiteSchedulerOccurrenceLedger(connection, _Clock()),
+    )
+
+    reconciled = restarted.reconcile_submit(request)
+
+    assert reconciled == uncertain
+    assert reconciled.effect_certainty is ExternalEffectCertainty.DISPATCH_IN_DOUBT
+    assert reconciled.accepted is None
+    assert restarted_backend.submit_calls == 0
+    assert restarted_backend.reconcile_calls == 0
+
+
+def test_reconcile_cancel_missing_credential_preserves_uncertain_occurrence() -> None:
+    connection = sqlite3.connect(":memory:")
+    install_hpc_inventory_schema_for_offline_migration(connection)
+    request = _request()
+    first_backend = _Backend()
+    first_backend.submit_outcome = SlurmBackendOutcome(
+        operation_id=request.operation_id,
+        request_digest=request.request_digest,
+        effect_certainty=ExternalEffectCertainty.EFFECT_KNOWN,
+        accepted=True,
+        raw_scheduler_id="slurm-job-12345",
+        state=SchedulerJobState.QUEUED,
+    )
+    first = SlurmSchedulerAdapter(
+        backend=first_backend,
+        credential_resolver=_Resolver(_credential()),  # type: ignore[arg-type]
+        ledger=SQLiteSchedulerOccurrenceLedger(connection, _Clock()),
+    )
+    submitted = first.submit(request)
+    assert submitted.opaque_handle_id is not None
+    cancel_request = SchedulerCancelRequest.create(
+        operation_id="cancel_operation_missing_credential_1",
+        opaque_handle_id=submitted.opaque_handle_id,
+        reason="operator requested cancellation",
+        credential_occurrence_id="credential_1",
+        credential_digest=DIGEST,
+    )
+    first_backend.cancel_outcome = SlurmBackendOutcome(
+        operation_id=cancel_request.operation_id,
+        request_digest=cancel_request.request_digest,
+        effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
+        accepted=None,
+        diagnostic_id="diagnostic_cancel_1",
+    )
+    uncertain = first.cancel(cancel_request)
+    restarted_backend = _Backend()
+    restarted = SlurmSchedulerAdapter(
+        backend=restarted_backend,
+        credential_resolver=_Resolver(None),  # type: ignore[arg-type]
+        ledger=SQLiteSchedulerOccurrenceLedger(connection, _Clock()),
+    )
+
+    reconciled = restarted.reconcile_cancel(cancel_request)
+
+    assert reconciled == uncertain
+    assert reconciled.effect_certainty is ExternalEffectCertainty.DISPATCH_IN_DOUBT
+    assert reconciled.accepted is None
+    assert restarted_backend.cancel_calls == 0
+    assert restarted_backend.reconcile_cancel_calls == 0
+
+
 def test_lost_cancel_response_reconciles_without_second_cancel() -> None:
     request = _request()
     backend = _Backend()

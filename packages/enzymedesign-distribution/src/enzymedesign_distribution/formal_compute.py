@@ -23,6 +23,7 @@ from openzyme_compute import ComputeExecutionApplicationService
 from openzyme_compute import ComputeAdmissionProof
 from openzyme_compute import ComputeExecutionRepository
 from openzyme_compute import ComputeExecutionRequest
+from openzyme_compute import ComputeResultValidatorBinding
 from openzyme_compute import ComputeRouteOutcome
 from openzyme_compute import ComputeRoutePort
 from openzyme_contracts import ClockPort
@@ -32,6 +33,7 @@ from openzyme_contracts import PublishedRevision
 from openzyme_contracts import RevisionPathVerificationReceipt
 from openzyme_contracts import SessionCapabilityBindingRevision
 from openzyme_contracts import ToolInvocation
+from openzyme_contracts import ToolResult
 from openzyme_contracts import WorkspaceGeneration
 from openzyme_contracts import WorkspaceGenerationStatus
 from openzyme_contracts import WorkspaceRuntimeBinding
@@ -41,6 +43,7 @@ from openzyme_contracts.identity import JsonValue
 from openzyme_execution_contracts import ExecutionRouteIdentity
 from openzyme_execution_contracts import ExecutionWorkloadSpec
 from openzyme_extension_spi import DriverInvocationRequest
+from openzyme_extension_spi import CompiledDriverWorkload
 from openzyme_extension_spi import ContinuationApplicationService
 from openzyme_extension_spi import ControlledOperationApplicationService
 from openzyme_extension_spi import KernelCommandContext
@@ -369,6 +372,13 @@ class ExactComputeRouteRouter:
     def dispatch(self, request: ComputeExecutionRequest) -> ComputeRouteOutcome:
         return self._route(request).dispatch(request)
 
+    def reconcile(
+        self,
+        request: ComputeExecutionRequest,
+        occurrence_identity: str,
+    ) -> ComputeRouteOutcome:
+        return self._route(request).reconcile(request, occurrence_identity)
+
     def observe(
         self,
         request: ComputeExecutionRequest,
@@ -394,6 +404,67 @@ class ExactComputeRouteRouter:
 class FormalComputeDriverBinding:
     driver: SubordinateDriver
     request_contract_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class ExactDriverTerminalResultValidator:
+    drivers: Mapping[str, FormalComputeDriverBinding]
+
+    def validate(
+        self,
+        *,
+        request: ComputeExecutionRequest,
+        binding: ComputeResultValidatorBinding,
+        result,
+    ) -> None:
+        selected = self.drivers.get(binding.driver_id)
+        if selected is None:
+            raise ValueError("formal Compute result names an unmounted Driver")
+        expected_validator_id = f"{binding.driver_id}.result-validator@1"
+        if (
+            binding.validator_id != expected_validator_id
+            or binding.route_id != request.route.route_id
+            or selected.driver.manifest.identity.component_id != binding.driver_id
+            or selected.driver.manifest.owning_plugin_id != binding.owning_plugin_id
+        ):
+            raise ValueError("formal Compute result validator identity drifted")
+        compiled = CompiledDriverWorkload(
+            driver_id=str(binding.compiled_workload["driver_id"]),
+            owning_plugin_id=str(binding.compiled_workload["owning_plugin_id"]),
+            route_id=str(binding.compiled_workload["route_id"]),
+            workload_contract_digest=str(
+                binding.compiled_workload["workload_contract_digest"]
+            ),
+            result_contract_digest=str(
+                binding.compiled_workload["result_contract_digest"]
+            ),
+            workload=json_compatible(binding.compiled_workload["workload"]),
+        )
+        if (
+            compiled.driver_id != binding.driver_id
+            or compiled.owning_plugin_id != binding.owning_plugin_id
+            or compiled.route_id != binding.route_id
+            or compiled.workload_contract_digest != binding.workload_contract_digest
+            or compiled.result_contract_digest != binding.result_contract_digest
+            or canonical_sha256_digest(json_compatible(compiled.workload))
+            != canonical_sha256_digest(request.workload.to_dict())
+        ):
+            raise ValueError("persisted compiled Driver workload drifted")
+        summary = json_compatible(result.result_summary)
+        tool_result = ToolResult(
+            call_id=result.invocation_id,
+            tool_name=request.workload.entry_point,
+            ok=result.state == "succeeded",
+            status=result.state,
+            summary="Formal Compute terminal result.",
+            payload=summary,
+            error_code=(
+                None if result.state == "succeeded" else "formal_compute_terminal_failure"
+            ),
+        )
+        validated = selected.driver.validate_result(compiled, tool_result)
+        if validated != tool_result:
+            raise ValueError("Driver result validator replaced the terminal result")
 
 
 @dataclass(slots=True)
@@ -438,6 +509,22 @@ class EnzymeDesignFormalComputeToolApplication:
             )
         )
         workload = ExecutionWorkloadSpec.from_dict(json_compatible(compiled.workload))
+        result_validator = ComputeResultValidatorBinding.create(
+            driver_id=compiled.driver_id,
+            owning_plugin_id=compiled.owning_plugin_id,
+            route_id=compiled.route_id,
+            validator_id=f"{compiled.driver_id}.result-validator@1",
+            workload_contract_digest=compiled.workload_contract_digest,
+            result_contract_digest=compiled.result_contract_digest,
+            compiled_workload={
+                "driver_id": compiled.driver_id,
+                "owning_plugin_id": compiled.owning_plugin_id,
+                "route_id": compiled.route_id,
+                "workload_contract_digest": compiled.workload_contract_digest,
+                "result_contract_digest": compiled.result_contract_digest,
+                "workload": json_compatible(compiled.workload),
+            },
+        )
         source = self.source_bindings.resolve(
             invocation=invocation,
             dispatch=dispatch,
@@ -508,6 +595,7 @@ class EnzymeDesignFormalComputeToolApplication:
             idempotency_key=idempotency_key,
             absolute_deadline=(now + self.maximum_duration).isoformat(),
             created_at=now.isoformat(),
+            result_validator=result_validator,
         )
         record = self.compute.submit(
             context=KernelCommandContext(
@@ -591,6 +679,7 @@ class EnzymeDesignFormalComputeApplicationBinding:
     ) -> None:
         if self._application is not None:
             raise ValueError("formal Compute application binding is immutable")
+        drivers = _load_enzymedesign_formal_compute_drivers()
         compute = ComputeExecutionApplicationService(
             repository=repository,
             admission_verifier=CanonicalFormalComputeAdmissionVerifier(
@@ -601,6 +690,7 @@ class EnzymeDesignFormalComputeApplicationBinding:
             controlled_operations=controlled_operations,
             route=self.route,
             continuations=continuations,
+            terminal_result_validator=ExactDriverTerminalResultValidator(drivers),
         )
         self._application = build_enzymedesign_formal_compute_application(
             compute=compute,
@@ -609,6 +699,7 @@ class EnzymeDesignFormalComputeApplicationBinding:
                 path_verifications=path_verifications,
             ),
             clock=self.clock,
+            drivers=drivers,
         )
 
     def request(
@@ -640,9 +731,24 @@ def build_enzymedesign_formal_compute_application(
     compute: ComputeExecutionApplicationService,
     source_bindings: FormalComputeSourceBindingResolver,
     clock: ClockPort,
+    drivers: Mapping[str, FormalComputeDriverBinding] | None = None,
 ) -> EnzymeDesignFormalComputeToolApplication:
     """Load the exact manifest-selected HMMER/Vina Drivers without ambient discovery."""
 
+    selected_drivers = (
+        dict(drivers)
+        if drivers is not None
+        else _load_enzymedesign_formal_compute_drivers()
+    )
+    return EnzymeDesignFormalComputeToolApplication(
+        compute=compute,
+        source_bindings=source_bindings,
+        clock=clock,
+        drivers=selected_drivers,
+    )
+
+
+def _load_enzymedesign_formal_compute_drivers() -> dict[str, FormalComputeDriverBinding]:
     drivers: dict[str, FormalComputeDriverBinding] = {}
     for locator, factory, request_digest in (
         (
@@ -672,12 +778,7 @@ def build_enzymedesign_formal_compute_application(
             driver=driver,
             request_contract_digest=request_digest,
         )
-    return EnzymeDesignFormalComputeToolApplication(
-        compute=compute,
-        source_bindings=source_bindings,
-        clock=clock,
-        drivers=drivers,
-    )
+    return drivers
 
 
 def _driver_payload(
@@ -698,6 +799,7 @@ def _driver_payload(
 
 
 __all__ = [
+    "ExactDriverTerminalResultValidator",
     "CanonicalFormalComputeAdmissionVerifier",
     "CanonicalFormalComputeSourceBindingResolver",
     "EnzymeDesignFormalComputeApplicationBinding",

@@ -56,6 +56,17 @@ The composition loader MUST deterministically derive the Kernel contract/schema 
 - **WHEN** a bound target's transient health changes but no manifest, tool contract, inventory generation or Session capability-binding revision changes
 - **THEN** release-bundle digests remain stable while the turn affordance observation may change independently
 
+### Requirement: Operational Adapter objects derive from exact selected runtime bindings
+Each selected Adapter runtime binding MUST expose and match its component ID, contract digest, build digest, slot ID and target ID. The composition root MUST derive every operational Adapter object from those validated bindings and MUST NOT accept a second independent operational-selection graph.
+
+#### Scenario: Metadata names the selected Adapter but execution uses another object
+- **WHEN** a caller supplies valid selected metadata while attempting to bind a different runtime, workspace, process, revision or scheduler implementation
+- **THEN** activation fails before constructing a writer or permitting an external effect
+
+#### Scenario: Exact selected runtime is mounted
+- **WHEN** the runtime binding identity and its operational object match the selected manifest and slot/target
+- **THEN** the composition root derives the operational graph from that binding and includes its identity in the runtime proof
+
 ### Requirement: Capability dependencies resolve as a closed acyclic graph
 The activation resolver MUST match required capability IDs and version/operation constraints against declared providers without importing provider internals. It MUST reject missing required dependencies, incompatible versions, ambiguous single-valued providers and every dependency cycle. It MUST preserve all matching target-scoped routes when the contract permits multiple explicit routes.
 

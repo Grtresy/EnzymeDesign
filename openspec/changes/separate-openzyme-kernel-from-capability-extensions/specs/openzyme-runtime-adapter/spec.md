@@ -77,6 +77,14 @@ Runtime and process adapters MUST map failures to the common FailureObservation 
 - **WHEN** a runtime-mediated external invocation may have occurred but no receipt is available
 - **THEN** the failure preserves unknown effect certainty and instructs reconciliation rather than authorizing an automatic retry
 
+#### Scenario: Mounted tool runtime raises a typed effect failure
+- **WHEN** a mounted runtime raises a closed failure carrying code, effect certainty, mutation fact, diagnostic identity and reconciliation policy
+- **THEN** the gateway preserves those exact safe facts and does not replace them with a generic certainty or retry policy
+
+#### Scenario: Mounted tool runtime raises an unclassified exception after invocation starts
+- **WHEN** the gateway cannot prove whether the invoked runtime crossed its effect boundary
+- **THEN** it reports `dispatch_in_doubt`, `mutation_applied=null`, `reconcile_required=true` and `fallback_performed=false`
+
 ### Requirement: Runtime completion remains separate from continuation and Task completion
 An adapter turn ending, a process exiting, an outcome being consumed and a continuation being delivered MUST remain distinct state transitions. None of them alone MAY imply Task completion, scientific closure, report publication or controlled-operation success.
 

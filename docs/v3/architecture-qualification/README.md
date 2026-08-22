@@ -51,9 +51,11 @@ boundary relation drift、skip、xfail、timeout 或不完整 effect ledger 都�
 除原有十四个基础场景和五个 cutover 场景外，当前还固定八个 composition profile 场景：
 
 - 三个剖面各自的真实闭包：Kernel fake、Plugin-free Standard、EnzymeDesign exact component catalog；
-- EnzymeDesign 另有真实 non-live 产品跨层场景，从 generic Host、Session pin、authority、immutable
+- EnzymeDesign 另有 mounted product graph 下的 non-live HMMER/Vina formal cross-layer slice，从 generic Host、Session pin、authority、immutable
   publication、adopted inventory 与 affordance/route，经 mounted HMMER/Vina Drivers 和 durable Compute 到
-  声明式 fake runner，再验证 result、owner continuation、Science validator 与 Task 非自动终态；
+  声明式 fake runner，再验证 exact Driver result validator、owner continuation、Science validator 与 Task 非自动终态。
+  该 slice 直接 seed 部分 canonical 前置事实，并以 no-op/fake 替代其他 product application 与 external Port，
+  因此不能声明 14 个 Plugin 的完整生产命令生命周期或任何真实外部 target 已验证；
 - dependency/pyproject/wheel content/fresh import/archive exposure；
 - Plugin activation 的 add/remove/missing/degraded/drift/collision/cycle/namespace/Session pin 负例；
 - capability inventory、qualification、declared/effective catalog、affordance 与 route stale 负例；

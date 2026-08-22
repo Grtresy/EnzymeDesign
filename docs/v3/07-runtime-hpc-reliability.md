@@ -61,12 +61,17 @@ Slurm Adapter 在首次 submit/cancel effect 前，将 exact provider/kind/opera
 `openzyme_hpc_scheduler_occurrences`。raw Slurm id 只存在该 HPC-owned 私有账本；公开 receipt 只返回 opaque
 handle。EnzymeDesign application root 通过 selected `SlurmSchedulerAdapterFactory` 显式注入 backend、credential
 resolver 与同一 SQLite 账本，不允许 ambient backend 或 in-memory production fallback。
+submit/cancel reconcile 总是先读取该 durable occurrence：terminal receipt 可在没有 credential 时直接返回；
+已有 uncertain occurrence 而 credential 暂不可用时保持原 `dispatch_in_doubt`，不得以当前不可观察推断原 effect
+为 `no_effect`。SSH workspace reconcile 对 locator/qualification 暂时漂移采用同一原则。
 
 产品级 formal Compute 的 source/admission 也必须可重建：HMMER/Vina 输入引用一个 immutable
 `PublishedRevision`，每个 path 有 publication-owned verification receipt；owner workspace generation、authority
 generation/fence、Session capability binding、target inventory generation/digest 与 exact route 在 dispatch 前重验。
-这些 facts 不从 Driver 或模型参数推断。当前 non-live qualification 使用声明式 fake external runner 验证完整内部
-链和 continuation/Task 终态分离；它不声称真实 SSH/Slurm backend 已可达。
+这些 facts 不从 Driver 或模型参数推断。Compute 在 terminal persistence/continuation 之前重建 exact compiled
+Driver workload，并调用对应 HMMER/Vina `validate_result()`；result contract drift 或 `raw_shell=true` 会以
+terminal-known validation failure 停止，不能注册 continuation。当前 non-live qualification 使用声明式 fake
+external runner 验证这一 formal slice 和 continuation/Task 终态分离；它不声称真实 SSH/Slurm backend 已可达。
 
 ## Runner lifecycle
 

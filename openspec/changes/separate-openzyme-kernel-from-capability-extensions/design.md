@@ -516,6 +516,16 @@ Plugin之间不互相import实现或直接调用service。HMMER manifest可要�
 
 替代方案是让HMMER Plugin直接调用HPC Plugin或Slurm Adapter。拒绝，因为它把领域语义绑到单一部署机制，也绕过route resolution、inventory qualification和统一effect lifecycle。
 
+### 19. 外部派发 occurrence 与终态验证必须在 handle 之外闭合（D19）
+
+Provider handle 是一次派发的观察结果，不是派发已经发生的唯一证据。Compute 在调用 route 前先以 Store-owned CAS 持久化 `dispatch_state=reconcile_required` 和 deterministic `dispatch_occurrence_id`；收到确定已派发、terminal 或无效果证明后分别推进到 `dispatched`、`settled`，并保存 content-bound receipt digest。任何非 `not_started` 记录都失去再次调用 `dispatch()` 的资格。无 handle 或异常丢响应时，route 通过 `reconcile(original_request, occurrence_identity)` 查询原 occurrence；暂时缺 credential、locator、qualification 或 terminal proof 只说明 reconciliation unavailable，必须保留 `dispatch_in_doubt + mutation_applied=null`。
+
+正式领域结果的链路固定为：generic Compute identity validation → persisted exact Driver validator binding → owning Driver `validate_result()` → durable terminal result → owner continuation。Compute request 因而持久化 Driver ID、owning Plugin、compiled workload contract/digest 与 validator identity；通用 runner receipt 不能绕过 HMMER/Vina 对 result contract 和 `raw_shell=false` 的验证。
+
+mounted runtime gateway 接受 typed runtime effect failure，并逐项保留 code、certainty、mutation、diagnostic 与 reconcile policy；未分类的 invocation exception 只能保守成为 unknown effect，不能同时声称 `mutation_applied=false`。EnzymeDesign composition root 的 operational objects 只从 exact selected Adapter runtime bindings 派生，每个 binding 同时证明 component/contract/build/slot/target identity，不再接受独立的 metadata graph 与执行 graph。
+
+本 change 的产品资格声明分层：full Distribution manifest/mount closure 与 HMMER/Vina formal cross-layer slice 可以成立；使用 seeded canonical prerequisites、fake external Ports 或 no-op product applications 的场景不构成全部产品生命周期、真实外部资格或 cutover 证明。Podman 外层 ledger 保证零 redispatch，但新 Adapter epoch 缺少旧进程/container terminal proof 时允许长期保持 reconcile-required，不能文档化为必然自动恢复 terminal truth。
+
 ## Risks / Trade-offs
 
 - **[大 change 容易同时移动过多 owner]** → 任务按Contracts/Kernel、机制、reference extension、通用extension、EnzymeDesign、cutover分阶段；每阶段保持唯一implementation并运行focused gate，最终才激活`@2`。

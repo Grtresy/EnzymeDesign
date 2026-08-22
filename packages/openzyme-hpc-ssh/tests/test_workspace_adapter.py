@@ -276,6 +276,62 @@ def test_uncertain_remote_occurrence_reconciles_after_restart_without_redispatch
     assert len(restarted_transport.reconcile_calls) == 1
 
 
+def test_reconcile_missing_credential_preserves_prior_uncertainty_after_restart() -> None:
+    connection = sqlite3.connect(":memory:")
+    request = _exec()
+    first_transport = _Transport()
+    first_transport.dispatch_outcome = RemoteWorkspaceTransportOutcome(
+        operation_id=request.operation_id,
+        request_digest=request.intent_digest,
+        effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
+        mutation_applied=None,
+        diagnostic_id="diagnostic_1",
+    )
+    uncertain = SshWorkspaceAdapter(
+        _Resolver(_locator()), first_transport, _ledger(connection)
+    ).execute(request)
+    executor = _CommandExecutor(SshCommandResult(0, b"", b""))
+    restarted = SshWorkspaceAdapter(
+        _Resolver(_locator()),
+        SshJsonCommandTransport(_CredentialResolver(None), executor),
+        _ledger(connection),
+    )
+
+    reconciled = restarted.reconcile(request)
+
+    assert reconciled == uncertain
+    assert reconciled.effect_certainty is ExternalEffectCertainty.DISPATCH_IN_DOUBT
+    assert reconciled.mutation_applied is None
+    assert executor.calls == []
+
+
+def test_reconcile_missing_locator_preserves_prior_uncertainty_after_restart() -> None:
+    connection = sqlite3.connect(":memory:")
+    request = _exec()
+    first_transport = _Transport()
+    first_transport.dispatch_outcome = RemoteWorkspaceTransportOutcome(
+        operation_id=request.operation_id,
+        request_digest=request.intent_digest,
+        effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
+        mutation_applied=None,
+        diagnostic_id="diagnostic_1",
+    )
+    uncertain = SshWorkspaceAdapter(
+        _Resolver(_locator()), first_transport, _ledger(connection)
+    ).execute(request)
+    restarted_transport = _Transport()
+    restarted = SshWorkspaceAdapter(
+        _Resolver(None), restarted_transport, _ledger(connection)
+    )
+
+    reconciled = restarted.reconcile(request)
+
+    assert reconciled == uncertain
+    assert reconciled.effect_certainty is ExternalEffectCertainty.DISPATCH_IN_DOUBT
+    assert restarted_transport.dispatch_calls == []
+    assert restarted_transport.reconcile_calls == []
+
+
 def test_stale_workspace_generation_fails_before_transport() -> None:
     request = replace(_exec(), binding=_binding(generation=3))
     transport = _Transport()

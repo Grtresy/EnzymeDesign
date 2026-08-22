@@ -11,7 +11,7 @@ from .runtime import __all__ as _runtime_exports
 
 COMPONENT_ID = "enzymedesign.vina"
 COMPONENT_KIND = "product_plugin"
-MIGRATION_STATE = "target_implemented_legacy_callers_pending"
+MIGRATION_STATE = "target_implemented_not_cutover"
 
 __all__ = [
     "COMPONENT_ID",

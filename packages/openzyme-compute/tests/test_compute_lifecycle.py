@@ -12,6 +12,7 @@ from openzyme_compute import ComputeExecutionApplicationService
 from openzyme_compute import ComputeExecutionRequest
 from openzyme_compute import ComputeLifecycleError
 from openzyme_compute import ComputeRouteOutcome
+from openzyme_compute import ComputeResultValidatorBinding
 from openzyme_compute import InMemoryComputeExecutionRepository
 from openzyme_contracts import ExternalEffectCertainty
 from openzyme_contracts import KernelRecordSnapshot
@@ -83,7 +84,9 @@ def _route() -> ExecutionRouteIdentity:
     )
 
 
-def _request() -> ComputeExecutionRequest:
+def _request(
+    *, result_validator: ComputeResultValidatorBinding | None = None
+) -> ComputeExecutionRequest:
     return ComputeExecutionRequest.create(
         invocation_id="invocation_1",
         execution_id="execution_1",
@@ -107,6 +110,7 @@ def _request() -> ComputeExecutionRequest:
         idempotency_key="submit_1",
         absolute_deadline="2026-08-20T12:00:00+00:00",
         created_at="2026-08-20T10:00:00+00:00",
+        result_validator=result_validator,
     )
 
 
@@ -203,17 +207,37 @@ class RecordingContinuations:
         )
 
 
+class RejectingTerminalValidator:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def validate(self, **_: object) -> None:
+        self.calls += 1
+        raise ValueError("exact Driver result contract drifted")
+
+
 @dataclass
 class RecordingRoute:
     dispatch_outcome: ComputeRouteOutcome
     observe_outcome: ComputeRouteOutcome | None = None
+    reconcile_outcome: ComputeRouteOutcome | None = None
     cancel_error: ComputeLifecycleError | None = None
+    dispatch_error: ComputeLifecycleError | None = None
     dispatch_count: int = 0
+    reconcile_count: int = 0
     cancel_count: int = 0
 
     def dispatch(self, request: ComputeExecutionRequest) -> ComputeRouteOutcome:
         self.dispatch_count += 1
+        if self.dispatch_error is not None:
+            raise self.dispatch_error
         return self.dispatch_outcome
+
+    def reconcile(self, request, occurrence_identity) -> ComputeRouteOutcome:
+        del request, occurrence_identity
+        self.reconcile_count += 1
+        assert self.reconcile_outcome is not None
+        return self.reconcile_outcome
 
     def observe(self, request, provider_handle) -> ComputeRouteOutcome:
         assert self.observe_outcome is not None
@@ -325,7 +349,7 @@ def test_compute_uses_real_kernel_operation_truth_from_active_to_terminal() -> N
 
     result = ExecutionResultReceipt.from_dict(
         {
-            "schema_version": "execution_result_receipt@1",
+                "schema_version": "execution_result_receipt@2",
             "result_id": "result_1",
             "invocation_id": "invocation_1",
             "operation_id": "operation_1",
@@ -339,6 +363,7 @@ def test_compute_uses_real_kernel_operation_truth_from_active_to_terminal() -> N
             "result_revision_id": None,
             "result_digest": DIGEST,
             "terminal_receipt_digest": DIGEST,
+            "result_summary": {},
         }
     )
     route.observe_outcome = replace(
@@ -443,7 +468,7 @@ def test_terminal_result_only_wakes_owner_and_never_finishes_task() -> None:
     workload = _workload()
     result = ExecutionResultReceipt.from_dict(
         {
-            "schema_version": "execution_result_receipt@1",
+                "schema_version": "execution_result_receipt@2",
             "result_id": "result_1",
             "invocation_id": "invocation_1",
             "operation_id": "operation_1",
@@ -457,6 +482,7 @@ def test_terminal_result_only_wakes_owner_and_never_finishes_task() -> None:
             "result_revision_id": None,
             "result_digest": DIGEST,
             "terminal_receipt_digest": DIGEST,
+            "result_summary": {},
         }
     )
     route = RecordingRoute(_outcome(result=result))
@@ -474,3 +500,64 @@ def test_terminal_result_only_wakes_owner_and_never_finishes_task() -> None:
     }
     assert record.safe_projection()["task_finished"] is False
     assert record.safe_projection()["publication_created"] is False
+
+
+def test_terminal_result_validator_rejects_before_persistence_or_continuation() -> None:
+    workload = _workload()
+    result = ExecutionResultReceipt.from_dict(
+        {
+            "schema_version": "execution_result_receipt@2",
+            "result_id": "result_1",
+            "invocation_id": "invocation_1",
+            "operation_id": "operation_1",
+            "execution_id": "execution_1",
+            "route_id": "hpc-primary.revision-job",
+            "workload_digest": workload.workload_digest,
+            "state": "succeeded",
+            "result_contract_digest": canonical_sha256_digest(
+                workload.result_contract.to_dict()
+            ),
+            "result_revision_id": None,
+            "result_digest": DIGEST,
+            "terminal_receipt_digest": DIGEST,
+            "result_summary": {
+                "result_contract_digest": DIGEST,
+                "raw_shell": True,
+            },
+        }
+    )
+    binding = ComputeResultValidatorBinding.create(
+        driver_id="enzymedesign.hmmer.hpc",
+        owning_plugin_id="enzymedesign.hmmer",
+        route_id="hpc-primary.revision-job",
+        validator_id="enzymedesign.hmmer.hpc.result-validator@1",
+        workload_contract_digest=DIGEST,
+        result_contract_digest=DIGEST,
+        compiled_workload={"workload": workload.to_dict()},
+    )
+    repository = InMemoryComputeExecutionRepository()
+    operations = RecordingControlledOperations()
+    continuations = RecordingContinuations()
+    validator = RejectingTerminalValidator()
+    service = ComputeExecutionApplicationService(
+        repository=repository,
+        admission_verifier=ExactVerifier(),
+        controlled_operations=operations,
+        route=RecordingRoute(_outcome(result=result)),
+        continuations=continuations,
+        terminal_result_validator=validator,
+    )
+
+    with pytest.raises(ComputeLifecycleError) as caught:
+        service.submit(
+            context=_context(),
+            request=_request(result_validator=binding),
+        )
+
+    stored = repository.get("session_1", "execution_1")
+    assert caught.value.error_code == "compute_terminal_result_validation_failed"
+    assert caught.value.effect_certainty is ExternalEffectCertainty.TERMINAL_KNOWN
+    assert validator.calls == 1
+    assert stored is not None
+    assert stored.result is None
+    assert continuations.commands == []

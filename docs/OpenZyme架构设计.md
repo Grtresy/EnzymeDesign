@@ -216,7 +216,9 @@ canonical Plugin/Kernel surfaces；旧 function handler/repository/writer packag
   闭合，并能生成 EnzymeDesign fresh seed；typed runtime surface set 还能在 read-only startup gate 后通过
   Kernel exact mount 闭合 32 Plugin tools、13 capability routes、2 HTTP routes、5 projections、5 workers、
   2 finish validators 和 3 transaction participants，缺失或多余 surface 会在 mount 前失败。产品
-  `build_enzymedesign_application_runtime()` 还会精确核对 8 个 selected Adapter runtime binding，闭合 5 个
+  `build_enzymedesign_application_runtime()` 还会精确核对 8 个 selected Adapter runtime binding 的
+  slot/target/component/manifest/contract/build identity；LLM、Git、Podman 与 Slurm 的 effectful operational
+  object 只能从这组 binding 派生，composition root 不再接受第二套独立 operational selection。闭合 5 个
   Kernel 与 32 个 Plugin tool runtime 后才构造 SQLite writer、Kernel command/runtime gateway 与公共投影；
   通用 Host 入口已从该 graph 完成真实 Session bootstrap，且不依赖 `openzyme-standard`。这证明
   `runtime_mounted`；Distribution 另以 `ToolDispatchBinding` 将 Kernel 重验后的 authority fence、workspace
@@ -226,11 +228,16 @@ canonical Plugin/Kernel surfaces；旧 function handler/repository/writer packag
   当前 authority 与 adopted capability binding 推导 admission。该 bridge 已有 non-live 直接证明，
   Compute execution record 现通过 Kernel-admitted extension state、Store-owned SQLite coordinator/query 与
   `openzyme_compute` namespace 做 CAS 持久化；产品组合根同时构造 Kernel continuation service。SQLite restart
-  回归证明同一 invocation/route/opaque handle 不 redispatch，terminal result 与 continuation 在第二次重启后仍可恢复。
+  record 在首次外部调用前先持久化 `dispatch_state`、occurrence identity 与 receipt digest；无 provider handle 的
+  uncertain response 或 typed exception 在重启后都只 reconcile 原 occurrence，dispatch count 保持 1。terminal
+  result 还必须在落库和 continuation 注册前通过持久化的 exact Driver validator identity、compiled workload
+  contract 与 HMMER/Vina result semantics；失败不会唤醒 owner。
   真实 non-live 产品场景还从通用 Host、Session pin、authority、immutable publication、adopted inventory 和
   affordance/route，经 mounted HMMER/Vina Drivers 与 Compute 到声明式 fake runner，再验证 terminal result、
-  owner continuation、Science finish validator 以及 Task 保持 `todo`。这证明内部产品组合闭合，不等于真实
-  HPC/Slurm target qualified、cutover 或 live；
+  owner continuation、Science finish validator 以及 Task 保持 `todo`。该测试直接 seed 合法 canonical
+  capability/workspace/path facts，并为其他 application 与外部 I/O 使用 no-op/fake Port，因此只证明
+  `real mounted EnzymeDesign product graph with formal HMMER/Vina cross-layer slice`，不证明 14 个 Plugin 的
+  全部正式命令自然创建所有前置事实，也不等于真实 HPC/Slurm target qualified、cutover 或 live；
 - `openzyme-workspace-git-lfs` 已成为 `AgentGitWorkspace` identity/observation/restore 与 Git-LFS
   policy/pointer/closure/verification/receipt 机制 DTO 的唯一代码 owner；旧 Domain shim 已删除，仓内生产
   caller 使用 Adapter namespace。private/public ref 与 immutable-byte backend、
@@ -277,7 +284,10 @@ canonical Plugin/Kernel surfaces；旧 function handler/repository/writer packag
   process、transfer 与 SSH Adapter 都必须先以 provider/operation/intent/session/workspace generation 原子
   reserve，随后才可 dispatch。Standard 与 EnzymeDesign composition root 注入同一 target ledger；Host 重启后
   exact duplicate 只返回持久 receipt，uncertain occurrence 只 reconcile 原 transport identity，零 redispatch、
-  零 target/provider fallback。该 ledger 是机制事实，不会自动 checkpoint、publish、adopt 或完成 Task；
+  零 target/provider fallback。SSH/Slurm reconcile 必须先读取 durable occurrence；已有 uncertain occurrence 时，
+  credential、locator 或 qualification 暂不可用只表示 reconciliation unavailable，必须保留
+  `dispatch_in_doubt + mutation_applied=null`，不能降级成 `no_effect`。该 ledger 是机制事实，不会自动
+  checkpoint、publish、adopt 或完成 Task；
 - 新 Kernel 已实现 `RuntimeTurnCoordinator`：从 claimed signal、Session runtime lease、layered release、
   exact capability binding/affordance snapshot 与 selected runtime Adapter 构造 immutable bounded command，
   对 outcome 的 Session/member/signal/fence/epoch/budget 做 closed validation，并通过 repository Port 原子

@@ -17,6 +17,8 @@ from enzymedesign_distribution import activate_enzymedesign_composition
 from enzymedesign_distribution import EnzymeDesignAdapterRuntimeBinding
 from enzymedesign_distribution import EnzymeDesignAdapterRuntimeSet
 from enzymedesign_distribution import EnzymeDesignOperationalAdapterSelection
+from enzymedesign_distribution import EnzymeDesignPodmanOperationalRuntime
+from enzymedesign_distribution import EnzymeDesignSlurmOperationalRuntime
 from enzymedesign_distribution import EnzymeDesignPluginRuntimeSurfaceSet
 from enzymedesign_distribution import EnzymeDesignFormalComputeApplicationBinding
 from enzymedesign_distribution import ExactComputeRouteRouter
@@ -154,8 +156,9 @@ class _EmptyInventoryRepository:
 
 
 class _IdleRuntimeAdapter:
-    adapter_id = "test.runtime.idle"
-    adapter_contract_digest = DIGEST
+    def __init__(self, adapter_id: str, adapter_contract_digest: str) -> None:
+        self.adapter_id = adapter_id
+        self.adapter_contract_digest = adapter_contract_digest
 
     def run_turn(self, command, capability_gateway):  # noqa: ANN001, ANN201
         del command, capability_gateway
@@ -249,6 +252,9 @@ class _DeclaredFormalRunnerPort:
     def observe(self, request, provider_handle):  # noqa: ANN001, ANN201
         raise AssertionError((request, provider_handle))
 
+    def reconcile(self, request, occurrence_identity):  # noqa: ANN001, ANN201
+        raise AssertionError((request, occurrence_identity))
+
     def cancel(self, request, provider_handle):  # noqa: ANN001, ANN201
         raise AssertionError((request, provider_handle))
 
@@ -276,6 +282,7 @@ class _ProductFormalRunnerPort:
     def observe(self, request, provider_handle):  # noqa: ANN001, ANN201
         self.observe_calls += 1
         assert provider_handle == f"product-handle-{request.execution_id}"
+        assert request.result_validator is not None
         result_contract_digest = canonical_sha256_digest(
             request.workload.result_contract.to_dict()
         )
@@ -291,7 +298,7 @@ class _ProductFormalRunnerPort:
         )
         result = ExecutionResultReceipt.from_dict(
             {
-                "schema_version": "execution_result_receipt@1",
+                "schema_version": "execution_result_receipt@2",
                 "result_id": f"result-{request.execution_id}",
                 "invocation_id": request.invocation_id,
                 "operation_id": request.operation_id,
@@ -303,6 +310,10 @@ class _ProductFormalRunnerPort:
                 "result_revision_id": None,
                 "result_digest": result_digest,
                 "terminal_receipt_digest": terminal_digest,
+                "result_summary": {
+                    "result_contract_digest": request.result_validator.result_contract_digest,
+                    "raw_shell": False,
+                },
             }
         )
         return ComputeRouteOutcome(
@@ -316,6 +327,9 @@ class _ProductFormalRunnerPort:
             mutation_applied=True,
             terminal_result=result,
         )
+
+    def reconcile(self, request, occurrence_identity):  # noqa: ANN001, ANN201
+        raise AssertionError((request, occurrence_identity))
 
     def cancel(self, request, provider_handle):  # noqa: ANN001, ANN201
         raise AssertionError((request, provider_handle))
@@ -434,8 +448,17 @@ class _BootstrapAuthority:
 def _operational_selection(
     *, revision_backend=None  # noqa: ANN001
 ) -> EnzymeDesignOperationalAdapterSelection:
+    composition = activate_enzymedesign_composition()
+    runtime_manifest = next(
+        item.manifest
+        for item in composition.adapters
+        if item.selection.slot_id == "agent.turn"
+    )
     return EnzymeDesignOperationalAdapterSelection(
-        runtime_adapter=_IdleRuntimeAdapter(),
+        runtime_adapter=_IdleRuntimeAdapter(
+            runtime_manifest.identity.component_id,
+            runtime_manifest.identity.contract_digest,
+        ),
         workspace_mounts=object(),  # type: ignore[arg-type]
         process_isolation=object(),  # type: ignore[arg-type]
         revision_backend=revision_backend or object(),  # type: ignore[arg-type]
@@ -511,6 +534,20 @@ def _adapter_runtime_set(
     operational_selection: EnzymeDesignOperationalAdapterSelection,
 ) -> EnzymeDesignAdapterRuntimeSet:
     composition = activate_enzymedesign_composition()
+    runtimes = {
+        "agent.turn": operational_selection.runtime_adapter,
+        "workspace.backend": operational_selection.revision_backend,
+        "process.isolation": EnzymeDesignPodmanOperationalRuntime(
+            workspace_mounts=operational_selection.workspace_mounts,
+            process_isolation=operational_selection.process_isolation,
+            podman_binary=operational_selection.podman_binary,
+        ),
+        "hpc.scheduler": EnzymeDesignSlurmOperationalRuntime(
+            factory=operational_selection.slurm_factory,
+            backend=operational_selection.slurm_backend,
+            credential_resolver=operational_selection.slurm_credential_resolver,
+        ),
+    }
     return EnzymeDesignAdapterRuntimeSet(
         bindings=tuple(
             EnzymeDesignAdapterRuntimeBinding(
@@ -518,11 +555,9 @@ def _adapter_runtime_set(
                 target_id=item.selection.target_id,
                 component_id=item.manifest.identity.component_id,
                 manifest_digest=item.manifest.manifest_digest,
-                runtime=(
-                    operational_selection.slurm_factory
-                    if item.selection.slot_id == "hpc.scheduler"
-                    else object()
-                ),
+                contract_digest=item.manifest.identity.contract_digest,
+                build_digest=item.manifest.identity.build_digest,
+                runtime=runtimes.get(item.selection.slot_id, object()),
             )
             for item in composition.adapters
         )
@@ -1161,7 +1196,6 @@ def test_application_runtime_mounts_exact_product_before_enabling_writer() -> No
             clock=DeterministicClock(datetime(2026, 8, 22, tzinfo=UTC)),
             ids=DeterministicIdGenerator(),
             bootstrap_authority=_BootstrapAuthority(),
-            operational_selection=operational_selection,
         )
         app = build_enzymedesign_v2_host_app(
             runtime=runtime,
@@ -1234,13 +1268,45 @@ def test_application_runtime_rejects_missing_adapter_before_writer_enablement() 
                 clock=DeterministicClock(datetime(2026, 8, 22, tzinfo=UTC)),
                 ids=DeterministicIdGenerator(),
                 bootstrap_authority=_BootstrapAuthority(),
-                operational_selection=operational_selection,
             )
         assert connection.total_changes == before
     finally:
         connection.close()
 
     assert caught.value.code == "enzymedesign_adapter_runtime_set_incomplete"
+
+
+def test_application_runtime_rejects_operational_object_outside_exact_binding() -> None:
+    connection, startup = _activated_startup()
+    operational_selection = _operational_selection()
+    adapters = _adapter_runtime_set(operational_selection)
+    drifted = replace(
+        adapters,
+        bindings=tuple(
+            replace(binding, runtime=object())
+            if binding.slot_id == "agent.turn"
+            else binding
+            for binding in adapters.bindings
+        ),
+    )
+    before = connection.total_changes
+    try:
+        with pytest.raises(KernelContractError) as caught:
+            build_enzymedesign_application_runtime(
+                connection,
+                startup=startup,
+                surfaces=_runtime_surface_set(),
+                adapter_runtimes=drifted,
+                inventories=_EmptyInventoryRepository(),
+                clock=DeterministicClock(datetime(2026, 8, 22, tzinfo=UTC)),
+                ids=DeterministicIdGenerator(),
+                bootstrap_authority=_BootstrapAuthority(),
+            )
+        assert connection.total_changes == before
+    finally:
+        connection.close()
+
+    assert caught.value.code == "enzymedesign_runtime_adapter_identity_drift"
 
 
 @pytest.mark.parametrize(
@@ -1426,7 +1492,7 @@ def test_formal_product_tools_compile_driver_and_enter_compute_lifecycle(
 
 
 def test_real_product_composition_runs_hmmer_and_vina_through_one_pinned_graph() -> None:
-    """Qualify the real non-live product graph with only declared I/O Ports faked."""
+    """Prove the mounted graph's formal HMMER/Vina non-live cross-layer slice."""
 
     connection, startup = _activated_startup()
     inventory_repository, inventory = _publish_product_inventory(connection)
@@ -1479,7 +1545,6 @@ def test_real_product_composition_runs_hmmer_and_vina_through_one_pinned_graph()
         clock=clock,
         ids=DeterministicIdGenerator(),
         bootstrap_authority=_BootstrapAuthority(),
-        operational_selection=operational_selection,
         application_bindings=(formal_binding,),
     )
     app = build_enzymedesign_v2_host_app(

@@ -12,6 +12,7 @@ from openzyme_contracts import canonical_sha256_digest
 from openzyme_extension_spi import ToolRuntimeContribution
 from openzyme_extension_spi import ToolDispatchBinding
 from openzyme_runtime_spi import RuntimeCapabilityGateway
+from openzyme_runtime_spi import RuntimeToolInvocationError
 from openzyme_runtime_spi import RuntimeToolRequest
 
 from .affordance import ToolAffordanceContext
@@ -356,6 +357,24 @@ class MountedRuntimeCapabilityGateway(RuntimeCapabilityGateway):
                 result = admitted_invoke(invocation, dispatch)
             else:
                 result = runtime.invoke(invocation)
+        except RuntimeToolInvocationError as exc:
+            return ToolResult(
+                call_id=invocation.call_id,
+                tool_name=invocation.tool_name,
+                ok=False,
+                status=exc.status,
+                summary=exc.summary,
+                payload={
+                    "effect_certainty": exc.effect_certainty.value,
+                    "mutation_applied": exc.mutation_applied,
+                    "fallback_performed": False,
+                    "retry_performed": False,
+                    "reconcile_required": exc.reconcile_required,
+                    "diagnostic_id": exc.diagnostic_id,
+                },
+                error_code=exc.code,
+                hint=exc.hint,
+            )
         except Exception:
             return ToolResult(
                 call_id=invocation.call_id,
@@ -365,7 +384,7 @@ class MountedRuntimeCapabilityGateway(RuntimeCapabilityGateway):
                 summary="The mounted tool runtime failed without a terminal receipt.",
                 payload={
                     "effect_certainty": "dispatch_in_doubt",
-                    "mutation_applied": False,
+                    "mutation_applied": None,
                     "fallback_performed": False,
                     "retry_performed": False,
                     "reconcile_required": True,
@@ -382,7 +401,7 @@ class MountedRuntimeCapabilityGateway(RuntimeCapabilityGateway):
                 summary="The mounted tool runtime returned a mismatched receipt identity.",
                 payload={
                     "effect_certainty": "dispatch_in_doubt",
-                    "mutation_applied": False,
+                    "mutation_applied": None,
                     "fallback_performed": False,
                     "retry_performed": False,
                     "reconcile_required": True,

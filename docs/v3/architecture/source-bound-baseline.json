@@ -1,6 +1,6 @@
 {
   "schema_id": "openzyme_source_bound_architecture_baseline@1",
-  "component_inventory_digest": "sha256:23c7a2be71cab136fbf1277029238a2e21f1705551accf9d6968938d550bc47f",
+  "component_inventory_digest": "sha256:45ef292313b323fb2bb7fd82266e63cad60e90e1c3c6cb616e1bd1ca96436a65",
   "import_graph_digest": "sha256:be4252b8c30e0c6f9c9a098eb3c2e881c0a26681b6fad92a04b2ffdef593c5a5",
   "accepted_import_graph_transitions": [
     {

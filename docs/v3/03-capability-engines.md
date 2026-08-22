@@ -139,7 +139,9 @@ locator 或 raw probe output。模型 function list 只从同一 snapshot 中选
 和 snapshot digest；`invoke` 再从 command scope 取得 current context 并调用 `revalidate_tool_dispatch`。只有
 manifest/runtime/tool-contract 与 admission identity 全部一致时才进入 Plugin runtime。stale 或未挂载在调用前
 返回 `no_effect`；runtime 抛出或 receipt identity 漂移时不得假称未执行，而是返回
-`dispatch_in_doubt + reconcile_required`，且 `fallback_performed=false`。
+`dispatch_in_doubt + mutation_applied=null + reconcile_required=true`，且 `fallback_performed=false`。
+Plugin runtime 可抛出带 `code/effect_certainty/mutation_applied/diagnostic_id/reconcile_required` 的 typed error，
+Gateway 必须原样保留其 effect truth；普通未分类异常只允许采用保守的 unknown-effect 语义。
 
 Gateway 之前还必须建立 `MountedRuntimeToolSet`。它把 Kernel base runtime 与
 `MountedExtensionSurfaces.tools` 分开接收，再按 active release 的 `DeclaredToolCatalog` 做 exact closure：每个
