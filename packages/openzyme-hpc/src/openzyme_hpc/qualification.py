@@ -54,6 +54,7 @@ class QualificationProbeRequest:
     probe_kind: QualificationProbeKind
     argv: tuple[str, ...]
     expected_result_schema_digest: str
+    expected_operations: tuple[str, ...]
     request_digest: str
 
     @classmethod
@@ -83,6 +84,7 @@ class QualificationProbeRequest:
             "probe_kind": probe_kind.value,
             "argv": list(argv),
             "expected_result_schema_digest": expected_schema_digest,
+            "expected_operations": list(spec.expected_operations),
         }
         return cls(
             operation_id=operation_id,
@@ -93,6 +95,7 @@ class QualificationProbeRequest:
             probe_kind=probe_kind,
             argv=argv,
             expected_result_schema_digest=expected_schema_digest,
+            expected_operations=spec.expected_operations,
             request_digest=canonical_sha256_digest(payload),
         )
 
@@ -112,6 +115,8 @@ class QualificationProbeRequest:
             require_digest(getattr(self, field_name), field_name=field_name)
         if not self.argv or any(not value or "\x00" in value for value in self.argv):
             raise ValueError("qualification probe argv must be non-empty and closed")
+        if tuple(sorted(set(self.expected_operations))) != self.expected_operations:
+            raise ValueError("expected_operations must be canonical and unique")
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +129,7 @@ class QualificationProbeOutcome:
     backend_receipt_digest: str | None
     observed_version: str | None = None
     expected_schema_matched: bool | None = None
+    observed_operations: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         require_identifier(self.operation_id, field_name="operation_id")
@@ -137,6 +143,18 @@ class QualificationProbeOutcome:
             )
         if self.observed_version is not None:
             require_identifier(self.observed_version, field_name="observed_version")
+        if any(
+            not isinstance(value, str) or not value or "\x00" in value
+            for value in self.observed_operations
+        ):
+            raise ValueError("observed_operations must contain bounded strings")
+        if len(set(self.observed_operations)) != len(self.observed_operations):
+            raise ValueError("observed_operations must not contain duplicates")
+        object.__setattr__(
+            self,
+            "observed_operations",
+            tuple(sorted(self.observed_operations)),
+        )
 
 
 class ControlledQualificationProbePort(Protocol):
@@ -230,6 +248,10 @@ class TargetQualificationWorkflow:
                 or version.observed_version is None
                 or not smoke.succeeded
                 or smoke.expected_schema_matched is not True
+                or not smoke.observed_operations
+                or not set(smoke.observed_operations).issubset(
+                    spec.expected_operations
+                )
                 or version.backend_receipt_digest is None
                 or smoke.backend_receipt_digest is None
                 or version.output_digest is None
@@ -254,6 +276,7 @@ class TargetQualificationWorkflow:
                 expected_result_schema_digest=(
                     smoke_request.expected_result_schema_digest
                 ),
+                operations=smoke.observed_operations,
                 status=QualificationReceiptStatus.PASSED,
                 observed_at=command.observed_at,
                 valid_until=command.valid_until,
@@ -265,7 +288,7 @@ class TargetQualificationWorkflow:
                     kind=ResourceCapabilityKind.SOFTWARE,
                     contract_version=spec.contract_version,
                     version=version.observed_version,
-                    operations=(),
+                    operations=smoke.observed_operations,
                     environment_digest=command.environment_digest,
                     qualification_digest=receipt.receipt_digest,
                     implementation_digest=version.output_digest,

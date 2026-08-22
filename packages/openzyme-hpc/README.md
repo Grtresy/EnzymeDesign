@@ -31,8 +31,11 @@ EnzymeDesign fresh owner schema 会离线安装 inventory、qualification 与 sc
 
 `TargetQualificationWorkflow` 只允许 operator/admin，使用一个必须由 Kernel
 `ControlledOperation` 支撑的 Adapter Port 执行 version query 与 deterministic smoke；
-`dispatch_in_doubt` 只 reconcile 同一 occurrence，未闭合时不发布 inventory。Agent/import/turn
-都不能触发 probe。
+terminal smoke 必须回报其实际证明的 non-empty supported operations，且这些 operation 必须落在
+QualificationSpec expected-result schema 的 closed operations 集合内。同一 operations 同时进入
+`SoftwareQualificationReceipt` 与 `TargetCapabilityFact`；空集合、schema 外值或无法证明时不发布 inventory。
+`dispatch_in_doubt` 只 reconcile 同一 occurrence，未闭合时不发布 inventory。Agent/import/turn 都不能触发
+probe。
 
 HPC lifecycle 的 observation、credential、provision/cleanup Port、settlement proof 与纯状态机已由本包唯一拥有，
 Host 的 concrete provisioner/credential provider 已直接消费这些 contracts。本包 manifest 还精确声明并实现

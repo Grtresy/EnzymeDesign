@@ -1,10 +1,10 @@
 schema_id = "openzyme_composition@1"
 manifest_state = "active"
 delivery_surfaces = [
-  { component_id = "openzyme.host.api", contract_digest = "sha256:7263ba09651bd023e4162d022706865b5825d680ed6fefea2aabe159ef7860c1" },
-  { component_id = "openzyme.client", contract_digest = "sha256:1e173a930f4d5240ae3a8b8b769a754b01576ffe450ef00cd9113b91f43546d1" },
-  { component_id = "openzyme.host.cli", contract_digest = "sha256:6b20afa5804533c9aa549fe824cd9386b5be4414f87b417c0460568d1bf12fad" },
-  { component_id = "openzyme.web.ui", contract_digest = "sha256:a1d9cf3a9b00ddc290de1d242ecee985c01e7205fa3174c257382338d89d502d" },
+  { component_id = "openzyme.host.api", distribution_name = "openzyme-host-api", distribution_version = "0.1.0", build_digest = "sha256:dd96218a3d0ea0645d11d99f628a1b071c2873bc917d2ef7847dc7fee974370b", contract_digest = "sha256:7263ba09651bd023e4162d022706865b5825d680ed6fefea2aabe159ef7860c1" },
+  { component_id = "openzyme.client", distribution_name = "openzyme-client", distribution_version = "0.1.0", build_digest = "sha256:f5d9eb06cb16a4094d012ba74c3f267919524ec05f88d764c75c70151c03076c", contract_digest = "sha256:1e173a930f4d5240ae3a8b8b769a754b01576ffe450ef00cd9113b91f43546d1" },
+  { component_id = "openzyme.host.cli", distribution_name = "openzyme-host-cli", distribution_version = "0.1.0", build_digest = "sha256:fb157627fbfe86aee67157aef4c794301d12f43edd15789d4940f3a99defddbd", contract_digest = "sha256:6b20afa5804533c9aa549fe824cd9386b5be4414f87b417c0460568d1bf12fad" },
+  { component_id = "openzyme.web.ui", distribution_name = "openzyme-web-ui", distribution_version = "0.1.0", build_digest = "sha256:81d52cbf6799e2bbcb574c41797a604b57ca61e754b0a1fa2c745c5a1361f21a", contract_digest = "sha256:a1d9cf3a9b00ddc290de1d242ecee985c01e7205fa3174c257382338d89d502d" },
 ]
 drivers = []
 

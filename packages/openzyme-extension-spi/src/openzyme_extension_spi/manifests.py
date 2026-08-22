@@ -452,13 +452,45 @@ class DriverSelection:
 
 
 @dataclass(frozen=True, slots=True)
+class DeliverySurfaceSelection:
+    component_id: str
+    distribution_name: str
+    distribution_version: str
+    build_digest: str
+    contract_digest: str
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "component_id",
+            "distribution_name",
+            "distribution_version",
+        ):
+            require_identifier(getattr(self, field_name), field_name=field_name)
+        require_digest(self.build_digest, field_name="build_digest")
+        require_digest(self.contract_digest, field_name="contract_digest")
+
+    @property
+    def selection_key(self) -> str:
+        return self.component_id
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "component_id": self.component_id,
+            "distribution_name": self.distribution_name,
+            "distribution_version": self.distribution_version,
+            "build_digest": self.build_digest,
+            "contract_digest": self.contract_digest,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class DistributionManifest:
     identity: ComponentIdentity
     kernel: KernelSelection
     adapters: tuple[AdapterSelection, ...]
     plugins: tuple[PluginSelection, ...]
     drivers: tuple[DriverSelection, ...]
-    delivery_surfaces: tuple[NamedContribution, ...]
+    delivery_surfaces: tuple[DeliverySurfaceSelection, ...]
 
     def __post_init__(self) -> None:
         if self.identity.component_kind is not ComponentKind.DISTRIBUTION:
@@ -497,7 +529,7 @@ class DistributionManifest:
             "delivery_surfaces",
             _sorted_unique_records(
                 self.delivery_surfaces,
-                key="contribution_id",
+                key="selection_key",
                 field_name="delivery_surfaces",
             ),
         )
@@ -561,6 +593,7 @@ __all__ = [
     "ComponentKind",
     "ComponentManifest",
     "DistributionManifest",
+    "DeliverySurfaceSelection",
     "DriverManifest",
     "DriverSelection",
     "KernelSelection",

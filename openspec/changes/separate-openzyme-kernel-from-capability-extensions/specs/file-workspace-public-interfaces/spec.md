@@ -1,3 +1,8 @@
+## RENAMED Requirements
+
+- FROM: `### Requirement: Model-visible tools and SDK expose only native workspace and explicit effects`
+- TO: `### Requirement: Workspace tools expose structured local and remote operations`
+
 ## MODIFIED Requirements
 
 ### Requirement: Current public work products use one explicit file-workspace contract
@@ -37,17 +42,6 @@ The current `@2` workspace projection MUST partition stable Kernel facts under `
 #### Scenario: An extension is not enabled
 - **WHEN** the Session bundle omits a particular extension contract
 - **THEN** its section is absent rather than emitted as an empty Core field or synthesized from stale events
-
-### Requirement: Declared and effective model-visible tool catalogs are separate
-The DeclaredToolCatalog MUST be the deterministic union of the Kernel catalog and exact activated Plugin manifests. For each Agent turn the Kernel MUST derive an immutable ToolAffordanceSnapshot from Plugin activation, capability dependencies, adopted target inventories, explicit routes, AgentAuthorityLease, workspace readiness and Task/role policy. Only `AVAILABLE` and `AVAILABLE_WITH_APPROVAL` tools MAY enter the model function list. Blocked tools MUST remain visible only through bounded `capabilities.inspect` results with typed blockers; `HIDDEN` tools MUST not be disclosed. The system MUST NOT translate a removed, blocked or absent Plugin tool call into another action.
-
-#### Scenario: Declared HMMER tool lacks a route
-- **WHEN** the HMMER Plugin is active but no adopted route satisfies its software and Compute requirements
-- **THEN** the tool remains in the declared catalog, is excluded from the function list, and `capabilities.inspect` reports a safe `BLOCKED_QUALIFICATION` or `BLOCKED_DEPENDENCY` fact
-
-#### Scenario: Authority is revoked after prompt construction
-- **WHEN** the Agent calls a previously visible tool after its authority lease or route binding changes
-- **THEN** dispatch revalidation returns `tool_affordance_stale`, `effect_certainty = no_effect` and no fallback route or replacement call
 
 ### Requirement: Workspace tools expose structured local and remote operations
 The Kernel catalog MUST expose `workspace.status`, `workspace.fs.read`, `workspace.fs.list`, `workspace.fs.mutate` and `workspace.exec` only for the caller's current local workspace. `workspace.fs.mutate` MUST use a closed operation union and root-relative paths; `workspace.exec` MUST use explicit argv unless an explicit shell argv is requested. HPC Plugin MAY contribute `hpc.workspace.request/inspect/verify/sync_source/fs.read/fs.list/fs.mutate/exec`, each using an opaque workspace ID. Process execution, filesystem mutation and transfer MUST use durable ControlledOperation identity; status/stat/list/read/hash remain observations. No local tool may issue HPC SSH credentials or submit a scheduler job.
@@ -147,3 +141,16 @@ Errors for contract/bundle mismatch, missing/disabled extensions, removed tools,
 #### Scenario: Required extension is unavailable
 - **WHEN** a request targets state owned by a Session-pinned extension that is not active
 - **THEN** the Host returns a typed extension-unavailable/upgrade-required result with no Core mutation, empty-success projection or substitute capability
+
+## ADDED Requirements
+
+### Requirement: Declared and effective model-visible tool catalogs are separate
+The DeclaredToolCatalog MUST be the deterministic union of the Kernel catalog and exact activated Plugin manifests. For each Agent turn the Kernel MUST derive an immutable ToolAffordanceSnapshot from Plugin activation, capability dependencies, adopted target inventories, explicit routes, AgentAuthorityLease, workspace readiness and Task/role policy. Only `AVAILABLE` and `AVAILABLE_WITH_APPROVAL` tools MAY enter the model function list. Blocked tools MUST remain visible only through bounded `capabilities.inspect` results with typed blockers; `HIDDEN` tools MUST not be disclosed. The system MUST NOT translate a removed, blocked or absent Plugin tool call into another action.
+
+#### Scenario: Declared HMMER tool lacks a route
+- **WHEN** the HMMER Plugin is active but no adopted route satisfies its software and Compute requirements
+- **THEN** the tool remains in the declared catalog, is excluded from the function list, and `capabilities.inspect` reports a safe `BLOCKED_QUALIFICATION` or `BLOCKED_DEPENDENCY` fact
+
+#### Scenario: Authority is revoked after prompt construction
+- **WHEN** the Agent calls a previously visible tool after its authority lease or route binding changes
+- **THEN** dispatch revalidation returns `tool_affordance_stale`, `effect_certainty = no_effect` and no fallback route or replacement call

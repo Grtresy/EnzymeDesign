@@ -173,7 +173,9 @@ Tool Plugin 只声明 versioned `QualificationSpec`，不得在 import、catalog
 
 只有所有 probe `terminal_known`、observed version 存在且 smoke result 匹配 expected schema 时，workflow 才原子
 发布 `SoftwareQualificationReceipt`、`TargetCapabilityFact`、`TargetToolchainInventory` 与
-`InventoryGeneration`。`dispatch_in_doubt`、identity drift、失败或 Agent actor 都保持 inventory repository
+`InventoryGeneration`。terminal smoke 还必须回报实际证明的 non-empty supported operations，且只能是
+QualificationSpec expected-result schema 允许的值；receipt 和 capability fact 保存同一集合。空 operations、
+schema 外 operation、`dispatch_in_doubt`、identity drift、失败或 Agent actor 都保持 inventory repository
 不变。transient health 是独立 observation，不参与 inventory、release 或 Plugin digest。
 
 不要把领域工具写入 runner TOML。`runner_effective_config@2` 只接受 runner、cluster、

@@ -35,13 +35,14 @@ Host 的顺序固定为：
 - `adapters[]`，唯一键为 `slot + target_id-or-none`；
 - required/optional `plugins`；
 - `drivers[]`，唯一键为 slot，且 Driver ID 全局唯一；
-- delivery surfaces；
+- delivery surfaces，每项绑定 component ID、distribution name/version、build digest 与 contract digest；
 - policy 中 `ambient_discovery_enables_components=false`、`session_hot_swap=false`。
 
-每个 selection 都绑定 component ID、distribution name/version 和 manifest digest。target-scoped Adapter
-可把同一 manifest 绑定到多个显式 target；每个 slot/target binding 都进入 Adapter bundle digest。
-Driver selection 必须同时选择 owning Plugin，并在 activation 时验证 owning capability contract、required
-Adapter Port 和 exact Plugin route。
+Kernel、Adapter、Plugin 与 Driver selection 都绑定 component ID、distribution name/version 和 manifest
+digest；delivery surface 没有 Extension manifest locator，改为直接绑定 component ID、distribution
+name/version、build digest 与 contract digest。target-scoped Adapter 可把同一 manifest 绑定到多个显式
+target；每个 slot/target binding 都进入 Adapter bundle digest。Driver selection 必须同时选择 owning
+Plugin，并在 activation 时验证 owning capability contract、required Adapter Port 和 exact Plugin route。
 
 `scaffold_not_activatable` 是硬门禁。缺少目标 manifest 时不能只把该字段改为 `active` 来试跑。
 

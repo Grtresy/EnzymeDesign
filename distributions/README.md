@@ -13,10 +13,13 @@ seed。`active` 只解除早期 scaffold gate；Host 仍须先验证 schema、in
 exact activation epoch 后才能开放 writer/runtime。安装 wheel 或发现 entry point 本身不等于启用能力。
 
 配置采用 closed `openzyme_composition@1`：Kernel、每个 Adapter slot/target、required/optional Plugin、
-Driver slot/owner 和 delivery surface 都携带 exact package/version/digest。所有当前选择都绑定
-真实 package-resource manifest digest。`active` 只证明结构闭包；runtime/writer/public contract
-的旧 Host cutover 仍未完成。不得把单个 `manifest_state` 当作 production activation
-证明，也不得绕过 deployment proof/epoch 直接开放 surface。
+Driver slot/owner 和 delivery surface 都携带 exact package/version/digest。Kernel、Adapter、Plugin 与
+Driver 绑定 package-resource manifest digest；Host/Client/CLI/UI delivery surface 绑定各自 build digest
+和 contract digest。`active` 只证明结构闭包；它不证明四个 delivery surface 已随某个 Python meta-wheel
+安装、实际启动或完成部署 cutover。当前 wheel qualifier 的五个 profile union 构建 34 个 Python
+distributions；Web UI 不是 wheel，Client 与 Host CLI 由各自 package/app gate 和 mainline 独立验证。
+不得把单个 `manifest_state` 当作 production activation 证明，也不得绕过 deployment proof/epoch 直接开放
+surface。
 
 目标启动器必须先完成 composition/core-schema/installed-wheel 三类 read-only verification，再生成
 `DeploymentActivationEpoch`。epoch 之前不得创建 repository writer、挂 route/worker、启动 runtime 或调用

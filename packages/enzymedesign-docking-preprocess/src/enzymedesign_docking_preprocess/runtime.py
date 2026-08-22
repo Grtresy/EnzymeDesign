@@ -95,12 +95,22 @@ PREPROCESS_RESOURCE_REQUIREMENTS = (
     ),
 )
 
-_QUALIFICATION_OUTPUT: dict[str, JsonValue] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["version", "exit_code"],
-    "properties": {"version": _ID, "exit_code": {"const": 0}},
-}
+def _qualification_output(*operations: str) -> dict[str, JsonValue]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["version", "operations", "exit_code"],
+        "properties": {
+            "version": _ID,
+            "operations": {
+                "type": "array",
+                "items": {"enum": list(operations)},
+            },
+            "exit_code": {"const": 0},
+        },
+    }
+
+
 PREPROCESS_QUALIFICATION_SPECS = (
     QualificationSpec(
         qualification_spec_id="enzymedesign.docking.preprocess.rdkit@1",
@@ -113,7 +123,7 @@ PREPROCESS_QUALIFICATION_SPECS = (
             "-c",
             "from rdkit import Chem; assert Chem.MolFromSmiles('CC')",
         ),
-        expected_result_schema=_QUALIFICATION_OUTPUT,
+        expected_result_schema=_qualification_output("smiles_to_3d"),
     ),
     QualificationSpec(
         qualification_spec_id="enzymedesign.docking.preprocess.meeko@1",
@@ -122,7 +132,7 @@ PREPROCESS_QUALIFICATION_SPECS = (
         contract_version="1",
         version_argv=("python", "-c", "import meeko; print(meeko.__version__)"),
         smoke_argv=("python", "-c", "import meeko"),
-        expected_result_schema=_QUALIFICATION_OUTPUT,
+        expected_result_schema=_qualification_output("prepare_ligand"),
     ),
     QualificationSpec(
         qualification_spec_id="enzymedesign.docking.preprocess.openbabel@1",
@@ -131,7 +141,11 @@ PREPROCESS_QUALIFICATION_SPECS = (
         contract_version="1",
         version_argv=("obabel", "-V"),
         smoke_argv=("obabel", "-L", "formats"),
-        expected_result_schema=_QUALIFICATION_OUTPUT,
+        expected_result_schema=_qualification_output(
+            "convert_format",
+            "prepare_ligand",
+            "prepare_receptor",
+        ),
     ),
 )
 

@@ -218,6 +218,35 @@ class QualificationSpec:
         }
 
     @property
+    def expected_operations(self) -> tuple[str, ...]:
+        """Return the closed operation values that a smoke result may prove."""
+
+        required = self.expected_result_schema.get("required")
+        properties = self.expected_result_schema.get("properties")
+        if (
+            not isinstance(required, tuple)
+            or "operations" not in required
+            or not isinstance(properties, Mapping)
+        ):
+            return ()
+        operations = properties.get("operations")
+        if not isinstance(operations, Mapping):
+            return ()
+        items = operations.get("items")
+        if not isinstance(items, Mapping):
+            return ()
+        if "const" in items:
+            values = (items["const"],)
+        else:
+            enum_values = items.get("enum")
+            if not isinstance(enum_values, tuple):
+                return ()
+            values = enum_values
+        if any(not isinstance(value, str) for value in values):
+            return ()
+        return canonical_string_tuple(values, field_name="expected_operations")
+
+    @property
     def qualification_spec_digest(self) -> str:
         return canonical_sha256_digest(self.to_dict())
 

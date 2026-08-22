@@ -10,12 +10,12 @@ from openzyme_contracts import canonical_sha256_digest
 from openzyme_contracts import require_digest
 from openzyme_contracts import require_identifier
 
-from .contributions import NamedContribution
 from .manifests import AdapterSelection
 from .manifests import AdapterRequirementMode
 from .manifests import ComponentIdentity
 from .manifests import ComponentKind
 from .manifests import DistributionManifest
+from .manifests import DeliverySurfaceSelection
 from .manifests import DriverSelection
 from .manifests import KernelSelection
 from .manifests import PluginRequirementMode
@@ -431,7 +431,7 @@ def parse_distribution_composition_toml(
             )
         )
 
-    delivery_surfaces: list[NamedContribution] = []
+    delivery_surfaces: list[DeliverySurfaceSelection] = []
     for index, item in enumerate(
         _array(payload["delivery_surfaces"], field_name="delivery_surfaces")
     ):
@@ -439,14 +439,31 @@ def parse_distribution_composition_toml(
         _closed(
             surface,
             field_name=f"delivery_surfaces[{index}]",
-            required=frozenset({"component_id", "contract_digest"}),
+            required=frozenset(
+                {
+                    "component_id",
+                    "distribution_name",
+                    "distribution_version",
+                    "build_digest",
+                    "contract_digest",
+                }
+            ),
         )
         delivery_surfaces.append(
-            NamedContribution(
-                contribution_id=_text(
+            DeliverySurfaceSelection(
+                component_id=_text(
                     surface["component_id"],
                     field_name=f"delivery_surfaces[{index}].component_id",
                 ),
+                distribution_name=_text(
+                    surface["distribution_name"],
+                    field_name=f"delivery_surfaces[{index}].distribution_name",
+                ),
+                distribution_version=_text(
+                    surface["distribution_version"],
+                    field_name=f"delivery_surfaces[{index}].distribution_version",
+                ),
+                build_digest=str(surface["build_digest"]),
                 contract_digest=str(surface["contract_digest"]),
             )
         )

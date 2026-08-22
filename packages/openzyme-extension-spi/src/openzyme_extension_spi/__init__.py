@@ -28,6 +28,7 @@ from .manifests import ComponentIdentity
 from .manifests import ComponentKind
 from .manifests import ComponentManifest
 from .manifests import DistributionManifest
+from .manifests import DeliverySurfaceSelection
 from .manifests import DriverManifest
 from .manifests import DriverSelection
 from .manifests import KernelSelection
@@ -114,6 +115,7 @@ __all__ = [
     "ComponentKind",
     "ComponentManifest",
     "DistributionManifest",
+    "DeliverySurfaceSelection",
     "DistributionCompositionDocument",
     "DriverInvocationRequest",
     "DriverManifest",

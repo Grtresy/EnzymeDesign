@@ -1,6 +1,6 @@
 # Requirement evidence audit
 
-本文件把本 change 的全部 162 个 delta requirements 映射到当前代码、owner-local 测试和文档。映射单位是
+本文件把本 change 的全部 165 个 delta requirements 映射到当前代码、owner-local 测试和文档。映射单位是
 spec owner bundle：同一小节列出的每条 requirement 都必须同时由该小节的 source、test 和 document 三类
 直接证据支持；任一引用缺失或最终 gate 失败，该小节全部恢复为 `unproven`。当前清单是证据索引，不是
 全量通过声明；bundle 状态以各小节的 `Status` 为准。场景级跨层证明另由本文末尾的 architecture
@@ -51,7 +51,7 @@ Evidence currently covers：
 5. Generic pipeline SDK and AOX calculation code are physically separated.
 6. Vertical Host, worker, route and UI surfaces register through manifests.
 7. EnzymeDesign consumes only public OpenZyme seams.
-8. Exact selected Adapter/Plugin runtime graph is mounted before writer enablement and injected into the generic Host.
+8. EnzymeDesign has product-level non-live qualification through the exact selected Adapter/Plugin runtime graph before writer enablement and generic Host injection.
 9. EnzymeDesign code and documentation form one product boundary.
 
 Formal HMMER/Vina invocation 的 application 层要求由
@@ -186,11 +186,13 @@ Requirements proven：
 2. Compute admission binds an exact immutable revision and route.
 3. ExecutionWorkloadSpec is typed and provider-neutral.
 4. Compute composes with Kernel ControlledOperation.
-5. Compute providers and routes are capability-resolved.
-6. Generic execution SDK is domain-free.
-7. Runner wire contracts are narrow and independently deployable.
-8. Compute results are opaque bounded and non-terminal.
-9. Compute implementation and documentation align.
+5. Compute persists the dispatch occurrence before the external effect.
+6. Domain result validation precedes Compute terminal continuation.
+7. Compute providers and routes are capability-resolved.
+8. Generic execution SDK is domain-free.
+9. Runner wire contracts are narrow and independently deployable.
+10. Compute results are opaque bounded and non-terminal.
+11. Compute implementation and documentation align.
 
 ## openzyme-extension-composition
 
@@ -213,14 +215,15 @@ Requirements proven：
 2. Manifests distinguish Adapter, Plugin, Driver and Distribution.
 3. Plugin manifests are closed and digest-bound.
 4. Composition produces deterministic layered bundle identities.
-5. Capability dependencies resolve as a closed acyclic graph.
-6. Registration catalogs reject every canonical collision.
-7. Activation state distinguishes absent, invalid and resource-degraded Plugins.
-8. Deployment activation and Session pin exact composition.
-9. Extension state and migrations have exclusive namespaces.
-10. Atomic Plugin participation uses a restricted short Unit of Work.
-11. Plugin upgrade and removal are explicit offline operations.
-12. Composition failures are structured and secret-safe.
+5. Operational Adapter objects derive from exact selected runtime bindings.
+6. Capability dependencies resolve as a closed acyclic graph.
+7. Registration catalogs reject every canonical collision.
+8. Activation state distinguishes absent, invalid and resource-degraded Plugins.
+9. Deployment activation and Session pin exact composition.
+10. Extension state and migrations have exclusive namespaces.
+11. Atomic Plugin participation uses a restricted short Unit of Work.
+12. Plugin upgrade and removal are explicit offline operations.
+13. Composition failures are structured and secret-safe.
 
 ## openzyme-extension-spi
 
@@ -514,8 +517,9 @@ Evidence currently covers：
 9. HPC login/file operations never grant scheduler authority.
 10. Raw workspace results remain private and non-terminal.
 11. Workspace runtime documentation matches adapters and tools.
-12. Exact terminal receipts survive Host/Adapter restart; uncertain occurrences only reconcile the original identity and
-    never redispatch or fall back.
+
+补充的跨 requirement 对账证据：exact terminal receipts 可跨 Host/Adapter restart 恢复；uncertain occurrence
+只 reconcile 原 identity，不 redispatch，也不 fallback。
 
 ## Scenario-family closure
 

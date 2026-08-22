@@ -16,6 +16,7 @@ from openzyme_extension_spi import CapabilityRequirementKind
 from openzyme_extension_spi import ComponentIdentity
 from openzyme_extension_spi import ComponentKind
 from openzyme_extension_spi import DistributionManifest
+from openzyme_extension_spi import DeliverySurfaceSelection
 from openzyme_extension_spi import DriverSelection
 from openzyme_extension_spi import HttpMethod
 from openzyme_extension_spi import HttpRouteContribution
@@ -175,8 +176,11 @@ def test_standard_distribution_can_require_zero_semantic_plugins() -> None:
         plugins=(),
         drivers=(),
         delivery_surfaces=(
-            NamedContribution(
-                contribution_id="openzyme.host-api",
+            DeliverySurfaceSelection(
+                component_id="openzyme.host.api",
+                distribution_name="openzyme-host-api",
+                distribution_version="0.1.0",
+                build_digest=_digest("host-api-build"),
                 contract_digest=_digest("host-api"),
             ),
         ),

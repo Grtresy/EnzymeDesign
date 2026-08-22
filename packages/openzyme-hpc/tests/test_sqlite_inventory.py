@@ -32,6 +32,7 @@ def _receipt(receipt_id: str = "receipt_1") -> SoftwareQualificationReceipt:
         smoke_input_digest=DIGEST,
         smoke_result_digest=OTHER_DIGEST,
         expected_result_schema_digest=DIGEST,
+        operations=("hmmbuild", "hmmsearch"),
         status=QualificationReceiptStatus.PASSED,
         observed_at="2026-08-20T00:00:00Z",
         valid_until="2026-09-01T00:00:00Z",

@@ -159,6 +159,8 @@ HPC/Compute operator workflow 选择 exact target/environment，通过 Adapter �
 `TargetToolchainInventory` generation、`SoftwareQualificationReceipt` 和 resource facts。只有 operator/admin
 可 publish/adopt/revoke；Session 通过 immutable `SessionCapabilityBindingRevision` 显式采用。qualification
 validity 与 transient health 分开：expired/revoked 阻止新 dispatch，health 恢复不改变 inventory identity。
+smoke observation 必须显式回报实际证明的 non-empty operations，并由 expected-result schema 限定允许集合；
+receipt 与 capability fact 记录同一 operation 集合，不能再用空集合或 schema 声明本身代替 target observation。
 
 Target inventory 是可解释的 append-only closure，而不是 opaque toolchain 字符串。HPC Plugin 的
 `openzyme_hpc_*` namespaced tables 保存 exact qualification receipts、capability facts、inventory JSON closure、

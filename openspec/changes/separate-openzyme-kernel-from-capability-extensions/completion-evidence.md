@@ -61,9 +61,11 @@ effect truth、Driver terminal result validation 与 Adapter runtime identity �
   集合为 `61 passed in 4.02s`；
 - 静态架构检查：37 components、115 import edges、150 tables、134 indexes、679 triggers、422 foreign keys，
   catalog digest 为 `sha256:5315d578ebcd49d6a440f38fb14b41c0779605b539173b00008fdcf67254e978`；
-- fresh-wheel qualification：37 个 component wheels 全部构建，Contracts+SPI、Kernel、Plugin-free Standard、
-  runner、EnzymeDesign 五个 fresh Python 3.13 profile 全部通过，`network_used=false`、
-  `external_effects_real=false`；
+- fresh-wheel qualification：37 项 component inventory 中，wheel qualifier 的五个安装 profile union
+  实际闭合并构建 34 个 Python distributions；Web UI 不是 wheel，`openzyme-client` 与 Host CLI 不在该
+  profile union 内，三者由各自 package/app gate 与 mainline 独立验证。Contracts+SPI、Kernel、
+  Plugin-free Standard、runner、EnzymeDesign 五个 fresh Python 3.13 profile 全部通过，
+  `network_used=false`、`external_effects_real=false`；
 - 完整三 profile diagnostic qualification：报告位于 checkout 外
   `/tmp/openzyme-v3-qualification.6PK9YP/diagnostic-report/architecture-qualification-report.json`，payload digest
   为 `sha256:5a2d431bda66536e71c43ba26fe1e3796c49ab4261638b7e067c282f808afa9c`，28/28 scenario 与
@@ -88,6 +90,31 @@ pure verifier `valid=true`；eval 仍为 `status=passed`、`external_effect_perf
 source identity，因此包含本文件的最终 clean SHA 仍须按 19.12 顺序整组重跑 focused tests、fresh wheels、
 qualification、mainline、evals、strict validation 与独立 verifier；该最终外部结果必须在交付说明中记录，且运行后
 不得再修改 source、配置、文档、OpenSpec 或 manifest。
+
+## 2026-08-22 归档纠正 pre-seal candidate
+
+21.x 纠正及 main-spec 同步完成后的 dirty candidate 已取得以下 non-live 结果：
+
+- 受影响 owner-local 扩展集合 `482 passed`；最终 focused 集合 `28 passed`，affected lint 通过；
+- 34 个 Python distributions、五个隔离安装 profile 的 fresh wheel qualification 为
+  `terminal_status=pass`、`network_used=false`、`external_effects_real=false`；
+- diagnostic 报告位于 checkout 外
+  `/tmp/openzyme-goal-preseal-dirty-report/architecture-qualification-report.json`，payload digest
+  `sha256:67958958f0389344f3108f6353f7935a2aba6c3c15dcf1e2418059de795bcf0c`；28/28 scenario 与
+  28/28 invariant 全部 satisfied，零 gap、零 not-run、`run_failure=null`，独立 verifier `valid=true`，
+  rejection 严格只有 `mode_not_admission`、`source_not_clean`；
+- authoritative mainline evidence root 为 `/tmp/openzyme-mainline-authoritative.u9fCx0/evidence`，plan digest
+  `sha256:0e8e8e5e50cdb3bc4fa9b4d3c63c6800af44b3df4c5dab0feffddb729ec86bb5`，receipt digest
+  `sha256:051b822074bb8fb16ec0dac4cd7de7165848c8e41b3bc9fa6a453975c0d6c393`，
+  `terminal_status=pass`、pure verifier `valid=true`；
+- static architecture inventory 仍为 37 components、115 import edges、37 tools；V3 eval 为
+  `status=passed`、`external_effect_performed=false`、`fallback_performed=false`；当前 change strict
+  validation 与同步涉及的 18 个 main specs 均 valid。全仓 spec validation 另有既存且不属于本 change 的
+  `mcp-enzyme-design-knowledge` Purpose/Requirements 结构缺口，本 change 不静默代修或据此扩大范围。
+
+以上结果因本段及 task marker 的写入立即成为 historical pre-seal candidate，不是最终 source-bound authority。
+最终 archive 仍要求获授权创建包含全部纠正与 main specs 的 clean seal commit，并在该 clean SHA 上重跑
+admission、independent verifier、mainline、eval 与 strict validation；最终 SHA/path/digest 只记录在交付说明中。
 
 ## Frozen implementation surface
 
@@ -145,10 +172,18 @@ pytest、Web UI tests 和 Web UI build 全部为 `pass`。OpenSpec strict valida
 
 ## Requirement and documentation closure
 
-`requirement-evidence.md` 为 18 个 delta specs 的全部 162 个 requirements 保留 source、test 和 document
+`requirement-evidence.md` 为 18 个 delta specs 的全部 165 个 requirements 保留 source、test 和 document
 owner bundle 索引；product composition、restart/reconcile、完整 layered qualification 与 final completion
 均由 clean-source 外部 evidence chain 证明，不由结构映射或仓内 checkbox 单独推断。最终审计还必须
 确认：
+
+18 份 delta specs 已同步到 main specs：新增 15 个 capability spec、更新 3 个既有 spec；
+`file-workspace-public-interfaces` 对旧 model-visible tools requirement 使用显式 rename，并把 declared/effective
+catalog requirement 标为 added；首次归档同步预演为 `+144 / ~21 / →1 / -0`，main specs 与该成功预演输出
+的 requirements/scenarios 一致；15 个新 spec 的生成式 `TBD Purpose` 已替换为明确能力边界，EOF 空白已规范化。
+OpenSpec CLI 在 main specs 已含 ADDED requirements 时不会重放同步，因此正式 archive 必须沿
+“already synced”路径只移动 change。该同步事实仍须与其余 source 一起进入最终 clean seal，不能用预演
+替代 admission。
 
 - `docs/OpenZyme架构设计.md`、相关 `docs/v3/`、package/app README 与实际 owner/path/command 一致；
 - OpenZyme Standard 是 Distribution，不是语义层；Adapter、Plugin、Driver 与 Distribution 不混用；

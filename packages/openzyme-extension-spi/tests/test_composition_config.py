@@ -63,6 +63,30 @@ def test_enzymedesign_composition_retains_package_version_and_digest() -> None:
     assert adapter_modes["openzyme.research.tavily"] is (
         AdapterRequirementMode.OPTIONAL
     )
+    delivery = {
+        item.component_id: item for item in document.manifest.delivery_surfaces
+    }
+    assert delivery["openzyme.host.api"].distribution_name == "openzyme-host-api"
+    assert delivery["openzyme.host.api"].distribution_version == "0.1.0"
+    assert delivery["openzyme.host.api"].build_digest.startswith("sha256:")
+
+
+def test_delivery_surface_requires_exact_package_and_build_identity() -> None:
+    source = _source("openzyme-standard")
+
+    with pytest.raises(ValueError, match="fields are closed"):
+        parse_distribution_composition_toml(
+            source.replace(
+                'build_digest = "sha256:dd96218a3d0ea0645d11d99f628a1b071c2873bc917d2ef7847dc7fee974370b"',
+                'build_digest = "sha256:dd96218a3d0ea0645d11d99f628a1b071c2873bc917d2ef7847dc7fee974370b", ambient = true',
+                1,
+            )
+        )
+
+    with pytest.raises(ValueError, match="fields are closed.*distribution_version"):
+        parse_distribution_composition_toml(
+            source.replace('distribution_version = "0.1.0", ', "", 1)
+        )
 
 
 def test_composition_rejects_unknown_fields_and_ambient_activation() -> None:

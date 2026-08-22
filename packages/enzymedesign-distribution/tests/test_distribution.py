@@ -662,6 +662,11 @@ def _publish_product_inventory(
             expected_result_schema_digest=canonical_sha256_digest(
                 {"result_schema": suffix}
             ),
+            operations=(
+                ("hmmbuild", "hmmsearch")
+                if suffix == "hmmer"
+                else ("dock", "score")
+            ),
             status=QualificationReceiptStatus.PASSED,
             observed_at=observed_at,
             valid_until=valid_until,

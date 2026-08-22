@@ -151,9 +151,18 @@
     "delivery": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["component_id", "contract_digest"],
+      "required": [
+        "component_id",
+        "distribution_name",
+        "distribution_version",
+        "build_digest",
+        "contract_digest"
+      ],
       "properties": {
         "component_id": {"type": "string", "minLength": 1},
+        "distribution_name": {"type": "string", "minLength": 1},
+        "distribution_version": {"type": "string", "minLength": 1},
+        "build_digest": {"$ref": "#/$defs/digest"},
         "contract_digest": {"$ref": "#/$defs/digest"}
       }
     }

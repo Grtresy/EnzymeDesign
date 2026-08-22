@@ -69,6 +69,7 @@ class SoftwareQualificationReceipt:
     smoke_input_digest: str
     smoke_result_digest: str
     expected_result_schema_digest: str
+    operations: tuple[str, ...]
     status: QualificationReceiptStatus
     observed_at: str
     valid_until: str
@@ -102,6 +103,13 @@ class SoftwareQualificationReceipt:
             require_digest(getattr(self, field_name), field_name=field_name)
         if self.observed_version is not None:
             require_identifier(self.observed_version, field_name="observed_version")
+        object.__setattr__(
+            self,
+            "operations",
+            _canonical_string_tuple(self.operations, field_name="operations"),
+        )
+        if not self.operations:
+            raise ValueError("qualification receipt operations must not be empty")
         _timestamp(self.observed_at, field_name="observed_at")
         _timestamp(self.valid_until, field_name="valid_until")
         if datetime.fromisoformat(self.valid_until.replace("Z", "+00:00")) <= datetime.fromisoformat(
@@ -128,6 +136,7 @@ class SoftwareQualificationReceipt:
             "smoke_input_digest": self.smoke_input_digest,
             "smoke_result_digest": self.smoke_result_digest,
             "expected_result_schema_digest": self.expected_result_schema_digest,
+            "operations": list(self.operations),
             "status": self.status.value,
             "observed_at": self.observed_at,
             "valid_until": self.valid_until,

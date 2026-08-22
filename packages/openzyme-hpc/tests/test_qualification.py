@@ -31,7 +31,16 @@ def _spec() -> QualificationSpec:
         contract_version="1",
         version_argv=("hmmbuild", "-h"),
         smoke_argv=("hmmbuild", "fixture.hmm", "fixture.fasta"),
-        expected_result_schema={"type": "object", "required": ["model_digest"]},
+        expected_result_schema={
+            "type": "object",
+            "required": ["model_digest", "operations"],
+            "properties": {
+                "operations": {
+                    "type": "array",
+                    "items": {"enum": ["hmmbuild", "hmmsearch"]},
+                }
+            },
+        },
         required_resource_capabilities=(),
     )
 
@@ -134,6 +143,11 @@ class _ProbePort:
             expected_schema_matched=(
                 True if request.probe_kind is QualificationProbeKind.SMOKE else None
             ),
+            observed_operations=(
+                request.expected_operations
+                if request.probe_kind is QualificationProbeKind.SMOKE
+                else ()
+            ),
         )
 
 
@@ -145,6 +159,8 @@ def test_operator_qualification_publishes_explainable_inventory() -> None:
     assert inventory.generation == 1
     assert inventory.facts[0].capability_id == "software.hmmer"
     assert inventory.facts[0].version == "3.4"
+    assert inventory.facts[0].operations == ("hmmbuild", "hmmsearch")
+    assert repository.receipts[0][0].operations == ("hmmbuild", "hmmsearch")
     assert len(repository.receipts[0]) == 1
     assert len(probe.dispatches or []) == 2
     assert probe.reconciliations == []
@@ -162,6 +178,58 @@ def test_agent_cannot_probe_or_publish_inventory() -> None:
     assert error.value.error_code == "target_qualification_actor_forbidden"
     assert probe.dispatches == []
     assert repository.inventories == []
+
+
+def test_unproven_or_schema_external_operation_blocks_inventory_publish() -> None:
+    repository = _MemoryRepository()
+
+    class _UnprovenOperationsPort(_ProbePort):
+        observed_operations: tuple[str, ...]
+
+        def __init__(self, observed_operations: tuple[str, ...]) -> None:
+            super().__init__()
+            self.observed_operations = observed_operations
+
+        def dispatch(
+            self,
+            request: QualificationProbeRequest,
+        ) -> QualificationProbeOutcome:
+            outcome = super().dispatch(request)
+            if request.probe_kind is not QualificationProbeKind.SMOKE:
+                return outcome
+            return QualificationProbeOutcome(
+                operation_id=outcome.operation_id,
+                request_digest=outcome.request_digest,
+                effect_certainty=outcome.effect_certainty,
+                succeeded=outcome.succeeded,
+                output_digest=outcome.output_digest,
+                backend_receipt_digest=outcome.backend_receipt_digest,
+                observed_version=outcome.observed_version,
+                expected_schema_matched=outcome.expected_schema_matched,
+                observed_operations=self.observed_operations,
+            )
+
+    for operations in ((), ("hmmbuild", "unsupported")):
+        with pytest.raises(TargetQualificationError) as error:
+            TargetQualificationWorkflow(
+                _UnprovenOperationsPort(operations),
+                repository,
+            ).execute(_command())
+        assert error.value.error_code == "target_qualification_probe_failed"
+        assert repository.inventories == []
+
+
+def test_probe_outcome_rejects_duplicate_operations() -> None:
+    with pytest.raises(ValueError, match="must not contain duplicates"):
+        QualificationProbeOutcome(
+            operation_id="probe_1",
+            request_digest=DIGEST,
+            effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+            succeeded=True,
+            output_digest=DIGEST,
+            backend_receipt_digest=OTHER_DIGEST,
+            observed_operations=("hmmbuild", "hmmbuild"),
+        )
 
 
 def test_uncertain_probe_reconciles_same_occurrence_without_replay_or_fallback() -> None:

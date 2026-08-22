@@ -60,6 +60,18 @@ def test_preprocess_manifest_owns_tool_and_chemical_qualification() -> None:
         "software.openbabel",
         "software.rdkit",
     }
+    assert {
+        item.capability_id: item.expected_operations
+        for item in manifest.qualification_specs
+    } == {
+        "software.meeko": ("prepare_ligand",),
+        "software.openbabel": (
+            "convert_format",
+            "prepare_ligand",
+            "prepare_receptor",
+        ),
+        "software.rdkit": ("smiles_to_3d",),
+    }
     assert PREPROCESS_TOOL_SPEC.input_schema["additionalProperties"] is False
     assert "host_path" not in PREPROCESS_TOOL_SPEC.input_schema["properties"]
 
