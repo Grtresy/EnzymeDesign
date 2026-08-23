@@ -70,6 +70,9 @@ _PREPARATION_CREDENTIAL_REQUIREMENTS: Mapping[
             "workspace_root",
             "sidecar_root",
             "isolation_command",
+            "hmmer_sif",
+            "vina_sif",
+            "fpocket_sif",
             "slurm_policy_id",
         ),
     ),
@@ -272,6 +275,18 @@ class EnzymeDesignHpcIdentityPreparationExecutor:
         sidecar_root = credential_material.field_value("sidecar_root")
         isolation_command = credential_material.field_value("isolation_command")
         slurm_policy_id = credential_material.field_value("slurm_policy_id")
+        scientific_images = {
+            software_id: {
+                "path": credential_material.field_value(field_name),
+                "digest": observation.software_image_digest(software_id),
+                "version": observation.software_version(software_id),
+            }
+            for software_id, field_name in (
+                ("software.hmmer", "hmmer_sif"),
+                ("software.vina", "vina_sif"),
+                ("software.fpocket", "fpocket_sif"),
+            )
+        }
         private_payload = {
             "schema_version": "enzymedesign_qualification_hpc_config@1",
             "occurrence_id": occurrence_id,
@@ -297,6 +312,8 @@ class EnzymeDesignHpcIdentityPreparationExecutor:
                 "login_alias": login_alias,
                 "inventory_generation_digest": observation.inventory_generation_digest,
             },
+            "scientific_images": scientific_images,
+            "apptainer_version": observation.apptainer_version,
             "scheduler_submit_enabled": False,
             "slurm_policy_id": slurm_policy_id,
         }
@@ -326,6 +343,8 @@ class EnzymeDesignHpcIdentityPreparationExecutor:
                 {
                     "software": software_id,
                     "version": observation.software_version(software_id),
+                    "image_digest": observation.software_image_digest(software_id),
+                    "runtime": observation.apptainer_version,
                     "environment": observation.environment_digest,
                 }
             )
@@ -344,7 +363,15 @@ class EnzymeDesignHpcIdentityPreparationExecutor:
                     ("credential_provider_identity", credential_provider_id),
                     ("executor_workspace_v2_profile", profile_digest),
                     ("fpocket_software_fact", software_facts["software.fpocket"]),
+                    (
+                        "fpocket_sif_digest",
+                        observation.software_image_digest("software.fpocket"),
+                    ),
                     ("hmmer_software_fact", software_facts["software.hmmer"]),
+                    (
+                        "hmmer_sif_digest",
+                        observation.software_image_digest("software.hmmer"),
+                    ),
                     (
                         "hpc_inventory_generation_digest",
                         observation.inventory_generation_digest,
@@ -355,6 +382,10 @@ class EnzymeDesignHpcIdentityPreparationExecutor:
                     ),
                     ("slurm_account_or_qos_policy", slurm_policy_id),
                     ("vina_software_fact", software_facts["software.vina"]),
+                    (
+                        "vina_sif_digest",
+                        observation.software_image_digest("software.vina"),
+                    ),
                 )
             )
         )

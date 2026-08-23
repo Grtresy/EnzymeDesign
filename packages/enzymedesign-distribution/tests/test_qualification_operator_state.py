@@ -329,6 +329,9 @@ def test_credential_preflight_covers_every_exact_locator_before_mutation(
                         "workspace_root": "/qualification/workspaces",
                         "sidecar_root": "/qualification/sidecars",
                         "isolation_command": "/qualification/isolate",
+                        "hmmer_sif": "/qualification/containers/hmmer.sif",
+                        "vina_sif": "/qualification/containers/vina.sif",
+                        "fpocket_sif": "/qualification/containers/fpocket.sif",
                         "slurm_policy_id": "slurm.3090.qualification",
                     },
                 },
@@ -367,6 +370,9 @@ class _HpcMaterial:
             "workspace_root": "/data/openzyme/qualification/workspaces",
             "sidecar_root": "/data/openzyme/qualification/sidecars",
             "isolation_command": "/usr/local/libexec/openzyme-workspace-isolation",
+            "hmmer_sif": "/home/operator/containers/hmmer_3.4.sif",
+            "vina_sif": "/home/operator/containers/vina.sif",
+            "fpocket_sif": "/home/operator/containers/fpocket.sif",
             "slurm_policy_id": "partition-3090-no-account-override",
         }[field_name]
 
@@ -384,6 +390,12 @@ class _HpcObservation:
                 ("software.hmmer", "3.4"),
                 ("software.vina", "1.2.7"),
             ),
+            software_image_digests=(
+                ("software.fpocket", "sha256:" + "7" * 64),
+                ("software.hmmer", "sha256:" + "8" * 64),
+                ("software.vina", "sha256:" + "9" * 64),
+            ),
+            apptainer_version="apptainer version 1.4.5",
         )
 
 
@@ -423,11 +435,14 @@ def test_hpc_identity_preparation_writes_only_qualification_config(
         "authenticator_identity",
         "credential_locator_id",
         "credential_provider_identity",
-        "executor_workspace_v2_profile",
-        "fpocket_software_fact",
-        "hmmer_software_fact",
-        "hpc_inventory_generation_digest",
-        "inventory_generation_digest",
-        "slurm_account_or_qos_policy",
-        "vina_software_fact",
-    }
+            "executor_workspace_v2_profile",
+            "fpocket_software_fact",
+            "fpocket_sif_digest",
+            "hmmer_software_fact",
+            "hmmer_sif_digest",
+            "hpc_inventory_generation_digest",
+            "inventory_generation_digest",
+            "slurm_account_or_qos_policy",
+            "vina_software_fact",
+            "vina_sif_digest",
+        }

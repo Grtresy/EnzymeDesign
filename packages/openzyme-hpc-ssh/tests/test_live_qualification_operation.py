@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from dataclasses import field
 import re
+import shlex
 
 from openzyme_contracts import ExternalQualificationProbeRequest
 from openzyme_hpc_ssh import OpenSshQualificationOperation
@@ -25,9 +26,13 @@ class _Material:
 class _CommandPort:
     response_loss_token: str | None = None
     scripts: list[str] = field(default_factory=list)
+    argvs: list[tuple[str, ...]] = field(default_factory=list)
 
     def run(self, argv: tuple[str, ...]):
-        script = argv[-1]
+        self.argvs.append(argv)
+        parsed = shlex.split(argv[-1])
+        assert len(parsed) == 1
+        script = parsed[0]
         self.scripts.append(script)
         if script == "command -v sh; command -v sha256sum":
             return 0, "/bin/sh\n/usr/bin/sha256sum\n", ""
@@ -76,6 +81,7 @@ def test_ssh_qualification_runs_exact_port_and_restores_response_loss(tmp_path) 
             "ssh_port": "22222",
             "identity_file": str(identity),
             "known_hosts_file": str(known_hosts),
+            "workspace_root": "/qualification/workspaces",
         },
     )
     state = OpenSshQualificationState(
@@ -118,3 +124,5 @@ def test_ssh_qualification_runs_exact_port_and_restores_response_loss(tmp_path) 
     assert restored.reconcile(request).succeeded is True
     assert any("-p" in argv for argv in (state._connection_argv(),))
     assert "22222" in state._connection_argv()
+    assert all(argv[-3:-1] == ("bash", "-lc") for argv in command.argvs)
+    assert state.remote_workspace == "/qualification/workspaces/batch-1-test"

@@ -131,7 +131,7 @@ class HmmerDriver:
         if any(not isinstance(path, str) for path in input_paths):
             raise ValueError("HMMER input paths are invalid")
         if operation is HmmerOperation.BUILD:
-            argv = ["hmmbuild", "--noali", output_path, input_paths[0]]
+            argv = ["hmmbuild", output_path, input_paths[0]]
         else:
             argv = [
                 "hmmsearch",

@@ -10,6 +10,7 @@ EnzymeDesign 已完成 45 个精确 external qualification unit 的 deterministi
 - 固定第一批 profile 为 `base + research-provider + hpc-primary + hmmer + docking`，AlphaFold 作为第二批独立 optional profile；任一批只对 exact unit 产生资格结果，不扩大为 package/product-wide claim。
 - 建立 identity preparation plan 和 real qualification dry-plan 两级 plan、各自独立的 occurrence authorization、budget ledger、effect allowlist、credential locator binding、fault-injection schedule、TTL/storage policy 与独立 verifier。
 - 增加真实 Provider/Git/Podman/SSH/Slurm/科学软件 probe backend 的显式 Port/factory wiring，但默认处于 plan-only 状态；没有 exact occurrence authorization 时，任何 dispatch 必须在 credential resolution 和 effect 前 fail closed。
+- 在同一 change 内实现 `software.openzyme-workspace-runtime == 1.0.0` 的单文件 target-native helper；每个 target profile 绑定一个 principal-owned exact absolute path。Diannan 固定为 `/home/grtresy/.local/libexec/openzyme-workspace-runtime`，并建立独立 source-bound deployment plan、一次性 authority、原子安装、native positive/negative qualification 与 exact rollback receipt；禁止 `$HOME`/`PATH` 解析或运行时路径 fallback。
 - 在后续 occurrence 授权后，按 exact unit 执行 bounded probes、same-attempt reconcile、negative tests，产生 real-subject qualification evidence；成功只得到 `qualified`，不自动 adoption、cutover 或 live-by-default。
 - 保持 required non-live CI；live workflow 继续仅允许 `workflow_dispatch`，普通 pull request/push 不得读取 credentials 或触发外部系统。
 
@@ -31,5 +32,5 @@ EnzymeDesign 已完成 45 个精确 external qualification unit 的 deterministi
 
 - 主要影响 `openzyme-contracts`、`enzymedesign-distribution`、LLM/Tavily/Bio HTTP/本地隔离 Git-LFS/Podman/SSH/Slurm Adapter qualification seams、HPC inventory 与 HMMER/Vina/fpocket/preprocess/AlphaFold Driver qualification wiring；当前 Git scope 明确不包含 GitHub 或其他托管服务。
 - 新增 operator-facing identity discovery report、gap-resolution document、dry-plan CLI/schema、plan verifier、manual workflow inputs 和 protected receipt-ledger 接口；不新增 Agent-facing raw credential、SSH、Slurm 或 provider bypass。
-- 第一实施阶段只做 read-only discovery、方案矩阵、dry plan 与 non-live verification。首次真实 Provider、Git mutation、container、SSH、Slurm、HPC 或科学程序 occurrence 前必须再次暂停并取得用户明确授权。
+- helper 源码与 non-live verification 可在本地完成；首次远端安装必须先闭合 exact deployment plan 中的 target principal/home/path、安装机制、目标前置 digest、备份和 rollback owner。principal-owned exact libexec 不可安全创建、owner/mode 漂移或 target home 不匹配时，稳定停在 `blocked_deployment_authority`。
 - 本 change 不执行 deployment adoption、Session capability binding 更新、cutover、quiescence、迁移或自动 fallback；这些仍属于独立 `cut-over-enzymedesign-qualified-runtime` change。

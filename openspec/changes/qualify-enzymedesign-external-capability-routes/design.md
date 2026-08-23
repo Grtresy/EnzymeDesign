@@ -37,6 +37,7 @@ gap packet 展示后，operator 又明确选择：LLM 采用当前 intended acco
 - 不读取 credential material，不把 secret name/path/value写入公共 artifact。
 - 不在缺少 subject identity 时生成 placeholder receipt 或把逻辑 ID 当成真实 identity。
 - 不自动安装软件、pull image、创建 repository、修改 HPC 配置或选择替代 target。
+- 唯一例外是 operator 已选择并另行 exact-authorize 的 workspace runtime helper 部署；该 effect 只建立 qualification prerequisite，不构成 target inventory adoption、runtime activation 或 cutover。
 - 不更新 Session capability binding，不启用生产 runtime，不 cut over。
 - 不把 AlphaFold 第二批缺失扩大为第一批失败，也不把第一批成功推导为 AlphaFold 合格。
 
@@ -152,6 +153,16 @@ Repository-owned scientific image recipes 从各自官方 Git URL 完整取得�
 
 普通 CI 运行 discovery fixtures、gap/candidate validation、dry-plan verifier、backend factory no-effect tests 和 receipt tamper tests，固定 `OPENZYME_ALLOW_LIVE=0`。manual workflow 在本阶段只生成 plan；只有未来 occurrence authorization 输入与 protected environment 同时存在时才能进入 live job，且每个 batch 单独触发。
 
+### 13. Workspace runtime helper 使用 target-qualified exact principal path 与可恢复回滚
+
+`openzyme-hpc-ssh` 拥有 `software.openzyme-workspace-runtime == 1.0.0` 的标准库单文件实现。helper 只接受 `policy-digest`、`provision`、`verify`、`cleanup` 和 `version`，不接受 raw command 或 scheduler operation。workspace 必须是 root-policy 绑定父目录下的 exact `hpcws_<uuid>` 直接子目录；policy 同时绑定 OS principal、policy ID、helper version 和父目录。provision marker、owner identity、runner handle、cleanup settlement 与 helper state 都以 canonical digest 封闭；symlink、跨 root、principal/owner/handle drift 必须在 mutation 前拒绝。cleanup 先在同一父目录原子 rename，再删除，并以 durable `deleting/deleted` state 支持同一 occurrence response-loss reconcile。
+
+fleet target 不再共享一个必须由管理员写入的全局 helper 路径；每个 target profile 选择并资格化一个由 exact login principal 拥有的绝对路径。Diannan 明确选择 `/home/grtresy/.local/libexec/openzyme-workspace-runtime`，这项 operator decision 替代此前 `/usr/local/libexec` 唯一路径设计，不是运行时 fallback。不得在执行时展开 `$HOME`、搜索 `PATH`、采用相邻 executable 或根据权限自动换路径。远端 deployment plan 必须绑定 source identity、helper bytes/build digest、目标 host key、login principal、observed absolute home、deployment scope、exact path、当前目标文件状态/digest、same-parent staging/backup、安装机制、文件 owner/group/mode、positive/negative probes、rollback owner 和 deadline。
+
+target home、principal、parent owner/mode 或 direct-write mechanism 任一未闭合时，plan 保持 `blocked_deployment_authority`，不写 staging、不创建 qualification receipt。获独立一次性 deployment authority 后，部署器才可在 exact principal-owned libexec 下创建 protected parent、上传 exact bytes、核对 staging digest并执行同 filesystem 原子替换。若目标已有文件，替换前保存 exact backup digest；若安装后 version/build、policy、positive/negative 或 cleanup probe 任一失败，部署器只在当前目标 digest 仍等于本 occurrence 安装 digest 时恢复 backup，或删除本 occurrence 首次创建的文件。回滚失败保留 `deployment_in_doubt` 与私有诊断，禁止 qualification dispatch。
+
+helper deployment receipt 只证明 exact software 安装和 native isolation contract；它不 adoption inventory、不激活 runner、不授权 SSH/Slurm 或后续 44-unit batch。effect-free rediscovery 必须消费 deployment/qualification safe fields 重建 target subject，随后仍需新的 qualification dry plan 与独立 occurrence authority。
+
 ## Risks / Trade-offs
 
 - [当前 identity 大量缺失，change 不能立即产生 qualified receipt] → 先产出机械可验证 gap/candidate packet；保持 batch/profile blocked，不伪造 placeholder。
@@ -170,10 +181,11 @@ Repository-owned scientific image recipes 从各自官方 Git URL 完整取得�
 4. 将 operator selections 冻结为 exact decisions，生成 Batch 1/Batch 2 identity-preparation plan；未授权时保持零 effect。
 5. 在首次 preparation effect 前暂停；用户批准 exact preparation-plan digest、batch 与 operator 后，才创建持久一次性的 preparation occurrence authorization；后续只能恢复同一 occurrence，或通过 exact revocation 显式撤销。
 6. Preparation 完成后重新观察 subject identity，重建 authorizable qualification dry plan。
-7. 再次取得 exact、持久一次性的 qualification-plan occurrence authorization，分 unit 执行真实 qualification、settle/reconcile、验证 receipt；只能恢复同一 occurrence 的已持久化终态，禁止 redispatch，也允许 exact 私有撤销。任何未闭合 profile 保持 blocked。
-8. 完成真实资格后同步/归档本 change，并进入 cutover 前第二个人工决策门。
+7. 为 Diannan exact `/home/grtresy/.local/libexec/openzyme-workspace-runtime` 生成独立 deployment plan；只有 principal/home/path、direct-user-libexec mechanism、pre-state、backup 和 rollback owner 全部闭合并获得一次性 authority 后才执行原子安装与 native positive/negative probe，失败按 exact digest 回滚。
+8. effect-free 重建 target subject 和 44-unit Batch 1 plan，再次取得 exact、持久一次性的 qualification-plan occurrence authorization，分 unit执行真实 qualification、settle/reconcile、验证 receipt；只能恢复同一 occurrence 的已持久化终态，禁止 redispatch，也允许 exact 私有撤销。任何未闭合 profile 保持 blocked。
+9. 完成真实资格后同步/归档本 change，并进入 cutover 前第二个人工决策门。
 
-回滚当前 plan-only implementation 只需移除新增 contract/wiring/workflow；它不包含数据库 migration 或外部 mutation。真实 occurrence 开始后的回滚只能停止新 dispatch、reconcile 已知 attempt、执行声明的 cleanup，并保留证据。
+helper 部署的回滚独立于产品 cutover：只允许 compare-and-restore exact backup，或 compare-and-remove 本 occurrence 首次创建的 exact helper；不得删除未知文件。其他真实 occurrence 开始后的回滚只能停止新 dispatch、reconcile 已知 attempt、执行声明的 cleanup，并保留证据。
 
 ## Open Questions
 
@@ -183,6 +195,7 @@ Repository-owned scientific image recipes 从各自官方 Git URL 完整取得�
 - 本地隔离 Git repository 与 local LFS endpoint；禁止 hosted sync。
 - Podman 各科学工具 qualification image digest 或建设方案。
 - `Diannan/3090` 的 executor workspace v2 profile、inventory/proof、credential provider/authenticator 与 Slurm account/QOS。
+- Diannan observed home、principal-owned `.local/libexec` parent identity 与 direct-write preflight；任一漂移时保持 `blocked_deployment_authority`，不得回退到 `/usr/local`、`PATH` 或另一用户目录。
 - local/HPC HMMER、Vina、fpocket、preprocess software closure。
 - AlphaFold GPU image、model parameters、database closure 和固定 smoke input。
 - protected SQLite ledger 与 private evidence root 的部署位置（只在 operator config 中记录，不进入公共 artifact）。

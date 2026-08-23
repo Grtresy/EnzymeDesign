@@ -99,3 +99,22 @@ def test_preprocess_compiler_builds_bounded_real_software_smoke(
     assert workload.expected_output_paths
     for item in workload.inputs:
         assert SCIENTIFIC_QUALIFICATION_INPUTS.resolve(item.content_digest)
+
+
+def test_real_program_fixtures_are_nontrivial_and_wheel_owned() -> None:
+    vina = build_selected_driver_scientific_compiler(
+        component_id="enzymedesign.vina.local",
+        operation="dock",
+        route_kind="local",
+    ).compile(_request("dock"))
+    fpocket = build_selected_driver_scientific_compiler(
+        component_id="enzymedesign.fpocket.local",
+        operation="detect",
+        route_kind="local",
+    ).compile(_request("detect"))
+
+    vina_sizes = tuple(item.size_bytes for item in vina.inputs)
+    fpocket_sizes = tuple(item.size_bytes for item in fpocket.inputs)
+    assert max(vina_sizes) > 100_000
+    assert min(vina_sizes) > 100
+    assert fpocket_sizes[0] > 40_000

@@ -29,10 +29,20 @@ opaque workspace ID，并重新验证 owner、local/remote generation、target q
 authority。SSH/SFTP/rsync Adapter 执行具体 I/O；Plugin import、Agent turn 和 tool visibility 计算均不得临时
 SSH/`which` 探测软件。远端 response loss 进入同一 ControlledOperation reconcile，不自动重发。
 
-远端 transport 只允许调用 exact `/usr/local/libexec/openzyme-workspace-runtime` helper。它必须作为
+远端 transport 只允许调用 target profile 已资格化的 exact absolute `openzyme-workspace-runtime` helper。Diannan
+当前绑定 `/home/grtresy/.local/libexec/openzyme-workspace-runtime`。它必须作为
 `software.openzyme-workspace-runtime == 1.0.0` 出现在 adopted target inventory 中，并由 qualification receipt
 绑定 build digest、target generation 与 environment；缺失或版本漂移时 remote workspace tools 为
 `blocked_qualification`，Adapter 不临时 SSH 探测或自动安装。
+
+fleet target 可采用 exact login-principal-owned `.local/libexec`，但该选择必须在 target qualification 中显式绑定
+observed principal、absolute home、deployment scope、exact path、目标文件 pre-state/build digest、same-parent
+staging/backup、owner/group/mode 与 rollback owner，并使用独立一次性 authority。不得在运行时展开 `$HOME`、搜索
+`PATH`、根据权限改到 `/usr/local`、相邻 helper 或另一用户目录。principal/home/parent identity 不闭合时稳定进入
+`blocked_deployment_authority`，不能把可执行文件存在当资格。
+安装后 native positive/negative qualification 任一失败时，只能在 destination 仍匹配本 occurrence 安装 digest
+时恢复 exact backup 或删除本 occurrence 首次创建的文件；destination identity 不明时保持
+`deployment_in_doubt` 并阻断 dependent qualification。
 
 普通 login Shell 与 scheduler 永远分开：`hpc.workspace.exec` 不能调用/模拟 `sbatch`、`scancel` 或 runner
 API；formal occurrence credential 只由 Compute admission 为 exact workload/route 签发。

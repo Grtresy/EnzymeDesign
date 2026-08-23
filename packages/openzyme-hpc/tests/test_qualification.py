@@ -302,6 +302,11 @@ def test_hpc_identity_observation_is_generic_and_canonical() -> None:
             ("software.two", "2.0"),
             ("software.one", "1.0"),
         ),
+        software_image_digests=(
+            ("software.two", "sha256:" + "8" * 64),
+            ("software.one", "sha256:" + "7" * 64),
+        ),
+        apptainer_version="apptainer version 1.4.5",
     )
 
     assert observation.software_versions == (
@@ -309,3 +314,6 @@ def test_hpc_identity_observation_is_generic_and_canonical() -> None:
         ("software.two", "2.0"),
     )
     assert observation.software_version("software.one") == "1.0"
+    assert observation.software_image_digest("software.one") == (
+        "sha256:" + "7" * 64
+    )

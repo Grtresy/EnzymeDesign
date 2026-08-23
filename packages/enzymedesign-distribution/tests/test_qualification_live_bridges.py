@@ -77,6 +77,10 @@ def factory(tmp_path):
                     "ssh_port": "22222",
                     "identity_file": str(identity),
                     "known_hosts_file": str(known_hosts),
+                    "workspace_root": "/qualification/workspaces",
+                    "hmmer_sif": "/qualification/containers/hmmer.sif",
+                    "vina_sif": "/qualification/containers/vina.sif",
+                    "fpocket_sif": "/qualification/containers/fpocket.sif",
                 },
             ),
         },
@@ -87,11 +91,17 @@ def factory(tmp_path):
     return SelectedLiveQualificationBridgeFactory(
         credential_resolver=resolver,  # type: ignore[arg-type]
         protected_workspace_root=tmp_path / "workspaces",
+        private_diagnostic_root=tmp_path / "private-diagnostics",
         git_repository=repository,
         image_digests={
             "base": "sha256:" + "a" * 64,
             "hmmer": "sha256:" + "b" * 64,
             "docking": "sha256:" + "c" * 64,
+        },
+        hpc_image_digests={
+            "hmmer": "sha256:" + "d" * 64,
+            "vina": "sha256:" + "e" * 64,
+            "fpocket": "sha256:" + "f" * 64,
         },
         tavily_deadline_at="2026-08-23T18:30:00+08:00",
     )

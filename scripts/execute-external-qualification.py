@@ -297,8 +297,14 @@ def main() -> int:
     factory = SelectedLiveQualificationBridgeFactory(
         credential_resolver=resolver,
         protected_workspace_root=layout.root / "qualification-workspaces",
+        private_diagnostic_root=layout.private_evidence_root,
         git_repository=git_repository,
         image_digests=image_digests,
+        hpc_image_digests={
+            "hmmer": _field(snapshot, "hmmer-hpc", "hmmer_sif_digest"),
+            "vina": _field(snapshot, "vina-hpc", "vina_sif_digest"),
+            "fpocket": _field(snapshot, "fpocket-hpc", "fpocket_sif_digest"),
+        },
         tavily_deadline_at=(datetime.now(tz=UTC) + timedelta(minutes=10)).isoformat(),
     )
     try:

@@ -34,6 +34,8 @@ class HpcQualificationIdentityObservation:
     environment_digest: str
     inventory_generation_digest: str
     software_versions: tuple[tuple[str, str], ...]
+    software_image_digests: tuple[tuple[str, str], ...]
+    apptainer_version: str
 
     def __post_init__(self) -> None:
         if not 1 <= self.ssh_port <= 65535:
@@ -53,6 +55,15 @@ class HpcQualificationIdentityObservation:
             if not value or len(value) > 128:
                 raise ValueError("HPC software versions must be bounded")
         object.__setattr__(self, "software_versions", versions)
+        image_digests = tuple(sorted(self.software_image_digests))
+        if {item[0] for item in image_digests} != {item[0] for item in versions}:
+            raise ValueError("HPC software image identities must match version facts")
+        for software_id, digest in image_digests:
+            require_identifier(software_id, field_name="software_id")
+            require_digest(digest, field_name="software_image_digest")
+        if not self.apptainer_version or len(self.apptainer_version) > 128:
+            raise ValueError("HPC Apptainer version must be bounded")
+        object.__setattr__(self, "software_image_digests", image_digests)
 
     def software_version(self, software_id: str) -> str:
         require_identifier(software_id, field_name="software_id")
@@ -60,6 +71,13 @@ class HpcQualificationIdentityObservation:
             return dict(self.software_versions)[software_id]
         except KeyError as exc:
             raise KeyError("HPC identity observation lacks required software") from exc
+
+    def software_image_digest(self, software_id: str) -> str:
+        require_identifier(software_id, field_name="software_id")
+        try:
+            return dict(self.software_image_digests)[software_id]
+        except KeyError as exc:
+            raise KeyError("HPC identity observation lacks required image") from exc
 
 
 class HpcQualificationIdentityObservationPort(Protocol):

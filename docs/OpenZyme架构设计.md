@@ -267,8 +267,12 @@ canonical Plugin/Kernel surfaces；旧 function handler/repository/writer packag
   Session binding 或替代另一个 cutover change。正式本地入口拆成 root/layout-only bootstrap、canonical authorization
   writer 与 source-bound Batch 1 executor；executor 必须先预检全部 exact locator，再按稳定 occurrence identity 写 protected
   ledger。已有 residual state 而无 terminal result 时停止人工 reconcile，不覆盖、不重发、不 fallback。当前 live bridge
-  已覆盖 Provider、Git/LFS、Podman、SSH、Slurm 与 HMMER/Vina/fpocket/preprocess 正式 Compute route；Diannan 只消费
-  target 已安装工具，不执行远端安装、升级或重建，本地科学 route 只采用已固定 digest 的 qualification image；
+  已覆盖 Provider、Git/LFS、Podman、SSH、Slurm 与 HMMER/Vina/fpocket/preprocess 正式 Compute route；Diannan 科学
+  route 只消费 target 已安装且 digest-pinned 的 Apptainer SIF，不安装、升级或重建 HMMER/Vina/fpocket，本地科学
+  route 只采用已固定 digest 的 qualification image。唯一另行治理的 target 安装是 exact
+  target-qualified exact `openzyme-workspace-runtime`：Diannan 绑定
+  `/home/grtresy/.local/libexec/openzyme-workspace-runtime`，其实现、principal-bound deployment plan、native qualification 和 exact rollback
+  均属于当前 qualification change，但不构成 inventory adoption、runtime activation 或 cutover；
 - `openzyme-workspace-git-lfs` 已成为 `AgentGitWorkspace` identity/observation/restore 与 Git-LFS
   policy/pointer/closure/verification/receipt 机制 DTO 的唯一代码 owner；旧 Domain shim 已删除，仓内生产
   caller 使用 Adapter namespace。private/public ref 与 immutable-byte backend、
@@ -571,7 +575,8 @@ repository、Plugin manifest/tool/route runtime 和 Host 重验证 gateway 已�
 repository 或静态 tool writer。EnzymeDesign non-live application root 已完成 exact Distribution mount、`@2`
 projection 及 SSH/Slurm Adapter identity/runtime factory 绑定；Agent 是否看到 `hpc.workspace.*` 仍由 Session
 binding、authority、workspace readiness、target inventory 与 helper qualification 求交决定。真实 target
-qualification、credential 配置和 live cutover 未在本 change 执行。
+qualification 与 helper prerequisite 部署纳入当前 qualification change；Session adoption、生产 credential 激活和
+live cutover 仍不在本 change 执行。
 
 `openzyme-hpc-ssh` 已实现 target-scoped Observation/Filesystem/Process/Transfer Ports，使用私有 locator
 解析 exact owner root、credential claim、workspace generation 与 target qualification。公开请求只含 opaque
@@ -579,11 +584,14 @@ workspace binding 和 root-relative path；hostname、login alias、remote root�
 lost response 保持 `dispatch_in_doubt`，reconcile 只观察同一 occurrence，且该 Adapter 永不携带 scheduler
 authority。它消费 Store-owned durable Workspace occurrence ledger；terminal receipt 可跨 Adapter epoch 恢复，
 uncertain receipt 只能经远端 wrapper 查询原 operation/request digest。它已被 EnzymeDesign exact composition
-identity-mounted。`/usr/local/libexec/openzyme-workspace-runtime` 现以 exact
+identity-mounted。target-qualified exact `openzyme-workspace-runtime` 现以
 `software.openzyme-workspace-runtime == 1.0.0` resource capability 建模，私有 locator 同时绑定 helper build、
 qualification receipt、target inventory generation/digest；缺失该事实时 remote tools 为
-`blocked_qualification`。本 change 没有在真实 target 上安装或探测 helper，因此仍不是 ambient 或 live
-capability。
+`blocked_qualification`。当前 change 现在包含标准库单文件 helper 的 source-bound 实现，以及 exact
+Diannan `/home/grtresy/.local/libexec/openzyme-workspace-runtime` 的独立 principal-bound deployment plan、positive/negative qualification
+和 compare-and-rollback。login/home/path/owner/mode 或 direct-user-libexec mechanism 未闭合时保持
+`blocked_deployment_authority`，不得自动切换 `/usr/local`、`PATH`、相邻 executable 或另一用户目录；安装成功也仍不是 ambient、adopted
+或 live capability。
 
 `openzyme-hpc-slurm` 实现独立 `openzyme.hpc.scheduler-port@1`：只有 Compute admission 创建的一次性 formal
 occurrence credential 可进入 submit/cancel；login/file credential 在类型和 resolver 上都被拒绝。raw Slurm id

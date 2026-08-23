@@ -41,6 +41,12 @@ from .qualification_bridges import QualificationProbeBridgeBuilder
 from .qualification_compute import FormalComputeScientificQualificationOperation
 from .qualification_operator_state import ProtectedQualificationCredentialBundleResolver
 from .qualification_operator_state import ProtectedQualificationCredentialMaterial
+from .qualification_private_diagnostics import DiagnosticQualificationBridge
+from .qualification_private_diagnostics import ProtectedQualificationDiagnosticWriter
+from .qualification_private_diagnostics import QualificationDiagnosticContext
+from .qualification_private_diagnostics import RecordingGitCommandPort
+from .qualification_private_diagnostics import RecordingPodmanCommandPort
+from .qualification_private_diagnostics import RecordingSshCommandPort
 from .qualification_scientific_workloads import PreprocessScientificQualificationCompiler
 from .qualification_scientific_workloads import SCIENTIFIC_QUALIFICATION_INPUTS
 from .qualification_scientific_workloads import build_selected_driver_scientific_compiler
@@ -72,8 +78,10 @@ class SelectedLiveQualificationBridgeFactory:
         repr=False
     )
     protected_workspace_root: Path = field(repr=False)
+    private_diagnostic_root: Path = field(repr=False)
     git_repository: Path = field(repr=False)
     image_digests: Mapping[str, str]
+    hpc_image_digests: Mapping[str, str]
     tavily_deadline_at: str
     _git_state: LocalGitLfsQualificationState | None = field(
         default=None, init=False, repr=False
@@ -88,11 +96,17 @@ class SelectedLiveQualificationBridgeFactory:
         default=None, init=False, repr=False
     )
     _authorization_digest: str | None = field(default=None, init=False, repr=False)
+    _diagnostic_context: QualificationDiagnosticContext = field(
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         required = {"base", "hmmer", "docking"}
         if set(self.image_digests) != required:
             raise ValueError("live qualification requires exact base/hmmer/docking images")
+        if set(self.hpc_image_digests) != {"hmmer", "vina", "fpocket"}:
+            raise ValueError("live qualification requires exact HPC scientific images")
         root = self.protected_workspace_root.absolute()
         if root.is_symlink():
             raise ValueError("qualification workspace root cannot be a symlink")
@@ -100,9 +114,12 @@ class SelectedLiveQualificationBridgeFactory:
         root.chmod(0o700)
         self.protected_workspace_root = root
         self.git_repository = self.git_repository.absolute()
+        self._diagnostic_context = QualificationDiagnosticContext(
+            ProtectedQualificationDiagnosticWriter(self.private_diagnostic_root)
+        )
 
     def builders(self) -> Mapping[str, QualificationProbeBridgeBuilder]:
-        return {
+        raw = {
             "openzyme.runtime.llm": self._llm,
             "openzyme.research.tavily": self._tavily,
             "enzymedesign.bio-provider-http": self._bio,
@@ -118,6 +135,24 @@ class SelectedLiveQualificationBridgeFactory:
             "enzymedesign.fpocket.hpc": self._scientific,
             "enzymedesign.docking.preprocess": self._preprocess,
         }
+        return {
+            component_id: self._diagnostic_builder(component_id, builder)
+            for component_id, builder in raw.items()
+        }
+
+    def _diagnostic_builder(
+        self,
+        component_id: str,
+        builder: QualificationProbeBridgeBuilder,
+    ) -> QualificationProbeBridgeBuilder:
+        def build(binding: ExternalQualificationBridgeBinding):
+            return DiagnosticQualificationBridge(
+                delegate=builder(binding),
+                context=self._diagnostic_context,
+                component_id=component_id,
+            )
+
+        return build
 
     def cleanup(self) -> Mapping[str, dict[str, object]]:
         receipts: dict[str, dict[str, object]] = {}
@@ -201,7 +236,10 @@ class SelectedLiveQualificationBridgeFactory:
             self._git_state = LocalGitLfsQualificationState(
                 repository=self.git_repository,
                 workspace=self.protected_workspace_root / f"git-lfs-{suffix}",
-                command_port=SubprocessLocalGitLfsQualificationCommandPort(),
+                command_port=RecordingGitCommandPort(
+                    SubprocessLocalGitLfsQualificationCommandPort(),
+                    self._diagnostic_context,
+                ),
             )
         return GitLfsQualificationProbeBridge(
             binding=binding,
@@ -220,7 +258,10 @@ class SelectedLiveQualificationBridgeFactory:
                 image_digest=self.image_digests["base"],
                 container_name=f"openzyme-qualification-{suffix}",
                 workspace=self.protected_workspace_root / f"podman-{suffix}",
-                command_port=SubprocessPodmanQualificationCommandPort(),
+                command_port=RecordingPodmanCommandPort(
+                    SubprocessPodmanQualificationCommandPort(),
+                    self._diagnostic_context,
+                ),
             )
         return PodmanQualificationProbeBridge(
             binding=binding,
@@ -241,7 +282,10 @@ class SelectedLiveQualificationBridgeFactory:
             self._ssh_state = OpenSshQualificationState(
                 credential_material=self._hpc_material(),
                 workspace_id=f"batch-1-{suffix}",
-                command_port=SubprocessOpenSshQualificationCommandPort(),
+                command_port=RecordingSshCommandPort(
+                    SubprocessOpenSshQualificationCommandPort(),
+                    self._diagnostic_context,
+                ),
             )
         return self._ssh_state
 
@@ -289,11 +333,21 @@ class SelectedLiveQualificationBridgeFactory:
         )
         if route_kind == "hpc-primary":
             ssh_state = self._ensure_ssh(binding)
+            if binding.component_id.startswith("enzymedesign.hmmer."):
+                image_group = "hmmer"
+            elif binding.component_id.startswith("enzymedesign.vina."):
+                image_group = "vina"
+            else:
+                image_group = "fpocket"
             route = SlurmScientificQualificationRoute(
                 workspace_root=ssh_state.remote_workspace,
                 partition="3090",
                 command_port=ssh_state,
                 input_resolver=SCIENTIFIC_QUALIFICATION_INPUTS,
+                software_image_path=self._hpc_material().field_value(
+                    f"{image_group}_sif"
+                ),
+                software_image_digest=self.hpc_image_digests[image_group],
             )
         else:
             image_group = (
@@ -304,7 +358,10 @@ class SelectedLiveQualificationBridgeFactory:
             route = PodmanScientificQualificationRoute(
                 image_digest=self.image_digests[image_group],
                 workspace_root=self.protected_workspace_root / f"science-{suffix}",
-                command_port=SubprocessPodmanQualificationCommandPort(),
+                command_port=RecordingPodmanCommandPort(
+                    SubprocessPodmanQualificationCommandPort(),
+                    self._diagnostic_context,
+                ),
                 input_resolver=SCIENTIFIC_QUALIFICATION_INPUTS,
             )
         port = FormalComputeScientificQualificationOperation(
@@ -329,7 +386,10 @@ class SelectedLiveQualificationBridgeFactory:
         route = PodmanScientificQualificationRoute(
             image_digest=self.image_digests["docking"],
             workspace_root=self.protected_workspace_root / f"science-{suffix}",
-            command_port=SubprocessPodmanQualificationCommandPort(),
+            command_port=RecordingPodmanCommandPort(
+                SubprocessPodmanQualificationCommandPort(),
+                self._diagnostic_context,
+            ),
             input_resolver=SCIENTIFIC_QUALIFICATION_INPUTS,
         )
         port = FormalComputeScientificQualificationOperation(

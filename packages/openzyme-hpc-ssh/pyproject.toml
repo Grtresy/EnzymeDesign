@@ -10,6 +10,9 @@ dependencies = [
   "openzyme-extension-spi",
 ]
 
+[project.scripts]
+openzyme-workspace-runtime = "openzyme_hpc_ssh.workspace_runtime:main"
+
 [project.entry-points."openzyme.extensions"]
 "openzyme.hpc.ssh" = "openzyme_hpc_ssh.manifest_locator:locate_component_manifest"
 

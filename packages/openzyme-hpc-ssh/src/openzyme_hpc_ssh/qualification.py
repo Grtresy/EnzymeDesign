@@ -5,6 +5,7 @@ from dataclasses import field
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 from typing import Protocol
 
@@ -29,14 +30,15 @@ SSH_QUALIFICATION_OPERATIONS = (
     "version",
 )
 
-_REMOTE_IDENTITY_SCRIPT = """set -eu
-uname -srm | head -n 1
-sinfo -h -p 3090 -o '%P' | head -n 1
-hmmbuild -h 2>&1 | head -n 1
-vina --version 2>&1 | head -n 1
-fpocket -h 2>&1 | head -n 1
-"""
 
+def _safe_remote_absolute_path(value: str) -> bool:
+    return (
+        value.startswith("/")
+        and value != "/"
+        and not value.endswith("/")
+        and re.fullmatch(r"/[A-Za-z0-9._/-]{1,254}", value) is not None
+        and all(segment not in {"", ".", ".."} for segment in value[1:].split("/"))
+    )
 
 class SshQualificationCredentialMaterial(Protocol):
     locator_id: str
@@ -54,9 +56,14 @@ class SshHpcIdentityObservation:
     environment_digest: str
     inventory_generation_digest: str
     software_versions: tuple[tuple[str, str], ...]
+    software_image_digests: tuple[tuple[str, str], ...]
+    apptainer_version: str
 
     def software_version(self, software_id: str) -> str:
         return dict(self.software_versions)[software_id]
+
+    def software_image_digest(self, software_id: str) -> str:
+        return dict(self.software_image_digests)[software_id]
 
 
 class OpenSshQualificationCommandPort(Protocol):
@@ -103,6 +110,11 @@ class OpenSshHpcQualificationIdentityObservationPort:
         known_hosts_file = Path(
             credential_material.field_value("known_hosts_file")
         ).absolute()
+        software_images = {
+            "software.hmmer": credential_material.field_value("hmmer_sif"),
+            "software.vina": credential_material.field_value("vina_sif"),
+            "software.fpocket": credential_material.field_value("fpocket_sif"),
+        }
         if (
             re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,254}", host) is None
             or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", user) is None
@@ -111,6 +123,7 @@ class OpenSshHpcQualificationIdentityObservationPort:
             or identity_file.is_symlink()
             or not known_hosts_file.is_file()
             or known_hosts_file.is_symlink()
+            or any(not _safe_remote_absolute_path(path) for path in software_images.values())
         ):
             raise ExternalQualificationError(
                 "qualification_hpc_credential_identity_invalid",
@@ -127,6 +140,21 @@ class OpenSshHpcQualificationIdentityObservationPort:
                 "qualification_hpc_identity_file_permissions_unsafe",
                 "SSH qualification identity file must not be accessible by group or others",
             )
+        hmmer_image = shlex.quote(software_images["software.hmmer"])
+        vina_image = shlex.quote(software_images["software.vina"])
+        fpocket_image = shlex.quote(software_images["software.fpocket"])
+        remote_identity_script = f"""set -eu
+system=$(uname -srm | head -n 1)
+partition=$(sinfo -h -p 3090 -o '%P' | head -n 1)
+apptainer_version=$(apptainer --version | head -n 1)
+hmmer_digest=$(sha256sum {hmmer_image} | cut -d' ' -f1)
+hmmer_version=$(apptainer exec {hmmer_image} hmmbuild -h 2>&1 | grep -m1 '^# HMMER ')
+vina_digest=$(sha256sum {vina_image} | cut -d' ' -f1)
+vina_version=$(apptainer exec {vina_image} vina --version 2>&1 | head -n 1)
+fpocket_digest=$(sha256sum {fpocket_image} | cut -d' ' -f1)
+fpocket_version=$(apptainer exec {fpocket_image} fpocket -h 2>&1 | sed 's/\\x1B\\[[0-9;]*[mK]//g' | grep -m1 'fpocket [0-9]')
+printf '%s\\n' "$system" "$partition" "$apptainer_version" "$hmmer_digest" "$hmmer_version" "$vina_digest" "$vina_version" "$fpocket_digest" "$fpocket_version"
+"""
         argv = (
             self.ssh_binary,
             "-F",
@@ -146,13 +174,19 @@ class OpenSshHpcQualificationIdentityObservationPort:
             "-o",
             "ConnectTimeout=15",
             f"{user}@{host}",
-            "sh",
+            "bash",
             "-lc",
-            _REMOTE_IDENTITY_SCRIPT,
+            shlex.quote(remote_identity_script),
         )
         returncode, stdout, _stderr = self.command_port.run(argv)
         lines = tuple(line.strip() for line in stdout.splitlines() if line.strip())
-        if returncode != 0 or len(lines) != 5 or "3090" not in lines[1]:
+        if (
+            returncode != 0
+            or len(lines) != 9
+            or "3090" not in lines[1]
+            or not lines[2].startswith(("apptainer version ", "apptainer version"))
+            or any(re.fullmatch(r"[0-9a-f]{64}", lines[index]) is None for index in (3, 5, 7))
+        ):
             raise ExternalQualificationError(
                 "qualification_hpc_identity_observation_failed",
                 "SSH target identity observation failed or returned an unexpected shape",
@@ -169,9 +203,13 @@ class OpenSshHpcQualificationIdentityObservationPort:
             {
                 "environment_digest": environment_digest,
                 "partition_observation": lines[1],
-                "hmmer_version_observation": lines[2],
-                "vina_version_observation": lines[3],
-                "fpocket_version_observation": lines[4],
+                "apptainer_version_observation": lines[2],
+                "hmmer_image_digest": lines[3],
+                "hmmer_version_observation": lines[4],
+                "vina_image_digest": lines[5],
+                "vina_version_observation": lines[6],
+                "fpocket_image_digest": lines[7],
+                "fpocket_version_observation": lines[8],
             }
         )
         return SshHpcIdentityObservation(
@@ -181,10 +219,16 @@ class OpenSshHpcQualificationIdentityObservationPort:
             environment_digest=environment_digest,
             inventory_generation_digest=inventory_digest,
             software_versions=(
-                ("software.fpocket", lines[4]),
-                ("software.hmmer", lines[2]),
-                ("software.vina", lines[3]),
+                ("software.fpocket", lines[8]),
+                ("software.hmmer", lines[4]),
+                ("software.vina", lines[6]),
             ),
+            software_image_digests=(
+                ("software.fpocket", f"sha256:{lines[7]}"),
+                ("software.hmmer", f"sha256:{lines[3]}"),
+                ("software.vina", f"sha256:{lines[5]}"),
+            ),
+            apptainer_version=lines[2],
         )
 
 
@@ -210,7 +254,22 @@ class OpenSshQualificationState:
 
     @property
     def remote_workspace(self) -> str:
-        return f".local/state/openzyme-qualification/{self.workspace_id}"
+        workspace_root = self.credential_material.field_value("workspace_root")
+        if (
+            not workspace_root.startswith("/")
+            or workspace_root == "/"
+            or workspace_root.endswith("/")
+            or any(
+                segment in {"", ".", ".."}
+                for segment in workspace_root[1:].split("/")
+            )
+            or re.fullmatch(r"/[A-Za-z0-9._/-]{1,190}", workspace_root) is None
+        ):
+            raise ExternalQualificationError(
+                "qualification_hpc_workspace_root_invalid",
+                "SSH qualification workspace root is not one protected absolute path",
+            )
+        return f"{workspace_root}/{self.workspace_id}"
 
     def _connection_argv(self) -> tuple[str, ...]:
         host = self.credential_material.field_value("ssh_host")
@@ -257,7 +316,9 @@ class OpenSshQualificationState:
         )
 
     def run_remote(self, script: str) -> tuple[int, str, str]:
-        return self.command_port.run((*self._connection_argv(), "sh", "-lc", script))
+        return self.command_port.run(
+            (*self._connection_argv(), "bash", "-lc", shlex.quote(script))
+        )
 
     def cleanup(self) -> dict[str, object]:
         workspace = self.remote_workspace

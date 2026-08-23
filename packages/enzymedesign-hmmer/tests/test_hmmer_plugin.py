@@ -115,7 +115,7 @@ def _driver_request(*, search: bool, payload_extra: dict[str, object] | None = N
 @pytest.mark.parametrize(
     ("search", "expected_argv"),
     (
-        (False, ["hmmbuild", "--noali", "results/hmmer/model.hmm", "inputs/alignment.fasta"]),
+        (False, ["hmmbuild", "results/hmmer/model.hmm", "inputs/alignment.fasta"]),
         (
             True,
             [

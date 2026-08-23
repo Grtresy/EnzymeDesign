@@ -25,7 +25,7 @@ Plugin activation、Session binding、inventory generation、route、workspace r
 ## Driver 边界
 
 `enzymedesign.hmmer.local` 与 `enzymedesign.hmmer.hpc` 都只实现 compile/validate：它们把 closed request 转成
-`ExecutionWorkloadSpec`，生成固定 `hmmbuild --noali` 或 `hmmsearch --noali --tblout` argv，并绑定 immutable
+`ExecutionWorkloadSpec`，生成固定 `hmmbuild` 或 `hmmsearch --noali --tblout` argv，并绑定 immutable
 revision inputs、root-relative cwd/output、resource/environment policy、result contract 和
 `software.hmmer` requirement。caller 不能提交 argv、shell command、credential、Host/remote path 或 scheduler ID。
 

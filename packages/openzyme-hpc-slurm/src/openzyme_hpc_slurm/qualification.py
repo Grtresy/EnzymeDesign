@@ -22,6 +22,17 @@ from openzyme_contracts import canonical_sha256_digest
 SLURM_QUALIFICATION_OPERATIONS = ("cancel", "observe", "reconcile", "submit")
 
 
+def _safe_scoped_remote_path(value: str) -> bool:
+    relative = value[1:] if value.startswith("/") else value
+    return (
+        bool(relative)
+        and not value.endswith("/")
+        and re.fullmatch(r"/?[A-Za-z0-9.][A-Za-z0-9._/-]{0,190}", value)
+        is not None
+        and all(segment not in {"", ".", ".."} for segment in relative.split("/"))
+    )
+
+
 class SlurmQualificationOperationPort(
     ExternalBoundQualificationOperationPort,
     Protocol,
@@ -48,8 +59,7 @@ class SlurmQualificationState:
 
     def __post_init__(self) -> None:
         if (
-            re.fullmatch(r"[A-Za-z0-9.][A-Za-z0-9._/-]{0,190}", self.workspace) is None
-            or any(segment in {"", ".", ".."} for segment in self.workspace.split("/"))
+            not _safe_scoped_remote_path(self.workspace)
             or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}", self.partition) is None
         ):
             raise ValueError("Slurm qualification scope is invalid")
@@ -233,16 +243,22 @@ class SlurmScientificQualificationRoute:
     partition: str
     command_port: SlurmQualificationRemoteCommandPort = field(repr=False)
     input_resolver: SlurmScientificQualificationInputResolver = field(repr=False)
+    software_image_path: str
+    software_image_digest: str
     route_kind: str = "hpc-primary"
 
     def __post_init__(self) -> None:
         if (
-            re.fullmatch(r"[A-Za-z0-9.][A-Za-z0-9._/-]{0,190}", self.workspace_root) is None
+            not _safe_scoped_remote_path(self.workspace_root)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}", self.partition) is None
+            or not self.software_image_path.startswith("/")
+            or self.software_image_path.endswith("/")
             or any(
                 segment in {"", ".", ".."}
-                for segment in self.workspace_root.split("/")
+                for segment in self.software_image_path[1:].split("/")
             )
-            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}", self.partition) is None
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", self.software_image_digest)
+            is None
         ):
             raise ValueError("scientific Slurm qualification scope is invalid")
 
@@ -252,6 +268,14 @@ class SlurmScientificQualificationRoute:
     ) -> ExternalScientificQualificationRouteOutcome:
         run_root = f"{self.workspace_root}/scientific/{workload.workload_id}"
         try:
+            observed_image_digest = self._run(
+                f"sha256sum {shlex.quote(self.software_image_path)} | cut -d' ' -f1"
+            )
+            if f"sha256:{observed_image_digest}" != self.software_image_digest:
+                raise ExternalQualificationError(
+                    "qualification_compute_image_digest_drift",
+                    "scientific Slurm image differs from prepared target identity",
+                )
             self._run(
                 f"test ! -e {shlex.quote(run_root)}; "
                 f"mkdir -p -m 700 {shlex.quote(run_root)}"
@@ -278,8 +302,10 @@ class SlurmScientificQualificationRoute:
             if workload.operation == "hmmsearch":
                 setup = shlex.join(
                     (
+                        "apptainer",
+                        "exec",
+                        self.software_image_path,
                         "hmmbuild",
-                        "--noali",
                         "inputs/model.hmm",
                         "inputs/alignment.fasta",
                     )
@@ -288,7 +314,9 @@ class SlurmScientificQualificationRoute:
             self._submit_wait(
                 workload,
                 cwd,
-                shlex.join(workload.argv),
+                shlex.join(
+                    ("apptainer", "exec", self.software_image_path, *workload.argv)
+                ),
                 suffix="run",
             )
             outputs: list[dict[str, object]] = []

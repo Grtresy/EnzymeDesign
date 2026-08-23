@@ -280,7 +280,6 @@ class PodmanScientificQualificationRoute:
                     run_root,
                     (
                         "hmmbuild",
-                        "--noali",
                         "inputs/model.hmm",
                         "inputs/alignment.fasta",
                     ),

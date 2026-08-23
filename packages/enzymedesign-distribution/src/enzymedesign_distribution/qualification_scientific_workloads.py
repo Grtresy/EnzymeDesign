@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from collections.abc import Mapping
+import base64
 from dataclasses import dataclass
 from dataclasses import field
+import gzip
 from importlib.resources import files
 from typing import Any
 
@@ -38,48 +40,51 @@ from openzyme_extension_spi import parse_component_manifest_json
 
 _ALIGNMENT = b">query_a\nACDEFGHIKLMNPQRSTVWY\n>query_b\nACDEYGHIKLMNPQRSTVWY\n"
 _PROTEINS = b">target_a\nTTTACDEFGHIKLMNPQRSTVWYAAA\n>target_b\nGGGGGGGGGGGGGGGGGGGG\n"
-_RECEPTOR_PDBQT = (
-    b"ATOM      1  C1  REC A   1       0.000   0.000   0.000  1.00  0.00     0.000 C\n"
-    b"ATOM      2  O1  REC A   1       1.400   0.000   0.000  1.00  0.00    -0.200 OA\n"
-    b"END\n"
-)
-_LIGAND_PDBQT = (
-    b"ROOT\n"
-    b"HETATM    1  C1  LIG A   1       0.000   0.000   0.000  1.00  0.00     0.000 C\n"
-    b"HETATM    2  O1  LIG A   1       1.400   0.000   0.000  1.00  0.00    -0.200 OA\n"
-    b"ENDROOT\nTORSDOF 0\n"
-)
+
+
+def _qualification_asset(name: str) -> bytes:
+    encoded = (
+        files("enzymedesign_distribution.qualification_assets")
+        .joinpath(name)
+        .read_text(encoding="ascii")
+    )
+    compact = "".join(encoded.split())
+    return gzip.decompress(base64.b64decode(compact, validate=True))
+
+
+_RECEPTOR_PDBQT = _qualification_asset("vina-receptor.pdbqt.gz.b64")
+_LIGAND_PDBQT = _qualification_asset("vina-ligand.pdbqt.gz.b64")
 _VINA_CONFIG = (
-    b"center_x = 0\ncenter_y = 0\ncenter_z = 0\n"
-    b"size_x = 10\nsize_y = 10\nsize_z = 10\n"
+    b"center_x = 15.190\ncenter_y = 53.903\ncenter_z = 16.917\n"
+    b"size_x = 20\nsize_y = 20\nsize_z = 20\n"
     b"exhaustiveness = 1\nnum_modes = 1\nseed = 20260823\n"
 )
-_STRUCTURE_PDB = b"".join(
-    (
-        f"ATOM  {index:5d}  CA  ALA A{index:4d}    "
-        f"{index * 1.45:8.3f}{(index % 5) * 1.7:8.3f}{(index % 7) * 1.2:8.3f}"
-        "  1.00 20.00           C\n"
-    ).encode("ascii")
-    for index in range(1, 61)
-) + b"TER\nEND\n"
+_STRUCTURE_PDB = _qualification_asset("fpocket-1crn.pdb.gz.b64")
 _LIGAND_SDF = b"""OpenZyme qualification
   OpenZyme
 
-  3  2  0  0  0  0  0  0  0  0999 V2000
-    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
-    1.5000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
-    2.1000    1.2000    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  9  8  0  0  0  0  0  0  0  0999 V2000
+   -0.9254    0.0742    0.0328 C   0  0  0  0  0  0  0  0  0  0  0  0
+    0.5123   -0.4192   -0.0743 C   0  0  0  0  0  0  0  0  0  0  0  0
+    1.3778    0.4494    0.6044 O   0  0  0  0  0  0  0  0  0  0  0  0
+   -1.0220    1.0731   -0.4429 H   0  0  0  0  0  0  0  0  0  0  0  0
+   -1.6044   -0.6368   -0.4832 H   0  0  0  0  0  0  0  0  0  0  0  0
+   -1.2236    0.1472    1.1002 H   0  0  0  0  0  0  0  0  0  0  0  0
+    0.8057   -0.5060   -1.1451 H   0  0  0  0  0  0  0  0  0  0  0  0
+    0.5852   -1.4274    0.3853 H   0  0  0  0  0  0  0  0  0  0  0  0
+    1.4949    1.2455    0.0227 H   0  0  0  0  0  0  0  0  0  0  0  0
   1  2  1  0  0  0  0
   2  3  1  0  0  0  0
+  1  4  1  0  0  0  0
+  1  5  1  0  0  0  0
+  1  6  1  0  0  0  0
+  2  7  1  0  0  0  0
+  2  8  1  0  0  0  0
+  3  9  1  0  0  0  0
 M  END
 $$$$
 """
-_RECEPTOR_PDB = (
-    b"ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00 20.00           N\n"
-    b"ATOM      2  CA  ALA A   1       1.450   0.000   0.000  1.00 20.00           C\n"
-    b"ATOM      3  C   ALA A   1       2.100   1.300   0.000  1.00 20.00           C\n"
-    b"TER\nEND\n"
-)
+_RECEPTOR_PDB = _STRUCTURE_PDB
 
 
 def _content_digest(content: bytes) -> str:
@@ -116,7 +121,6 @@ SCIENTIFIC_QUALIFICATION_INPUTS = FixedScientificQualificationInputRegistry.crea
         _VINA_CONFIG,
         _STRUCTURE_PDB,
         _LIGAND_SDF,
-        _RECEPTOR_PDB,
     )
 )
 

@@ -18,6 +18,9 @@ class _Material:
             "ssh_user": "qualification",
             "identity_file": str(identity_file),
             "known_hosts_file": str(known_hosts_file),
+            "hmmer_sif": "/home/qualification/containers/hmmer_3.4.sif",
+            "vina_sif": "/home/qualification/containers/vina.sif",
+            "fpocket_sif": "/home/qualification/containers/fpocket.sif",
         }
 
     def field_value(self, field_name: str) -> str:
@@ -32,7 +35,15 @@ class _Commands:
         self.argv = argv
         return (
             0,
-            "Linux 6.1 x86_64\n3090\nHMMER 3.4\nAutoDock Vina v1.2.7\nfpocket 4.2.3\n",
+            "Linux 6.1 x86_64\n"
+            "3090\n"
+            "apptainer version 1.4.5\n"
+            f"{'a' * 64}\n"
+            "# HMMER 3.4 (Aug 2023); http://hmmer.org/\n"
+            f"{'b' * 64}\n"
+            "AutoDock Vina 1.1.2 (May 11, 2011)\n"
+            f"{'c' * 64}\n"
+            ":||: fpocket 4.0 :||:\n",
             "",
         )
 
@@ -58,12 +69,17 @@ def test_openssh_identity_observation_uses_exact_files_without_ambient_fallback(
     assert observation.ssh_port == 22222
     assert observation.partition == "3090"
     assert observation.inventory_generation_digest.startswith("sha256:")
+    assert observation.software_image_digest("software.hmmer") == (
+        "sha256:" + "a" * 64
+    )
+    assert observation.apptainer_version == "apptainer version 1.4.5"
     assert commands.argv[:3] == ("ssh", "-F", "/dev/null")
     assert commands.argv[3:5] == ("-p", "22222")
     assert "BatchMode=yes" in commands.argv
     assert "IdentitiesOnly=yes" in commands.argv
     assert f"IdentityFile={identity_file}" in commands.argv
     assert f"UserKnownHostsFile={known_hosts_file}" in commands.argv
+    assert commands.argv[-3:-1] == ("bash", "-lc")
 
 
 def test_openssh_identity_observation_rejects_invalid_port_before_command(

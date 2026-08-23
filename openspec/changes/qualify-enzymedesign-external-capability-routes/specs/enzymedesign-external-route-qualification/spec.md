@@ -133,3 +133,20 @@ Ordinary CI MUST run discovery fixtures, gap and decision validation, dry-plan v
 #### Scenario: Pull request changes a live Adapter
 - **WHEN** ordinary CI evaluates the change
 - **THEN** it performs no credential lookup or external effect and cannot emit a real-subject receipt
+
+### Requirement: Target workspace helper deployment is exact, principal-qualified and reversible
+The qualification system MUST implement `software.openzyme-workspace-runtime == 1.0.0` as a source-bound target-native helper. Every target profile MUST bind one exact absolute helper path to its observed login principal and home identity; Diannan MUST use `/home/grtresy/.local/libexec/openzyme-workspace-runtime`. A deployment dry plan MUST bind exact helper bytes/build digest, target and host-key identity, login principal, observed home, deployment scope, destination pre-state, same-parent staging and backup identities, installation mechanism, owner/group/mode, positive and negative probes, rollback owner and no-fallback policy. Deployment MUST require its own durable one-shot authority and MUST complete or rollback before any affected workspace qualification unit is dispatched. `$HOME`, `PATH`, adjacent executable and permission-driven path fallback are forbidden.
+
+The helper MUST restrict every workspace to an exact root-policy-bound `hpcws_<uuid>` child, bind OS principal, owner and runner identities, reject symlinks and drift before mutation, and persist same-occurrence provision/cleanup state. Cleanup MUST use an atomic same-parent rename and durable intent so response loss is reconciled without deleting a replacement path or replaying another occurrence.
+
+#### Scenario: Target principal home or libexec ownership drifts
+- **WHEN** the observed login/home differs from the plan or the exact principal-owned libexec cannot be created with the required owner/mode
+- **THEN** deployment remains `blocked_deployment_authority`, performs no staging, and does not switch to `/usr/local`, `PATH` or another user-local path
+
+#### Scenario: Post-install negative qualification fails
+- **WHEN** the installed helper digest still equals this occurrence's exact digest and one native negative probe fails
+- **THEN** the deployment executor restores the exact prior backup or removes only its newly created exact file, persists a rollback receipt, and issues no helper qualification fact
+
+#### Scenario: Destination changed after installation
+- **WHEN** rollback observes a destination digest different from both the pre-state and this occurrence's installed digest
+- **THEN** it records `deployment_in_doubt`, leaves the unknown file untouched, and blocks all dependent qualification units
