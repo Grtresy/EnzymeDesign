@@ -185,6 +185,23 @@ def test_resolver_rejects_unplanned_locator_before_bundle_access(
     assert not layout.credential_bundle_path.exists()
 
 
+def test_resolver_accepts_empty_allowlist_without_bundle_access(
+    tmp_path: Path,
+) -> None:
+    layout = _layout(tmp_path)
+    assert not layout.credential_bundle_path.exists()
+    resolver = ProtectedQualificationCredentialBundleResolver(
+        layout=layout,
+        allowed_locator_ids=(),
+    )
+
+    with pytest.raises(ExternalQualificationError) as captured:
+        resolver.resolve(locator_id=LLM_LOCATOR)
+
+    assert captured.value.error_code == "qualification_credential_locator_mismatch"
+    assert not layout.credential_bundle_path.exists()
+
+
 def test_resolver_rejects_unsafe_bundle_mode_without_reading_secret(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

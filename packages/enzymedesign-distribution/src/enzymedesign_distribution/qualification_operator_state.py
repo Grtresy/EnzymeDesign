@@ -243,10 +243,6 @@ class ProtectedQualificationCredentialBundleResolver:
     ) -> None:
         self._layout = layout
         self._allowed_locator_ids = frozenset(allowed_locator_ids)
-        if not self._allowed_locator_ids:
-            raise ValueError(
-                "allowed qualification credential locators cannot be empty"
-            )
         for locator_id in self._allowed_locator_ids:
             require_identifier(locator_id, field_name="allowed_locator_id")
 
