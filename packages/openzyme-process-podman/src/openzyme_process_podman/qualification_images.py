@@ -292,88 +292,71 @@ class PodmanQualificationImagePreparationExecutor:
         recipe = self.manifest.recipe(image_group)
         exists_argv = ("podman", "image", "exists", recipe.output_image_ref)
         returncode, _stdout, _stderr = self.command_port.run(exists_argv)
+        external_effect_performed = True
+        resolution = "built"
         if returncode == 0:
-            error = ExternalQualificationError(
-                "qualification_image_output_already_exists",
-                "qualification image output requires operator reconciliation before build",
-                diagnostic_id=f"diagnostic.{occurrence_id}.existing-image-output",
+            image_digest = self._observe_exact_existing_image(
+                recipe=recipe,
+                occurrence_id=occurrence_id,
             )
-            error.component = "openzyme.process.podman"
-            error.phase = "qualification-image-preflight"
-            error.effect_certainty = "preexisting_residual_observed"
-            raise error
+            external_effect_performed = False
+            resolution = "adopted-exact-existing"
         if returncode != 1:
-            raise ExternalQualificationError(
-                "qualification_image_preflight_failed",
-                "qualification image output state could not be determined",
-            )
-        base_exists_argv = ("podman", "image", "exists", recipe.base_image_ref)
-        returncode, _stdout, _stderr = self.command_port.run(base_exists_argv)
-        if returncode == 1:
-            returncode, stdout, stderr = self.command_port.run(
-                (
-                    "podman",
-                    "pull",
-                    "--platform",
-                    recipe.platform,
-                    recipe.base_image_ref,
+            if returncode != 0:
+                raise ExternalQualificationError(
+                    "qualification_image_preflight_failed",
+                    "qualification image output state could not be determined",
                 )
-            )
+        if returncode == 1:
+            base_exists_argv = ("podman", "image", "exists", recipe.base_image_ref)
+            returncode, _stdout, _stderr = self.command_port.run(base_exists_argv)
+            if returncode == 1:
+                returncode, stdout, stderr = self.command_port.run(
+                    (
+                        "podman",
+                        "pull",
+                        "--platform",
+                        recipe.platform,
+                        recipe.base_image_ref,
+                    )
+                )
+                if returncode != 0:
+                    raise QualificationImageCommandFailure(
+                        error_code="qualification_image_base_pull_failed",
+                        message="digest-pinned qualification base image pull failed",
+                        occurrence_id=occurrence_id,
+                        image_group=image_group,
+                        phase="qualification-base-image-pull",
+                        returncode=returncode,
+                        stdout=stdout,
+                        stderr=stderr,
+                    )
+                returncode, _stdout, _stderr = self.command_port.run(base_exists_argv)
+            if returncode != 0:
+                raise ExternalQualificationError(
+                    "qualification_image_base_digest_unavailable",
+                    "digest-pinned qualification base image is unavailable after resolution",
+                )
+            asset_root = files("openzyme_process_podman.qualification_image_assets")
+            with as_file(asset_root) as context_root:
+                returncode, stdout, stderr = self.command_port.run(
+                    recipe.build_argv(),
+                    working_directory=context_root,
+                )
             if returncode != 0:
                 raise QualificationImageCommandFailure(
-                    error_code="qualification_image_base_pull_failed",
-                    message="digest-pinned qualification base image pull failed",
+                    error_code="qualification_image_build_failed",
+                    message="repository-owned qualification image build failed",
                     occurrence_id=occurrence_id,
                     image_group=image_group,
-                    phase="qualification-base-image-pull",
+                    phase="qualification-image-build",
                     returncode=returncode,
                     stdout=stdout,
                     stderr=stderr,
                 )
-            returncode, _stdout, _stderr = self.command_port.run(base_exists_argv)
-        if returncode != 0:
-            raise ExternalQualificationError(
-                "qualification_image_base_digest_unavailable",
-                "digest-pinned qualification base image is unavailable after resolution",
-            )
-        asset_root = files("openzyme_process_podman.qualification_image_assets")
-        with as_file(asset_root) as context_root:
-            returncode, stdout, stderr = self.command_port.run(
-                recipe.build_argv(),
-                working_directory=context_root,
-            )
-        if returncode != 0:
-            raise QualificationImageCommandFailure(
-                error_code="qualification_image_build_failed",
-                message="repository-owned qualification image build failed",
+            image_digest = self._observe_image_digest(
+                recipe=recipe,
                 occurrence_id=occurrence_id,
-                image_group=image_group,
-                phase="qualification-image-build",
-                returncode=returncode,
-                stdout=stdout,
-                stderr=stderr,
-            )
-        inspect_argv = (
-            "podman",
-            "image",
-            "inspect",
-            "--format={{.Id}}",
-            recipe.output_image_ref,
-        )
-        returncode, stdout, stderr = self.command_port.run(inspect_argv)
-        image_digest = _normalized_image_digest(stdout)
-        if returncode != 0 or image_digest is None:
-            raise QualificationImageCommandFailure(
-                error_code="qualification_image_digest_observation_failed",
-                message=(
-                    "built qualification image did not expose one immutable image digest"
-                ),
-                occurrence_id=occurrence_id,
-                image_group=image_group,
-                phase="qualification-image-digest-observation",
-                returncode=returncode,
-                stdout=stdout,
-                stderr=stderr,
                 effect_certainty="output_created_identity_unresolved",
             )
         versions = dict(recipe.expected_versions)
@@ -423,16 +406,90 @@ class PodmanQualificationImagePreparationExecutor:
             request_digest=request_digest,
             safe_identity_fields=fields,
             receipt_payload={
-                "schema_version": "podman_qualification_image_preparation_receipt@1",
+                "schema_version": "podman_qualification_image_preparation_receipt@2",
                 "occurrence_id": occurrence_id,
                 "image_group": image_group,
                 "image_digest": image_digest,
                 "manifest_digest": self.manifest.manifest_digest,
                 "recipe_digest": recipe.recipe_digest,
+                "resolution": resolution,
             },
-            external_effect_performed=True,
+            external_effect_performed=external_effect_performed,
             credential_material_accessed=False,
         )
+
+    def _observe_exact_existing_image(
+        self,
+        *,
+        recipe: QualificationImageRecipe,
+        occurrence_id: str,
+    ) -> str:
+        image_digest = self._observe_image_digest(
+            recipe=recipe,
+            occurrence_id=occurrence_id,
+            effect_certainty="preexisting_residual_observed",
+        )
+        returncode, label, _stderr = self.command_port.run(
+            (
+                "podman",
+                "image",
+                "inspect",
+                '--format={{index .Labels "io.openzyme.qualification.recipe-digest"}}',
+                recipe.output_image_ref,
+            )
+        )
+        platform_code, platform, _platform_stderr = self.command_port.run(
+            (
+                "podman",
+                "image",
+                "inspect",
+                "--format={{.Os}}/{{.Architecture}}",
+                recipe.output_image_ref,
+            )
+        )
+        if (
+            returncode != 0
+            or label.strip() != recipe.recipe_digest
+            or platform_code != 0
+            or platform.strip() != recipe.platform
+        ):
+            raise ExternalQualificationError(
+                "qualification_existing_image_identity_mismatch",
+                "preexisting qualification image does not match the exact recipe identity",
+                diagnostic_id=f"diagnostic.{occurrence_id}.existing-image-identity",
+            )
+        return image_digest
+
+    def _observe_image_digest(
+        self,
+        *,
+        recipe: QualificationImageRecipe,
+        occurrence_id: str,
+        effect_certainty: str,
+    ) -> str:
+        returncode, stdout, stderr = self.command_port.run(
+            (
+                "podman",
+                "image",
+                "inspect",
+                "--format={{.Id}}",
+                recipe.output_image_ref,
+            )
+        )
+        image_digest = _normalized_image_digest(stdout)
+        if returncode != 0 or image_digest is None:
+            raise QualificationImageCommandFailure(
+                error_code="qualification_image_digest_observation_failed",
+                message="qualification image did not expose one immutable image digest",
+                occurrence_id=occurrence_id,
+                image_group=recipe.image_group,
+                phase="qualification-image-digest-observation",
+                returncode=returncode,
+                stdout=stdout,
+                stderr=stderr,
+                effect_certainty=effect_certainty,
+            )
+        return image_digest
 
     def cleanup(self, image_group: str) -> None:
         recipe = self.manifest.recipe(image_group)

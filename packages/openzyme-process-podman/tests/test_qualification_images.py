@@ -173,13 +173,21 @@ def test_docking_preparation_builds_once_and_projects_all_image_facts() -> None:
     assert result.observation.external_effect_performed is True
 
 
-def test_preparation_refuses_to_overwrite_an_existing_output_image() -> None:
+def test_preparation_refuses_existing_output_with_mismatched_recipe_identity() -> None:
     class _ExistingCommands(_Commands):
         def run(
             self, argv: tuple[str, ...], *, working_directory: Path | None = None
         ) -> tuple[int, str, str]:
             self.calls.append((argv, working_directory))
-            return 0, "", ""
+            if argv[:3] == ("podman", "image", "exists"):
+                return 0, "", ""
+            if "--format={{.Id}}" in argv:
+                return 0, "sha256:" + "a" * 64, ""
+            if "recipe-digest" in argv[3]:
+                return 0, "sha256:" + "0" * 64, ""
+            if "--format={{.Os}}/{{.Architecture}}" in argv:
+                return 0, "linux/amd64", ""
+            raise AssertionError(argv)
 
     commands = _ExistingCommands()
     executor = PodmanQualificationImagePreparationExecutor(command_port=commands)
@@ -202,8 +210,51 @@ def test_preparation_refuses_to_overwrite_an_existing_output_image() -> None:
             credential_material=None,
         )
 
-    assert captured.value.error_code == "qualification_image_output_already_exists"
-    assert len(commands.calls) == 1
+    assert captured.value.error_code == "qualification_existing_image_identity_mismatch"
+    assert len(commands.calls) == 4
+
+
+def test_preparation_adopts_exact_existing_output_without_rebuild() -> None:
+    recipe = load_qualification_image_manifest().recipe("base")
+
+    class _ExactExistingCommands(_Commands):
+        def run(
+            self, argv: tuple[str, ...], *, working_directory: Path | None = None
+        ) -> tuple[int, str, str]:
+            self.calls.append((argv, working_directory))
+            if argv[:3] == ("podman", "image", "exists"):
+                return 0, "", ""
+            if "--format={{.Id}}" in argv:
+                return 0, "sha256:" + "a" * 64, ""
+            if "recipe-digest" in argv[3]:
+                return 0, recipe.recipe_digest, ""
+            if "--format={{.Os}}/{{.Architecture}}" in argv:
+                return 0, "linux/amd64", ""
+            raise AssertionError(argv)
+
+    commands = _ExactExistingCommands()
+    executor = PodmanQualificationImagePreparationExecutor(command_port=commands)
+    action = SimpleNamespace(
+        action_id="prepare.batch-1.image-base",
+        owner_component_id="openzyme.process.podman",
+        effect_id="podman.qualification-image.resolve.base",
+        credential_locator_id=None,
+        input_binding_digest="sha256:" + "3" * 64,
+        safe_input_fields=(SafeIdentityField("image_group", "base"),),
+    )
+
+    result = executor(
+        plan=SimpleNamespace(preparation_plan_digest="sha256:" + "1" * 64),
+        authorization=SimpleNamespace(authorization_digest="sha256:" + "2" * 64),
+        action=action,
+        occurrence_id="occurrence.base-image-adoption",
+        request_digest="sha256:" + "4" * 64,
+        credential_material=None,
+    )
+
+    assert result.observation.external_effect_performed is False
+    assert len(commands.calls) == 4
+    assert all(call[0][:2] != ("podman", "build") for call in commands.calls)
 
 
 def test_build_failure_preserves_bounded_private_diagnostic_without_retry() -> None:

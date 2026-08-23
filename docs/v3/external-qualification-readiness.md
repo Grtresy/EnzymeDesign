@@ -148,6 +148,10 @@ Batch 1 preparation 精确为七个 action：LLM locator、Tavily locator、本�
 host/port（当前 `Diannan` 端口为 `22222`）、`ssh -F /dev/null`、`BatchMode=yes`、`IdentitiesOnly=yes` 与 exact
 identity/known-hosts files；不覆盖当前 runner 配置。
 
+若 repository-owned output image 已存在，preparation 不覆盖也不重建：只有 Podman 同时返回 immutable image digest、
+与当前 recipe digest 完全相等的 build label 及 `linux/amd64` platform 时，才以 `adopted-exact-existing` 恢复 identity；
+任一字段不一致即 `qualification_existing_image_identity_mismatch`，禁止删除、重标记或 fallback。
+
 Preparation success 写入 `ExternalIdentityPreparationResult` 和 protected SQLite ledger。effect-free rediscovery 验证每个
 result 的 plan、authorization、owner、input 和字段覆盖后才生成新的 safe snapshot。随后必须重建 exact catalog：
 `nonlive.locator.*` 不能进入 real plan，LLM/Tavily/HPC 改绑专用 locator，本地 Git/LFS 移除 credential placeholder；
