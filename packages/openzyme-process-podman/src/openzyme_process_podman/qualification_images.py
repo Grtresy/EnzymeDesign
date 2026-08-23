@@ -170,6 +170,7 @@ class QualificationImageRecipe:
         for source in self.sources:
             argument_name = {
                 "hmmer": "HMMER_COMMIT",
+                "easel": "EASEL_COMMIT",
                 "autodock_vina": "VINA_COMMIT",
                 "fpocket": "FPOCKET_COMMIT",
             }[source.source_id]

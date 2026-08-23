@@ -25,6 +25,7 @@ def test_repository_owned_qualification_images_bind_exact_sources_and_lock() -> 
     assert manifest.manifest_digest.startswith("sha256:")
     assert {source.commit for item in manifest.recipes for source in item.sources} == {
         "9acd8b6758a0ca5d21db6d167e0277484341929b",
+        "07ca83ba9ef0414dba9ce0a9331d465b5eb58f2b",
         "8eb40404f4f45608acb3b01427587ac049f27c1f",
         "4bb0d8447f62fee77e2c3c29f54b5fcaf5e2c066",
     }
@@ -63,7 +64,7 @@ def test_docking_recipe_matches_pinned_legacy_build_system_and_fpocket_runtime()
 
 @pytest.mark.parametrize(
     ("containerfile_name", "expected_complete_clones"),
-    (("Containerfile.hmmer", 1), ("Containerfile.docking", 2)),
+    (("Containerfile.hmmer", 2), ("Containerfile.docking", 2)),
 )
 def test_source_fetches_use_complete_http11_clones_without_retry_or_fallback(
     containerfile_name: str,
@@ -83,7 +84,7 @@ def test_source_fetches_use_complete_http11_clones_without_retry_or_fallback(
     assert "mirror" not in containerfile.lower()
 
 
-def test_hmmer_recipe_initializes_commit_pinned_easel_submodule() -> None:
+def test_hmmer_recipe_clones_commit_pinned_easel_source() -> None:
     containerfile = (
         files("openzyme_process_podman.qualification_image_assets")
         .joinpath("Containerfile.hmmer")
@@ -92,11 +93,15 @@ def test_hmmer_recipe_initializes_commit_pinned_easel_submodule() -> None:
 
     assert "git -C /src/hmmer checkout --detach" in containerfile
     assert (
-        "git -c http.version=HTTP/1.1 -C /src/hmmer "
-        "submodule update --init --recursive"
+        "git -c http.version=HTTP/1.1 clone "
+        "https://github.com/EddyRivasLab/easel.git /src/hmmer/easel"
     ) in containerfile
+    assert "git -C /src/hmmer/easel checkout --detach" in containerfile
+    assert 'rev-parse HEAD)" = "${EASEL_COMMIT}"' in containerfile
+    assert "submodule update" not in containerfile
+    assert "&& autoconf" in containerfile
     assert containerfile.index("checkout --detach") < containerfile.index(
-        "submodule update --init --recursive"
+        "EddyRivasLab/easel.git"
     )
 
 

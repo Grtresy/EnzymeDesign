@@ -6,7 +6,7 @@
 
 gap packet 展示后，operator 又明确选择：LLM 采用当前 intended account 的资格 locator；Tavily 采用 dedicated qualification account；Git/LFS 只创建本地隔离仓库且不向 GitHub 或其他托管平台同步；Podman/科学软件采用 digest-pinned image；HPC 采用 `Diannan/3090`；protected evidence 采用 operator state root。该选择只冻结 candidate，不表示 subject 已存在、identity 已闭合或任何 effect 已获授权。
 
-具体实现继续收紧为：operator state root 必须由当前 uid 持有、精确 `0700` 且禁止 symlink，layout、credential bundle、SQLite ledger 与私有配置精确 `0600`；凭据只从 `credential.llm.micuapi.qualification`、`credential.tavily.qualification`、`credential.hpc.diannan.qualification` 三个 plan-bound locator 解析，不读取 ambient environment fallback。Podman preparation 只有 `base`、`hmmer`、`docking` 三个 repository-owned recipe group，统一绑定 digest-pinned Python base、当前 `uv.lock` 与官方 HMMER/Vina/fpocket source commit。HPC preparation 生成独立 `aox-qualification-diannan` 配置，保持 `activated=false`、`scheduler_submit_enabled=false`，并使用 exact host/port（当前端口为 `22222`）、identity file/known-hosts file 做只读 `Diannan/3090` identity observation；不得覆盖既有 runner 配置。
+具体实现继续收紧为：operator state root 必须由当前 uid 持有、精确 `0700` 且禁止 symlink，layout、credential bundle、SQLite ledger 与私有配置精确 `0600`；凭据只从 `credential.llm.micuapi.qualification`、`credential.tavily.qualification`、`credential.hpc.diannan.qualification` 三个 plan-bound locator 解析，不读取 ambient environment fallback。Podman preparation 只有 `base`、`hmmer`、`docking` 三个 repository-owned recipe group，统一绑定 digest-pinned Python base、当前 `uv.lock` 与官方 HMMER/Easel/Vina/fpocket source commit。HPC preparation 生成独立 `aox-qualification-diannan` 配置，保持 `activated=false`、`scheduler_submit_enabled=false`，并使用 exact host/port（当前端口为 `22222`）、identity file/known-hosts file 做只读 `Diannan/3090` identity observation；不得覆盖既有 runner 配置。
 
 只读发现得到的当前事实如下：
 
@@ -136,7 +136,7 @@ Distribution 只负责编排和验证，不直接实现 Provider/Git/Podman/SSH/
 
 plan-only factory 可以构造 bridge metadata，但不会构造 credential-bearing backend。live factory 需要 exact selected binding、resolved subject、credential locator、budget lease 和 occurrence authorization 全部一致。
 
-Repository-owned scientific image recipes 从同一官方 Git URL 完整取得固定 commit，并显式固定 Git HTTP/1.1；禁止 partial-clone promisor checkout、自动 retry 或镜像源 fallback。这样 checkout 只消费本地完整对象闭包，网络失败仍以单次 occurrence 的 terminal failure 暴露并由 operator 决定后续处理。
+Repository-owned scientific image recipes 从各自官方 Git URL 完整取得固定 commit，并显式固定 Git HTTP/1.1；HMMER Git source 按官方构建闭包另行固定 Easel 0.49 commit，不把 Easel 误当 submodule 或浮动 master。禁止 partial-clone promisor checkout、自动 retry 或镜像源 fallback。这样 checkout 只消费本地完整对象闭包，网络或依赖闭包失败仍以单次 occurrence 的 terminal failure 暴露并由 operator 决定后续处理。
 
 在 preparation authority 之前可实现和非 live 测试 bridge 代码，但不得构造真实 backend。当前已闭合 LLM、Tavily、公共 Bio HTTP 的 typed Adapter bridge，以及 Git/LFS、Podman、SSH、Slurm 和科学 Driver 的 owner/route/subject guard；authorization-bound Distribution router 会在任何 owner builder 前验证 exact dry-plan authority。基础设施的真实 typed operation builder、科学 fixed-smoke workload 与 terminal validator 仍需在 preparation 产生 exact repository/image/target identity 后完成，因此这些 guard 测试不得表述为真实外部资格已通过。
 
