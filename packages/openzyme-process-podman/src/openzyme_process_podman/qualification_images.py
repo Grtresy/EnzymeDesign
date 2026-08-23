@@ -25,6 +25,7 @@ from openzyme_contracts import require_identifier
 QUALIFICATION_IMAGE_MANIFEST_SCHEMA = "openzyme_qualification_image_manifest@1"
 QUALIFICATION_IMAGE_GROUPS = ("base", "docking", "hmmer")
 _IMAGE_DIGEST_REF = re.compile(r"[^\s]+@sha256:[0-9a-f]{64}")
+_IMAGE_ID = re.compile(r"(?:sha256:)?([0-9a-f]{64})")
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 _OUTPUT_REF = re.compile(r"localhost/openzyme-qualification-[a-z-]+:[0-9A-Za-z.-]+")
 _PRIVATE_OUTPUT_LIMIT = 8192
@@ -35,6 +36,11 @@ def _bounded_private_output(value: str) -> tuple[str, bool]:
         return value, False
     half = _PRIVATE_OUTPUT_LIMIT // 2
     return value[:half] + "\n...<bounded>...\n" + value[-half:], True
+
+
+def _normalized_image_digest(value: str) -> str | None:
+    matched = _IMAGE_ID.fullmatch(value.strip())
+    return None if matched is None else f"sha256:{matched.group(1)}"
 
 
 class QualificationImageCommandFailure(ExternalQualificationError):
@@ -51,6 +57,7 @@ class QualificationImageCommandFailure(ExternalQualificationError):
         returncode: int,
         stdout: str,
         stderr: str,
+        effect_certainty: str = "partial_residual_observed",
     ) -> None:
         super().__init__(
             error_code,
@@ -63,7 +70,7 @@ class QualificationImageCommandFailure(ExternalQualificationError):
         self.returncode = returncode
         self.bounded_stdout, self.stdout_truncated = _bounded_private_output(stdout)
         self.bounded_stderr, self.stderr_truncated = _bounded_private_output(stderr)
-        self.effect_certainty = "partial_residual_observed"
+        self.effect_certainty = effect_certainty
         self.mutation_applied = True
 
 
@@ -285,10 +292,15 @@ class PodmanQualificationImagePreparationExecutor:
         exists_argv = ("podman", "image", "exists", recipe.output_image_ref)
         returncode, _stdout, _stderr = self.command_port.run(exists_argv)
         if returncode == 0:
-            raise ExternalQualificationError(
+            error = ExternalQualificationError(
                 "qualification_image_output_already_exists",
                 "qualification image output requires operator reconciliation before build",
+                diagnostic_id=f"diagnostic.{occurrence_id}.existing-image-output",
             )
+            error.component = "openzyme.process.podman"
+            error.phase = "qualification-image-preflight"
+            error.effect_certainty = "preexisting_residual_observed"
+            raise error
         if returncode != 1:
             raise ExternalQualificationError(
                 "qualification_image_preflight_failed",
@@ -347,15 +359,21 @@ class PodmanQualificationImagePreparationExecutor:
             "--format={{.Id}}",
             recipe.output_image_ref,
         )
-        returncode, stdout, _stderr = self.command_port.run(inspect_argv)
-        image_digest = stdout.strip()
-        if (
-            returncode != 0
-            or re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest) is None
-        ):
-            raise ExternalQualificationError(
-                "qualification_image_digest_observation_failed",
-                "built qualification image did not expose one immutable image digest",
+        returncode, stdout, stderr = self.command_port.run(inspect_argv)
+        image_digest = _normalized_image_digest(stdout)
+        if returncode != 0 or image_digest is None:
+            raise QualificationImageCommandFailure(
+                error_code="qualification_image_digest_observation_failed",
+                message=(
+                    "built qualification image did not expose one immutable image digest"
+                ),
+                occurrence_id=occurrence_id,
+                image_group=image_group,
+                phase="qualification-image-digest-observation",
+                returncode=returncode,
+                stdout=stdout,
+                stderr=stderr,
+                effect_certainty="output_created_identity_unresolved",
             )
         versions = dict(recipe.expected_versions)
         if image_group == "base":

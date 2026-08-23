@@ -241,3 +241,43 @@ def test_missing_base_is_pulled_by_digest_then_build_remains_pull_never() -> Non
         argv for argv, _cwd in commands.calls if argv[:2] == ("podman", "build")
     )
     assert build_argv[:3] == ("podman", "build", "--pull=never")
+
+
+def test_bare_podman_image_id_is_normalized_to_canonical_digest() -> None:
+    class _BareIdCommands(_Commands):
+        def run(
+            self, argv: tuple[str, ...], *, working_directory: Path | None = None
+        ) -> tuple[int, str, str]:
+            self.calls.append((argv, working_directory))
+            if argv[:3] == ("podman", "image", "exists"):
+                return (0, "", "") if "@sha256:" in argv[-1] else (1, "", "")
+            if argv[:3] == ("podman", "image", "inspect"):
+                return 0, "b" * 64 + "\n", ""
+            return 0, "built", ""
+
+    commands = _BareIdCommands()
+    executor = PodmanQualificationImagePreparationExecutor(command_port=commands)
+    action = SimpleNamespace(
+        action_id="prepare.batch-1.image-base",
+        owner_component_id="openzyme.process.podman",
+        effect_id="podman.qualification-image.resolve.base",
+        credential_locator_id=None,
+        input_binding_digest="sha256:" + "3" * 64,
+        safe_input_fields=(SafeIdentityField("image_group", "base"),),
+    )
+
+    result = executor(
+        plan=SimpleNamespace(preparation_plan_digest="sha256:" + "1" * 64),
+        authorization=SimpleNamespace(authorization_digest="sha256:" + "2" * 64),
+        action=action,
+        occurrence_id="occurrence.base-image-preparation",
+        request_digest="sha256:" + "4" * 64,
+        credential_material=None,
+    )
+
+    assert (
+        dict((field.field_id, field.value) for field in result.safe_identity_fields)[
+            "approved_qualification_image_digest"
+        ]
+        == "sha256:" + "b" * 64
+    )
