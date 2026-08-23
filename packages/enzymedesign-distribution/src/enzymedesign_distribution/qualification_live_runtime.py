@@ -995,7 +995,7 @@ def _unit_cleanup_ok(
     checks = {
         "openzyme.workspace.git.lfs": ("workspace_removed", "repository_preserved"),
         "openzyme.process.podman": ("container_absent",),
-        "openzyme.hpc.ssh": ("workspace_removed",),
+        "openzyme.hpc.ssh": ("workspace_removed", "control_master_closed"),
         "openzyme.hpc.slurm": ("scheduler_cleanup_attempted", "command_accepted"),
     }
     component_ids: tuple[str, ...]

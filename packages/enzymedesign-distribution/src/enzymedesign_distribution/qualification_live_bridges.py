@@ -320,6 +320,9 @@ class SelectedLiveQualificationBridgeFactory:
                     SubprocessOpenSshQualificationCommandPort(),
                     self._diagnostic_context,
                 ),
+                control_path=(
+                    self.protected_workspace_root.parent / f"ssh-{suffix}.sock"
+                ),
                 workspace_runtime_identity=self.workspace_runtime_identity,
             )
         return self._ssh_state
@@ -359,6 +362,7 @@ class SelectedLiveQualificationBridgeFactory:
                     SubprocessOpenSshQualificationCommandPort(timeout_seconds=600),
                     self._diagnostic_context,
                 ),
+                control_path=adapter_state.control_path,
                 workspace_runtime_identity=self.workspace_runtime_identity,
             )
         return self._scientific_ssh_state

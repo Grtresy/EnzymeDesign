@@ -247,6 +247,9 @@ def test_hpc_scientific_route_uses_its_approved_600_second_timeout(factory) -> N
     assert factory._ssh_state.remote_workspace == (
         factory._scientific_ssh_state.remote_workspace
     )
+    assert factory._ssh_state.control_path == factory._scientific_ssh_state.control_path
+    assert "ControlMaster=auto" in factory._ssh_state._connection_argv()
+    assert "ControlPersist=60" in factory._scientific_ssh_state._connection_argv()
 
 
 @pytest.mark.parametrize(

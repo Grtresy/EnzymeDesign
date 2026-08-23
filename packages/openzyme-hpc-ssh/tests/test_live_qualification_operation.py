@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from dataclasses import field
 import re
 import shlex
+import socket
 
 import pytest
 
@@ -42,6 +43,9 @@ class _CommandPort:
 
     def run(self, argv: tuple[str, ...]):
         self.argvs.append(argv)
+        if "-O" in argv:
+            assert argv[-3:] == ("-O", "exit", "operator@diannan")
+            return 0, "Exit request sent.\n", ""
         parsed = shlex.split(argv[-1])
         assert len(parsed) == 1
         script = parsed[0]
@@ -130,6 +134,7 @@ def test_ssh_qualification_runs_exact_port_and_restores_response_loss(tmp_path) 
         credential_material=material,
         workspace_id="batch-1-test",
         command_port=command,
+        control_path=tmp_path / "ssh-control.sock",
         workspace_runtime_identity=_workspace_runtime_identity(),
     )
     operation = OpenSshQualificationOperation(
@@ -155,6 +160,7 @@ def test_ssh_qualification_runs_exact_port_and_restores_response_loss(tmp_path) 
         credential_material=material,
         workspace_id="batch-1-test",
         command_port=command,
+        control_path=tmp_path / "ssh-control.sock",
         workspace_runtime_identity=_workspace_runtime_identity(),
     )
     restored = OpenSshQualificationOperation(
@@ -170,3 +176,18 @@ def test_ssh_qualification_runs_exact_port_and_restores_response_loss(tmp_path) 
     assert "22222" in state._connection_argv()
     assert all(argv[-3:-1] == ("bash", "-lc") for argv in command.argvs)
     assert state.remote_workspace == "/qualification/workspaces/batch-1-test"
+    assert "ControlMaster=auto" in state._connection_argv()
+    assert "ControlPersist=60" in state._connection_argv()
+
+    control_socket = socket.socket(socket.AF_UNIX)
+    control_socket.bind(str(state.control_path))
+    state.control_path.chmod(0o600)
+    try:
+        assert state.cleanup() == {
+            "workspace_removed": True,
+            "control_master_closed": True,
+        }
+    finally:
+        control_socket.close()
+        state.control_path.unlink(missing_ok=True)
+    assert any("-O" in argv for argv in command.argvs)

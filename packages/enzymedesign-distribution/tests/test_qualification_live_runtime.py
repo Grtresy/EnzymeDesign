@@ -504,7 +504,10 @@ def test_scientific_receipts_require_their_route_cleanup_closure() -> None:
     assert _unit_cleanup_ok(
         hpc,
         {
-            "openzyme.hpc.ssh": {"workspace_removed": True},
+            "openzyme.hpc.ssh": {
+                "workspace_removed": True,
+                "control_master_closed": True,
+            },
             "openzyme.hpc.slurm": {
                 "scheduler_cleanup_attempted": True,
                 "command_accepted": False,
@@ -514,7 +517,10 @@ def test_scientific_receipts_require_their_route_cleanup_closure() -> None:
     assert _unit_cleanup_ok(
         hpc,
         {
-            "openzyme.hpc.ssh": {"workspace_removed": True},
+            "openzyme.hpc.ssh": {
+                "workspace_removed": True,
+                "control_master_closed": True,
+            },
             "openzyme.hpc.slurm": {
                 "scheduler_cleanup_attempted": True,
                 "command_accepted": True,

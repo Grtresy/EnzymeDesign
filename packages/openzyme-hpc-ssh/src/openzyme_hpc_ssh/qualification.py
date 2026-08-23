@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import stat
 import subprocess
 from typing import Protocol
 
@@ -358,12 +359,15 @@ class OpenSshQualificationState:
     credential_material: SshQualificationCredentialMaterial = field(repr=False)
     workspace_id: str
     command_port: OpenSshQualificationCommandPort = field(repr=False)
+    control_path: Path | None = field(default=None, repr=False)
     workspace_runtime_identity: SshWorkspaceRuntimeQualificationIdentity | None = None
     response_loss_token: str | None = None
 
     def __post_init__(self) -> None:
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", self.workspace_id) is None:
             raise ValueError("SSH qualification workspace identity is invalid")
+        if self.control_path is not None:
+            self.control_path = self.control_path.absolute()
         self._connection_argv()
 
     @property
@@ -408,6 +412,17 @@ class OpenSshQualificationState:
                 "qualification_hpc_credential_identity_invalid",
                 "SSH qualification identity material is incomplete or unsafe",
             )
+        control_options: tuple[str, ...] = ()
+        if self.control_path is not None:
+            self._validate_control_path()
+            control_options = (
+                "-o",
+                "ControlMaster=auto",
+                "-o",
+                f"ControlPath={self.control_path}",
+                "-o",
+                "ControlPersist=60",
+            )
         return (
             "ssh",
             "-F",
@@ -426,8 +441,36 @@ class OpenSshQualificationState:
             "StrictHostKeyChecking=yes",
             "-o",
             "ConnectTimeout=15",
+            *control_options,
             f"{user}@{host}",
         )
+
+    def _validate_control_path(self) -> None:
+        assert self.control_path is not None
+        parent = self.control_path.parent
+        if (
+            len(os.fsencode(self.control_path)) > 96
+            or re.fullmatch(r"[A-Za-z0-9._-]{1,64}", self.control_path.name) is None
+            or not parent.is_dir()
+            or parent.is_symlink()
+            or parent.stat().st_uid != os.geteuid()
+            or parent.stat().st_mode & 0o077
+        ):
+            raise ExternalQualificationError(
+                "qualification_hpc_control_path_invalid",
+                "SSH qualification control path is outside one protected owner directory",
+            )
+        if os.path.lexists(self.control_path):
+            observed = self.control_path.lstat()
+            if (
+                not stat.S_ISSOCK(observed.st_mode)
+                or observed.st_uid != os.geteuid()
+                or observed.st_mode & 0o077
+            ):
+                raise ExternalQualificationError(
+                    "qualification_hpc_control_socket_unsafe",
+                    "SSH qualification control socket is not exact owner-only state",
+                )
 
     def run_remote(self, script: str) -> tuple[int, str, str]:
         return self.command_port.run(
@@ -442,7 +485,19 @@ class OpenSshQualificationState:
             f"rm -rf -- {workspace}"
         )
         returncode, _stdout, _stderr = self.run_remote(script)
-        return {"workspace_removed": returncode == 0}
+        return {
+            "workspace_removed": returncode == 0,
+            "control_master_closed": self._close_control_master(),
+        }
+
+    def _close_control_master(self) -> bool:
+        if self.control_path is None or not os.path.lexists(self.control_path):
+            return True
+        connection = self._connection_argv()
+        returncode, _stdout, _stderr = self.command_port.run(
+            (*connection[:-1], "-O", "exit", connection[-1])
+        )
+        return returncode == 0
 
 
 def observe_diannan_workspace_runtime_identity(
