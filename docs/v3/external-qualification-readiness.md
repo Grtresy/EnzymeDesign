@@ -186,6 +186,15 @@ terminal validator。live coordinator 在 protected SQLite 中逐 unit 持久 ou
 只使用 target 已安装软件，绝不安装、升级或重建远端工具；本地 route 只采用 preparation 已固定 digest 的 image。
 非 live/fake-command 回归只能证明绑定、请求构造、状态恢复和失败语义，不能表述为真实外部资格已通过。
 
+AlphaFold Batch 2 不构建新镜像，也不把管理员资源复制到用户目录。identity preparation 只读观测
+`Diannan/3090` 上现存 AlphaFold 3.0.1 wrapper、Apptainer SIF、`af3.bin`、数据库 metadata closure、GPU partition、
+source commit/dirty digest 与 Apptainer version，并以 exact digest 生成 owner-only 私有配置；dispatch 前必须重新
+计算 wrapper/image/model/database/GPU digest，任何漂移均在 Slurm submit 前失败。正式 AlphaFold Driver 固定编译
+20 aa monomer、seed `20260824` 与两个 terminal output；Slurm route 固定一张 3090、30 分钟、inference-only、
+`max_retries=0`、无 fallback，并在结束时验证实际 GPU identity、CIF、summary confidence 及 cleanup。流程不执行
+license acceptance，缺少既有合法资源时保持 `blocked_identity`，不能自动下载、重建或选择另一 target。Batch 2 的
+独立 preparation/qualification authority 与 7 天 receipt 不能替代 Batch 1 receipt，更不能直接形成 cutover。
+
 首次真实 Batch 1 occurrence 已终态裁决，不得复用 authority。它证明部分真实 route 可用，同时暴露了固定 Git branch、
 不可写 `/data/openzyme` workspace、HMMER/fpocket output path、本地 docking image runtime dependency 与私有诊断投影问题。
 修正后，Git publication ref 按 occurrence 隔离；HPC locator 的 `ssh_user`、`workspace_root`、`isolation_command` 必须在
@@ -207,10 +216,11 @@ dry-plan digest 下每个 unit 的当前 receipt，并逐份重验
 authorization、occurrence scope、negative gate、budget settlement、cleanup、TTL 与 unit/subject/route/schema；缺一项即保持
 `blocked_qualification`，且无论结果如何都仍是 `cutover=false`。
 
-## 后续强制暂停点
+## 已确认的 authority 与 cutover 边界
 
-当前必须在首次 Provider、Git mutation、container、SSH、Slurm、HPC 或科学程序 effect 前，把 exact
-identity-preparation plan digest、batch 和 operator 交给操作员再次确认；preparation 完成后，真实 probe 还要
-对重建的 qualification dry plan 另行确认。真实 qualification 完成后，在创建
-`cut-over-enzymedesign-qualified-runtime` 或执行 adoption 前，还要再次确认部署环境、quiescence、迁移/备份、
-rollback/forward-only 边界、监控、post-cutover smoke 与最终授权人。
+operator 已批准 P0–P16 决策包，并允许对其范围内的后续硬门机械通过而不再暂停。实现仍必须为每个 exact source、
+plan digest、batch、operator 与 occurrence 创建相互独立、持久、一次性的 authority；批准范围不允许复用旧 authority、
+放宽 `max_retries=0`、启用 fallback、自动接受 license、改变 target/route 或把 qualification 扩大成 cutover。
+cutover 采用 owner-local protected runtime root、仅消费未过期且 exact-source 的 Batch 1/2 receipt、先 quiescence 和
+backup，再执行 startup readback；第一条 live occurrence 前仍保持可比较恢复，之后只允许 forward-only repair 并保留
+全部证据。最终 authorizer 固定为 `operator.enzymedesign-owner`，只创建本地 seal commit，不 push。

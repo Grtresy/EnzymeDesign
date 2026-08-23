@@ -20,8 +20,9 @@ DIGEST = "sha256:" + "1" * 64
 def test_subprocess_ssh_qualification_timeout_is_explicit_and_bounded() -> None:
     assert SubprocessOpenSshQualificationCommandPort().timeout_seconds == 120
     assert SubprocessOpenSshQualificationCommandPort(600).timeout_seconds == 600
+    assert SubprocessOpenSshQualificationCommandPort(2_400).timeout_seconds == 2_400
     with pytest.raises(ValueError):
-        SubprocessOpenSshQualificationCommandPort(601)
+        SubprocessOpenSshQualificationCommandPort(2_401)
 
 
 @dataclass(frozen=True)

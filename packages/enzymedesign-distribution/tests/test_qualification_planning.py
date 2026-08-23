@@ -82,6 +82,63 @@ def test_current_safe_snapshot_covers_all_units_and_emits_two_blocked_plans() ->
     assert bundle["external_effect_performed"] is False
 
 
+def test_alphafold_batch_2_preparation_is_read_only_and_exact() -> None:
+    from enzymedesign_distribution import ExternalQualificationBatch
+    from enzymedesign_distribution import build_external_identity_gaps
+    from enzymedesign_distribution import build_external_identity_preparation_plan
+    from enzymedesign_distribution import build_external_identity_resolution_decisions
+    from enzymedesign_distribution import discover_external_subject_identities
+
+    snapshot = load_safe_identity_snapshot(SNAPSHOT)
+    original = load_operator_identity_resolution_selections(SELECTIONS)
+    selections = replace(
+        original,
+        selection_set_id="operator-confirmed-alphafold-test",
+        selections=tuple(
+            replace(
+                item,
+                candidate_id="observe-existing-alphafold3-resource-closure",
+            )
+            if item.projection_id == "alphafold-hpc"
+            else item
+            for item in original.selections
+        ),
+    )
+    readiness = build_enzymedesign_external_qualification_plan(
+        plan_id="qualification.readiness.alphafold-preparation",
+        created_at=snapshot.observed_at,
+        enabled_optional_profiles=OPTIONAL_PROFILES,
+    )
+    discovery = discover_external_subject_identities(
+        readiness_plan=readiness,
+        snapshot=snapshot,
+    )
+    gaps = build_external_identity_gaps(discovery)
+    plan = build_external_identity_preparation_plan(
+        readiness_plan=readiness,
+        discovery=discovery,
+        gaps=gaps,
+        decisions=build_external_identity_resolution_decisions(
+            gaps=gaps,
+            snapshot=snapshot,
+            selection_set=selections,
+        ),
+        selection_set=selections,
+        batch=ExternalQualificationBatch.BATCH_2_ALPHAFOLD,
+    )
+
+    assert plan.batch_id == "batch-2-alphafold"
+    assert len(plan.actions) == 1
+    action = plan.actions[0]
+    assert action.effect_id == "hpc.alphafold3.resource-identity.observe"
+    assert action.credential_locator_id == "credential.hpc.diannan.qualification"
+    assert action.mutating is False
+    assert action.cleanup_action_id is None
+    assert action.cleanup_deadline_seconds is None
+    assert "fixed_monomer_input_digest" in action.expected_identity_fields
+    assert "alphafold_version" in action.expected_identity_fields
+
+
 def test_operator_decisions_preserve_local_only_git_and_two_phase_authority() -> None:
     bundle = _bundle()
     selection_set = bundle["operator_selection_set"]

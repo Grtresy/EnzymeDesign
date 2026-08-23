@@ -8,6 +8,7 @@ import subprocess
 from typing import Mapping
 
 from enzymedesign_bio_provider_adapters import BioHttpQualificationProbeBridge
+from enzymedesign_alphafold import AlphaFoldQualificationProbeBridge
 from enzymedesign_bio_provider_adapters import HttpBioProviderAdapter
 from enzymedesign_docking_preprocess import PreprocessQualificationProbeBridge
 from enzymedesign_hmmer import HmmerQualificationProbeBridge
@@ -15,10 +16,12 @@ from enzymedesign_structure import FpocketQualificationProbeBridge
 from enzymedesign_vina import VinaQualificationProbeBridge
 from openzyme_contracts import ExternalQualificationBridgeBinding
 from openzyme_contracts import ExternalQualificationError
+from openzyme_contracts import canonical_sha256_digest
 from openzyme_hpc_slurm import OpenSshSlurmQualificationOperation
 from openzyme_hpc_slurm import SlurmQualificationProbeBridge
 from openzyme_hpc_slurm import SlurmQualificationState
 from openzyme_hpc_slurm import SlurmScientificQualificationRoute
+from openzyme_hpc_slurm import SlurmAlphaFoldQualificationRoute
 from openzyme_hpc_ssh import OpenSshQualificationOperation
 from openzyme_hpc_ssh import OpenSshQualificationState
 from openzyme_hpc_ssh import SshQualificationProbeBridge
@@ -479,4 +482,193 @@ class SelectedLiveQualificationBridgeFactory:
         )
 
 
-__all__ = ["SelectedLiveQualificationBridgeFactory"]
+@dataclass(slots=True)
+class SelectedAlphaFoldLiveQualificationBridgeFactory:
+    """Compose the one exact Batch-2 AF3 Driver bridge after authorization."""
+
+    credential_resolver: ProtectedQualificationCredentialBundleResolver = field(
+        repr=False
+    )
+    protected_workspace_root: Path = field(repr=False)
+    ssh_control_root: Path = field(repr=False)
+    private_diagnostic_root: Path = field(repr=False)
+    workspace_runtime_identity: SshWorkspaceRuntimeQualificationIdentity
+    alphafold_config: Mapping[str, object] = field(repr=False)
+    _ssh_state: OpenSshQualificationState | None = field(
+        default=None, init=False, repr=False
+    )
+    _authorization_digest: str | None = field(default=None, init=False, repr=False)
+    _diagnostic_context: QualificationDiagnosticContext = field(
+        init=False, repr=False
+    )
+
+    def __post_init__(self) -> None:
+        root = self.protected_workspace_root.absolute()
+        if root.is_symlink():
+            raise ValueError("AlphaFold qualification workspace cannot be a symlink")
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        root.chmod(0o700)
+        self.protected_workspace_root = root
+        control_root = self.ssh_control_root.absolute()
+        if (
+            not control_root.is_dir()
+            or control_root.is_symlink()
+            or control_root.stat().st_uid != os.geteuid()
+            or control_root.stat().st_mode & 0o077
+        ):
+            raise ValueError("AlphaFold SSH control root must be owner-only")
+        self.ssh_control_root = control_root
+        required = {
+            "schema_version",
+            "target_alias",
+            "partition",
+            "wrapper_path",
+            "image_path",
+            "model_path",
+            "database_path",
+            "alphafold_version",
+            "wrapper_digest",
+            "image_digest",
+            "model_parameters_digest",
+            "database_closure_digest",
+            "gpu_capability_digest",
+            "source_commit",
+            "source_dirty_digest",
+            "apptainer_version",
+            "inventory_generation_digest",
+            "fixed_monomer_input_digest",
+            "fixed_seed",
+            "gpu_count",
+            "gpu_time_hard_limit_minutes",
+            "max_retries",
+            "fallback_allowed",
+            "license_acceptance_performed",
+            "preparation_plan_digest",
+            "preparation_authorization_digest",
+            "config_digest",
+        }
+        if (
+            set(self.alphafold_config) != required
+            or self.alphafold_config.get("schema_version")
+            != "enzymedesign_alphafold_qualification_config@1"
+            or self.alphafold_config.get("target_alias") != "Diannan"
+            or self.alphafold_config.get("partition") != "3090"
+            or self.alphafold_config.get("fixed_seed") != 20260824
+            or self.alphafold_config.get("gpu_count") != 1
+            or self.alphafold_config.get("gpu_time_hard_limit_minutes") != 30
+            or self.alphafold_config.get("max_retries") != 0
+            or self.alphafold_config.get("fallback_allowed") is not False
+            or self.alphafold_config.get("license_acceptance_performed") is not False
+        ):
+            raise ValueError("AlphaFold qualification config is not exact")
+        unsigned = dict(self.alphafold_config)
+        config_digest = unsigned.pop("config_digest")
+        if config_digest != canonical_sha256_digest(unsigned):
+            raise ValueError("AlphaFold qualification config digest drifted")
+        self._diagnostic_context = QualificationDiagnosticContext(
+            ProtectedQualificationDiagnosticWriter(self.private_diagnostic_root)
+        )
+
+    def builders(self) -> Mapping[str, QualificationProbeBridgeBuilder]:
+        return {
+            "enzymedesign.alphafold.hpc": self._diagnostic_builder,
+        }
+
+    def _diagnostic_builder(self, binding: ExternalQualificationBridgeBinding):
+        return DiagnosticQualificationBridge(
+            delegate=self._alphafold(binding),
+            context=self._diagnostic_context,
+            component_id="enzymedesign.alphafold.hpc",
+        )
+
+    def _ensure_ssh(
+        self, binding: ExternalQualificationBridgeBinding
+    ) -> OpenSshQualificationState:
+        if self._authorization_digest is None:
+            self._authorization_digest = binding.authorization_digest
+        elif self._authorization_digest != binding.authorization_digest:
+            raise ExternalQualificationError(
+                "qualification_live_factory_authorization_drift",
+                "one AlphaFold factory cannot span qualification authorities",
+            )
+        if self._ssh_state is None:
+            material = self.credential_resolver.resolve(locator_id=_HPC_LOCATOR)
+            expected = self.workspace_runtime_identity
+            if (
+                material.field_value("workspace_root") != expected.workspace_parent
+                or material.field_value("isolation_command") != expected.helper_path
+                or material.field_value("ssh_user") != expected.file_owner
+            ):
+                raise ExternalQualificationError(
+                    "qualification_hpc_workspace_runtime_binding_mismatch",
+                    "AlphaFold credential material differs from the qualified runtime",
+                )
+            suffix = binding.authorization_digest.removeprefix("sha256:")[:20]
+            self._ssh_state = OpenSshQualificationState(
+                credential_material=material,
+                workspace_id=f"batch-2-{suffix}",
+                command_port=RecordingSshCommandPort(
+                    SubprocessOpenSshQualificationCommandPort(timeout_seconds=2_400),
+                    self._diagnostic_context,
+                ),
+                control_path=self.ssh_control_root / f"ozq-{suffix}",
+                workspace_runtime_identity=expected,
+            )
+        return self._ssh_state
+
+    def _alphafold(self, binding: ExternalQualificationBridgeBinding):
+        ssh_state = self._ensure_ssh(binding)
+        compiler = build_selected_driver_scientific_compiler(
+            component_id=binding.component_id,
+            operation=binding.operation,
+            route_kind="hpc-primary",
+        )
+        config = self.alphafold_config
+        route = SlurmAlphaFoldQualificationRoute(
+            workspace_root=ssh_state.remote_workspace,
+            workspace_owner_id=ssh_state.workspace_id,
+            command_port=ssh_state,
+            input_resolver=SCIENTIFIC_QUALIFICATION_INPUTS,
+            wrapper_digest=str(config["wrapper_digest"]),
+            image_digest=str(config["image_digest"]),
+            model_parameters_digest=str(config["model_parameters_digest"]),
+            database_closure_digest=str(config["database_closure_digest"]),
+            gpu_capability_digest=str(config["gpu_capability_digest"]),
+        )
+        port = FormalComputeScientificQualificationOperation(
+            component_id=binding.component_id,
+            route_id=binding.route_id,
+            subject_digest=binding.subject_digest,
+            driver_component_id=binding.component_id,
+            workload_input_digest=binding.input_digest,
+            result_schema_digest=binding.expected_result_schema_digest,
+            compiler=compiler,
+            compute_route=route,
+        )
+        return AlphaFoldQualificationProbeBridge(
+            binding=binding,
+            operation_port=port,
+        )
+
+    def cleanup(self) -> Mapping[str, dict[str, object]]:
+        if self._ssh_state is None:
+            return {}
+        try:
+            return {"openzyme.hpc.ssh": self._ssh_state.cleanup()}
+        except (ExternalQualificationError, OSError, subprocess.TimeoutExpired) as exc:
+            return {
+                "openzyme.hpc.ssh": {
+                    "cleanup_attempted": True,
+                    "cleanup_succeeded": False,
+                    "error_code": getattr(
+                        exc, "error_code", "qualification_cleanup_command_failed"
+                    ),
+                    "exception_type": type(exc).__name__,
+                }
+            }
+
+
+__all__ = [
+    "SelectedAlphaFoldLiveQualificationBridgeFactory",
+    "SelectedLiveQualificationBridgeFactory",
+]

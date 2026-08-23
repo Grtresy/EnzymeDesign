@@ -6,6 +6,8 @@ from .drivers import *  # noqa: F403
 from .drivers import __all__ as _driver_exports
 from .manifest_locator import *  # noqa: F403
 from .manifest_locator import __all__ as _locator_exports
+from .qualification import *  # noqa: F403
+from .qualification import __all__ as _qualification_exports
 from .runtime import *  # noqa: F403
 from .runtime import __all__ as _runtime_exports
 
@@ -20,5 +22,6 @@ __all__ = [
     *_contract_exports,
     *_driver_exports,
     *_locator_exports,
+    *_qualification_exports,
     *_runtime_exports,
 ]

@@ -72,6 +72,13 @@ candidate 记录 effect、cost、credential、operator action、compatibility �
 - 科学软件：local route 使用 digest-pinned Podman image，HPC route 使用 adopted target inventory；缺一侧只阻塞该 route。
 - AlphaFold：第二批使用独立 GPU image/model/database closure；资源未就绪时维持 `blocked_identity`。
 
+当前只读发现确认 `Diannan/3090` 已存在管理员维护的 AlphaFold 3.0.1 wrapper、Apptainer SIF、模型参数与数据库。
+Batch 2 因此采用 `observe-existing-alphafold3-resource-closure`，不执行 build、copy、install 或 license acceptance。
+preparation 将 wrapper/image/model/database metadata、GPU partition、source commit/dirty observation 与 Apptainer
+version 固定为受保护 identity；qualification 在 dispatch 前重算 effect-bearing resource digest。真实 workload 固定为
+20 aa monomer、seed `20260824`、一张 3090、30 分钟与 inference-only，输出只接受 exact CIF 和 summary
+confidence；cleanup 失败或资源漂移均阻断，不重试、不换 target、不 fallback。
+
 ### 3. Subject identity 是类型化闭包，不是显示名称或 probe 结果
 
 Provider identity 至少包含 provider ID、credential-free endpoint identity、account/project locator digest、API/contract variant 和 bounded configuration digest。Target identity 至少包含 target/deployment ID、host/runtime identity、environment/image/inventory digest、route mechanism 和 relevant policy digest。

@@ -98,6 +98,46 @@ class SshHpcIdentityObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class SshAlphaFoldIdentityObservation:
+    """Read-only identity closure for the exact Diannan AlphaFold 3 route."""
+
+    host_alias: str
+    ssh_port: int
+    partition: str
+    alphafold_version: str
+    wrapper_digest: str
+    image_digest: str
+    model_parameters_digest: str
+    database_closure_digest: str
+    gpu_capability_digest: str
+    source_commit: str
+    source_dirty_digest: str
+    apptainer_version: str
+    inventory_generation_digest: str
+
+    def __post_init__(self) -> None:
+        if self.host_alias != "Diannan" or self.partition != "3090":
+            raise ValueError("AlphaFold identity is frozen to Diannan/3090")
+        if not 1 <= self.ssh_port <= 65535 or self.alphafold_version != "3.0.1":
+            raise ValueError("AlphaFold target identity is unsupported")
+        for field_name in (
+            "wrapper_digest",
+            "image_digest",
+            "model_parameters_digest",
+            "database_closure_digest",
+            "gpu_capability_digest",
+            "source_dirty_digest",
+            "inventory_generation_digest",
+        ):
+            if re.fullmatch(r"sha256:[0-9a-f]{64}", getattr(self, field_name)) is None:
+                raise ValueError(f"{field_name} is not a canonical digest")
+        if re.fullmatch(r"[0-9a-f]{40}", self.source_commit) is None:
+            raise ValueError("AlphaFold source commit is invalid")
+        if not self.apptainer_version.startswith("apptainer version"):
+            raise ValueError("AlphaFold Apptainer version is invalid")
+
+
+@dataclass(frozen=True, slots=True)
 class SshWorkspaceRuntimeQualificationIdentity:
     helper_path: str
     workspace_parent: str
@@ -174,7 +214,7 @@ class SubprocessOpenSshQualificationCommandPort:
     timeout_seconds: int = 120
 
     def __post_init__(self) -> None:
-        if self.timeout_seconds <= 0 or self.timeout_seconds > 600:
+        if self.timeout_seconds <= 0 or self.timeout_seconds > 2_400:
             raise ValueError("SSH qualification command timeout is out of bounds")
 
     def run(self, argv: tuple[str, ...]) -> tuple[int, str, str]:
@@ -343,6 +383,140 @@ printf '%s\\n' "$system" "$partition" "$apptainer_version" "$hmmer_digest" "$hmm
                 ("software.vina", f"sha256:{lines[5]}"),
             ),
             apptainer_version=lines[2],
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class OpenSshAlphaFoldQualificationIdentityObservationPort:
+    """Observe the administrator-owned AF3 closure without changing the target."""
+
+    command_port: OpenSshQualificationCommandPort = field(repr=False)
+    ssh_binary: str = "ssh"
+
+    def observe(
+        self,
+        *,
+        host_alias: str,
+        partition: str,
+        credential_material: SshQualificationCredentialMaterial,
+    ) -> SshAlphaFoldIdentityObservation:
+        if host_alias != "Diannan" or partition != "3090":
+            raise ExternalQualificationError(
+                "qualification_alphafold_target_identity_mismatch",
+                "AlphaFold resource discovery is frozen to Diannan/3090",
+            )
+        host = credential_material.field_value("ssh_host")
+        user = credential_material.field_value("ssh_user")
+        raw_port = credential_material.field_value("ssh_port")
+        identity_file = Path(credential_material.field_value("identity_file")).absolute()
+        known_hosts_file = Path(
+            credential_material.field_value("known_hosts_file")
+        ).absolute()
+        if (
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,254}", host) is None
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", user) is None
+            or re.fullmatch(r"[1-9][0-9]{0,4}", raw_port) is None
+            or not identity_file.is_file()
+            or identity_file.is_symlink()
+            or identity_file.stat().st_mode & 0o077
+            or not known_hosts_file.is_file()
+            or known_hosts_file.is_symlink()
+        ):
+            raise ExternalQualificationError(
+                "qualification_alphafold_credential_identity_invalid",
+                "AlphaFold SSH identity material is incomplete or unsafe",
+            )
+        ssh_port = int(raw_port)
+        if ssh_port > 65535:
+            raise ExternalQualificationError(
+                "qualification_alphafold_credential_identity_invalid",
+                "AlphaFold SSH port is invalid",
+            )
+        remote_script = r"""set -eu
+root=/opt/tools_env/alphafold3
+wrapper=/opt/tools/alphafold3
+database=$(readlink -f "$root/databases")
+test "$database" = /data/tools/alphafold3
+test -x "$wrapper" -a -f "$root/alphafold3.sif" -a -f "$root/models/af3.bin"
+wrapper_digest=$(sha256sum "$wrapper" | cut -d' ' -f1)
+image_digest=$(sha256sum "$root/alphafold3.sif" | cut -d' ' -f1)
+model_digest=$(sha256sum "$root/models/af3.bin" | cut -d' ' -f1)
+database_digest=$({ printf 'schema=alphafold3-database-metadata-closure-v1\0root=%s\0' "$database"; find "$database" -type f -printf '%P\0%s\0%T@\0%D\0%i\0' | sort -z; } | sha256sum | cut -d' ' -f1)
+gpu_digest=$(sinfo -h -p 3090 -o '%P|%a|%D|%G' | sort | sha256sum | cut -d' ' -f1)
+source_commit=$(git -c safe.directory="$root/alphafold3" -C "$root/alphafold3" rev-parse HEAD)
+source_dirty_digest=$(git -c safe.directory="$root/alphafold3" -C "$root/alphafold3" status --porcelain | sha256sum | cut -d' ' -f1)
+apptainer_version=$(apptainer --version | head -n 1)
+version_dir=$(apptainer exec "$root/alphafold3.sif" find /alphafold3_venv/lib/python3.12/site-packages -maxdepth 1 -name 'alphafold3-*.dist-info' -printf '%f\n')
+test "$version_dir" = alphafold3-3.0.1.dist-info
+printf '%s\n' 3.0.1 "$wrapper_digest" "$image_digest" "$model_digest" "$database_digest" "$gpu_digest" "$source_commit" "$source_dirty_digest" "$apptainer_version"
+"""
+        argv = (
+            self.ssh_binary,
+            "-F",
+            "/dev/null",
+            "-p",
+            str(ssh_port),
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            f"IdentityFile={identity_file}",
+            "-o",
+            f"UserKnownHostsFile={known_hosts_file}",
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-o",
+            "ConnectTimeout=15",
+            f"{user}@{host}",
+            "bash",
+            "-lc",
+            shlex.quote(remote_script),
+        )
+        returncode, stdout, _stderr = self.command_port.run(argv)
+        lines = tuple(line.strip() for line in stdout.splitlines() if line.strip())
+        if (
+            returncode != 0
+            or len(lines) != 9
+            or any(re.fullmatch(r"[0-9a-f]{64}", lines[index]) is None for index in range(1, 6))
+            or re.fullmatch(r"[0-9a-f]{40}", lines[6]) is None
+            or re.fullmatch(r"[0-9a-f]{64}", lines[7]) is None
+            or not lines[8].startswith("apptainer version")
+        ):
+            raise ExternalQualificationError(
+                "qualification_alphafold_identity_observation_failed",
+                "AlphaFold target identity observation failed or returned an unexpected shape",
+            )
+        inventory_digest = canonical_sha256_digest(
+            {
+                "host_alias": host_alias,
+                "ssh_port": ssh_port,
+                "partition": partition,
+                "alphafold_version": lines[0],
+                "wrapper_digest": f"sha256:{lines[1]}",
+                "image_digest": f"sha256:{lines[2]}",
+                "model_parameters_digest": f"sha256:{lines[3]}",
+                "database_closure_digest": f"sha256:{lines[4]}",
+                "gpu_capability_digest": f"sha256:{lines[5]}",
+                "source_commit": lines[6],
+                "source_dirty_digest": f"sha256:{lines[7]}",
+                "apptainer_version": lines[8],
+            }
+        )
+        return SshAlphaFoldIdentityObservation(
+            host_alias=host_alias,
+            ssh_port=ssh_port,
+            partition=partition,
+            alphafold_version=lines[0],
+            wrapper_digest=f"sha256:{lines[1]}",
+            image_digest=f"sha256:{lines[2]}",
+            model_parameters_digest=f"sha256:{lines[3]}",
+            database_closure_digest=f"sha256:{lines[4]}",
+            gpu_capability_digest=f"sha256:{lines[5]}",
+            source_commit=lines[6],
+            source_dirty_digest=f"sha256:{lines[7]}",
+            apptainer_version=lines[8],
+            inventory_generation_digest=inventory_digest,
         )
 
 
@@ -791,6 +965,7 @@ __all__ = [
     "DIANNAN_WORKSPACE_RUNTIME_PATH",
     "DIANNAN_WORKSPACE_RUNTIME_POLICY_ID",
     "SSH_QUALIFICATION_OPERATIONS",
+    "OpenSshAlphaFoldQualificationIdentityObservationPort",
     "OpenSshHpcQualificationIdentityObservationPort",
     "OpenSshQualificationCommandPort",
     "OpenSshQualificationOperation",
@@ -798,6 +973,7 @@ __all__ = [
     "SshQualificationOperationPort",
     "SshQualificationProbeBridge",
     "SshHpcIdentityObservation",
+    "SshAlphaFoldIdentityObservation",
     "SshQualificationCredentialMaterial",
     "SshWorkspaceRuntimeQualificationIdentity",
     "SubprocessOpenSshQualificationCommandPort",

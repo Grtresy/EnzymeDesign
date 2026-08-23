@@ -56,6 +56,7 @@ from .qualification_scientific_workloads import PreprocessScientificQualificatio
 from .qualification_scientific_workloads import SCIENTIFIC_QUALIFICATION_INPUTS
 from .qualification_scientific_workloads import SelectedDriverScientificQualificationCompiler
 from .qualification_scientific_workloads import build_selected_driver_scientific_compiler
+from .qualification_live_bridges import SelectedAlphaFoldLiveQualificationBridgeFactory
 from .qualification_live_bridges import SelectedLiveQualificationBridgeFactory
 from .qualification_live_runtime import ExternalLiveQualificationCoordinator
 from .qualification_live_runtime import LiveQualificationExecutionReport
@@ -184,6 +185,7 @@ __all__ = [
     "SelectedDriverScientificQualificationCompiler",
     "build_selected_driver_scientific_compiler",
     "SelectedLiveQualificationBridgeFactory",
+    "SelectedAlphaFoldLiveQualificationBridgeFactory",
     "ExternalLiveQualificationCoordinator",
     "LiveQualificationExecutionReport",
     "LiveQualificationReceiptSetReport",

@@ -7,8 +7,13 @@ from dataclasses import dataclass
 from dataclasses import field
 import gzip
 from importlib.resources import files
+import json
 from typing import Any
 
+from enzymedesign_alphafold import ALPHAFOLD_DRIVER_REQUEST_CONTRACT_DIGEST
+from enzymedesign_alphafold import ALPHAFOLD_TOOL_SPEC
+from enzymedesign_alphafold import AlphaFoldHpcDriver
+from enzymedesign_alphafold import locate_hpc_driver_manifest as locate_alphafold_hpc_manifest
 from enzymedesign_hmmer import HMMER_DRIVER_REQUEST_CONTRACT_DIGEST
 from enzymedesign_hmmer import HMMER_TOOL_SPECS
 from enzymedesign_hmmer import HmmerDriver
@@ -42,6 +47,30 @@ from openzyme_extension_spi import parse_component_manifest_json
 
 _ALIGNMENT = b">query_a\nACDEFGHIKLMNPQRSTVWY\n>query_b\nACDEYGHIKLMNPQRSTVWY\n"
 _PROTEINS = b">target_a\nTTTACDEFGHIKLMNPQRSTVWYAAA\n>target_b\nGGGGGGGGGGGGGGGGGGGG\n"
+_ALPHAFOLD_JOB = (
+    json.dumps(
+        {
+            "dialect": "alphafold3",
+            "modelSeeds": [20260824],
+            "name": "openzyme_qualification_20aa",
+            "sequences": [
+                {
+                    "protein": {
+                        "id": ["A"],
+                        "pairedMsa": "",
+                        "sequence": "ACDEFGHIKLMNPQRSTVWY",
+                        "templates": [],
+                        "unpairedMsa": "",
+                    }
+                }
+            ],
+            "version": 1,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    + "\n"
+).encode()
 
 
 def _qualification_asset(name: str) -> bytes:
@@ -93,6 +122,9 @@ def _content_digest(content: bytes) -> str:
     return canonical_sha256_digest({"content_hex": content.hex()})
 
 
+ALPHAFOLD_QUALIFICATION_INPUT_DIGEST = _content_digest(_ALPHAFOLD_JOB)
+
+
 @dataclass(frozen=True, slots=True)
 class FixedScientificQualificationInputRegistry:
     _content: Mapping[str, bytes] = field(repr=False)
@@ -123,6 +155,7 @@ SCIENTIFIC_QUALIFICATION_INPUTS = FixedScientificQualificationInputRegistry.crea
         _VINA_CONFIG,
         _STRUCTURE_PDB,
         _LIGAND_SDF,
+        _ALPHAFOLD_JOB,
     )
 )
 
@@ -369,8 +402,61 @@ def build_selected_driver_scientific_compiler(
 ) -> SelectedDriverScientificQualificationCompiler:
     is_hpc = route_kind == "hpc-primary"
     policy_digest = canonical_sha256_digest(
-        {"qualification": "batch-1", "route_kind": route_kind}
+        {
+            "qualification": (
+                "batch-2-alphafold"
+                if component_id == "enzymedesign.alphafold.hpc"
+                else "batch-1"
+            ),
+            "route_kind": route_kind,
+        }
     )
+    if component_id == "enzymedesign.alphafold.hpc":
+        if not is_hpc or operation != "predict":
+            raise ValueError("AlphaFold qualification requires the exact HPC route")
+        driver = AlphaFoldHpcDriver(_manifest(locate_alphafold_hpc_manifest()))
+
+        def invocation(
+            request: ExternalQualificationProbeRequest,
+        ) -> DriverInvocationRequest:
+            return DriverInvocationRequest(
+                driver_id=component_id,
+                owning_plugin_id="enzymedesign.alphafold",
+                route_id="enzymedesign.alphafold.hpc-primary@1",
+                tool_name=ALPHAFOLD_TOOL_SPEC.tool_name,
+                tool_contract_digest=ALPHAFOLD_TOOL_SPEC.contract_digest,
+                request_contract_digest=ALPHAFOLD_DRIVER_REQUEST_CONTRACT_DIGEST,
+                payload={
+                    "workload_id": f"workload.{request.attempt_id}",
+                    "cwd": "analysis/alphafold3",
+                    "resource_policy_digest": policy_digest,
+                    "environment_policy_digest": policy_digest,
+                    "inputs": (
+                        _input_metadata(
+                            "inputs/job.json",
+                            _content_digest(_ALPHAFOLD_JOB),
+                            "revision-alphafold-qualification-input",
+                        ),
+                    ),
+                    "result_root": "results/alphafold3",
+                },
+            )
+
+        return SelectedDriverScientificQualificationCompiler(
+            driver=driver,
+            operation=operation,
+            route_kind=route_kind,
+            invocation_builder=invocation,
+            input_builder=lambda _request: (
+                _fixed_input("inputs/job.json", _ALPHAFOLD_JOB),
+            ),
+            output_builder=lambda _compiled: (
+                "results/alphafold3/openzyme_qualification_20aa/"
+                "openzyme_qualification_20aa_model.cif",
+                "results/alphafold3/openzyme_qualification_20aa/"
+                "openzyme_qualification_20aa_summary_confidences.json",
+            ),
+        )
     if component_id.startswith("enzymedesign.hmmer."):
         manifest = _manifest(
             locate_hmmer_hpc_manifest() if is_hpc else locate_hmmer_local_manifest()
@@ -556,6 +642,7 @@ def build_selected_driver_scientific_compiler(
 
 
 __all__ = [
+    "ALPHAFOLD_QUALIFICATION_INPUT_DIGEST",
     "FixedScientificQualificationInputRegistry",
     "PreprocessScientificQualificationCompiler",
     "SCIENTIFIC_QUALIFICATION_INPUTS",

@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from enzymedesign_distribution import PreprocessScientificQualificationCompiler
@@ -33,6 +35,7 @@ def _request(operation: str) -> ExternalQualificationProbeRequest:
         ("enzymedesign.vina.hpc", "dock", "hpc-primary", "vina"),
         ("enzymedesign.fpocket.local", "detect", "local", "fpocket"),
         ("enzymedesign.fpocket.hpc", "detect", "hpc-primary", "fpocket"),
+        ("enzymedesign.alphafold.hpc", "predict", "hpc-primary", "python"),
     ),
 )
 def test_selected_driver_compiler_builds_exact_formal_workload_and_validates_result(
@@ -137,3 +140,31 @@ def test_scientific_compilers_expect_the_programs_actual_output_paths() -> None:
     assert tuple(item.path for item in fpocket.inputs) == ("structure.pdb",)
     assert fpocket.argv == ("fpocket", "-f", "structure.pdb")
     assert fpocket.expected_output_paths == ("structure_out/structure_info.txt",)
+
+
+def test_alphafold_compiler_freezes_20aa_seeded_inference_contract() -> None:
+    workload = build_selected_driver_scientific_compiler(
+        component_id="enzymedesign.alphafold.hpc",
+        operation="predict",
+        route_kind="hpc-primary",
+    ).compile(_request("predict"))
+
+    assert workload.argv == (
+        "python",
+        "run_alphafold.py",
+        "--json_path",
+        "inputs/job.json",
+        "--output_dir",
+        "results/alphafold3",
+    )
+    job = json.loads(
+        SCIENTIFIC_QUALIFICATION_INPUTS.resolve(workload.inputs[0].content_digest)
+    )
+    assert job["modelSeeds"] == [20260824]
+    assert job["sequences"][0]["protein"]["sequence"] == "ACDEFGHIKLMNPQRSTVWY"
+    assert workload.expected_output_paths == (
+        "results/alphafold3/openzyme_qualification_20aa/"
+        "openzyme_qualification_20aa_model.cif",
+        "results/alphafold3/openzyme_qualification_20aa/"
+        "openzyme_qualification_20aa_summary_confidences.json",
+    )

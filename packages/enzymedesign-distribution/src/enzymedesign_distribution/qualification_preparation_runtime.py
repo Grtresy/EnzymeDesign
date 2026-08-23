@@ -21,6 +21,7 @@ from openzyme_contracts import verify_external_identity_preparation_occurrence_a
 from openzyme_hpc import HpcQualificationCredentialMaterial
 from openzyme_hpc import HpcQualificationIdentityObservationPort
 from openzyme_hpc_ssh import OpenSshHpcQualificationIdentityObservationPort
+from openzyme_hpc_ssh import OpenSshAlphaFoldQualificationIdentityObservationPort
 from openzyme_hpc_ssh import SubprocessOpenSshQualificationCommandPort
 from openzyme_process_podman import PodmanQualificationImagePreparationExecutor
 from openzyme_process_podman import SubprocessQualificationImageCommandPort
@@ -40,6 +41,9 @@ from .qualification_planning import PlanOnlyIdentityPreparationBackendFactory
 from .qualification_planning import QualificationCredentialMaterialResolver
 from .qualification_planning import SafeIdentitySnapshot
 from .qualification_planning import apply_external_identity_preparation_results
+from .qualification_scientific_workloads import (
+    ALPHAFOLD_QUALIFICATION_INPUT_DIGEST,
+)
 
 
 _PREPARATION_CREDENTIAL_REQUIREMENTS: Mapping[
@@ -143,12 +147,12 @@ def execute_enzymedesign_identity_preparation_batch(
     clock: Callable[[], str],
     existing_results: tuple[ExternalIdentityPreparationResult, ...] = (),
 ) -> EnzymeDesignIdentityPreparationBatchExecution:
-    """Execute each exact Batch 1 action once; no retry or fallback is possible."""
+    """Execute each exact preparation action once; no retry or fallback is possible."""
 
-    if plan.batch_id != "batch-1":
+    if plan.batch_id not in {"batch-1", "batch-2-alphafold"}:
         raise ExternalQualificationError(
             "blocked_identity",
-            "the current preparation executor is restricted to approved Batch 1",
+            "the preparation executor received an unsupported batch",
         )
     verify_external_identity_preparation_occurrence_authorization(
         plan,
@@ -212,12 +216,23 @@ def execute_enzymedesign_identity_preparation_batch(
 class EnzymeDesignHpcIdentityPreparationExecutor:
     private_config_path: Path = field(repr=False)
     observation_port: HpcQualificationIdentityObservationPort = field(repr=False)
+    alphafold_private_config_path: Path | None = field(default=None, repr=False)
+    alphafold_observation_port: (
+        OpenSshAlphaFoldQualificationIdentityObservationPort | None
+    ) = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         path = self.private_config_path.absolute()
         if not path.is_absolute() or path.is_symlink():
             raise ValueError("qualification-only HPC config path must be absolute and direct")
         object.__setattr__(self, "private_config_path", path)
+        if self.alphafold_private_config_path is not None:
+            alphafold_path = self.alphafold_private_config_path.absolute()
+            if not alphafold_path.is_absolute() or alphafold_path.is_symlink():
+                raise ValueError(
+                    "AlphaFold qualification config path must be absolute and direct"
+                )
+            object.__setattr__(self, "alphafold_private_config_path", alphafold_path)
 
     def __call__(
         self,
@@ -229,6 +244,15 @@ class EnzymeDesignHpcIdentityPreparationExecutor:
         request_digest: str,
         credential_material: HpcQualificationCredentialMaterial,
     ) -> ExternalIdentityPreparationResult:
+        if action.effect_id == "hpc.alphafold3.resource-identity.observe":
+            return self._observe_alphafold(
+                plan=plan,
+                authorization=authorization,
+                action=action,
+                occurrence_id=occurrence_id,
+                request_digest=request_digest,
+                credential_material=credential_material,
+            )
         if (
             action.owner_component_id != "openzyme.hpc"
             or action.effect_id != "hpc.executor-workspace-v2.identity-resolve"
@@ -412,6 +436,138 @@ class EnzymeDesignHpcIdentityPreparationExecutor:
             credential_material_accessed=True,
         )
 
+    def _observe_alphafold(
+        self,
+        *,
+        plan: ExternalIdentityPreparationPlan,
+        authorization: ExternalIdentityPreparationOccurrenceAuthorization,
+        action: ExternalIdentityPreparationAction,
+        occurrence_id: str,
+        request_digest: str,
+        credential_material: HpcQualificationCredentialMaterial,
+    ) -> ExternalIdentityPreparationResult:
+        if (
+            plan.batch_id != "batch-2-alphafold"
+            or action.owner_component_id != "openzyme.hpc"
+            or credential_material.locator_id != action.credential_locator_id
+            or action.mutating
+            or action.cleanup_action_id is not None
+        ):
+            raise ExternalQualificationError(
+                "qualification_alphafold_preparation_binding_mismatch",
+                "AlphaFold preparation differs from the exact read-only Batch-2 action",
+            )
+        if (
+            self.alphafold_private_config_path is None
+            or self.alphafold_observation_port is None
+        ):
+            raise ExternalQualificationError(
+                "qualification_alphafold_preparation_owner_unavailable",
+                "AlphaFold preparation owner is not configured",
+            )
+        observation = self.alphafold_observation_port.observe(
+            host_alias="Diannan",
+            partition="3090",
+            credential_material=credential_material,
+        )
+        config = {
+            "schema_version": "enzymedesign_alphafold_qualification_config@1",
+            "target_alias": observation.host_alias,
+            "partition": observation.partition,
+            "wrapper_path": "/opt/tools/alphafold3",
+            "image_path": "/opt/tools_env/alphafold3/alphafold3.sif",
+            "model_path": "/opt/tools_env/alphafold3/models/af3.bin",
+            "database_path": "/data/tools/alphafold3",
+            "alphafold_version": observation.alphafold_version,
+            "wrapper_digest": observation.wrapper_digest,
+            "image_digest": observation.image_digest,
+            "model_parameters_digest": observation.model_parameters_digest,
+            "database_closure_digest": observation.database_closure_digest,
+            "gpu_capability_digest": observation.gpu_capability_digest,
+            "source_commit": observation.source_commit,
+            "source_dirty_digest": observation.source_dirty_digest,
+            "apptainer_version": observation.apptainer_version,
+            "inventory_generation_digest": observation.inventory_generation_digest,
+            "fixed_monomer_input_digest": ALPHAFOLD_QUALIFICATION_INPUT_DIGEST,
+            "fixed_seed": 20260824,
+            "gpu_count": 1,
+            "gpu_time_hard_limit_minutes": 30,
+            "max_retries": 0,
+            "fallback_allowed": False,
+            "license_acceptance_performed": False,
+            "preparation_plan_digest": plan.preparation_plan_digest,
+            "preparation_authorization_digest": authorization.authorization_digest,
+        }
+        config["config_digest"] = canonical_sha256_digest(config)
+        path = self.alphafold_private_config_path
+        if path.exists() or path.is_symlink():
+            raise ExternalQualificationError(
+                "qualification_alphafold_config_already_exists",
+                "AlphaFold qualification config requires exact reconciliation",
+            )
+        parent = path.parent
+        if parent.exists() or parent.is_symlink():
+            metadata = parent.lstat()
+            if (
+                stat.S_ISLNK(metadata.st_mode)
+                or not stat.S_ISDIR(metadata.st_mode)
+                or metadata.st_uid != os.getuid()
+                or stat.S_IMODE(metadata.st_mode) != 0o700
+            ):
+                raise ExternalQualificationError(
+                    "qualification_operator_state_permissions_unsafe",
+                    "AlphaFold qualification config parent is unsafe",
+                )
+        else:
+            parent.mkdir(mode=0o700, parents=False)
+        encoded = (json.dumps(config, sort_keys=True, indent=2) + "\n").encode()
+        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        try:
+            os.write(descriptor, encoded)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        fields = tuple(
+            SafeIdentityField(field_id, value)
+            for field_id, value in sorted(
+                {
+                    "alphafold_gpu_image_digest": observation.image_digest,
+                    "model_parameters_digest": observation.model_parameters_digest,
+                    "database_closure_digest": observation.database_closure_digest,
+                    "gpu_capability_fact": observation.gpu_capability_digest,
+                    "fixed_monomer_input_digest": ALPHAFOLD_QUALIFICATION_INPUT_DIGEST,
+                    "alphafold_version": observation.alphafold_version,
+                    "alphafold_wrapper_digest": observation.wrapper_digest,
+                    "alphafold_source_commit": observation.source_commit,
+                    "alphafold_source_dirty_digest": observation.source_dirty_digest,
+                    "alphafold_inventory_generation_digest": (
+                        observation.inventory_generation_digest
+                    ),
+                    "credential_locator_id": credential_material.locator_id,
+                }.items()
+            )
+        )
+        return create_external_identity_preparation_success(
+            occurrence_id=occurrence_id,
+            preparation_plan_digest=plan.preparation_plan_digest,
+            authorization_digest=authorization.authorization_digest,
+            action_id=action.action_id,
+            owner_component_id=action.owner_component_id,
+            effect_id=action.effect_id,
+            input_binding_digest=action.input_binding_digest,
+            request_digest=request_digest,
+            safe_identity_fields=fields,
+            receipt_payload={
+                "schema_version": "alphafold_identity_preparation_receipt@1",
+                "occurrence_id": occurrence_id,
+                "inventory_generation_digest": observation.inventory_generation_digest,
+                "config_digest": config["config_digest"],
+                "license_acceptance_performed": False,
+            },
+            external_effect_performed=True,
+            credential_material_accessed=True,
+        )
+
 
 @dataclass(slots=True)
 class _LazyProtectedPreparationResultRecorder:
@@ -467,6 +623,9 @@ def build_enzymedesign_identity_preparation_backend_factory(
     hpc_observer = OpenSshHpcQualificationIdentityObservationPort(
         command_port=SubprocessOpenSshQualificationCommandPort()
     )
+    alphafold_observer = OpenSshAlphaFoldQualificationIdentityObservationPort(
+        command_port=SubprocessOpenSshQualificationCommandPort(timeout_seconds=600)
+    )
     return PlanOnlyIdentityPreparationBackendFactory(
         credential_resolver=exact_resolver,
         owner_builders={
@@ -486,6 +645,10 @@ def build_enzymedesign_identity_preparation_backend_factory(
                 / "hpc-qualification"
                 / "config.json",
                 observation_port=hpc_observer,
+                alphafold_private_config_path=layout.root
+                / "alphafold-qualification"
+                / "config.json",
+                alphafold_observation_port=alphafold_observer,
             ),
         },
         result_recorder=(

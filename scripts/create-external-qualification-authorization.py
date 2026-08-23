@@ -26,6 +26,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--authorization-id", required=True)
     parser.add_argument("--operator-id", required=True)
     parser.add_argument("--authorized-at")
+    parser.add_argument(
+        "--batch-id",
+        choices=("batch-1", "batch-2-alphafold"),
+        default="batch-1",
+    )
     return parser
 
 
@@ -58,7 +63,12 @@ def main() -> int:
     layout = QualificationOperatorStateLayout.open(Path(raw_root))
     packet = _load_object(args.post_preparation_packet.resolve())
     source = collect_source_identity(Path(__file__).resolve().parents[1])
-    dry_plan_digest = packet.get("batch_1_qualification_dry_plan_digest")
+    digest_field = (
+        "batch_1_qualification_dry_plan_digest"
+        if args.batch_id == "batch-1"
+        else "batch_2_qualification_dry_plan_digest"
+    )
+    dry_plan_digest = packet.get(digest_field)
     if (
         packet.get("schema_version")
         != "enzymedesign_post_preparation_operator_packet@1"
@@ -79,7 +89,7 @@ def main() -> int:
     authorization = ExternalQualificationOccurrenceAuthorization.create(
         authorization_id=args.authorization_id,
         dry_plan_digest=dry_plan_digest,
-        batch_id="batch-1",
+        batch_id=args.batch_id,
         operator_id=args.operator_id,
         authorized_at=args.authorized_at or datetime.now(tz=UTC).isoformat(),
     )

@@ -4,7 +4,10 @@ import hashlib
 import subprocess
 
 from openzyme_contracts import ExternalQualificationProbeRequest
+from openzyme_contracts import ExternalScientificQualificationInput
+from openzyme_contracts import ExternalScientificQualificationWorkload
 from openzyme_hpc_slurm import OpenSshSlurmQualificationOperation
+from openzyme_hpc_slurm import SlurmAlphaFoldQualificationRoute
 from openzyme_hpc_slurm import SlurmQualificationState
 
 
@@ -311,3 +314,126 @@ def test_scientific_input_staging_chunks_large_inputs_below_argv_limit() -> None
     chunk_scripts = [script for script in remote.scripts if "base64 -d >>" in script]
     assert len(chunk_scripts) > 1
     assert max(len(script) for script in chunk_scripts) < 40_000
+
+
+@dataclass
+class _AlphaFoldResolver:
+    content: bytes
+
+    def resolve(self, content_digest: str) -> bytes:
+        assert content_digest == DIGEST
+        return self.content
+
+
+@dataclass
+class _AlphaFoldRemote:
+    input_content: bytes
+    resource_digest: str
+    drift_resources: bool = False
+    scripts: list[str] = field(default_factory=list)
+
+    def run_remote(self, script: str):
+        self.scripts.append(script)
+        if script.startswith("set -eu"):
+            observed = "f" * 64 if self.drift_resources else self.resource_digest
+            return 0, "\n".join((observed,) * 5) + "\n", ""
+        if script.startswith("wc -c <") and "inputs/job.json" in script:
+            return (
+                0,
+                f"{len(self.input_content)}\n{hashlib.sha256(self.input_content).hexdigest()}\n",
+                "",
+            )
+        if script.startswith("test -s"):
+            return 0, f"128\n{'a' * 64}\n", ""
+        if script.startswith("cat ") and "gpu-identity.txt" in script:
+            return 0, "NVIDIA GeForce RTX 3090, GPU-test, 550.54, 8.6\n", ""
+        if script.startswith("sbatch --wait --parsable"):
+            return 0, "9001\n", ""
+        return 0, "", ""
+
+
+def _alphafold_workload(content: bytes) -> ExternalScientificQualificationWorkload:
+    return ExternalScientificQualificationWorkload.create(
+        workload_id="workload.alphafold.batch-2",
+        driver_component_id="enzymedesign.alphafold.hpc",
+        operation="predict",
+        route_kind="hpc-primary",
+        argv=(
+            "python",
+            "run_alphafold.py",
+            "--json_path",
+            "inputs/job.json",
+            "--output_dir",
+            "results/alphafold3",
+        ),
+        cwd="analysis/alphafold3",
+        inputs=(
+            ExternalScientificQualificationInput(
+                path="inputs/job.json",
+                content_digest=DIGEST,
+                size_bytes=len(content),
+            ),
+        ),
+        expected_output_paths=(
+            "results/alphafold3/openzyme_qualification_20aa/"
+            "openzyme_qualification_20aa_model.cif",
+            "results/alphafold3/openzyme_qualification_20aa/"
+            "openzyme_qualification_20aa_summary_confidences.json",
+        ),
+        compiled_workload_digest=DIGEST,
+    )
+
+
+def _alphafold_route(
+    remote: _AlphaFoldRemote,
+    content: bytes,
+) -> SlurmAlphaFoldQualificationRoute:
+    resource_digest = "sha256:" + remote.resource_digest
+    return SlurmAlphaFoldQualificationRoute(
+        workspace_root=".local/state/openzyme-qualification/alphafold-test",
+        workspace_owner_id="alphafold-test",
+        command_port=remote,
+        input_resolver=_AlphaFoldResolver(content),
+        wrapper_digest=resource_digest,
+        image_digest=resource_digest,
+        model_parameters_digest=resource_digest,
+        database_closure_digest=resource_digest,
+        gpu_capability_digest=resource_digest,
+    )
+
+
+def test_alphafold_route_runs_fixed_single_gpu_inference_and_cleans_workspace() -> None:
+    content = b'{"modelSeeds":[20260824]}\n'
+    remote = _AlphaFoldRemote(input_content=content, resource_digest="0" * 64)
+    route = _alphafold_route(remote, content)
+
+    outcome = route.dispatch(_alphafold_workload(content))
+
+    assert outcome.succeeded is True
+    submit = next(
+        script for script in remote.scripts if script.startswith("sbatch --wait")
+    )
+    assert "-p 3090 -t 00:30:00" in submit
+    assert "--gpus=1" in submit
+    assert "--norun_data_pipeline" in submit
+    assert "--run_inference" in submit
+    assert "--num_diffusion_samples=1" in submit
+    assert "--num_recycles=1" in submit
+    assert remote.scripts[-1].startswith("rm -rf --")
+
+
+def test_alphafold_route_rejects_resource_drift_before_dispatch() -> None:
+    content = b'{"modelSeeds":[20260824]}\n'
+    remote = _AlphaFoldRemote(
+        input_content=content,
+        resource_digest="0" * 64,
+        drift_resources=True,
+    )
+    route = _alphafold_route(remote, content)
+
+    outcome = route.dispatch(_alphafold_workload(content))
+
+    assert outcome.succeeded is False
+    assert outcome.error_code == "qualification_alphafold_resource_identity_drift"
+    assert not any(script.startswith("sbatch --wait") for script in remote.scripts)
+    assert remote.scripts[-1].startswith("rm -rf --")

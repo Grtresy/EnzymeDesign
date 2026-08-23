@@ -14,12 +14,16 @@ from openzyme_contracts import ExternalIdentityPreparationOccurrenceAuthorizatio
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Create a canonical Batch 1 preparation authorization."
+        description="Create a canonical external identity preparation authorization."
     )
     parser.add_argument("output", type=Path)
     parser.add_argument("--authorization-id", required=True)
     parser.add_argument("--preparation-plan-digest", required=True)
-    parser.add_argument("--batch-id", required=True, choices=("batch-1",))
+    parser.add_argument(
+        "--batch-id",
+        required=True,
+        choices=("batch-1", "batch-2-alphafold"),
+    )
     parser.add_argument("--operator-id", required=True)
     parser.add_argument("--authorized-at", required=True)
     return parser

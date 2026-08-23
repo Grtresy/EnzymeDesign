@@ -288,6 +288,14 @@ canonical Plugin/Kernel surfaces；旧 function handler/repository/writer packag
   `--log`/poses+log 与本地 `>=1.2,<2` modern 无 `--log`/poses-remark-derived score；Plugin route requirement、
   Kernel exact target admission、Driver workload/result digest 和 qualification subject 逐 route 绑定，禁止自动切换、
   profile retry 或 fallback，且不从 SIF/image digest 存在推导软件资格；
+- AlphaFold Batch 2 固定使用 `Diannan/3090` 上管理员已安装的 AlphaFold 3.0.1 闭包，不复制、重建或改写远端
+  wrapper、Apptainer SIF、模型参数或数据库。preparation 只读观测 wrapper/image/model/database metadata、GPU
+  partition、source commit/dirty observation 与 Apptainer version，并把 exact digest 写入受保护配置；qualification
+  在 dispatch 前再次逐项核验资源 identity。正式 Driver 只编译一个固定 20 aa monomer、seed `20260824`；Slurm
+  route 只允许一张 3090 GPU、30 分钟、`max_retries=0`、无 fallback 的 inference-only job，显式关闭 data
+  pipeline，并验证 model CIF、summary confidence、实际 GPU identity 与 workspace cleanup。既有模型参数只作为已安装
+  operator resource 使用，流程不执行新的许可接受；缺失或漂移只产生 `blocked_qualification`。该 Batch 的 receipt
+  TTL 为 7 天，成功也仍是 `qualified != cutover`；
 - `openzyme-workspace-git-lfs` 已成为 `AgentGitWorkspace` identity/observation/restore 与 Git-LFS
   policy/pointer/closure/verification/receipt 机制 DTO 的唯一代码 owner；旧 Domain shim 已删除，仓内生产
   caller 使用 Adapter namespace。private/public ref 与 immutable-byte backend、

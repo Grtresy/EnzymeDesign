@@ -1,0 +1,70 @@
+{
+  "schema_version": "enzymedesign_qualified_runtime_cutover_decisions@1",
+  "decision_set_id": "operator-approved-p0-p16-20260824",
+  "operator_id": "operator.enzymedesign-owner",
+  "decided_at": "2026-08-24T00:00:00+08:00",
+  "hard_gates_mechanically_approved": true,
+  "sequence": [
+    "close-batch-1",
+    "qualify-alphafold-batch-2",
+    "verify-sync-archive-qualification-change",
+    "create-and-implement-cutover-change",
+    "cut-over-qualified-runtime",
+    "post-cutover-live-smoke",
+    "run-final-mainline-once"
+  ],
+  "ssh_control": {
+    "host_alias": "Diannan",
+    "port": 22222,
+    "control_path_root": "/run/user/1000",
+    "control_persist_seconds": 60,
+    "explicit_control_exit": true,
+    "same_identity_only": true,
+    "max_retries": 0,
+    "fallback_allowed": false
+  },
+  "alphafold_batch_2": {
+    "target": "Diannan/3090",
+    "software": "AlphaFold3",
+    "max_gpus": 1,
+    "max_duration_minutes": 30,
+    "sequence": "ACDEFGHIKLMNPQRSTVWY",
+    "model_seed": 20260824,
+    "inference_only": true,
+    "read_only_resource_discovery": true,
+    "license_auto_accept": false,
+    "warning_usd": 25,
+    "hard_limit_usd": 100,
+    "receipt_ttl_days": 7,
+    "max_retries": 0,
+    "fallback_allowed": false
+  },
+  "deployment": {
+    "runtime_root": "/home/grtresy/.local/state/openzyme/deployments/enzymedesign-qualified-runtime",
+    "hosted_remote_allowed": false,
+    "receipt_policy": "unexpired-exact-source-batch-1-and-batch-2-only",
+    "maintenance_window": null,
+    "quiescence_required": true,
+    "unsettled_effects_allowed": false,
+    "backup_scope": [
+      "sqlite",
+      "configuration",
+      "target-inventory",
+      "wheel-lock",
+      "qualification-receipts",
+      "adoption-ledger"
+    ],
+    "dual_write_allowed": false,
+    "precommit_rollback_required": true,
+    "postcommit_compare_restore_before_first_live": true,
+    "after_first_live": "forward-only-preserve-evidence",
+    "ambient_env_is_runtime_truth": false,
+    "structured_redacted_monitoring": true,
+    "startup_readback_before_live": true,
+    "live_smoke_requires_separate_occurrence": true
+  },
+  "source_control": {
+    "local_seal_commits_allowed": true,
+    "push_allowed": false
+  }
+}

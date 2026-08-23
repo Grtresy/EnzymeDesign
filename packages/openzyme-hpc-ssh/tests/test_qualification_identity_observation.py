@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from openzyme_contracts import ExternalQualificationError
+from openzyme_hpc_ssh import OpenSshAlphaFoldQualificationIdentityObservationPort
 from openzyme_hpc_ssh import OpenSshHpcQualificationIdentityObservationPort
 from openzyme_hpc_ssh import OpenSshQualificationState
 from openzyme_hpc_ssh import observe_diannan_workspace_runtime_identity
@@ -48,6 +49,29 @@ class _Commands:
             ":||: fpocket 4.0 :||:\n",
             "",
         )
+
+
+class _AlphaFoldCommands:
+    def __init__(self, *, malformed: bool = False) -> None:
+        self.argv: tuple[str, ...] = ()
+        self.malformed = malformed
+
+    def run(self, argv: tuple[str, ...]) -> tuple[int, str, str]:
+        self.argv = argv
+        fields = (
+            "3.0.1",
+            "a" * 64,
+            "b" * 64,
+            "c" * 64,
+            "d" * 64,
+            "e" * 64,
+            "f" * 40,
+            "0" * 64,
+            "apptainer version 1.4.5",
+        )
+        if self.malformed:
+            fields = (*fields[:-1], "unexpected runtime")
+        return 0, "\n".join(fields) + "\n", ""
 
 
 def test_openssh_identity_observation_uses_exact_files_without_ambient_fallback(
@@ -138,6 +162,63 @@ def test_openssh_identity_observation_rejects_unparseable_software_version(
 
     assert error.value.error_code == (
         "qualification_hpc_software_version_unparseable"
+    )
+
+
+def test_alphafold_identity_observation_binds_exact_admin_resource_closure(
+    tmp_path: Path,
+) -> None:
+    identity_file = tmp_path / "id_ed25519"
+    identity_file.write_text("fake-test-key", encoding="utf-8")
+    identity_file.chmod(0o600)
+    known_hosts_file = tmp_path / "known_hosts"
+    known_hosts_file.write_text("fake-test-host-key", encoding="utf-8")
+    commands = _AlphaFoldCommands()
+    port = OpenSshAlphaFoldQualificationIdentityObservationPort(
+        command_port=commands
+    )
+
+    observation = port.observe(
+        host_alias="Diannan",
+        partition="3090",
+        credential_material=_Material(identity_file, known_hosts_file),
+    )
+
+    assert observation.alphafold_version == "3.0.1"
+    assert observation.wrapper_digest == "sha256:" + "a" * 64
+    assert observation.image_digest == "sha256:" + "b" * 64
+    assert observation.model_parameters_digest == "sha256:" + "c" * 64
+    assert observation.database_closure_digest == "sha256:" + "d" * 64
+    assert observation.gpu_capability_digest == "sha256:" + "e" * 64
+    assert observation.source_commit == "f" * 40
+    assert observation.source_dirty_digest == "sha256:" + "0" * 64
+    assert observation.inventory_generation_digest.startswith("sha256:")
+    assert commands.argv[:5] == ("ssh", "-F", "/dev/null", "-p", "22222")
+    assert "/opt/tools_env/alphafold3" in commands.argv[-1]
+    assert "sinfo -h -p 3090" in commands.argv[-1]
+
+
+def test_alphafold_identity_observation_rejects_shape_drift(
+    tmp_path: Path,
+) -> None:
+    identity_file = tmp_path / "id_ed25519"
+    identity_file.write_text("fake-test-key", encoding="utf-8")
+    identity_file.chmod(0o600)
+    known_hosts_file = tmp_path / "known_hosts"
+    known_hosts_file.write_text("fake-test-host-key", encoding="utf-8")
+    port = OpenSshAlphaFoldQualificationIdentityObservationPort(
+        command_port=_AlphaFoldCommands(malformed=True)
+    )
+
+    with pytest.raises(ExternalQualificationError) as error:
+        port.observe(
+            host_alias="Diannan",
+            partition="3090",
+            credential_material=_Material(identity_file, known_hosts_file),
+        )
+
+    assert error.value.error_code == (
+        "qualification_alphafold_identity_observation_failed"
     )
 
 

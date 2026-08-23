@@ -606,6 +606,283 @@ class SlurmScientificQualificationRoute:
 
 
 @dataclass(slots=True)
+class SlurmAlphaFoldQualificationRoute:
+    """Run one fixed AlphaFold 3 inference through the exact Diannan route."""
+
+    workspace_root: str
+    workspace_owner_id: str
+    command_port: SlurmQualificationRemoteCommandPort = field(repr=False)
+    input_resolver: SlurmScientificQualificationInputResolver = field(repr=False)
+    wrapper_digest: str
+    image_digest: str
+    model_parameters_digest: str
+    database_closure_digest: str
+    gpu_capability_digest: str
+    partition: str = "3090"
+    route_kind: str = "hpc-primary"
+
+    def __post_init__(self) -> None:
+        if (
+            not _safe_scoped_remote_path(self.workspace_root)
+            or re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", self.workspace_owner_id
+            )
+            is None
+            or self.partition != "3090"
+        ):
+            raise ValueError("AlphaFold Slurm qualification scope is invalid")
+        for value in (
+            self.wrapper_digest,
+            self.image_digest,
+            self.model_parameters_digest,
+            self.database_closure_digest,
+            self.gpu_capability_digest,
+        ):
+            if re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None:
+                raise ValueError("AlphaFold resource identity is invalid")
+
+    def dispatch(
+        self,
+        workload: ExternalScientificQualificationWorkload,
+    ) -> ExternalScientificQualificationRouteOutcome:
+        run_root = f"{self.workspace_root}/alphafold/{workload.workload_id}"
+        outcome: ExternalScientificQualificationRouteOutcome | None = None
+        cleanup_error: str | None = None
+        try:
+            self._ensure_workspace_scope()
+            self._verify_resources()
+            if workload.argv != (
+                "python",
+                "run_alphafold.py",
+                "--json_path",
+                "inputs/job.json",
+                "--output_dir",
+                "results/alphafold3",
+            ):
+                raise ExternalQualificationError(
+                    "qualification_alphafold_workload_profile_drift",
+                    "AlphaFold workload differs from the fixed Batch-2 profile",
+                )
+            self._run(
+                f"test ! -e {shlex.quote(run_root)}; "
+                f"mkdir -p -m 700 {shlex.quote(run_root)}"
+            )
+            for item in workload.inputs:
+                content = self.input_resolver.resolve(item.content_digest)
+                if len(content) != item.size_bytes:
+                    raise ExternalQualificationError(
+                        "qualification_compute_input_digest_mismatch",
+                        "AlphaFold qualification input size drifted",
+                    )
+                self._stage_input(
+                    f"{run_root}/{workload.cwd}/{item.path}", content
+                )
+            cwd = f"{run_root}/{workload.cwd}"
+            self._run(f"mkdir -p {shlex.quote(cwd + '/results/alphafold3')}")
+            command = (
+                "gpu=$(nvidia-smi --query-gpu=name,uuid,driver_version,compute_cap "
+                "--format=csv,noheader); printf '%s\\n' \"$gpu\" > gpu-identity.txt; "
+                "printf '%s\\n' \"$gpu\" | grep -q '3090'; "
+                "/opt/tools/alphafold3 --json_path inputs/job.json "
+                "--output_dir results/alphafold3 --norun_data_pipeline "
+                "--run_inference --num_diffusion_samples=1 --num_recycles=1 "
+                "--buckets=64"
+            )
+            job_name = (
+                "openzyme-af3-"
+                f"{workload.workload_digest.removeprefix('sha256:')[:12]}"
+            )
+            self._run(
+                "sbatch --wait --parsable -p 3090 -t 00:30:00 "
+                "--gpus=1 --cpus-per-task=8 --mem=64G "
+                f"-J {shlex.quote(job_name)} --chdir={shlex.quote(cwd)} "
+                f"-o {shlex.quote(cwd + '/slurm-%j.out')} "
+                f"-e {shlex.quote(cwd + '/slurm-%j.err')} "
+                f"--wrap {shlex.quote(command)}"
+            )
+            outputs: list[dict[str, object]] = []
+            for output_path in workload.expected_output_paths:
+                remote = f"{cwd}/{output_path}"
+                observed = self._run(
+                    f"test -s {shlex.quote(remote)}; "
+                    f"wc -c < {shlex.quote(remote)}; "
+                    f"sha256sum {shlex.quote(remote)} | cut -d' ' -f1"
+                ).splitlines()
+                if len(observed) != 2 or re.fullmatch(
+                    r"[0-9a-f]{64}", observed[1]
+                ) is None:
+                    raise ExternalQualificationError(
+                        "qualification_alphafold_expected_output_missing",
+                        "AlphaFold terminal output observation is incomplete",
+                    )
+                outputs.append(
+                    {
+                        "path": output_path,
+                        "size_bytes": int(observed[0]),
+                        "content_digest": f"sha256:{observed[1]}",
+                    }
+                )
+            gpu_observation = self._run(
+                f"cat {shlex.quote(cwd + '/gpu-identity.txt')}"
+            )
+            if "3090" not in gpu_observation:
+                raise ExternalQualificationError(
+                    "qualification_alphafold_gpu_identity_mismatch",
+                    "AlphaFold job did not observe one RTX 3090 GPU",
+                )
+            payload = {
+                "workload_digest": workload.workload_digest,
+                "partition": self.partition,
+                "gpu_observation_digest": canonical_sha256_digest(
+                    {"gpu_observation": gpu_observation}
+                ),
+                "outputs": outputs,
+                "route_kind": self.route_kind,
+                "inference_only": True,
+                "seed": 20260824,
+            }
+            outcome = ExternalScientificQualificationRouteOutcome(
+                workload_digest=workload.workload_digest,
+                effect_certainty="terminal_known",
+                terminal=True,
+                succeeded=True,
+                output_digest=canonical_sha256_digest(payload),
+                receipt_digest=canonical_sha256_digest(
+                    {**payload, "workspace_cleanup_required": True}
+                ),
+                error_code=None,
+                external_effect_performed=True,
+                credential_material_accessed=True,
+            )
+        except ExternalQualificationError as exc:
+            outcome = self._failure(workload, exc.error_code)
+        except subprocess.TimeoutExpired:
+            outcome = self._failure(
+                workload,
+                "qualification_alphafold_remote_timeout_in_doubt",
+                effect_certainty="dispatch_in_doubt",
+            )
+        except OSError:
+            outcome = self._failure(
+                workload,
+                "qualification_alphafold_transport_in_doubt",
+                effect_certainty="dispatch_in_doubt",
+            )
+        finally:
+            try:
+                returncode, _stdout, _stderr = self.command_port.run_remote(
+                    f"rm -rf -- {shlex.quote(run_root)}"
+                )
+                if returncode != 0:
+                    cleanup_error = "qualification_alphafold_cleanup_failed"
+            except subprocess.TimeoutExpired:
+                cleanup_error = "qualification_alphafold_cleanup_timeout"
+        if cleanup_error is not None:
+            return self._failure(
+                workload,
+                cleanup_error,
+                effect_certainty=(
+                    "dispatch_in_doubt"
+                    if cleanup_error.endswith("_timeout")
+                    else "terminal_known"
+                ),
+            )
+        assert outcome is not None
+        return outcome
+
+    def reconcile(
+        self,
+        workload: ExternalScientificQualificationWorkload,
+    ) -> ExternalScientificQualificationRouteOutcome:
+        return self._failure(
+            workload, "qualification_alphafold_reconcile_without_dispatch"
+        )
+
+    def _verify_resources(self) -> None:
+        script = r"""set -eu
+root=/opt/tools_env/alphafold3
+database=$(readlink -f "$root/databases")
+printf '%s\n' \
+  "$(sha256sum /opt/tools/alphafold3 | cut -d' ' -f1)" \
+  "$(sha256sum "$root/alphafold3.sif" | cut -d' ' -f1)" \
+  "$(sha256sum "$root/models/af3.bin" | cut -d' ' -f1)" \
+  "$({ printf 'schema=alphafold3-database-metadata-closure-v1\0root=%s\0' "$database"; find "$database" -type f -printf '%P\0%s\0%T@\0%D\0%i\0' | sort -z; } | sha256sum | cut -d' ' -f1)" \
+  "$(sinfo -h -p 3090 -o '%P|%a|%D|%G' | sort | sha256sum | cut -d' ' -f1)"
+"""
+        lines = self._run(script).splitlines()
+        expected = [
+            self.wrapper_digest.removeprefix("sha256:"),
+            self.image_digest.removeprefix("sha256:"),
+            self.model_parameters_digest.removeprefix("sha256:"),
+            self.database_closure_digest.removeprefix("sha256:"),
+            self.gpu_capability_digest.removeprefix("sha256:"),
+        ]
+        if lines != expected:
+            raise ExternalQualificationError(
+                "qualification_alphafold_resource_identity_drift",
+                "AlphaFold resource closure changed before dispatch",
+            )
+
+    def _ensure_workspace_scope(self) -> None:
+        workspace = shlex.quote(self.workspace_root)
+        owner_marker = shlex.quote(
+            f"{self.workspace_root}/.openzyme-qualification-owner"
+        )
+        owner_id = shlex.quote(self.workspace_owner_id)
+        self._run(
+            f"if test -e {workspace}; then test -d {workspace} && "
+            f"test -f {owner_marker} && test \"$(cat {owner_marker})\" = {owner_id}; "
+            f"else mkdir -p -m 700 {workspace} && printf '%s' {owner_id} > "
+            f"{owner_marker} && chmod 600 {owner_marker}; fi"
+        )
+
+    def _stage_input(self, remote_path: str, content: bytes) -> None:
+        parent = shlex.quote(remote_path.rsplit("/", 1)[0])
+        target = shlex.quote(remote_path)
+        self._run(f"mkdir -p {parent}; : > {target}")
+        encoded = base64.b64encode(content).decode("ascii")
+        for offset in range(0, len(encoded), 32_768):
+            chunk = shlex.quote(encoded[offset : offset + 32_768])
+            self._run(f"printf '%s' {chunk} | base64 -d >> {target}")
+        observed = self._run(
+            f"wc -c < {target}; sha256sum {target} | cut -d' ' -f1"
+        ).splitlines()
+        if observed != [str(len(content)), hashlib.sha256(content).hexdigest()]:
+            raise ExternalQualificationError(
+                "qualification_compute_remote_input_verification_failed",
+                "AlphaFold staged input differs from the exact fixed bytes",
+            )
+
+    def _run(self, script: str) -> str:
+        returncode, stdout, _stderr = self.command_port.run_remote(script)
+        if returncode != 0:
+            raise ExternalQualificationError(
+                "qualification_alphafold_remote_command_failed",
+                "AlphaFold Slurm qualification command failed",
+            )
+        return stdout.strip()
+
+    @staticmethod
+    def _failure(
+        workload: ExternalScientificQualificationWorkload,
+        error_code: str,
+        *,
+        effect_certainty: str = "terminal_known",
+    ) -> ExternalScientificQualificationRouteOutcome:
+        return ExternalScientificQualificationRouteOutcome(
+            workload_digest=workload.workload_digest,
+            effect_certainty=effect_certainty,
+            terminal=True,
+            succeeded=False,
+            output_digest=None,
+            receipt_digest=None,
+            error_code=error_code,
+            external_effect_performed=True,
+            credential_material_accessed=True,
+        )
+
+
+@dataclass(slots=True)
 class SlurmQualificationProbeBridge:
     binding: ExternalQualificationBridgeBinding
     operation_port: SlurmQualificationOperationPort
@@ -652,6 +929,7 @@ __all__ = [
     "SlurmQualificationRemoteCommandPort",
     "SlurmScientificQualificationInputResolver",
     "SlurmScientificQualificationRoute",
+    "SlurmAlphaFoldQualificationRoute",
     "SlurmQualificationState",
     "SlurmQualificationOperationPort",
     "SlurmQualificationProbeBridge",

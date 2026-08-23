@@ -72,4 +72,4 @@
 
 ## 8. Cutover handoff gate
 
-- [ ] 8.1 Stop after qualification and ask the operator to confirm deployment environment, maintenance window, migration, backup, rollback or forward-only boundary, monitoring, post-cutover smoke and final authorizer before creating `cut-over-enzymedesign-qualified-runtime`
+- [x] 8.1 Record the operator-approved P0–P16 deployment environment, no-clock-window quiescence, migration/backup, rollback/forward-only boundary, monitoring, post-cutover smoke and final authorizer decisions before creating `cut-over-enzymedesign-qualified-runtime`

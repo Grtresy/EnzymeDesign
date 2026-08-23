@@ -84,6 +84,13 @@ Git/LFS、Podman、SSH、Slurm 以及 HMMER/Vina/fpocket/preprocess 已有严格
 operation builder 与 fixed scientific smoke 仍依赖 preparation 后的 exact local repository、image 和 target
 identity，当前 fake-Port 绿色结果不属于 live qualification。
 
+AlphaFold Batch 2 使用独立的 preparation 与 live bridge：preparation 只读观测 `Diannan/3090` 上已安装的
+AlphaFold 3.0.1 wrapper、SIF、模型参数、数据库 metadata closure、GPU partition 与 source/runtime identity，
+不构建、复制或安装远端资源。Driver 只编译固定 20 aa monomer、seed `20260824`；Slurm route 在 submit 前重验
+全部资源 digest，只允许一张 3090、30 分钟、inference-only、零 retry、无 fallback 的 job，并验证 CIF、summary
+confidence、实际 GPU identity 与 cleanup。该路径不执行 license acceptance；任何资源缺失/漂移只阻断 Batch 2，
+也不会被 Batch 1 receipt、另一 target 或 image fallback 替代。
+
 `build_enzymedesign_scientific_contributions()` 是 Product composition factory：它构造 AOX
 workflow registry、scientific finalization handler 与 exact executor receipt validator，再通过
 通用 Science application ports 注入 Host。Host 不直接 import AOX 或 executor。

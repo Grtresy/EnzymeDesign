@@ -58,6 +58,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("safe_snapshot", type=Path)
     parser.add_argument("decision_selections", type=Path)
     parser.add_argument("authorization", type=Path)
+    parser.add_argument(
+        "--batch-id",
+        choices=("batch-1", "batch-2-alphafold"),
+        default="batch-1",
+    )
     return parser
 
 
@@ -132,6 +137,7 @@ def _restore_terminal_private_evidence(
     authorization: ExternalIdentityPreparationOccurrenceAuthorization,
     result_digests: tuple[str, ...],
     expected_result_count: int,
+    qualification_digest_field: str = "batch_1_qualification_dry_plan_digest",
 ) -> dict[str, object] | None:
     suffix = authorization.authorization_id
     snapshot_path = (
@@ -172,9 +178,7 @@ def _restore_terminal_private_evidence(
         or document.get("fallback_performed") is not False
         or document.get("packet_digest")
         != canonical_sha256_digest(unsigned_document)
-        or not isinstance(
-            document.get("batch_1_qualification_dry_plan_digest"), str
-        )
+        or not isinstance(document.get(qualification_digest_field), str)
     ):
         raise ExternalQualificationError(
             "qualification_private_evidence_conflict",
@@ -188,6 +192,7 @@ def _print_terminal_summary(
     *,
     result_count: int,
     terminal_results_restored: bool,
+    qualification_digest_field: str,
 ) -> None:
     print(f"preparation_plan_digest={document['preparation_plan_digest']}")
     print(
@@ -197,8 +202,8 @@ def _print_terminal_summary(
     print(f"preparation_result_count={result_count}")
     print(f"post_preparation_packet_digest={document['packet_digest']}")
     print(
-        "batch_1_qualification_dry_plan_digest="
-        f"{document['batch_1_qualification_dry_plan_digest']}"
+        f"{qualification_digest_field}="
+        f"{document[qualification_digest_field]}"
     )
     print(f"terminal_results_restored={str(terminal_results_restored).lower()}")
     print(
@@ -287,12 +292,13 @@ def _record_private_failure_diagnostic(
     return diagnostic_id
 
 
-def _batch_1_plan(
+def _batch_plan(
     *,
     snapshot: Any,
     selection_set: Any,
     source_digest: str,
     credential_locator_ids: dict[str, str | None] | None,
+    batch: ExternalQualificationBatch,
 ) -> tuple[Any, Any]:
     rebound_snapshot = replace(snapshot, source_digest=source_digest)
     readiness = build_enzymedesign_external_qualification_plan(
@@ -317,7 +323,7 @@ def _batch_1_plan(
         gaps=gaps,
         decisions=decisions,
         selection_set=selection_set,
-        batch=ExternalQualificationBatch.BATCH_1,
+        batch=batch,
     )
     return (
         project_external_identity_discovery_snapshot(
@@ -366,13 +372,20 @@ def main() -> int:
             "operator packet is not the exact current no-effect source-bound packet",
         )
 
-    snapshot, plan = _batch_1_plan(
+    batch = ExternalQualificationBatch(args.batch_id)
+    qualification_digest_field = (
+        "batch_1_qualification_dry_plan_digest"
+        if batch is ExternalQualificationBatch.BATCH_1
+        else "batch_2_qualification_dry_plan_digest"
+    )
+    snapshot, plan = _batch_plan(
         snapshot=load_safe_identity_snapshot(args.safe_snapshot.resolve()),
         selection_set=load_operator_identity_resolution_selections(
             args.decision_selections.resolve()
         ),
         source_digest=source.digest,
         credential_locator_ids=_packet_credential_locator_ids(packet),
+        batch=batch,
     )
     embedded_plans = packet.get("identity_preparation_plans")
     if not isinstance(embedded_plans, list):
@@ -381,7 +394,7 @@ def main() -> int:
         (
             item
             for item in embedded_plans
-            if isinstance(item, dict) and item.get("batch_id") == "batch-1"
+            if isinstance(item, dict) and item.get("batch_id") == batch.value
         ),
         None,
     )
@@ -426,12 +439,14 @@ def main() -> int:
         authorization=authorization,
         result_digests=tuple(item.result_digest for item in existing_results),
         expected_result_count=len(plan.actions),
+        qualification_digest_field=qualification_digest_field,
     )
     if terminal_document is not None:
         _print_terminal_summary(
             terminal_document,
             result_count=len(existing_results),
             terminal_results_restored=True,
+            qualification_digest_field=qualification_digest_field,
         )
         return 0
 
@@ -473,7 +488,7 @@ def main() -> int:
         return 1
 
     exact_readiness = build_enzymedesign_external_qualification_plan(
-        plan_id="qualification.batch-1.exact-readiness",
+        plan_id=f"qualification.{batch.value}.exact-readiness",
         created_at=execution.prepared_snapshot.observed_at,
         enabled_optional_profiles=OPTIONAL_PROFILES,
         credential_locator_ids=EXACT_EXTERNAL_QUALIFICATION_CREDENTIAL_LOCATORS,
@@ -483,15 +498,20 @@ def main() -> int:
         snapshot=execution.prepared_snapshot,
         selection_set=None,
     )
-    if rediscovered["summary"]["batch_1_authorizable"] is not True:  # type: ignore[index]
+    summary_field = (
+        "batch_1_authorizable"
+        if batch is ExternalQualificationBatch.BATCH_1
+        else "batch_2_authorizable"
+    )
+    if rediscovered["summary"][summary_field] is not True:  # type: ignore[index]
         raise ExternalQualificationError(
             "qualification_preparation_rediscovery_incomplete",
-            "Batch 1 remains blocked after exact preparation results",
+            f"{batch.value} remains blocked after exact preparation results",
         )
     qualification_plan = next(
         item
         for item in rediscovered["dry_plans"]
-        if item["batch_id"] == "batch-1"  # type: ignore[index,union-attr]
+        if item["batch_id"] == batch.value  # type: ignore[index,union-attr]
     )
     document = {
         "schema_version": "enzymedesign_post_preparation_operator_packet@1",
@@ -505,7 +525,7 @@ def main() -> int:
         ],
         "prepared_snapshot": execution.prepared_snapshot.to_dict(),
         "rediscovery": rediscovered,
-        "batch_1_qualification_dry_plan_digest": qualification_plan["dry_plan_digest"],
+        qualification_digest_field: qualification_plan["dry_plan_digest"],
         "credential_material_persisted": False,
         "qualified": False,
         "cutover": False,
@@ -527,6 +547,7 @@ def main() -> int:
         document,
         result_count=len(execution.results),
         terminal_results_restored=False,
+        qualification_digest_field=qualification_digest_field,
     )
     return 0
 

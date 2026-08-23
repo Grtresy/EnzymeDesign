@@ -774,13 +774,19 @@ def build_external_identity_gaps(
     for observation in report.observations:
         if observation.status is ExternalSubjectIdentityStatus.RESOLVED:
             continue
-        action_id, action = _RECOMMENDED_ACTIONS.get(
-            observation.logical_subject_id,
-            (
-                "configure-intended-real-subject",
-                "配置并冻结 intended real subject 的完整非 secret identity closure",
-            ),
-        )
+        if observation.observation_id == "observation.alphafold-hpc":
+            action_id, action = (
+                "observe-existing-alphafold3-resource-closure",
+                "只读冻结 Diannan/3090 现有 AF3 image、model、database 与 GPU identity",
+            )
+        else:
+            action_id, action = _RECOMMENDED_ACTIONS.get(
+                observation.logical_subject_id,
+                (
+                    "configure-intended-real-subject",
+                    "配置并冻结 intended real subject 的完整非 secret identity closure",
+                ),
+            )
         candidates = (
             ExternalIdentityResolutionCandidate(
                 candidate_id=action_id,
@@ -802,6 +808,22 @@ def build_external_identity_gaps(
                 recommended=False,
             ),
         )
+        if observation.observation_id == "observation.alphafold-hpc":
+            candidates = (
+                *candidates,
+                ExternalIdentityResolutionCandidate(
+                    candidate_id="complete-executor-workspace-v2-inventory",
+                    title="仅保留历史 Batch-1 HPC inventory 决策",
+                    operator_action=(
+                        "不观察 AlphaFold 资源；该候选只用于重放既有 plan-only 工件"
+                    ),
+                    effect_summary="不扩大为 AlphaFold 资格授权",
+                    cost_summary="无 AlphaFold GPU effect",
+                    security_summary="AlphaFold profile 继续 blocked_identity",
+                    prerequisite_ids=tuple(observation.missing_fields),
+                    recommended=False,
+                ),
+            )
         gaps.append(
             ExternalIdentityGap.create(
                 gap_id=f"gap.{observation.observation_id}",
@@ -957,7 +979,7 @@ def _batch_budgets(
     )
 
 
-_PREPARATION_EFFECTS: dict[str, tuple[str, str, bool, tuple[str, ...]]] = {
+_PREPARATION_EFFECTS: dict[str, tuple[str, str | None, bool, tuple[str, ...]]] = {
     "bind-current-provider-qualification-locator": (
         "provider.llm.qualification-locator.configure",
         "cleanup.provider.llm.qualification-locator",
@@ -994,6 +1016,12 @@ _PREPARATION_EFFECTS: dict[str, tuple[str, str, bool, tuple[str, ...]]] = {
         True,
         ("credential.hpc.diannan.qualification",),
     ),
+    "observe-existing-alphafold3-resource-closure": (
+        "hpc.alphafold3.resource-identity.observe",
+        None,
+        True,
+        ("credential.hpc.diannan.qualification",),
+    ),
 }
 
 
@@ -1005,7 +1033,8 @@ class _ExternalIdentityPreparationActionGroup:
     input_schema_id: str
     safe_input_fields: tuple[SafeIdentityField, ...]
     credential_locator_id: str | None
-    cleanup_action_id: str
+    cleanup_action_id: str | None
+    mutating: bool
     requires_credential_material: bool
     gap_digests: set[str]
     decision_digests: set[str]
@@ -1070,6 +1099,21 @@ _PREPARATION_INPUTS: dict[
             ("partition", "3090"),
             ("profile_schema", "executor_workspace@2"),
             ("configuration_mode", "qualification-only"),
+        ),
+    ),
+    "observe-existing-alphafold3-resource-closure": (
+        "openzyme.hpc",
+        "alphafold3-resource-identity-observation@1",
+        (
+            ("target_alias", "Diannan-3090"),
+            ("partition", "3090"),
+            ("wrapper_identity", "diannan-admin-af3-wrapper-v1"),
+            ("image_identity", "diannan-admin-af3-sif-v1"),
+            ("model_identity", "diannan-admin-af3-model-v1"),
+            ("database_identity", "diannan-admin-af3-database-v1"),
+            ("gpu_count", "1"),
+            ("gpu_time_hard_limit_minutes", "30"),
+            ("fixed_seed", "20260824"),
         ),
     ),
 }
@@ -1165,6 +1209,17 @@ def build_external_identity_preparation_plan(
             expected_identity_fields.add("credential_locator_id")
         if candidate.candidate_id == "complete-executor-workspace-v2-inventory":
             group_id = "hpc-primary"
+        elif candidate.candidate_id == "observe-existing-alphafold3-resource-closure":
+            group_id = "alphafold-hpc"
+            expected_identity_fields.update(
+                {
+                    "alphafold_version",
+                    "alphafold_wrapper_digest",
+                    "alphafold_source_commit",
+                    "alphafold_source_dirty_digest",
+                    "alphafold_inventory_generation_digest",
+                }
+            )
         else:
             group_id = projection_id
             if candidate.candidate_id in {
@@ -1213,6 +1268,7 @@ def build_external_identity_preparation_plan(
                 safe_input_fields=safe_input_fields,
                 credential_locator_id=credential_locator_id,
                 cleanup_action_id=cleanup_id,
+                mutating=cleanup_id is not None,
                 requires_credential_material=requires_credential,
                 gap_digests={gap.gap_digest},
                 decision_digests={decision.decision_digest},
@@ -1227,6 +1283,7 @@ def build_external_identity_preparation_plan(
                 or group.safe_input_fields != safe_input_fields
                 or group.credential_locator_id != credential_locator_id
                 or group.cleanup_action_id != cleanup_id
+                or group.mutating != (cleanup_id is not None)
                 or group.requires_credential_material != requires_credential
             ):
                 raise ExternalQualificationError(
@@ -1249,11 +1306,11 @@ def build_external_identity_preparation_plan(
             input_schema_id=group.input_schema_id,
             safe_input_fields=group.safe_input_fields,
             credential_locator_id=group.credential_locator_id,
-            mutating=True,
+            mutating=group.mutating,
             requires_credential_material=group.requires_credential_material,
             expected_identity_fields=tuple(sorted(group.expected_identity_fields)),
             cleanup_action_id=group.cleanup_action_id,
-            cleanup_deadline_seconds=24 * 60 * 60,
+            cleanup_deadline_seconds=(24 * 60 * 60 if group.mutating else None),
         )
         for group_id, group in action_groups.items()
     )

@@ -23,6 +23,7 @@ from enzymedesign_distribution import QUALIFICATION_STATE_ROOT_ENV
 from enzymedesign_distribution import QualificationOperatorStateLayout
 from enzymedesign_distribution import SafeIdentitySnapshot
 from enzymedesign_distribution import SelectedLiveQualificationBridgeFactory
+from enzymedesign_distribution import SelectedAlphaFoldLiveQualificationBridgeFactory
 from enzymedesign_distribution import SelectedQualificationProbeRouter
 from enzymedesign_distribution import validate_hpc_live_bridge_snapshot
 from enzymedesign_distribution import verify_live_qualification_receipt_set
@@ -58,6 +59,11 @@ def _parser() -> argparse.ArgumentParser:
             "Execute only this exact dry-plan unit in the occurrence; repeat for "
             "a bounded follow-up subset. The full dry plan remains the authority ceiling."
         ),
+    )
+    parser.add_argument(
+        "--batch-id",
+        choices=("batch-1", "batch-2-alphafold"),
+        default="batch-1",
     )
     return parser
 
@@ -135,6 +141,41 @@ def _field(snapshot: SafeIdentitySnapshot, projection_id: str, field_id: str) ->
             "qualification_live_subject_field_missing",
             "prepared subject lacks one exact live bridge field",
         ) from exc
+
+
+def _workspace_runtime_identity(
+    snapshot: SafeIdentitySnapshot,
+) -> SshWorkspaceRuntimeQualificationIdentity:
+    return SshWorkspaceRuntimeQualificationIdentity(
+        helper_path=DIANNAN_WORKSPACE_RUNTIME_PATH,
+        workspace_parent=DIANNAN_WORKSPACE_RUNTIME_PARENT,
+        policy_id=_field(snapshot, "hpc-control", "workspace_runtime_policy_id"),
+        helper_version=_field(snapshot, "hpc-control", "workspace_runtime_version"),
+        helper_build_digest=_field(
+            snapshot, "hpc-control", "workspace_runtime_build_digest"
+        ),
+        root_policy_digest=_field(
+            snapshot, "hpc-control", "workspace_runtime_root_policy_digest"
+        ),
+        principal_identity_digest=_field(
+            snapshot, "hpc-control", "workspace_runtime_principal_identity_digest"
+        ),
+        deployment_plan_digest=_field(
+            snapshot, "hpc-control", "workspace_runtime_deployment_plan_digest"
+        ),
+        deployment_receipt_digest=_field(
+            snapshot, "hpc-control", "workspace_runtime_deployment_receipt_digest"
+        ),
+        native_qualification_digest=_field(
+            snapshot, "hpc-control", "workspace_runtime_native_qualification_digest"
+        ),
+        file_owner=_field(snapshot, "hpc-control", "workspace_runtime_file_owner"),
+        file_group=_field(snapshot, "hpc-control", "workspace_runtime_file_group"),
+        file_mode=_field(snapshot, "hpc-control", "workspace_runtime_file_mode"),
+        observation_digest=_field(
+            snapshot, "hpc-control", "workspace_runtime_observation_digest"
+        ),
+    )
 
 
 def _prepared_git_repository(
@@ -270,8 +311,9 @@ def main() -> int:
         raise ValueError("post-preparation packet lacks one safe prepared snapshot")
     snapshot = SafeIdentitySnapshot.from_dict(prepared_snapshot)
     validate_hpc_live_bridge_snapshot(snapshot)
+    batch = ExternalQualificationBatch(args.batch_id)
     readiness = build_enzymedesign_external_qualification_plan(
-        plan_id="qualification.batch-1.exact-readiness",
+        plan_id=f"qualification.{batch.value}.exact-readiness",
         created_at=snapshot.observed_at,
         enabled_optional_profiles=OPTIONAL_PROFILES,
         credential_locator_ids=EXACT_EXTERNAL_QUALIFICATION_CREDENTIAL_LOCATORS,
@@ -284,11 +326,14 @@ def main() -> int:
         readiness_plan=readiness,
         discovery=discovery,
         gaps=build_external_identity_gaps(discovery),
-        batch=ExternalQualificationBatch.BATCH_1,
+        batch=batch,
     )
-    if dry_plan.dry_plan_digest != packet.get(
+    digest_field = (
         "batch_1_qualification_dry_plan_digest"
-    ):
+        if batch is ExternalQualificationBatch.BATCH_1
+        else "batch_2_qualification_dry_plan_digest"
+    )
+    if dry_plan.dry_plan_digest != packet.get(digest_field):
         raise ExternalQualificationError(
             "qualification_dry_plan_source_drift",
             "reconstructed Batch 1 dry plan differs from prepared evidence",
@@ -331,27 +376,6 @@ def main() -> int:
         preparation_authorization_digest, str
     ):
         raise ValueError("post-preparation packet lacks exact preparation identity")
-    git_repository = _prepared_git_repository(
-        layout=layout,
-        ledger=ledger,
-        snapshot=snapshot,
-    )
-    image_digests = {
-        "base": _field(snapshot, "podman-base", "approved_qualification_image_digest"),
-        "hmmer": _field(snapshot, "hmmer-local", "hmmer_image_digest"),
-        "docking": _field(snapshot, "vina-local", "vina_image_digest"),
-    }
-    if len(
-        {
-            image_digests["docking"],
-            _field(snapshot, "fpocket-local", "fpocket_image_digest"),
-            _field(snapshot, "preprocess-podman", "preprocess_image_digest"),
-        }
-    ) != 1:
-        raise ExternalQualificationError(
-            "qualification_docking_image_identity_drift",
-            "Vina, fpocket and preprocess do not share the prepared docking image",
-        )
     resolver = ProtectedQualificationCredentialBundleResolver(
         layout=layout,
         allowed_locator_ids=dry_plan.credential_locator_ids,
@@ -362,84 +386,79 @@ def main() -> int:
             "qualification_hpc_control_root_missing",
             "XDG_RUNTIME_DIR is required for the exact SSH qualification control socket",
         )
-    factory = SelectedLiveQualificationBridgeFactory(
-        credential_resolver=resolver,
-        protected_workspace_root=layout.root / "qualification-workspaces",
-        ssh_control_root=Path(ssh_control_root_value),
-        private_diagnostic_root=layout.private_evidence_root,
-        git_repository=git_repository,
-        image_digests=image_digests,
-        hpc_image_digests={
-            "hmmer": _field(snapshot, "hmmer-hpc", "hmmer_sif_digest"),
-            "vina": _field(snapshot, "vina-hpc", "vina_sif_digest"),
-            "fpocket": _field(snapshot, "fpocket-hpc", "fpocket_sif_digest"),
-        },
-        workspace_runtime_identity=SshWorkspaceRuntimeQualificationIdentity(
-            helper_path=DIANNAN_WORKSPACE_RUNTIME_PATH,
-            workspace_parent=DIANNAN_WORKSPACE_RUNTIME_PARENT,
-            policy_id=_field(
-                snapshot,
-                "hpc-control",
-                "workspace_runtime_policy_id",
+    if batch is ExternalQualificationBatch.BATCH_1:
+        git_repository = _prepared_git_repository(
+            layout=layout,
+            ledger=ledger,
+            snapshot=snapshot,
+        )
+        image_digests = {
+            "base": _field(
+                snapshot, "podman-base", "approved_qualification_image_digest"
             ),
-            helper_version=_field(
-                snapshot,
-                "hpc-control",
-                "workspace_runtime_version",
-            ),
-            helper_build_digest=_field(
-                snapshot,
-                "hpc-control",
-                "workspace_runtime_build_digest",
-            ),
-            root_policy_digest=_field(
-                snapshot,
-                "hpc-control",
-                "workspace_runtime_root_policy_digest",
-            ),
-            principal_identity_digest=_field(
-                snapshot,
-                "hpc-control",
-                "workspace_runtime_principal_identity_digest",
-            ),
-            deployment_plan_digest=_field(
-                snapshot,
-                "hpc-control",
-                "workspace_runtime_deployment_plan_digest",
-            ),
-            deployment_receipt_digest=_field(
-                snapshot,
-                "hpc-control",
-                "workspace_runtime_deployment_receipt_digest",
-            ),
-            native_qualification_digest=_field(
-                snapshot,
-                "hpc-control",
-                "workspace_runtime_native_qualification_digest",
-            ),
-            file_owner=_field(
-                snapshot,
-                "hpc-control",
-                "workspace_runtime_file_owner",
-            ),
-            file_group=_field(
-                snapshot,
-                "hpc-control",
-                "workspace_runtime_file_group",
-            ),
-            file_mode=_field(
-                snapshot,
-                "hpc-control",
-                "workspace_runtime_file_mode",
-            ),
-            observation_digest=_field(
-                snapshot,
-                "hpc-control",
-                "workspace_runtime_observation_digest",
-            ),
-        ),
-        tavily_deadline_at=(datetime.now(tz=UTC) + timedelta(minutes=10)).isoformat(),
-    )
+            "hmmer": _field(snapshot, "hmmer-local", "hmmer_image_digest"),
+            "docking": _field(snapshot, "vina-local", "vina_image_digest"),
+        }
+        if len(
+            {
+                image_digests["docking"],
+                _field(snapshot, "fpocket-local", "fpocket_image_digest"),
+                _field(snapshot, "preprocess-podman", "preprocess_image_digest"),
+            }
+        ) != 1:
+            raise ExternalQualificationError(
+                "qualification_docking_image_identity_drift",
+                "Vina, fpocket and preprocess do not share the prepared image",
+            )
+        factory = SelectedLiveQualificationBridgeFactory(
+            credential_resolver=resolver,
+            protected_workspace_root=layout.root / "qualification-workspaces",
+            ssh_control_root=Path(ssh_control_root_value),
+            private_diagnostic_root=layout.private_evidence_root,
+            git_repository=git_repository,
+            image_digests=image_digests,
+            hpc_image_digests={
+                "hmmer": _field(snapshot, "hmmer-hpc", "hmmer_sif_digest"),
+                "vina": _field(snapshot, "vina-hpc", "vina_sif_digest"),
+                "fpocket": _field(snapshot, "fpocket-hpc", "fpocket_sif_digest"),
+            },
+            workspace_runtime_identity=_workspace_runtime_identity(snapshot),
+            tavily_deadline_at=(
+                datetime.now(tz=UTC) + timedelta(minutes=10)
+            ).isoformat(),
+        )
+    else:
+        config_path = layout.root / "alphafold-qualification" / "config.json"
+        _validate_private_file(config_path)
+        alphafold_config = _load_object(config_path)
+        if (
+            alphafold_config.get("preparation_plan_digest")
+            != preparation_plan_digest
+            or alphafold_config.get("preparation_authorization_digest")
+            != preparation_authorization_digest
+            or alphafold_config.get("image_digest")
+            != _field(snapshot, "alphafold-hpc", "alphafold_gpu_image_digest")
+            or alphafold_config.get("model_parameters_digest")
+            != _field(snapshot, "alphafold-hpc", "model_parameters_digest")
+            or alphafold_config.get("database_closure_digest")
+            != _field(snapshot, "alphafold-hpc", "database_closure_digest")
+            or alphafold_config.get("gpu_capability_digest")
+            != _field(snapshot, "alphafold-hpc", "gpu_capability_fact")
+            or alphafold_config.get("fixed_monomer_input_digest")
+            != _field(snapshot, "alphafold-hpc", "fixed_monomer_input_digest")
+        ):
+            raise ExternalQualificationError(
+                "qualification_alphafold_config_subject_drift",
+                "AlphaFold private config differs from the prepared subject",
+            )
+        factory = SelectedAlphaFoldLiveQualificationBridgeFactory(
+            credential_resolver=resolver,
+            protected_workspace_root=layout.root / "qualification-workspaces",
+            ssh_control_root=Path(ssh_control_root_value),
+            private_diagnostic_root=layout.private_evidence_root,
+            workspace_runtime_identity=_workspace_runtime_identity(snapshot),
+            alphafold_config=alphafold_config,
+        )
     try:
         router = SelectedQualificationProbeRouter(
             dry_plan=dry_plan,
