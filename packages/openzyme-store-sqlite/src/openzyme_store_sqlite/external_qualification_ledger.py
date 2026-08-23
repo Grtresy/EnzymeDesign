@@ -33,6 +33,13 @@ class ProtectedQualificationLedgerPort(Protocol):
         self, result: ExternalIdentityPreparationResult
     ) -> None: ...
 
+    def restore_preparation_results_by_safe_identity(
+        self,
+        *,
+        owner_component_id: str,
+        safe_identity_fields: Mapping[str, str],
+    ) -> tuple[ExternalIdentityPreparationResult, ...]: ...
+
     def record_probe_outcome(
         self,
         *,
@@ -351,6 +358,35 @@ class SQLiteProtectedQualificationLedger:
             for payload in self.read_preparation_results(preparation_plan_digest)
             if payload.get("authorization_digest") == authorization_digest
         )
+
+    def restore_preparation_results_by_safe_identity(
+        self,
+        *,
+        owner_component_id: str,
+        safe_identity_fields: Mapping[str, str],
+    ) -> tuple[ExternalIdentityPreparationResult, ...]:
+        if not owner_component_id or not safe_identity_fields:
+            raise ValueError("preparation identity lookup must be exact and non-empty")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload_json FROM external_identity_preparation_results "
+                "ORDER BY occurrence_id"
+            ).fetchall()
+        expected = dict(safe_identity_fields)
+        matches = []
+        for (payload_json,) in rows:
+            result = ExternalIdentityPreparationResult.from_dict(
+                json.loads(payload_json)
+            )
+            fields = {
+                item.field_id: item.value for item in result.safe_identity_fields
+            }
+            if result.owner_component_id == owner_component_id and all(
+                fields.get(field_id) == value
+                for field_id, value in expected.items()
+            ):
+                matches.append(result)
+        return tuple(matches)
 
     def restore_probe_outcomes(
         self,

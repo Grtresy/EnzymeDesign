@@ -128,6 +128,14 @@ def test_adapter_owned_ledger_records_safe_preparation_result_once(tmp_path) -> 
         DIGEST,
         next_occurrence.authorization_digest,
     ) == (next_occurrence,)
+    assert ledger.restore_preparation_results_by_safe_identity(
+        owner_component_id="provider.owner",
+        safe_identity_fields={"locator_digest": DIGEST},
+    ) == (result, next_occurrence)
+    assert ledger.restore_preparation_results_by_safe_identity(
+        owner_component_id="another.owner",
+        safe_identity_fields={"locator_digest": DIGEST},
+    ) == ()
 
 
 def test_adapter_owned_ledger_restores_terminal_probe_without_redispatch(

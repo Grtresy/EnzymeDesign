@@ -126,6 +126,48 @@ def _field(snapshot: SafeIdentitySnapshot, projection_id: str, field_id: str) ->
         ) from exc
 
 
+def _prepared_git_repository(
+    *,
+    layout: QualificationOperatorStateLayout,
+    ledger: SQLiteProtectedQualificationLedger,
+    snapshot: SafeIdentitySnapshot,
+) -> Path:
+    identity_fields = {
+        field_id: _field(snapshot, "git-primary", field_id)
+        for field_id in (
+            "local_repository_endpoint",
+            "local_lfs_endpoint_identity",
+            "repository_policy_digest",
+            "local_process_scope_digest",
+        )
+    }
+    matches = ledger.restore_preparation_results_by_safe_identity(
+        owner_component_id="openzyme.workspace.git.lfs",
+        safe_identity_fields=identity_fields,
+    )
+    if len(matches) != 1:
+        raise ExternalQualificationError(
+            "qualification_git_prepared_identity_not_unique",
+            "prepared Git/LFS identity must resolve to exactly one protected occurrence",
+        )
+    repository_root = layout.root / "git-lfs"
+    repository = repository_root / matches[0].occurrence_id
+    owner_marker = repository / ".openzyme-qualification-owner"
+    if (
+        repository.parent != repository_root
+        or repository.is_symlink()
+        or not repository.is_dir()
+        or not owner_marker.is_file()
+        or owner_marker.is_symlink()
+        or owner_marker.read_text(encoding="utf-8") != matches[0].occurrence_id
+    ):
+        raise ExternalQualificationError(
+            "qualification_git_prepared_repository_invalid",
+            "prepared Git/LFS repository does not match its protected owner occurrence",
+        )
+    return repository
+
+
 def _load_revocation(
     layout: QualificationOperatorStateLayout,
     authorization: ExternalQualificationOccurrenceAuthorization,
@@ -269,16 +311,11 @@ def main() -> int:
         preparation_authorization_digest, str
     ):
         raise ValueError("post-preparation packet lacks exact preparation identity")
-    preparation_results = ledger.restore_preparation_results(
-        preparation_plan_digest,
-        preparation_authorization_digest,
+    git_repository = _prepared_git_repository(
+        layout=layout,
+        ledger=ledger,
+        snapshot=snapshot,
     )
-    git_result = next(
-        item
-        for item in preparation_results
-        if item.owner_component_id == "openzyme.workspace.git.lfs"
-    )
-    git_repository = layout.root / "git-lfs" / git_result.occurrence_id
     image_digests = {
         "base": _field(snapshot, "podman-base", "approved_qualification_image_digest"),
         "hmmer": _field(snapshot, "hmmer-local", "hmmer_image_digest"),

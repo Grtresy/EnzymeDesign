@@ -41,6 +41,18 @@ def _preparation_script_module():
     return module
 
 
+def _qualification_script_module():
+    script_path = REPO_ROOT / "scripts/execute-external-qualification.py"
+    spec = importlib.util.spec_from_file_location(
+        "openzyme_external_qualification_script",
+        script_path,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _dry_plan_script_module():
     script_path = REPO_ROOT / "scripts/build-external-qualification-dry-plan.py"
     spec = importlib.util.spec_from_file_location(
@@ -197,6 +209,51 @@ def test_preparation_entry_checks_revocation_before_credential_resolution() -> N
     terminal_restore = source.rindex("terminal_document = _restore_terminal_private_evidence(")
 
     assert revocation_guard < terminal_restore < resolver_construction < credential_preflight
+
+
+def test_qualification_resolves_persisted_git_identity_across_preparation_plans(
+    tmp_path: Path,
+) -> None:
+    module = _qualification_script_module()
+    occurrence_id = "authorization.prior.prepare.batch-1.git-primary"
+    repository_root = tmp_path / "git-lfs"
+    repository_root.mkdir(mode=0o700)
+    repository = repository_root / occurrence_id
+    repository.mkdir(mode=0o700)
+    marker = repository / ".openzyme-qualification-owner"
+    marker.write_text(occurrence_id, encoding="utf-8")
+    marker.chmod(0o600)
+    identity_fields = {
+        "local_repository_endpoint": "local-git-lfs.qualification.exact",
+        "local_lfs_endpoint_identity": "sha256:" + "1" * 64,
+        "repository_policy_digest": "sha256:" + "2" * 64,
+        "local_process_scope_digest": "sha256:" + "3" * 64,
+    }
+    snapshot = SimpleNamespace(
+        projections=(
+            SimpleNamespace(
+                projection_id="git-primary",
+                safe_fields=tuple(
+                    SimpleNamespace(field_id=field_id, value=value)
+                    for field_id, value in identity_fields.items()
+                ),
+            ),
+        )
+    )
+
+    class _Ledger:
+        def restore_preparation_results_by_safe_identity(
+            self, *, owner_component_id, safe_identity_fields
+        ):
+            assert owner_component_id == "openzyme.workspace.git.lfs"
+            assert safe_identity_fields == identity_fields
+            return (SimpleNamespace(occurrence_id=occurrence_id),)
+
+    assert module._prepared_git_repository(
+        layout=SimpleNamespace(root=tmp_path),
+        ledger=_Ledger(),
+        snapshot=snapshot,
+    ) == repository
 
 
 def test_terminal_private_evidence_restores_exact_packet_without_regeneration(
