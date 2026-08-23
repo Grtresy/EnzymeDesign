@@ -134,8 +134,61 @@ def test_preparation_entry_checks_revocation_before_credential_resolution() -> N
     credential_preflight = source.index(
         "preflight_enzymedesign_identity_preparation_credentials("
     )
+    terminal_restore = source.rindex("terminal_document = _restore_terminal_private_evidence(")
 
-    assert revocation_guard < resolver_construction < credential_preflight
+    assert revocation_guard < terminal_restore < resolver_construction < credential_preflight
+
+
+def test_terminal_private_evidence_restores_exact_packet_without_regeneration(
+    tmp_path: Path,
+) -> None:
+    preparation = _preparation_script_module()
+    evidence_root = tmp_path / "private-evidence"
+    evidence_root.mkdir(mode=0o700)
+    layout = SimpleNamespace(private_evidence_root=evidence_root)
+    authorization = SimpleNamespace(
+        authorization_id="authorization.preparation.batch-1",
+        authorization_digest="sha256:" + "2" * 64,
+    )
+    source_identity = {"digest": "sha256:" + "1" * 64, "commit": "abc123"}
+    prepared_snapshot = {"schema_version": "safe_snapshot@1", "observed_at": "then"}
+    document = {
+        "schema_version": "enzymedesign_post_preparation_operator_packet@1",
+        "claim": "prepared_not_qualified",
+        "source_identity": source_identity,
+        "source_identity_digest": source_identity["digest"],
+        "preparation_plan_digest": "sha256:" + "3" * 64,
+        "preparation_authorization_digest": authorization.authorization_digest,
+        "preparation_result_digests": ["sha256:" + "4" * 64],
+        "prepared_snapshot": prepared_snapshot,
+        "rediscovery": {"summary": {"batch_1_authorizable": True}},
+        "batch_1_qualification_dry_plan_digest": "sha256:" + "5" * 64,
+        "credential_material_persisted": False,
+        "qualified": False,
+        "cutover": False,
+        "fallback_performed": False,
+    }
+    document["packet_digest"] = preparation.canonical_sha256_digest(document)
+    preparation._write_private_json(
+        evidence_root / "prepared-snapshot-authorization.preparation.batch-1.json",
+        prepared_snapshot,
+    )
+    preparation._write_private_json(
+        evidence_root
+        / "post-preparation-packet-authorization.preparation.batch-1.json",
+        document,
+    )
+
+    restored = preparation._restore_terminal_private_evidence(
+        layout=layout,
+        source_identity=source_identity,
+        plan_digest="sha256:" + "3" * 64,
+        authorization=authorization,
+        result_digests=("sha256:" + "4" * 64,),
+        expected_result_count=1,
+    )
+
+    assert restored == document
 
 
 def test_preparation_failure_diagnostic_is_private_bounded_evidence(

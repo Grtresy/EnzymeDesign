@@ -122,6 +122,92 @@ def _write_private_json(path: Path, payload: dict[str, object]) -> None:
         os.close(descriptor)
 
 
+def _restore_terminal_private_evidence(
+    *,
+    layout: QualificationOperatorStateLayout,
+    source_identity: dict[str, object],
+    plan_digest: str,
+    authorization: ExternalIdentityPreparationOccurrenceAuthorization,
+    result_digests: tuple[str, ...],
+    expected_result_count: int,
+) -> dict[str, object] | None:
+    suffix = authorization.authorization_id
+    snapshot_path = (
+        layout.private_evidence_root / f"prepared-snapshot-{suffix}.json"
+    )
+    packet_path = (
+        layout.private_evidence_root / f"post-preparation-packet-{suffix}.json"
+    )
+    present = tuple(path.exists() or path.is_symlink() for path in (snapshot_path, packet_path))
+    if not any(present):
+        return None
+    if not all(present) or len(result_digests) != expected_result_count:
+        raise ExternalQualificationError(
+            "qualification_private_evidence_conflict",
+            "terminal private evidence is incomplete for the exact occurrence",
+        )
+    for path in (snapshot_path, packet_path):
+        _validate_private_file(path)
+    prepared_snapshot = _load_object(snapshot_path)
+    document = _load_object(packet_path)
+    unsigned_document = {
+        key: value for key, value in document.items() if key != "packet_digest"
+    }
+    if (
+        document.get("schema_version")
+        != "enzymedesign_post_preparation_operator_packet@1"
+        or document.get("claim") != "prepared_not_qualified"
+        or document.get("source_identity") != source_identity
+        or document.get("source_identity_digest") != source_identity.get("digest")
+        or document.get("preparation_plan_digest") != plan_digest
+        or document.get("preparation_authorization_digest")
+        != authorization.authorization_digest
+        or document.get("preparation_result_digests") != list(result_digests)
+        or document.get("prepared_snapshot") != prepared_snapshot
+        or document.get("credential_material_persisted") is not False
+        or document.get("qualified") is not False
+        or document.get("cutover") is not False
+        or document.get("fallback_performed") is not False
+        or document.get("packet_digest")
+        != canonical_sha256_digest(unsigned_document)
+        or not isinstance(
+            document.get("batch_1_qualification_dry_plan_digest"), str
+        )
+    ):
+        raise ExternalQualificationError(
+            "qualification_private_evidence_conflict",
+            "terminal private evidence differs from the exact occurrence",
+        )
+    return document
+
+
+def _print_terminal_summary(
+    document: dict[str, object],
+    *,
+    result_count: int,
+    terminal_results_restored: bool,
+) -> None:
+    print(f"preparation_plan_digest={document['preparation_plan_digest']}")
+    print(
+        "preparation_authorization_digest="
+        f"{document['preparation_authorization_digest']}"
+    )
+    print(f"preparation_result_count={result_count}")
+    print(f"post_preparation_packet_digest={document['packet_digest']}")
+    print(
+        "batch_1_qualification_dry_plan_digest="
+        f"{document['batch_1_qualification_dry_plan_digest']}"
+    )
+    print(f"terminal_results_restored={str(terminal_results_restored).lower()}")
+    print(
+        "external_effect_performed="
+        f"{str(not terminal_results_restored).lower()}"
+    )
+    print("qualified=false")
+    print("cutover=false")
+    print("fallback_performed=false")
+
+
 def _load_preparation_revocation(
     *,
     layout: QualificationOperatorStateLayout,
@@ -298,15 +384,6 @@ def main() -> int:
         revocation,
     )
 
-    resolver = ProtectedQualificationCredentialBundleResolver(
-        layout=layout,
-        allowed_locator_ids=plan.credential_locator_ids,
-    )
-    preloaded = preflight_enzymedesign_identity_preparation_credentials(
-        plan=plan,
-        resolver=resolver,
-    )
-
     existing_results = ()
     if layout.ledger_path.exists() or layout.ledger_path.is_symlink():
         _validate_private_file(layout.ledger_path)
@@ -316,6 +393,30 @@ def main() -> int:
             plan.preparation_plan_digest,
             authorization.authorization_digest,
         )
+    terminal_document = _restore_terminal_private_evidence(
+        layout=layout,
+        source_identity=source.as_dict(),
+        plan_digest=plan.preparation_plan_digest,
+        authorization=authorization,
+        result_digests=tuple(item.result_digest for item in existing_results),
+        expected_result_count=len(plan.actions),
+    )
+    if terminal_document is not None:
+        _print_terminal_summary(
+            terminal_document,
+            result_count=len(existing_results),
+            terminal_results_restored=True,
+        )
+        return 0
+
+    resolver = ProtectedQualificationCredentialBundleResolver(
+        layout=layout,
+        allowed_locator_ids=plan.credential_locator_ids,
+    )
+    preloaded = preflight_enzymedesign_identity_preparation_credentials(
+        plan=plan,
+        resolver=resolver,
+    )
     factory = build_enzymedesign_identity_preparation_backend_factory(
         layout=layout,
         allowed_locator_ids=plan.credential_locator_ids,
@@ -396,17 +497,11 @@ def main() -> int:
         layout.private_evidence_root / f"post-preparation-packet-{suffix}.json",
         document,
     )
-    print(f"preparation_plan_digest={execution.plan_digest}")
-    print(f"preparation_authorization_digest={execution.authorization_digest}")
-    print(f"preparation_result_count={len(execution.results)}")
-    print(f"post_preparation_packet_digest={document['packet_digest']}")
-    print(
-        "batch_1_qualification_dry_plan_digest="
-        f"{document['batch_1_qualification_dry_plan_digest']}"
+    _print_terminal_summary(
+        document,
+        result_count=len(execution.results),
+        terminal_results_restored=False,
     )
-    print("qualified=false")
-    print("cutover=false")
-    print("fallback_performed=false")
     return 0
 
 

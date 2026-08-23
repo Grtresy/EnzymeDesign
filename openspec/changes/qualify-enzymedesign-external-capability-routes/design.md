@@ -89,6 +89,8 @@ operator candidate decision 只选择如何补齐 identity，不授权执行。�
 
 首次 preparation effect 需要独立、持久、一次性的 `ExternalIdentityPreparationOccurrenceAuthorization` 绑定 exact preparation-plan digest、batch 和 operator，不设置 wall-clock 有效期。该 authority 只允许启动或恢复同一 exact occurrence：已持久化的 terminal action 直接恢复且不得重复派发；source、plan、batch、operator 任一漂移都会失效，也可由绑定 exact authorization 的私有 revocation evidence 显式撤销。没有 authority 或 authority 已撤销时，preparation backend 必须在 credential resolution、建仓、容器、SSH/Slurm 或其他 effect 前 fail closed。Preparation terminal observation 只能补齐/否决 subject identity，不能生成 `qualified` evidence。
 
+当同一 occurrence 的全部 action result、prepared snapshot 与 post-preparation packet 已终态持久化时，后续调用必须在 credential resolver 与 owner backend 构造前验证并恢复 exact 私有证据；不得以新的 wall-clock 时间重建 snapshot/packet，也不得再次访问 credential 或 redispatch effect。
+
 每个成功 preparation action 产生 `ExternalIdentityPreparationResult`，绑定 occurrence、preparation plan、authorization、owner、input-binding digest、terminal observation 与 exact safe identity fields。结果写入 protected SQLite ledger；effect-free rediscovery 只消费这些安全字段。重新构造 live qualification dry plan 时，readiness catalog 中的 `nonlive.locator.*` 必须被 exact LLM/Tavily/HPC locator 取代，本地 Git/LFS 的 non-live credential placeholder 必须移除，变化后的 unit digest 才可进入 real-subject plan。
 
 `ExternalQualificationDryPlan` 绑定 source identity、readiness catalog/plan digest、resolved subjects、unit set、probe/fault sequence、budgets、credential locators、effect allowlist、cleanup、TTL/storage policy 和 `live_effect_authorized=false`。独立 verifier 必须证明 exact closure、no secret、no fallback、所有 effect 尚未发生。
