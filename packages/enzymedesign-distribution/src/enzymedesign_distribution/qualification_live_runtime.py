@@ -596,11 +596,22 @@ def exercise_live_qualification_negative_gate(
         )
     )
     if not response_loss_units:
-        raise ExternalQualificationError(
-            "qualification_response_loss_fixture_missing",
-            "live plan lacks an exact same-attempt response-loss unit",
+        terminal_only_alphafold = (
+            dry_plan.batch_id == "batch-2-alphafold"
+            and len(selected_unit_digests) == 1
+            and unit.component_id == "enzymedesign.alphafold.hpc"
+            and unit.operation == "predict"
         )
-    failures["response.loss"] = "planned_same_attempt_reconcile"
+        if not terminal_only_alphafold:
+            raise ExternalQualificationError(
+                "qualification_response_loss_fixture_missing",
+                "live plan lacks an exact same-attempt response-loss unit",
+            )
+        failures["response.loss"] = "terminal_scientific_route_no_redispatch"
+        response_loss_policy = "terminal_only_fail_closed_without_redispatch"
+    else:
+        failures["response.loss"] = "planned_same_attempt_reconcile"
+        response_loss_policy = "same_attempt_reconcile"
     return canonical_sha256_digest(
         {
             "schema_version": "external_live_qualification_negative_gate@1",
@@ -609,6 +620,7 @@ def exercise_live_qualification_negative_gate(
             "operator_id": operator_id,
             "checks": failures,
             "response_loss_unit_digests": list(response_loss_units),
+            "response_loss_policy": response_loss_policy,
             "external_effect_performed": False,
             "credential_material_accessed": False,
             "fallback_performed": False,

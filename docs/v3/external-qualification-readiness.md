@@ -194,6 +194,10 @@ source commit/dirty digest 与 Apptainer version，并以 exact digest 生成 ow
 `max_retries=0`、无 fallback，并在结束时验证实际 GPU identity、CIF、summary confidence 及 cleanup。流程不执行
 license acceptance，缺少既有合法资源时保持 `blocked_identity`，不能自动下载、重建或选择另一 target。Batch 2 的
 独立 preparation/qualification authority 与 7 天 receipt 不能替代 Batch 1 receipt，更不能直接形成 cutover。
+Batch 2 只有一个 terminal `predict` unit，不伪造不存在的 response-loss operation；其 `response.loss` 负门固定为
+terminal scientific route 无 redispatch，仍同时执行缺失 authority、operation/schema mismatch 与 timeout-before-effect。
+路由级 resource drift、expected output 缺失、GPU mismatch 和 cleanup failure 由 deterministic negative regression
+闭合。只有 Batch 1 含明确 reconcile operation 的 unit 才可声明 same-attempt reconcile，其他 batch 不得借此放宽。
 若一次只读观测已终态、但后续本地 rediscovery 因源码缺陷失败，新 source/plan/authority 不得删除或盲目覆盖既有
 私有配置；executor 只允许在重新观测的全部 resource identity 完全相等且旧配置 digest/owner/mode 完整时，原子更新
 plan/authority 绑定并记录 prior config digest。任一稳定资源字段漂移都停止 reconcile，禁止把该路径当作 retry 或 fallback。

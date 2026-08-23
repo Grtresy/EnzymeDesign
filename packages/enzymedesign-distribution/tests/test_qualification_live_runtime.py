@@ -23,6 +23,9 @@ from openzyme_contracts import ExternalRealSubjectIdentity
 from openzyme_contracts import canonical_sha256_digest
 from openzyme_store_sqlite import SQLiteProtectedQualificationLedger
 from enzymedesign_distribution.qualification_live_runtime import _unit_cleanup_ok
+from enzymedesign_distribution.qualification_live_runtime import (
+    exercise_live_qualification_negative_gate,
+)
 
 
 DIGEST = "sha256:" + "1" * 64
@@ -151,6 +154,125 @@ def _plans():
         authorized_at=OBSERVED_AT,
     )
     return readiness, dry_plan, authorization
+
+
+def _alphafold_plans():
+    unit = _unit(
+        "enzymedesign.alphafold.hpc",
+        "predict",
+        "enzymedesign.alphafold.hpc-primary@1",
+        "hpc-primary",
+    )
+    readiness = ExternalQualificationPlan.create(
+        plan_id="qualification.alphafold.live-runtime.test",
+        distribution_id="enzymedesign",
+        distribution_digest=DIGEST,
+        enabled_profiles=("alphafold",),
+        profiles=(
+            ExternalQualificationProfileRef(
+                profile_id="alphafold",
+                required=False,
+                unit_digests=(unit.unit_digest,),
+                required_negative_tests=(
+                    "auth.failure",
+                    "operation.mismatch",
+                    "response.loss",
+                    "schema.mismatch",
+                    "timeout.before.effect",
+                ),
+            ),
+        ),
+        units=(unit,),
+        created_at=OBSERVED_AT,
+        live_allowed=False,
+    )
+    subject = ExternalRealSubjectIdentity.create(
+        identity_id="identity.alphafold.diannan-3090",
+        logical_subject_id="hpc-primary",
+        subject_kind=unit.subject_kind,
+        endpoint_or_runtime_id="runtime.diannan-3090.alphafold3",
+        account_or_deployment_digest=DIGEST,
+        api_or_route_variant="qualification-v1",
+        environment_or_inventory_digest=DIGEST,
+        policy_digest=DIGEST,
+        source_observation_digest=DIGEST,
+    )
+    dry_plan = ExternalQualificationDryPlan.create(
+        plan_id="qualification.alphafold.live-runtime.dry-plan",
+        batch_id="batch-2-alphafold",
+        source_digest=DIGEST,
+        readiness_plan_digest=readiness.plan_digest,
+        discovery_report_digest=DIGEST,
+        unit_bindings=(
+            ExternalQualificationUnitSubjectBinding(
+                unit_digest=unit.unit_digest,
+                profile_id="alphafold",
+                subject_digest=subject.subject_digest,
+            ),
+        ),
+        subjects=(subject,),
+        budgets=(
+            ExternalQualificationBudgetPolicy(
+                "budget.batch-2.cash",
+                "batch-2-alphafold",
+                "cash",
+                25,
+                100,
+                "usd",
+            ),
+        ),
+        credential_locator_ids=(),
+        effect_policies=(
+            ExternalQualificationEffectPolicy(
+                "qualification.alphafold.fixed-inference",
+                "batch-2-alphafold",
+                True,
+                "cleanup.alphafold.workspace",
+                1_800,
+            ),
+        ),
+        fault_policies=(
+            ExternalQualificationFaultPolicy(
+                "response.loss",
+                "scientific-route.terminal",
+                True,
+            ),
+        ),
+        ttl_policies=(
+            ExternalQualificationTtlPolicy("ttl.alphafold", "alphafold", 604_800),
+        ),
+        storage_policy=ExternalQualificationStoragePolicy(
+            ledger_id="qualification.ledger.sqlite",
+            private_evidence_root_id="qualification.evidence.private",
+            public_export_secret_safe=True,
+            credential_material_persisted=False,
+        ),
+        max_retries=0,
+        created_at=OBSERVED_AT,
+        live_effect_authorized=False,
+    )
+    authorization = ExternalQualificationOccurrenceAuthorization.create(
+        authorization_id="authorization.alphafold.live-runtime.test",
+        dry_plan_digest=dry_plan.dry_plan_digest,
+        batch_id="batch-2-alphafold",
+        operator_id="operator.enzymedesign-owner",
+        authorized_at=OBSERVED_AT,
+    )
+    return readiness, dry_plan, authorization
+
+
+def test_alphafold_negative_gate_uses_terminal_no_redispatch_policy() -> None:
+    readiness, dry_plan, authorization = _alphafold_plans()
+
+    digest = exercise_live_qualification_negative_gate(
+        dry_plan=dry_plan,
+        readiness_plan=readiness,
+        authorization=authorization,
+        operator_id="operator.enzymedesign-owner",
+        observed_at=OBSERVED_AT,
+    )
+
+    assert digest.startswith("sha256:")
 
 
 @dataclass
