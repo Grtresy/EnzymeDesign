@@ -136,6 +136,8 @@ Distribution 只负责编排和验证，不直接实现 Provider/Git/Podman/SSH/
 
 plan-only factory 可以构造 bridge metadata，但不会构造 credential-bearing backend。live factory 需要 exact selected binding、resolved subject、credential locator、budget lease 和 occurrence authorization 全部一致。
 
+Repository-owned scientific image recipes 从同一官方 Git URL 完整取得固定 commit，并显式固定 Git HTTP/1.1；禁止 partial-clone promisor checkout、自动 retry 或镜像源 fallback。这样 checkout 只消费本地完整对象闭包，网络失败仍以单次 occurrence 的 terminal failure 暴露并由 operator 决定后续处理。
+
 在 preparation authority 之前可实现和非 live 测试 bridge 代码，但不得构造真实 backend。当前已闭合 LLM、Tavily、公共 Bio HTTP 的 typed Adapter bridge，以及 Git/LFS、Podman、SSH、Slurm 和科学 Driver 的 owner/route/subject guard；authorization-bound Distribution router 会在任何 owner builder 前验证 exact dry-plan authority。基础设施的真实 typed operation builder、科学 fixed-smoke workload 与 terminal validator 仍需在 preparation 产生 exact repository/image/target identity 后完成，因此这些 guard 测试不得表述为真实外部资格已通过。
 
 ### 11. Receipt 只能由真实终态 evidence 形成

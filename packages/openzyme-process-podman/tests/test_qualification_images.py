@@ -61,6 +61,28 @@ def test_docking_recipe_matches_pinned_legacy_build_system_and_fpocket_runtime()
     ) in containerfile
 
 
+@pytest.mark.parametrize(
+    ("containerfile_name", "expected_complete_clones"),
+    (("Containerfile.hmmer", 1), ("Containerfile.docking", 2)),
+)
+def test_source_fetches_use_complete_http11_clones_without_retry_or_fallback(
+    containerfile_name: str,
+    expected_complete_clones: int,
+) -> None:
+    containerfile = (
+        files("openzyme_process_podman.qualification_image_assets")
+        .joinpath(containerfile_name)
+        .read_text(encoding="utf-8")
+    )
+
+    assert "--filter=blob:none" not in containerfile
+    assert containerfile.count("git -c http.version=HTTP/1.1 clone") == (
+        expected_complete_clones
+    )
+    assert "retry" not in containerfile.lower()
+    assert "mirror" not in containerfile.lower()
+
+
 def test_hmmer_recipe_initializes_commit_pinned_easel_submodule() -> None:
     containerfile = (
         files("openzyme_process_podman.qualification_image_assets")
@@ -69,7 +91,10 @@ def test_hmmer_recipe_initializes_commit_pinned_easel_submodule() -> None:
     )
 
     assert "git -C /src/hmmer checkout --detach" in containerfile
-    assert "git -C /src/hmmer submodule update --init --recursive" in containerfile
+    assert (
+        "git -c http.version=HTTP/1.1 -C /src/hmmer "
+        "submodule update --init --recursive"
+    ) in containerfile
     assert containerfile.index("checkout --detach") < containerfile.index(
         "submodule update --init --recursive"
     )

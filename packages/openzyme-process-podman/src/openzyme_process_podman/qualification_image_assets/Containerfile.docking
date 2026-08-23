@@ -8,11 +8,11 @@ RUN printf 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debia
     && rm -f /etc/apt/sources.list.d/debian.sources \
     && apt-get -o Acquire::Check-Valid-Until=false update \
     && apt-get install -y --no-install-recommends build-essential git libboost-all-dev libnetcdf-dev \
-    && git clone --filter=blob:none https://github.com/ccsb-scripps/AutoDock-Vina.git /src/vina \
+    && git -c http.version=HTTP/1.1 clone https://github.com/ccsb-scripps/AutoDock-Vina.git /src/vina \
     && git -C /src/vina checkout --detach "${VINA_COMMIT}" \
     && test "$(git -C /src/vina rev-parse HEAD)" = "${VINA_COMMIT}" \
     && make -C /src/vina/build/linux/release -j2 \
-    && git clone --filter=blob:none https://github.com/Discngine/fpocket.git /src/fpocket \
+    && git -c http.version=HTTP/1.1 clone https://github.com/Discngine/fpocket.git /src/fpocket \
     && git -C /src/fpocket checkout --detach "${FPOCKET_COMMIT}" \
     && test "$(git -C /src/fpocket rev-parse HEAD)" = "${FPOCKET_COMMIT}" \
     && make -C /src/fpocket CXX=g++
