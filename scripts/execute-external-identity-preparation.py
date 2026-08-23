@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import sys
 from typing import Any
 
 from enzymedesign_distribution import EXACT_EXTERNAL_QUALIFICATION_CREDENTIAL_LOCATORS
@@ -115,6 +116,62 @@ def _write_private_json(path: Path, payload: dict[str, object]) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _record_private_failure_diagnostic(
+    *,
+    layout: QualificationOperatorStateLayout,
+    source_digest: str,
+    plan_digest: str,
+    authorization_digest: str,
+    error: ExternalQualificationError,
+) -> str:
+    diagnostic_id = error.diagnostic_id or (
+        "diagnostic.preparation."
+        + canonical_sha256_digest(
+            {
+                "source_digest": source_digest,
+                "plan_digest": plan_digest,
+                "authorization_digest": authorization_digest,
+                "error_code": error.error_code,
+            }
+        ).removeprefix("sha256:")[:24]
+    )
+    payload: dict[str, object] = {
+        "schema_version": "enzymedesign_preparation_private_diagnostic@1",
+        "diagnostic_id": diagnostic_id,
+        "observed_at": _now(),
+        "source_identity_digest": source_digest,
+        "preparation_plan_digest": plan_digest,
+        "preparation_authorization_digest": authorization_digest,
+        "error_code": error.error_code,
+        "component": getattr(error, "component", "enzymedesign.distribution"),
+        "phase": getattr(error, "phase", "identity-preparation"),
+        "effect_certainty": getattr(error, "effect_certainty", "no_effect_observed"),
+        "mutation_applied": bool(error.mutation_applied),
+        "fallback_performed": bool(error.fallback_performed),
+        "retry_performed": False,
+        "reconcile_policy": "operator_required_before_new_occurrence",
+        "cause_type": type(error).__name__,
+        "cause_message": str(error),
+    }
+    for field_name in (
+        "image_group",
+        "returncode",
+        "bounded_stdout",
+        "bounded_stderr",
+        "stdout_truncated",
+        "stderr_truncated",
+    ):
+        if hasattr(error, field_name):
+            payload[field_name] = getattr(error, field_name)
+    _ensure_private_directory(layout.private_evidence_root)
+    suffix = canonical_sha256_digest(payload).removeprefix("sha256:")[:24]
+    _write_private_json(
+        layout.private_evidence_root / f"preparation-failure-{suffix}.json",
+        payload,
+    )
+    return diagnostic_id
 
 
 def _batch_1_plan(
@@ -228,14 +285,29 @@ def main() -> int:
         allowed_locator_ids=plan.credential_locator_ids,
         credential_resolver=preloaded,
     )
-    execution = execute_enzymedesign_identity_preparation_batch(
-        plan=plan,
-        authorization=authorization,
-        snapshot=snapshot,
-        factory=factory,
-        clock=_now,
-        existing_results=existing_results,
-    )
+    try:
+        execution = execute_enzymedesign_identity_preparation_batch(
+            plan=plan,
+            authorization=authorization,
+            snapshot=snapshot,
+            factory=factory,
+            clock=_now,
+            existing_results=existing_results,
+        )
+    except ExternalQualificationError as exc:
+        diagnostic_id = _record_private_failure_diagnostic(
+            layout=layout,
+            source_digest=source.digest,
+            plan_digest=plan.preparation_plan_digest,
+            authorization_digest=authorization.authorization_digest,
+            error=exc,
+        )
+        print(f"error_code={exc.error_code}", file=sys.stderr)
+        print(f"diagnostic_id={diagnostic_id}", file=sys.stderr)
+        print(f"mutation_applied={str(exc.mutation_applied).lower()}", file=sys.stderr)
+        print("fallback_performed=false", file=sys.stderr)
+        print("retry_performed=false", file=sys.stderr)
+        return 1
 
     exact_readiness = build_enzymedesign_external_qualification_plan(
         plan_id="qualification.batch-1.exact-readiness",
@@ -254,7 +326,9 @@ def main() -> int:
             "Batch 1 remains blocked after exact preparation results",
         )
     qualification_plan = next(
-        item for item in rediscovered["dry_plans"] if item["batch_id"] == "batch-1"  # type: ignore[index,union-attr]
+        item
+        for item in rediscovered["dry_plans"]
+        if item["batch_id"] == "batch-1"  # type: ignore[index,union-attr]
     )
     document = {
         "schema_version": "enzymedesign_post_preparation_operator_packet@1",
@@ -268,9 +342,7 @@ def main() -> int:
         ],
         "prepared_snapshot": execution.prepared_snapshot.to_dict(),
         "rediscovery": rediscovered,
-        "batch_1_qualification_dry_plan_digest": qualification_plan[
-            "dry_plan_digest"
-        ],
+        "batch_1_qualification_dry_plan_digest": qualification_plan["dry_plan_digest"],
         "credential_material_persisted": False,
         "qualified": False,
         "cutover": False,

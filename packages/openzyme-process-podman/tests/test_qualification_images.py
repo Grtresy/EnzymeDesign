@@ -28,7 +28,10 @@ def test_repository_owned_qualification_images_bind_exact_sources_and_lock() -> 
         "4bb0d8447f62fee77e2c3c29f54b5fcaf5e2c066",
     }
     for recipe in manifest.recipes:
-        assert "@sha256:" in recipe.base_image_ref
+        assert recipe.base_image_ref == (
+            "docker.io/library/python@sha256:"
+            "356b0d18f9385f4bdcc673af60e1e64c9d1504952e4ec36ee32044c722a6bc4e"
+        )
         assert recipe.output_image_ref.startswith("localhost/openzyme-qualification-")
         assert recipe.uv_lock_digest == (
             "sha256:08ea390c480ef23d2f79282042849a989577ee7ff5de9f996a5ff76b60ae1c45"
@@ -60,7 +63,7 @@ class _Commands:
     ) -> tuple[int, str, str]:
         self.calls.append((argv, working_directory))
         if argv[:3] == ("podman", "image", "exists"):
-            return 1, "", ""
+            return (0, "", "") if "@sha256:" in argv[-1] else (1, "", "")
         if argv[:3] == ("podman", "image", "inspect"):
             return 0, "sha256:" + "a" * 64 + "\n", ""
         return 0, "built", ""
@@ -86,10 +89,11 @@ def test_docking_preparation_builds_once_and_projects_all_image_facts() -> None:
         credential_material=None,
     )
 
-    assert len(commands.calls) == 3
+    assert len(commands.calls) == 4
     assert commands.calls[0][0][:3] == ("podman", "image", "exists")
-    assert commands.calls[1][0][:3] == ("podman", "build", "--pull=never")
-    assert commands.calls[1][1] is not None
+    assert commands.calls[1][0][:3] == ("podman", "image", "exists")
+    assert commands.calls[2][0][:3] == ("podman", "build", "--pull=never")
+    assert commands.calls[2][1] is not None
     assert {item.field_id for item in result.safe_identity_fields} == {
         "fpocket_image_digest",
         "fpocket_version",
@@ -125,9 +129,7 @@ def test_preparation_refuses_to_overwrite_an_existing_output_image() -> None:
     with pytest.raises(ExternalQualificationError) as captured:
         executor(
             plan=SimpleNamespace(preparation_plan_digest="sha256:" + "1" * 64),
-            authorization=SimpleNamespace(
-                authorization_digest="sha256:" + "2" * 64
-            ),
+            authorization=SimpleNamespace(authorization_digest="sha256:" + "2" * 64),
             action=action,
             occurrence_id="occurrence.base-image-preparation",
             request_digest="sha256:" + "4" * 64,
@@ -136,3 +138,106 @@ def test_preparation_refuses_to_overwrite_an_existing_output_image() -> None:
 
     assert captured.value.error_code == "qualification_image_output_already_exists"
     assert len(commands.calls) == 1
+
+
+def test_build_failure_preserves_bounded_private_diagnostic_without_retry() -> None:
+    class _FailingCommands(_Commands):
+        def run(
+            self, argv: tuple[str, ...], *, working_directory: Path | None = None
+        ) -> tuple[int, str, str]:
+            self.calls.append((argv, working_directory))
+            if argv[:3] == ("podman", "image", "exists"):
+                return (0, "", "") if "@sha256:" in argv[-1] else (1, "", "")
+            return 23, "x" * 9000, "apt dependency conflict"
+
+    commands = _FailingCommands()
+    executor = PodmanQualificationImagePreparationExecutor(command_port=commands)
+    action = SimpleNamespace(
+        action_id="prepare.batch-1.image-base",
+        owner_component_id="openzyme.process.podman",
+        effect_id="podman.qualification-image.resolve.base",
+        credential_locator_id=None,
+        input_binding_digest="sha256:" + "3" * 64,
+        safe_input_fields=(SafeIdentityField("image_group", "base"),),
+    )
+
+    with pytest.raises(ExternalQualificationError) as captured:
+        executor(
+            plan=SimpleNamespace(preparation_plan_digest="sha256:" + "1" * 64),
+            authorization=SimpleNamespace(authorization_digest="sha256:" + "2" * 64),
+            action=action,
+            occurrence_id="occurrence.base-image-preparation",
+            request_digest="sha256:" + "4" * 64,
+            credential_material=None,
+        )
+
+    failure = captured.value
+    assert failure.error_code == "qualification_image_build_failed"
+    assert failure.diagnostic_id == (
+        "diagnostic.occurrence.base-image-preparation.qualification-image-build"
+    )
+    assert failure.mutation_applied is True
+    assert failure.fallback_performed is False
+    assert failure.returncode == 23
+    assert len(failure.bounded_stdout) < 9000
+    assert failure.stdout_truncated is True
+    assert failure.bounded_stderr == "apt dependency conflict"
+    assert failure.stderr_truncated is False
+    assert len(commands.calls) == 3
+
+
+def test_missing_base_is_pulled_by_digest_then_build_remains_pull_never() -> None:
+    class _PullingCommands(_Commands):
+        def __init__(self) -> None:
+            super().__init__()
+            self.base_available = False
+
+        def run(
+            self, argv: tuple[str, ...], *, working_directory: Path | None = None
+        ) -> tuple[int, str, str]:
+            self.calls.append((argv, working_directory))
+            if argv[:3] == ("podman", "image", "exists"):
+                if "@sha256:" not in argv[-1]:
+                    return 1, "", ""
+                return (0, "", "") if self.base_available else (1, "", "")
+            if argv[:2] == ("podman", "pull"):
+                self.base_available = True
+                return 0, "pulled exact digest", ""
+            if argv[:3] == ("podman", "image", "inspect"):
+                return 0, "sha256:" + "a" * 64 + "\n", ""
+            return 0, "built", ""
+
+    commands = _PullingCommands()
+    executor = PodmanQualificationImagePreparationExecutor(command_port=commands)
+    action = SimpleNamespace(
+        action_id="prepare.batch-1.image-base",
+        owner_component_id="openzyme.process.podman",
+        effect_id="podman.qualification-image.resolve.base",
+        credential_locator_id=None,
+        input_binding_digest="sha256:" + "3" * 64,
+        safe_input_fields=(SafeIdentityField("image_group", "base"),),
+    )
+
+    executor(
+        plan=SimpleNamespace(preparation_plan_digest="sha256:" + "1" * 64),
+        authorization=SimpleNamespace(authorization_digest="sha256:" + "2" * 64),
+        action=action,
+        occurrence_id="occurrence.base-image-preparation",
+        request_digest="sha256:" + "4" * 64,
+        credential_material=None,
+    )
+
+    pull_argv = next(
+        argv for argv, _cwd in commands.calls if argv[:2] == ("podman", "pull")
+    )
+    assert pull_argv == (
+        "podman",
+        "pull",
+        "--platform",
+        "linux/amd64",
+        load_qualification_image_manifest().recipe("base").base_image_ref,
+    )
+    build_argv = next(
+        argv for argv, _cwd in commands.calls if argv[:2] == ("podman", "build")
+    )
+    assert build_argv[:3] == ("podman", "build", "--pull=never")

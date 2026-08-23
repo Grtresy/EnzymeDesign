@@ -2,7 +2,7 @@
   "schema_version": "openzyme_qualification_image_manifest@1",
   "manifest_id": "enzymedesign.batch-1.qualification-images",
   "platform": "linux/amd64",
-  "base_image_ref": "docker.io/library/python@sha256:46cb7cc2877e60fbd5e21a9ae6115c30ace7a077b9f8772da879e4590c18c2e3",
+  "base_image_ref": "docker.io/library/python@sha256:356b0d18f9385f4bdcc673af60e1e64c9d1504952e4ec36ee32044c722a6bc4e",
   "uv_lock_digest": "sha256:08ea390c480ef23d2f79282042849a989577ee7ff5de9f996a5ff76b60ae1c45",
   "recipes": [
     {

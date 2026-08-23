@@ -27,6 +27,44 @@ QUALIFICATION_IMAGE_GROUPS = ("base", "docking", "hmmer")
 _IMAGE_DIGEST_REF = re.compile(r"[^\s]+@sha256:[0-9a-f]{64}")
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 _OUTPUT_REF = re.compile(r"localhost/openzyme-qualification-[a-z-]+:[0-9A-Za-z.-]+")
+_PRIVATE_OUTPUT_LIMIT = 8192
+
+
+def _bounded_private_output(value: str) -> tuple[str, bool]:
+    if len(value) <= _PRIVATE_OUTPUT_LIMIT:
+        return value, False
+    half = _PRIVATE_OUTPUT_LIMIT // 2
+    return value[:half] + "\n...<bounded>...\n" + value[-half:], True
+
+
+class QualificationImageCommandFailure(ExternalQualificationError):
+    """Private diagnostic carrier for one terminal Podman preparation failure."""
+
+    def __init__(
+        self,
+        *,
+        error_code: str,
+        message: str,
+        occurrence_id: str,
+        image_group: str,
+        phase: str,
+        returncode: int,
+        stdout: str,
+        stderr: str,
+    ) -> None:
+        super().__init__(
+            error_code,
+            message,
+            diagnostic_id=f"diagnostic.{occurrence_id}.{phase}",
+        )
+        self.component = "openzyme.process.podman"
+        self.phase = phase
+        self.image_group = image_group
+        self.returncode = returncode
+        self.bounded_stdout, self.stdout_truncated = _bounded_private_output(stdout)
+        self.bounded_stderr, self.stderr_truncated = _bounded_private_output(stderr)
+        self.effect_certainty = "partial_residual_observed"
+        self.mutation_applied = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,7 +79,9 @@ class QualificationImageSource:
         if not self.url.startswith("https://github.com/") or not self.url.endswith(
             ".git"
         ):
-            raise ValueError("qualification image source must be one official HTTPS Git URL")
+            raise ValueError(
+                "qualification image source must be one official HTTPS Git URL"
+            )
         if not self.version or _COMMIT.fullmatch(self.commit) is None:
             raise ValueError("qualification image source must bind version and commit")
 
@@ -170,7 +210,9 @@ class QualificationImageManifest:
 
     def recipe(self, image_group: str) -> QualificationImageRecipe:
         try:
-            return next(item for item in self.recipes if item.image_group == image_group)
+            return next(
+                item for item in self.recipes if item.image_group == image_group
+            )
         except StopIteration as exc:
             raise ExternalQualificationError(
                 "qualification_image_group_unknown",
@@ -252,16 +294,51 @@ class PodmanQualificationImagePreparationExecutor:
                 "qualification_image_preflight_failed",
                 "qualification image output state could not be determined",
             )
+        base_exists_argv = ("podman", "image", "exists", recipe.base_image_ref)
+        returncode, _stdout, _stderr = self.command_port.run(base_exists_argv)
+        if returncode == 1:
+            returncode, stdout, stderr = self.command_port.run(
+                (
+                    "podman",
+                    "pull",
+                    "--platform",
+                    recipe.platform,
+                    recipe.base_image_ref,
+                )
+            )
+            if returncode != 0:
+                raise QualificationImageCommandFailure(
+                    error_code="qualification_image_base_pull_failed",
+                    message="digest-pinned qualification base image pull failed",
+                    occurrence_id=occurrence_id,
+                    image_group=image_group,
+                    phase="qualification-base-image-pull",
+                    returncode=returncode,
+                    stdout=stdout,
+                    stderr=stderr,
+                )
+            returncode, _stdout, _stderr = self.command_port.run(base_exists_argv)
+        if returncode != 0:
+            raise ExternalQualificationError(
+                "qualification_image_base_digest_unavailable",
+                "digest-pinned qualification base image is unavailable after resolution",
+            )
         asset_root = files("openzyme_process_podman.qualification_image_assets")
         with as_file(asset_root) as context_root:
-            returncode, _stdout, _stderr = self.command_port.run(
+            returncode, stdout, stderr = self.command_port.run(
                 recipe.build_argv(),
                 working_directory=context_root,
             )
         if returncode != 0:
-            raise ExternalQualificationError(
-                "qualification_image_build_failed",
-                "repository-owned qualification image build failed",
+            raise QualificationImageCommandFailure(
+                error_code="qualification_image_build_failed",
+                message="repository-owned qualification image build failed",
+                occurrence_id=occurrence_id,
+                image_group=image_group,
+                phase="qualification-image-build",
+                returncode=returncode,
+                stdout=stdout,
+                stderr=stderr,
             )
         inspect_argv = (
             "podman",
@@ -272,7 +349,10 @@ class PodmanQualificationImagePreparationExecutor:
         )
         returncode, stdout, _stderr = self.command_port.run(inspect_argv)
         image_digest = stdout.strip()
-        if returncode != 0 or re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest) is None:
+        if (
+            returncode != 0
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest) is None
+        ):
             raise ExternalQualificationError(
                 "qualification_image_digest_observation_failed",
                 "built qualification image did not expose one immutable image digest",
@@ -359,9 +439,9 @@ def load_qualification_image_manifest() -> QualificationImageManifest:
     for item in payload["recipes"]:
         containerfile_name = str(item["containerfile"])
         containerfile = root.joinpath(containerfile_name).read_bytes()
-        containerfile_digest = "sha256:" + __import__("hashlib").sha256(
-            containerfile
-        ).hexdigest()
+        containerfile_digest = (
+            "sha256:" + __import__("hashlib").sha256(containerfile).hexdigest()
+        )
         sources = tuple(
             QualificationImageSource(
                 source_id=str(source["source_id"]),

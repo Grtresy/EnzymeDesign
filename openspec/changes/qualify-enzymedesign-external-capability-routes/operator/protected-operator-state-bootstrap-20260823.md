@@ -71,3 +71,8 @@ uv run python scripts/bootstrap-external-qualification-operator-state.py \
 必须在 Git/image/HPC mutation 前失败。执行器不实现 retry/fallback；已记录 occurrence 只按 exact plan 与 authorization 恢复，
 未记录但已有 Git/image/HPC residual state 时停止并要求人工 reconcile。成功输出仍是
 `prepared_not_qualified`，只允许下一步 effect-free rediscovery，不构成 qualification authority。
+
+Podman build 等已进入 effect 边界的 preparation 失败必须写入 `private-evidence/`：记录稳定
+`diagnostic_id`、return code、bounded stdout/stderr、截断标记、effect certainty、mutation/fallback/retry
+事实和人工 reconcile policy。公共错误只暴露 error code、diagnostic identity 与 mutation/fallback/retry 事实；
+不得丢弃原始构建诊断，也不得因缺少诊断而自动 redispatch。
