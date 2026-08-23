@@ -4,6 +4,8 @@ import pytest
 
 from enzymedesign_distribution import SelectedLiveQualificationBridgeFactory
 from openzyme_contracts import ExternalQualificationBridgeBinding
+from openzyme_contracts import canonical_sha256_digest
+from openzyme_hpc_ssh import SshWorkspaceRuntimeQualificationIdentity
 
 
 DIGEST = "sha256:" + "1" * 64
@@ -48,6 +50,28 @@ def _binding(
         expected_result_schema_digest=DIGEST,
         authorization_digest=OTHER_DIGEST,
         credential_locator_id=locator,
+    )
+
+
+def _workspace_runtime_identity() -> SshWorkspaceRuntimeQualificationIdentity:
+    payload = {
+        "helper_path": "/home/grtresy/.local/libexec/openzyme-workspace-runtime",
+        "workspace_parent": "/home/grtresy/.local/state/openzyme-executor-workspaces",
+        "policy_id": "policy.openzyme.hpc.diannan.workspace-runtime",
+        "helper_version": "1.0.0",
+        "helper_build_digest": "sha256:" + "4" * 64,
+        "root_policy_digest": "sha256:" + "5" * 64,
+        "principal_identity_digest": "sha256:" + "6" * 64,
+        "deployment_plan_digest": "sha256:" + "7" * 64,
+        "deployment_receipt_digest": "sha256:" + "8" * 64,
+        "native_qualification_digest": "sha256:" + "9" * 64,
+        "file_owner": "grtresy",
+        "file_group": "grtresy",
+        "file_mode": "755",
+    }
+    return SshWorkspaceRuntimeQualificationIdentity(
+        **payload,
+        observation_digest=canonical_sha256_digest(payload),
     )
 
 
@@ -103,6 +127,7 @@ def factory(tmp_path):
             "vina": "sha256:" + "e" * 64,
             "fpocket": "sha256:" + "f" * 64,
         },
+        workspace_runtime_identity=_workspace_runtime_identity(),
         tavily_deadline_at="2026-08-23T18:30:00+08:00",
     )
 

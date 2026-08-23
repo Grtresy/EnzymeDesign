@@ -4,8 +4,10 @@ import re
 import shlex
 
 from openzyme_contracts import ExternalQualificationProbeRequest
+from openzyme_contracts import canonical_sha256_digest
 from openzyme_hpc_ssh import OpenSshQualificationOperation
 from openzyme_hpc_ssh import OpenSshQualificationState
+from openzyme_hpc_ssh import SshWorkspaceRuntimeQualificationIdentity
 
 
 DIGEST = "sha256:" + "1" * 64
@@ -34,8 +36,16 @@ class _CommandPort:
         assert len(parsed) == 1
         script = parsed[0]
         self.scripts.append(script)
-        if script == "command -v sh; command -v sha256sum":
-            return 0, "/bin/sh\n/usr/bin/sha256sum\n", ""
+        if "OPENZYME_WORKSPACE_RUNTIME_VERSION" in script:
+            return (
+                0,
+                "VERSION=1.0.0\n"
+                f"BUILD=sha256:{'a' * 64}\n"
+                f"ROOT_POLICY=sha256:{'b' * 64}\n"
+                f"PRINCIPAL=sha256:{'c' * 64}\n"
+                "OWNER=grtresy\nGROUP=grtresy\nMODE=755\n",
+                "",
+            )
         if script == "uname -srm":
             return 0, "Linux 6.1 x86_64\n", ""
         if script.endswith("/item") and script.startswith("cat "):
@@ -65,6 +75,28 @@ def _request(operation: str) -> ExternalQualificationProbeRequest:
     )
 
 
+def _workspace_runtime_identity() -> SshWorkspaceRuntimeQualificationIdentity:
+    payload = {
+        "helper_path": "/home/grtresy/.local/libexec/openzyme-workspace-runtime",
+        "workspace_parent": "/home/grtresy/.local/state/openzyme-executor-workspaces",
+        "policy_id": "policy.openzyme.hpc.diannan.workspace-runtime",
+        "helper_version": "1.0.0",
+        "helper_build_digest": "sha256:" + "a" * 64,
+        "root_policy_digest": "sha256:" + "b" * 64,
+        "principal_identity_digest": "sha256:" + "c" * 64,
+        "deployment_plan_digest": "sha256:" + "d" * 64,
+        "deployment_receipt_digest": "sha256:" + "e" * 64,
+        "native_qualification_digest": "sha256:" + "f" * 64,
+        "file_owner": "grtresy",
+        "file_group": "grtresy",
+        "file_mode": "755",
+    }
+    return SshWorkspaceRuntimeQualificationIdentity(
+        **payload,
+        observation_digest=canonical_sha256_digest(payload),
+    )
+
+
 def test_ssh_qualification_runs_exact_port_and_restores_response_loss(tmp_path) -> None:
     identity = tmp_path / "identity"
     identity.write_text("placeholder", encoding="utf-8")
@@ -88,6 +120,7 @@ def test_ssh_qualification_runs_exact_port_and_restores_response_loss(tmp_path) 
         credential_material=material,
         workspace_id="batch-1-test",
         command_port=command,
+        workspace_runtime_identity=_workspace_runtime_identity(),
     )
     operation = OpenSshQualificationOperation(
         component_id="openzyme.hpc.ssh",
@@ -112,6 +145,7 @@ def test_ssh_qualification_runs_exact_port_and_restores_response_loss(tmp_path) 
         credential_material=material,
         workspace_id="batch-1-test",
         command_port=command,
+        workspace_runtime_identity=_workspace_runtime_identity(),
     )
     restored = OpenSshQualificationOperation(
         component_id="openzyme.hpc.ssh",

@@ -137,6 +137,8 @@ Ordinary CI MUST run discovery fixtures, gap and decision validation, dry-plan v
 ### Requirement: Target workspace helper deployment is exact, principal-qualified and reversible
 The qualification system MUST implement `software.openzyme-workspace-runtime == 1.0.0` as a source-bound target-native helper. Every target profile MUST bind one exact absolute helper path to its observed login principal and home identity; Diannan MUST use `/home/grtresy/.local/libexec/openzyme-workspace-runtime`. A deployment dry plan MUST bind exact helper bytes/build digest, target and host-key identity, login principal, observed home, deployment scope, destination pre-state, same-parent staging and backup identities, installation mechanism, owner/group/mode, positive and negative probes, rollback owner and no-fallback policy. Deployment MUST require its own durable one-shot authority and MUST complete or rollback before any affected workspace qualification unit is dispatched. `$HOME`, `PATH`, adjacent executable and permission-driven path fallback are forbidden.
 
+The post-deployment HPC subject closure MUST bind the deployment plan, one-shot authorization, terminal deployment receipt, native qualification, exact helper build, root policy, OS principal and a fresh read-only target observation. The SSH `helper-identity` qualification occurrence MUST re-observe and compare that exact identity; checking only generic shell utilities, executable presence or PATH resolution MUST NOT issue a successful receipt.
+
 The helper MUST restrict every workspace to an exact root-policy-bound `hpcws_<uuid>` child, bind OS principal, owner and runner identities, reject symlinks and drift before mutation, and persist same-occurrence provision/cleanup state. Cleanup MUST use an atomic same-parent rename and durable intent so response loss is reconciled without deleting a replacement path or replaying another occurrence.
 
 #### Scenario: Target principal home or libexec ownership drifts
@@ -150,3 +152,9 @@ The helper MUST restrict every workspace to an exact root-policy-bound `hpcws_<u
 #### Scenario: Destination changed after installation
 - **WHEN** rollback observes a destination digest different from both the pre-state and this occurrence's installed digest
 - **THEN** it records `deployment_in_doubt`, leaves the unknown file untouched, and blocks all dependent qualification units
+
+#### Scenario: Helper identity probe sees a different deployed subject
+- **GIVEN** a deployment receipt and HPC subject closure bound to one helper build, root policy and OS principal
+- **WHEN** the SSH `helper-identity` occurrence re-observes the exact absolute helper path
+- **THEN** any path, owner, mode, version, build, policy or principal drift produces a terminal qualification failure
+- **AND** no generic `sh`, `sha256sum`, PATH or adjacent executable observation can substitute

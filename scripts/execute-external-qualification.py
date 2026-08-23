@@ -34,6 +34,9 @@ from openzyme_contracts import ExternalQualificationError
 from openzyme_contracts import ExternalQualificationOccurrenceAuthorization
 from openzyme_contracts import canonical_sha256_digest
 from openzyme_contracts import verify_external_qualification_occurrence_authorization
+from openzyme_hpc_ssh import SshWorkspaceRuntimeQualificationIdentity
+from openzyme_hpc_ssh import DIANNAN_WORKSPACE_RUNTIME_PARENT
+from openzyme_hpc_ssh import DIANNAN_WORKSPACE_RUNTIME_PATH
 from openzyme_store_sqlite import SQLiteProtectedQualificationLedger
 from test_gate.source import collect_source_identity
 
@@ -305,6 +308,70 @@ def main() -> int:
             "vina": _field(snapshot, "vina-hpc", "vina_sif_digest"),
             "fpocket": _field(snapshot, "fpocket-hpc", "fpocket_sif_digest"),
         },
+        workspace_runtime_identity=SshWorkspaceRuntimeQualificationIdentity(
+            helper_path=DIANNAN_WORKSPACE_RUNTIME_PATH,
+            workspace_parent=DIANNAN_WORKSPACE_RUNTIME_PARENT,
+            policy_id=_field(
+                snapshot,
+                "hpc-control",
+                "workspace_runtime_policy_id",
+            ),
+            helper_version=_field(
+                snapshot,
+                "hpc-control",
+                "workspace_runtime_version",
+            ),
+            helper_build_digest=_field(
+                snapshot,
+                "hpc-control",
+                "workspace_runtime_build_digest",
+            ),
+            root_policy_digest=_field(
+                snapshot,
+                "hpc-control",
+                "workspace_runtime_root_policy_digest",
+            ),
+            principal_identity_digest=_field(
+                snapshot,
+                "hpc-control",
+                "workspace_runtime_principal_identity_digest",
+            ),
+            deployment_plan_digest=_field(
+                snapshot,
+                "hpc-control",
+                "workspace_runtime_deployment_plan_digest",
+            ),
+            deployment_receipt_digest=_field(
+                snapshot,
+                "hpc-control",
+                "workspace_runtime_deployment_receipt_digest",
+            ),
+            native_qualification_digest=_field(
+                snapshot,
+                "hpc-control",
+                "workspace_runtime_native_qualification_digest",
+            ),
+            file_owner=_field(
+                snapshot,
+                "hpc-control",
+                "workspace_runtime_file_owner",
+            ),
+            file_group=_field(
+                snapshot,
+                "hpc-control",
+                "workspace_runtime_file_group",
+            ),
+            file_mode=_field(
+                snapshot,
+                "hpc-control",
+                "workspace_runtime_file_mode",
+            ),
+            observation_digest=_field(
+                snapshot,
+                "hpc-control",
+                "workspace_runtime_observation_digest",
+            ),
+        ),
         tavily_deadline_at=(datetime.now(tz=UTC) + timedelta(minutes=10)).isoformat(),
     )
     try:

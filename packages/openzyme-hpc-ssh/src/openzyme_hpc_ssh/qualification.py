@@ -30,6 +30,16 @@ SSH_QUALIFICATION_OPERATIONS = (
     "version",
 )
 
+DIANNAN_WORKSPACE_RUNTIME_PATH = (
+    "/home/grtresy/.local/libexec/openzyme-workspace-runtime"
+)
+DIANNAN_WORKSPACE_RUNTIME_PARENT = (
+    "/home/grtresy/.local/state/openzyme-executor-workspaces"
+)
+DIANNAN_WORKSPACE_RUNTIME_POLICY_ID = (
+    "policy.openzyme.hpc.diannan.workspace-runtime"
+)
+
 
 def _safe_remote_absolute_path(value: str) -> bool:
     return (
@@ -64,6 +74,74 @@ class SshHpcIdentityObservation:
 
     def software_image_digest(self, software_id: str) -> str:
         return dict(self.software_image_digests)[software_id]
+
+
+@dataclass(frozen=True, slots=True)
+class SshWorkspaceRuntimeQualificationIdentity:
+    helper_path: str
+    workspace_parent: str
+    policy_id: str
+    helper_version: str
+    helper_build_digest: str
+    root_policy_digest: str
+    principal_identity_digest: str
+    deployment_plan_digest: str
+    deployment_receipt_digest: str
+    native_qualification_digest: str
+    file_owner: str
+    file_group: str
+    file_mode: str
+    observation_digest: str
+
+    def __post_init__(self) -> None:
+        if (
+            self.helper_path != DIANNAN_WORKSPACE_RUNTIME_PATH
+            or self.workspace_parent != DIANNAN_WORKSPACE_RUNTIME_PARENT
+            or self.policy_id != DIANNAN_WORKSPACE_RUNTIME_POLICY_ID
+            or self.helper_version != "1.0.0"
+            or self.file_owner != "grtresy"
+            or self.file_group != "grtresy"
+            or self.file_mode != "755"
+        ):
+            raise ValueError("workspace runtime qualification identity is not exact")
+        for field_name in (
+            "helper_build_digest",
+            "root_policy_digest",
+            "principal_identity_digest",
+            "deployment_plan_digest",
+            "deployment_receipt_digest",
+            "native_qualification_digest",
+            "observation_digest",
+        ):
+            value = getattr(self, field_name)
+            if re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None:
+                raise ValueError(f"{field_name} is not a canonical digest")
+        if self.observation_digest != canonical_sha256_digest(
+            self.observation_payload
+        ):
+            raise ValueError("workspace runtime observation digest drifted")
+
+    @property
+    def observation_payload(self) -> dict[str, str]:
+        return {
+            "helper_path": self.helper_path,
+            "workspace_parent": self.workspace_parent,
+            "policy_id": self.policy_id,
+            "helper_version": self.helper_version,
+            "helper_build_digest": self.helper_build_digest,
+            "root_policy_digest": self.root_policy_digest,
+            "principal_identity_digest": self.principal_identity_digest,
+            "deployment_plan_digest": self.deployment_plan_digest,
+            "deployment_receipt_digest": self.deployment_receipt_digest,
+            "native_qualification_digest": self.native_qualification_digest,
+            "file_owner": self.file_owner,
+            "file_group": self.file_group,
+            "file_mode": self.file_mode,
+        }
+
+    @property
+    def identity_payload(self) -> dict[str, str]:
+        return {**self.observation_payload, "observation_digest": self.observation_digest}
 
 
 class OpenSshQualificationCommandPort(Protocol):
@@ -245,6 +323,7 @@ class OpenSshQualificationState:
     credential_material: SshQualificationCredentialMaterial = field(repr=False)
     workspace_id: str
     command_port: OpenSshQualificationCommandPort = field(repr=False)
+    workspace_runtime_identity: SshWorkspaceRuntimeQualificationIdentity | None = None
     response_loss_token: str | None = None
 
     def __post_init__(self) -> None:
@@ -329,6 +408,82 @@ class OpenSshQualificationState:
         )
         returncode, _stdout, _stderr = self.run_remote(script)
         return {"workspace_removed": returncode == 0}
+
+
+def observe_diannan_workspace_runtime_identity(
+    *,
+    state: OpenSshQualificationState,
+    deployment_plan_digest: str,
+    deployment_receipt_digest: str,
+    native_qualification_digest: str,
+) -> SshWorkspaceRuntimeQualificationIdentity:
+    """Read the exact installed helper identity without mutating the target."""
+
+    for value in (
+        deployment_plan_digest,
+        deployment_receipt_digest,
+        native_qualification_digest,
+    ):
+        if re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None:
+            raise ValueError("workspace runtime deployment evidence digest is invalid")
+    helper = shlex.quote(DIANNAN_WORKSPACE_RUNTIME_PATH)
+    parent = shlex.quote(DIANNAN_WORKSPACE_RUNTIME_PARENT)
+    policy = shlex.quote(DIANNAN_WORKSPACE_RUNTIME_POLICY_ID)
+    script = f"""set -eu
+helper={helper}
+test -f "$helper"
+test ! -L "$helper"
+owner=$(stat -c '%U' "$helper")
+group=$(stat -c '%G' "$helper")
+mode=$(stat -c '%a' "$helper")
+version_output=$("$helper" version)
+version=$(printf '%s\n' "$version_output" | sed -n 's/^OPENZYME_WORKSPACE_RUNTIME_VERSION=//p')
+build=$(printf '%s\n' "$version_output" | sed -n 's/^OPENZYME_WORKSPACE_RUNTIME_BUILD_DIGEST=//p')
+policy_output=$("$helper" policy-digest --policy-id {policy} --workspace-parent {parent})
+root_policy=$(printf '%s\n' "$policy_output" | sed -n 's/^OPENZYME_ROOT_POLICY_DIGEST=//p')
+principal=$(printf '%s\n' "$policy_output" | sed -n 's/^OPENZYME_OS_PRINCIPAL_IDENTITY_DIGEST=//p')
+printf 'VERSION=%s\nBUILD=%s\nROOT_POLICY=%s\nPRINCIPAL=%s\nOWNER=%s\nGROUP=%s\nMODE=%s\n' "$version" "$build" "$root_policy" "$principal" "$owner" "$group" "$mode"
+"""
+    returncode, stdout, _stderr = state.run_remote(script)
+    fields = dict(
+        line.split("=", 1) for line in stdout.splitlines() if "=" in line
+    )
+    if (
+        returncode != 0
+        or set(fields)
+        != {"VERSION", "BUILD", "ROOT_POLICY", "PRINCIPAL", "OWNER", "GROUP", "MODE"}
+        or fields["VERSION"] != "1.0.0"
+        or fields["OWNER"] != "grtresy"
+        or fields["GROUP"] != "grtresy"
+        or fields["MODE"] != "755"
+        or any(
+            re.fullmatch(r"sha256:[0-9a-f]{64}", fields[field_name]) is None
+            for field_name in ("BUILD", "ROOT_POLICY", "PRINCIPAL")
+        )
+    ):
+        raise ExternalQualificationError(
+            "qualification_workspace_runtime_identity_observation_failed",
+            "workspace runtime identity observation failed or drifted",
+        )
+    identity = {
+        "helper_path": DIANNAN_WORKSPACE_RUNTIME_PATH,
+        "workspace_parent": DIANNAN_WORKSPACE_RUNTIME_PARENT,
+        "policy_id": DIANNAN_WORKSPACE_RUNTIME_POLICY_ID,
+        "helper_version": fields["VERSION"],
+        "helper_build_digest": fields["BUILD"],
+        "root_policy_digest": fields["ROOT_POLICY"],
+        "principal_identity_digest": fields["PRINCIPAL"],
+        "deployment_plan_digest": deployment_plan_digest,
+        "deployment_receipt_digest": deployment_receipt_digest,
+        "native_qualification_digest": native_qualification_digest,
+        "file_owner": fields["OWNER"],
+        "file_group": fields["GROUP"],
+        "file_mode": fields["MODE"],
+    }
+    return SshWorkspaceRuntimeQualificationIdentity(
+        **identity,
+        observation_digest=canonical_sha256_digest(identity),
+    )
 
 
 @dataclass(slots=True)
@@ -418,11 +573,22 @@ class OpenSshQualificationOperation:
     def _execute(self, operation: str) -> None:
         workspace = self.state.remote_workspace
         if operation == "helper-identity":
-            output = self._run("command -v sh; command -v sha256sum")
-            if "sh" not in output or "sha256sum" not in output:
+            expected = self.state.workspace_runtime_identity
+            if expected is None:
                 raise ExternalQualificationError(
-                    "qualification_ssh_helper_identity_failed",
-                    "SSH helper identity is incomplete",
+                    "qualification_workspace_runtime_identity_missing",
+                    "SSH helper qualification requires one exact deployed identity",
+                )
+            observed = observe_diannan_workspace_runtime_identity(
+                state=self.state,
+                deployment_plan_digest=expected.deployment_plan_digest,
+                deployment_receipt_digest=expected.deployment_receipt_digest,
+                native_qualification_digest=expected.native_qualification_digest,
+            )
+            if observed != expected:
+                raise ExternalQualificationError(
+                    "qualification_workspace_runtime_identity_drift",
+                    "installed workspace runtime differs from the bound subject identity",
                 )
         elif operation == "version":
             if not self._run("uname -srm"):
@@ -529,6 +695,9 @@ class SshQualificationProbeBridge:
 
 
 __all__ = [
+    "DIANNAN_WORKSPACE_RUNTIME_PARENT",
+    "DIANNAN_WORKSPACE_RUNTIME_PATH",
+    "DIANNAN_WORKSPACE_RUNTIME_POLICY_ID",
     "SSH_QUALIFICATION_OPERATIONS",
     "OpenSshHpcQualificationIdentityObservationPort",
     "OpenSshQualificationCommandPort",
@@ -538,5 +707,7 @@ __all__ = [
     "SshQualificationProbeBridge",
     "SshHpcIdentityObservation",
     "SshQualificationCredentialMaterial",
+    "SshWorkspaceRuntimeQualificationIdentity",
     "SubprocessOpenSshQualificationCommandPort",
+    "observe_diannan_workspace_runtime_identity",
 ]

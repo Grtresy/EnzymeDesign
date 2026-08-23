@@ -4,6 +4,8 @@ import pytest
 
 from openzyme_contracts import ExternalQualificationError
 from openzyme_hpc_ssh import OpenSshHpcQualificationIdentityObservationPort
+from openzyme_hpc_ssh import OpenSshQualificationState
+from openzyme_hpc_ssh import observe_diannan_workspace_runtime_identity
 
 
 class _Material:
@@ -104,3 +106,49 @@ def test_openssh_identity_observation_rejects_invalid_port_before_command(
 
     assert error.value.error_code == "qualification_hpc_credential_identity_invalid"
     assert commands.argv == ()
+
+
+class _WorkspaceCommands:
+    def run(self, argv: tuple[str, ...]) -> tuple[int, str, str]:
+        assert argv[-3:-1] == ("bash", "-lc")
+        return (
+            0,
+            "VERSION=1.0.0\n"
+            f"BUILD=sha256:{'d' * 64}\n"
+            f"ROOT_POLICY=sha256:{'e' * 64}\n"
+            f"PRINCIPAL=sha256:{'f' * 64}\n"
+            "OWNER=grtresy\nGROUP=grtresy\nMODE=755\n",
+            "",
+        )
+
+
+def test_workspace_runtime_identity_observation_binds_deployment_evidence(
+    tmp_path: Path,
+) -> None:
+    identity_file = tmp_path / "id_ed25519"
+    identity_file.write_text("fake-test-key", encoding="utf-8")
+    identity_file.chmod(0o600)
+    known_hosts_file = tmp_path / "known_hosts"
+    known_hosts_file.write_text("fake-test-host-key", encoding="utf-8")
+    material = _Material(identity_file, known_hosts_file)
+    material._values["workspace_root"] = "/qualification/workspaces"
+    state = OpenSshQualificationState(
+        credential_material=material,
+        workspace_id="workspace-runtime-observation",
+        command_port=_WorkspaceCommands(),
+    )
+
+    observation = observe_diannan_workspace_runtime_identity(
+        state=state,
+        deployment_plan_digest="sha256:" + "1" * 64,
+        deployment_receipt_digest="sha256:" + "2" * 64,
+        native_qualification_digest="sha256:" + "3" * 64,
+    )
+
+    assert observation.helper_path == (
+        "/home/grtresy/.local/libexec/openzyme-workspace-runtime"
+    )
+    assert observation.helper_build_digest == "sha256:" + "d" * 64
+    assert observation.root_policy_digest == "sha256:" + "e" * 64
+    assert observation.principal_identity_digest == "sha256:" + "f" * 64
+    assert observation.observation_digest.startswith("sha256:")

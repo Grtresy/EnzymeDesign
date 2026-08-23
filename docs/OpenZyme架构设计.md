@@ -592,6 +592,10 @@ Diannan `/home/grtresy/.local/libexec/openzyme-workspace-runtime` 的独立 prin
 和 compare-and-rollback。login/home/path/owner/mode 或 direct-user-libexec mechanism 未闭合时保持
 `blocked_deployment_authority`，不得自动切换 `/usr/local`、`PATH`、相邻 executable 或另一用户目录；安装成功也仍不是 ambient、adopted
 或 live capability。
+deployment receipt 还必须经独立只读 target observation 纳入 `hpc-control` subject closure：公开层只保存 absolute
+path identity digest，私有层绑定 plan/authority/receipt、native qualification、exact build、root-policy、OS principal
+与 owner/group/mode。后续 SSH `helper-identity` live occurrence 必须从 exact path 重跑 `version`/`policy-digest`
+并与该 closure 全量比较；`command -v sh`、`sha256sum`、文件存在或 PATH 可见性均不能形成 helper receipt。
 
 `openzyme-hpc-slurm` 实现独立 `openzyme.hpc.scheduler-port@1`：只有 Compute admission 创建的一次性 formal
 occurrence credential 可进入 submit/cancel；login/file credential 在类型和 resolver 上都被拒绝。raw Slurm id

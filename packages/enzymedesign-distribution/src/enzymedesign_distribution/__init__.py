@@ -108,6 +108,10 @@ from .qualification_preparation_runtime import (
 from .qualification_preparation_runtime import (
     preflight_enzymedesign_identity_preparation_credentials,
 )
+from .qualification_workspace_runtime import (
+    augment_prepared_snapshot_with_workspace_runtime,
+)
+from .qualification_workspace_runtime import workspace_runtime_safe_identity_fields
 from .session_composition_reader import EnzymeDesignSessionCompositionReader
 
 __all__ = [
@@ -181,6 +185,7 @@ __all__ = [
     "EnzymeDesignDeploymentStartup",
     "EnzymeDesignTargetInventoryQueryPort",
     "activate_enzymedesign_composition",
+    "augment_prepared_snapshot_with_workspace_runtime",
     "build_enzymedesign_scientific_contributions",
     "build_enzymedesign_application_runtime",
     "build_enzymedesign_formal_compute_application",
@@ -210,4 +215,5 @@ __all__ = [
     "load_operator_identity_resolution_selections",
     "qualification_plan_bundle",
     "preflight_enzymedesign_identity_preparation_credentials",
+    "workspace_runtime_safe_identity_fields",
 ]

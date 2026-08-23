@@ -20,6 +20,7 @@ from openzyme_hpc_slurm import SlurmScientificQualificationRoute
 from openzyme_hpc_ssh import OpenSshQualificationOperation
 from openzyme_hpc_ssh import OpenSshQualificationState
 from openzyme_hpc_ssh import SshQualificationProbeBridge
+from openzyme_hpc_ssh import SshWorkspaceRuntimeQualificationIdentity
 from openzyme_hpc_ssh import SubprocessOpenSshQualificationCommandPort
 from openzyme_process_podman import PodmanQualificationProbeBridge
 from openzyme_process_podman import PodmanQualificationState
@@ -82,6 +83,7 @@ class SelectedLiveQualificationBridgeFactory:
     git_repository: Path = field(repr=False)
     image_digests: Mapping[str, str]
     hpc_image_digests: Mapping[str, str]
+    workspace_runtime_identity: SshWorkspaceRuntimeQualificationIdentity
     tavily_deadline_at: str
     _git_state: LocalGitLfsQualificationState | None = field(
         default=None, init=False, repr=False
@@ -286,6 +288,7 @@ class SelectedLiveQualificationBridgeFactory:
                     SubprocessOpenSshQualificationCommandPort(),
                     self._diagnostic_context,
                 ),
+                workspace_runtime_identity=self.workspace_runtime_identity,
             )
         return self._ssh_state
 

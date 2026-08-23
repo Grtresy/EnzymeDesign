@@ -48,11 +48,11 @@
 - [x] 6.3c Implement the seven Batch 1 owner actions: dedicated LLM/Tavily locators, local-only Git/LFS, three repository-owned image groups and qualification-only `Diannan/3090` identity observation/config
 - [x] 6.3d Rebind post-preparation readiness units from non-live locator placeholders to exact qualification locators and prove safe results can drive effect-free rediscovery without issuing qualification evidence
 - [x] 6.3e Add an idempotent root/layout-only bootstrap, canonical authorization writer and source-bound Batch 1 executor that preflights all exact locators before mutation, records every result, resumes only exact stored occurrences and emits `prepared_not_qualified` rediscovery evidence
-- [ ] 6.4 Pause before credential resolution or any Provider, Git, container, SSH, Slurm, HPC or scientific-program effect and obtain explicit durable one-shot preparation authorization for an exact plan digest, batch and operator, with terminal no-redispatch and explicit revocation
-- [ ] 6.5 After preparation and effect-free rediscovery, obtain a separate durable one-shot exact qualification occurrence authorization with terminal no-redispatch and explicit revocation; preparation authority MUST NOT substitute
+- [x] 6.4 Pause before credential resolution or any Provider, Git, container, SSH, Slurm, HPC or scientific-program effect and obtain explicit durable one-shot preparation authorization for an exact plan digest, batch and operator, with terminal no-redispatch and explicit revocation
+- [x] 6.5 After preparation and effect-free rediscovery, obtain a separate durable one-shot exact qualification occurrence authorization with terminal no-redispatch and explicit revocation; preparation authority MUST NOT substitute
 - [x] 6.6 Implement the exact `openzyme-workspace-runtime@1` target helper with root/principal/owner/handle fencing, durable same-occurrence state, atomic cleanup and deterministic positive/negative tests
-- [ ] 6.7 Build an independently verified Diannan `/home/grtresy/.local/libexec/openzyme-workspace-runtime` deployment plan that binds exact principal/home/path, direct-user-libexec mechanism, destination pre-state, backup and rollback owner; reject runtime path fallback
-- [ ] 6.8 Obtain a distinct one-shot helper deployment authorization, execute compare-and-install, run native positive/negative qualification and either persist the exact deployment receipt or complete exact rollback
+- [x] 6.7 Build an independently verified Diannan `/home/grtresy/.local/libexec/openzyme-workspace-runtime` deployment plan that binds exact principal/home/path, direct-user-libexec mechanism, destination pre-state, backup and rollback owner; reject runtime path fallback
+- [x] 6.8 Obtain a distinct one-shot helper deployment authorization, execute compare-and-install, run native positive/negative qualification and either persist the exact deployment receipt or complete exact rollback
 - [ ] 6.9 Rediscover the helper build, root policy, principal and native proof identities effect-free before rebuilding the Batch 1 dry plan
 
 ## 7. Future real qualification after authorization

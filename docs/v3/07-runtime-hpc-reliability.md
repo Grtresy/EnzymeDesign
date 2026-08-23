@@ -44,6 +44,11 @@ staging/backup、owner/group/mode 与 rollback owner，并使用独立一次性 
 时恢复 exact backup 或删除本 occurrence 首次创建的文件；destination identity 不明时保持
 `deployment_in_doubt` 并阻断 dependent qualification。
 
+deployment receipt 只证明 helper 本体和隔离语义。后续 `hpc-control` subject closure 还必须绑定 deployment
+plan/authority/receipt、native qualification、build、root-policy 与 OS principal；SSH `helper-identity`
+occurrence 会从 exact path 重新执行 `version`/`policy-digest` 并比较全部 identity。只检查通用 shell 命令、
+文件存在或 PATH 可见性不构成资格证据；公开 snapshot 只记录绝对路径的 identity digest。
+
 普通 login Shell 与 scheduler 永远分开：`hpc.workspace.exec` 不能调用/模拟 `sbatch`、`scancel` 或 runner
 API；formal occurrence credential 只由 Compute admission 为 exact workload/route 签发。
 
