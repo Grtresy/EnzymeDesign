@@ -61,6 +61,20 @@ def test_docking_recipe_matches_pinned_legacy_build_system_and_fpocket_runtime()
     ) in containerfile
 
 
+def test_hmmer_recipe_initializes_commit_pinned_easel_submodule() -> None:
+    containerfile = (
+        files("openzyme_process_podman.qualification_image_assets")
+        .joinpath("Containerfile.hmmer")
+        .read_text(encoding="utf-8")
+    )
+
+    assert "git -C /src/hmmer checkout --detach" in containerfile
+    assert "git -C /src/hmmer submodule update --init --recursive" in containerfile
+    assert containerfile.index("checkout --detach") < containerfile.index(
+        "submodule update --init --recursive"
+    )
+
+
 def test_build_commands_are_exact_and_do_not_pull_mutable_base() -> None:
     manifest = load_qualification_image_manifest()
 

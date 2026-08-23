@@ -10,6 +10,7 @@ RUN printf 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debia
     && git clone --filter=blob:none https://github.com/EddyRivasLab/hmmer.git /src/hmmer \
     && git -C /src/hmmer checkout --detach "${HMMER_COMMIT}" \
     && test "$(git -C /src/hmmer rev-parse HEAD)" = "${HMMER_COMMIT}" \
+    && git -C /src/hmmer submodule update --init --recursive \
     && cd /src/hmmer \
     && autoreconf -i \
     && ./configure --prefix=/opt/hmmer \
