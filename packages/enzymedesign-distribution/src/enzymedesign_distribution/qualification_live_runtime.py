@@ -907,6 +907,7 @@ def _unit_execution_key(unit: ExternalQualificationUnit) -> tuple[int, int, str]
         "enzymedesign.fpocket.local",
         "enzymedesign.fpocket.hpc",
         "enzymedesign.docking.preprocess",
+        "enzymedesign.alphafold.hpc",
     )
     operation_order = {
         "clone": 1,
@@ -929,6 +930,7 @@ def _unit_execution_key(unit: ExternalQualificationUnit) -> tuple[int, int, str]
         "cancel": 3,
         "hmmbuild": 1,
         "hmmsearch": 2,
+        "predict": 1,
     }
     return (
         component_order.index(unit.component_id),
@@ -956,6 +958,11 @@ def _unit_budget_charges(unit: ExternalQualificationUnit) -> tuple[tuple[str, fl
         if unit.operation == "container-start":
             charges.append(("budget.podman.memory", 2048.0))
         return tuple(charges)
+    if unit.component_id == "enzymedesign.alphafold.hpc":
+        return (
+            ("budget.batch-2.cash", 25.0),
+            ("budget.alphafold.gpu-time", 30.0),
+        )
     if unit.component_id.endswith((".local",)) or unit.component_id == (
         "enzymedesign.docking.preprocess"
     ):
@@ -966,6 +973,8 @@ def _unit_budget_charges(unit: ExternalQualificationUnit) -> tuple[tuple[str, fl
 
 
 def _unit_timeout_seconds(unit: ExternalQualificationUnit) -> int:
+    if unit.component_id == "enzymedesign.alphafold.hpc":
+        return 1_800
     if unit.component_id.startswith(("enzymedesign.hmmer", "enzymedesign.vina")):
         return 600
     if unit.component_id.startswith("enzymedesign.fpocket"):

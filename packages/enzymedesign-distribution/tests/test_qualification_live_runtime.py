@@ -23,6 +23,9 @@ from openzyme_contracts import ExternalRealSubjectIdentity
 from openzyme_contracts import canonical_sha256_digest
 from openzyme_store_sqlite import SQLiteProtectedQualificationLedger
 from enzymedesign_distribution.qualification_live_runtime import _unit_cleanup_ok
+from enzymedesign_distribution.qualification_live_runtime import _unit_budget_charges
+from enzymedesign_distribution.qualification_live_runtime import _unit_execution_key
+from enzymedesign_distribution.qualification_live_runtime import _unit_timeout_seconds
 from enzymedesign_distribution.qualification_live_runtime import (
     exercise_live_qualification_negative_gate,
 )
@@ -273,6 +276,13 @@ def test_alphafold_negative_gate_uses_terminal_no_redispatch_policy() -> None:
     )
 
     assert digest.startswith("sha256:")
+    unit = readiness.units[0]
+    assert _unit_execution_key(unit)[0] > 0
+    assert _unit_budget_charges(unit) == (
+        ("budget.batch-2.cash", 25.0),
+        ("budget.alphafold.gpu-time", 30.0),
+    )
+    assert _unit_timeout_seconds(unit) == 1_800
 
 
 @dataclass
