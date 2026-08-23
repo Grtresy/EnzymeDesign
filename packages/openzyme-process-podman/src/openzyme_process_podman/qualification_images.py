@@ -363,6 +363,7 @@ class PodmanQualificationImagePreparationExecutor:
         if image_group == "base":
             field_pairs = (
                 ("approved_qualification_image_digest", image_digest),
+                ("base_image_recipe_digest", recipe.recipe_digest),
                 (
                     "container_policy_digest",
                     canonical_sha256_digest(
@@ -377,11 +378,13 @@ class PodmanQualificationImagePreparationExecutor:
             )
         elif image_group == "hmmer":
             field_pairs = (
+                ("hmmer_image_recipe_digest", recipe.recipe_digest),
                 ("hmmer_image_digest", image_digest),
                 ("hmmer_version", versions["hmmer"]),
             )
         else:
             field_pairs = (
+                ("docking_image_recipe_digest", recipe.recipe_digest),
                 ("fpocket_image_digest", image_digest),
                 ("fpocket_version", versions["fpocket"]),
                 ("meeko_version", versions["meeko"]),

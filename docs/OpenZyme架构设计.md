@@ -278,7 +278,9 @@ canonical Plugin/Kernel surfaces；旧 function handler/repository/writer packag
   均属于当前 qualification change，但不构成 inventory adoption、runtime activation 或 cutover；
   首次真实 Batch 1 occurrence 已终态且 authority 不可复用；其部分成功 receipt 不构成 batch qualified。后续源码已要求
   本地 Git ref 按 occurrence 隔离、HPC login/workspace/helper material 与已资格 runtime identity 在 SSH 前精确闭合，
-  并把 cleanup resource payload 和逐 unit budget settlement 连同 digest 持久化。Diannan 当前 Vina SIF 观测为
+  并把 cleanup resource payload 和逐 unit budget settlement 连同 digest 持久化。本地 qualification image subject
+  同时绑定 immutable image digest 与当前源码重算的 recipe digest；缺失或漂移保持 `partial`/`drifted`，recipe 变化
+  使用新 output ref，禁止覆盖、重标记或回退旧镜像。Diannan 当前 Vina SIF 观测为
   `1.1.2`，不满足 Distribution 的 `>=1.2,<2`，在明确版本决策前保持阻断，不从 digest 存在推导软件资格；
 - `openzyme-workspace-git-lfs` 已成为 `AgentGitWorkspace` identity/observation/restore 与 Git-LFS
   policy/pointer/closure/verification/receipt 机制 DTO 的唯一代码 owner；旧 Domain shim 已删除，仓内生产

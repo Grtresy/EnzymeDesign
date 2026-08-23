@@ -18,6 +18,7 @@ from openzyme_contracts import ExternalSubjectIdentityStatus
 from openzyme_contracts import ExternalIdentityPreparationResult
 from openzyme_contracts import SafeIdentityField
 from openzyme_contracts import canonical_sha256_digest
+from openzyme_process_podman import load_qualification_image_manifest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -212,6 +213,12 @@ def test_resolved_subject_with_out_of_range_version_becomes_drifted_gap() -> Non
         status=ExternalSubjectIdentityStatus.RESOLVED,
         safe_fields=(
             *generic_fields,
+            SafeIdentityField(
+                "docking_image_recipe_digest",
+                load_qualification_image_manifest()
+                .recipe("docking")
+                .recipe_digest,
+            ),
             SafeIdentityField("vina_image_digest", "sha256:" + "2" * 64),
             SafeIdentityField("vina_version", "1.1.2"),
         ),
@@ -252,6 +259,87 @@ def test_resolved_subject_with_out_of_range_version_becomes_drifted_gap() -> Non
     assert observation.missing_fields == (
         "vina_version_satisfies_declared_spec",
     )
+
+
+@pytest.mark.parametrize(
+    ("recipe_fields", "expected_missing_field"),
+    (
+        ((), "docking_image_recipe_digest"),
+        (
+            (
+                SafeIdentityField(
+                    "docking_image_recipe_digest",
+                    "sha256:" + "0" * 64,
+                ),
+            ),
+            "docking_image_recipe_digest_matches_current_source",
+        ),
+    ),
+)
+def test_resolved_local_image_requires_current_source_recipe_digest(
+    recipe_fields: tuple[SafeIdentityField, ...],
+    expected_missing_field: str,
+) -> None:
+    snapshot = load_safe_identity_snapshot(SNAPSHOT)
+    generic_fields = next(
+        projection.safe_fields
+        for projection in snapshot.projections
+        if projection.projection_id == "bio-uniprot-public"
+    )
+    vina = next(
+        projection
+        for projection in snapshot.projections
+        if projection.projection_id == "vina-local"
+    )
+    resolved_vina = replace(
+        vina,
+        status=ExternalSubjectIdentityStatus.RESOLVED,
+        safe_fields=(
+            *generic_fields,
+            *recipe_fields,
+            SafeIdentityField("vina_image_digest", "sha256:" + "2" * 64),
+            SafeIdentityField("vina_version", "1.2.7"),
+        ),
+        missing_fields=(),
+    )
+    snapshot = replace(
+        snapshot,
+        projections=tuple(
+            resolved_vina
+            if item.projection_id == resolved_vina.projection_id
+            else item
+            for item in snapshot.projections
+        ),
+    )
+    readiness = build_enzymedesign_external_qualification_plan(
+        plan_id="qualification.readiness.recipe-drift",
+        created_at=snapshot.observed_at,
+        enabled_optional_profiles=OPTIONAL_PROFILES,
+    )
+    from enzymedesign_distribution import discover_external_subject_identities
+
+    discovery = discover_external_subject_identities(
+        readiness_plan=readiness,
+        snapshot=snapshot,
+    )
+    observation = next(
+        item
+        for item in discovery.observations
+        if item.logical_subject_id == "local"
+        and any(
+            unit.component_id == "enzymedesign.vina.local"
+            and unit.unit_digest in item.affected_unit_digests
+            for unit in readiness.units
+        )
+    )
+
+    expected_status = (
+        ExternalSubjectIdentityStatus.PARTIAL
+        if not recipe_fields
+        else ExternalSubjectIdentityStatus.DRIFTED
+    )
+    assert observation.status is expected_status
+    assert observation.missing_fields == (expected_missing_field,)
 
 
 def test_operator_selection_parser_rejects_secret_shaped_identity(

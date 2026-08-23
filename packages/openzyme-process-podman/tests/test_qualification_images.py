@@ -163,6 +163,7 @@ def test_docking_preparation_builds_once_and_projects_all_image_facts() -> None:
     assert commands.calls[2][0][:3] == ("podman", "build", "--pull=never")
     assert commands.calls[2][1] is not None
     assert {item.field_id for item in result.safe_identity_fields} == {
+        "docking_image_recipe_digest",
         "fpocket_image_digest",
         "fpocket_version",
         "meeko_version",

@@ -154,6 +154,11 @@ identity/known-hosts files；不覆盖当前 runner 配置。
 与当前 recipe digest 完全相等的 build label 及 `linux/amd64` platform 时，才以 `adopted-exact-existing` 恢复 identity；
 任一字段不一致即 `qualification_existing_image_identity_mismatch`，禁止删除、重标记或 fallback。
 
+image subject 的 safe projection 必须同时携带对应的 repository-owned recipe digest。effect-free rediscovery 会用
+当前 checkout 重算该 digest：字段缺失时 projection 为 `partial`，与当前源码不一致时为 `drifted`；即使 immutable
+image digest 仍存在，也不能据此生成 authorizable dry plan。recipe 改变必须使用新的 output image ref；旧镜像保留作
+历史对象，不覆盖、不重标记，也不作为 fallback。
+
 Preparation success 写入 `ExternalIdentityPreparationResult` 和 protected SQLite ledger。effect-free rediscovery 验证每个
 result 的 plan、authorization、owner、input 和字段覆盖后才生成新的 safe snapshot。随后必须重建 exact catalog：
 `nonlive.locator.*` 不能进入 real plan，LLM/Tavily/HPC 改绑专用 locator，本地 Git/LFS 移除 credential placeholder；

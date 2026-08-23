@@ -20,7 +20,7 @@
 1. Git publish 使用固定 `refs/heads/qualification`，与旧 occurrence 发生 non-fast-forward。修正为按 occurrence workspace 生成稳定 ref，并让 LFS fetch 绑定同一 exact tracking ref。
 2. HPC locator 使用不可写的 `/data/openzyme/qualification/workspaces`，使 SSH workspace、Slurm submit/observe 和所有 HPC scientific unit 成串失败。配置改为已部署 helper 绑定的 `/home/grtresy/.local/state/openzyme-executor-workspaces`，且 factory 在 effect 前强校验 login principal、workspace root 和 helper absolute path。
 3. HMMER build expected output 误取输入 argv；fpocket expected output 误加 `inputs/` 前缀。二者按实际 argv/cwd 修正。
-4. 本地 docking image 缺 Meeko 所需 SciPy 与 Open Babel wheel 所需 Xrender runtime。recipe 固定补入 `scipy==1.14.1` 和 `libxrender1`；旧 image digest 不得冒充新 recipe，后续需要新的 image preparation/deployment authority。
+4. 本地 docking image 缺 Meeko 所需 SciPy 与 Open Babel wheel 所需 Xrender runtime。recipe 固定补入 `scipy==1.14.1` 和 `libxrender1`，新 output ref 为 `localhost/openzyme-qualification-docking:20260823-r2`；本地 image subject 另行绑定当前 source recipe digest。旧 image digest 不得冒充新 recipe，后续需要新的 image preparation authority。
 5. Tavily 返回 `provider_unavailable` 且 effect certainty 为 `dispatch_in_doubt`；同 attempt reconcile 后仍非终态。该 attempt 不重派发。受保护 diagnostic 现可记录 Adapter 已去敏的 provider status/summary，public outcome 仍不泄露该内容。
 6. 旧 report 只保存 cleanup 和 budget digest。新 occurrence evidence 会在 protected SQLite 中持久化 exact cleanup resources 与逐 unit budget settlement payload，并在完整恢复时校验。
 7. 旧 discovery 只绑定 HPC software fact/image digest，没有把 observed version 与 selected Plugin requirement 比较。unit schema 现升级为 `external_qualification_unit@2`，显式绑定 `subject_version_spec`；HPC banner 规范化为 per-capability version，缺失/不可解析/不满足 spec 均保持 blocked。

@@ -47,6 +47,7 @@ from openzyme_contracts import (
     verify_external_identity_preparation_occurrence_authorization,
 )
 from openzyme_contracts import verify_external_identity_preparation_plan
+from openzyme_process_podman import load_qualification_image_manifest
 
 
 BATCH_1_PROFILES = (
@@ -67,6 +68,22 @@ _SUBJECT_VERSION_FIELDS = {
     "software.openbabel": "openbabel_version",
     "software.rdkit": "rdkit_version",
 }
+
+
+def _current_image_recipe_requirements() -> dict[str, dict[str, str]]:
+    recipes = {
+        item.image_group: item.recipe_digest
+        for item in load_qualification_image_manifest().recipes
+    }
+    return {
+        "podman-base": {"base_image_recipe_digest": recipes["base"]},
+        "hmmer-local": {"hmmer_image_recipe_digest": recipes["hmmer"]},
+        "vina-local": {"docking_image_recipe_digest": recipes["docking"]},
+        "fpocket-local": {"docking_image_recipe_digest": recipes["docking"]},
+        "preprocess-podman": {
+            "docking_image_recipe_digest": recipes["docking"]
+        },
+    }
 
 
 class ExternalQualificationBatch(StrEnum):
@@ -489,6 +506,7 @@ def discover_external_subject_identities(
 ) -> ExternalSubjectIdentityDiscoveryReport:
     observations: list[ExternalSubjectIdentityObservation] = []
     observed_units: set[str] = set()
+    image_recipe_requirements = _current_image_recipe_requirements()
     for projection in snapshot.projections:
         affected = tuple(
             unit.unit_digest
@@ -573,6 +591,33 @@ def discover_external_subject_identities(
             elif missing:
                 effective_status = ExternalSubjectIdentityStatus.PARTIAL
             effective_missing_fields = tuple(sorted(missing))
+        projection_requirements = image_recipe_requirements.get(
+            projection.projection_id,
+            {},
+        )
+        if (
+            projection_requirements
+            and projection.status is ExternalSubjectIdentityStatus.RESOLVED
+        ):
+            safe_values = {
+                item.field_id: item.value for item in projection.safe_fields
+            }
+            missing = set(effective_missing_fields)
+            drifted = effective_status is ExternalSubjectIdentityStatus.DRIFTED
+            for field_id, expected_value in sorted(
+                projection_requirements.items()
+            ):
+                observed_value = safe_values.get(field_id)
+                if observed_value is None:
+                    missing.add(field_id)
+                elif observed_value != expected_value:
+                    drifted = True
+                    missing.add(f"{field_id}_matches_current_source")
+            if drifted:
+                effective_status = ExternalSubjectIdentityStatus.DRIFTED
+            elif missing:
+                effective_status = ExternalSubjectIdentityStatus.PARTIAL
+            effective_missing_fields = tuple(sorted(missing))
         observation_source_digest = canonical_sha256_digest(
             {
                 "snapshot_source_digest": snapshot.source_digest,
@@ -580,6 +625,9 @@ def discover_external_subject_identities(
                 "safe_fields": [item.to_dict() for item in projection.safe_fields],
                 "subject_version_requirements": dict(
                     sorted(version_requirements.items())
+                ),
+                "projection_requirements": dict(
+                    sorted(projection_requirements.items())
                 ),
             }
         )

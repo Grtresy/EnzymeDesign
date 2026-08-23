@@ -66,9 +66,15 @@ A Provider subject MUST bind provider ID, credential-free endpoint, account or p
 
 Software/image/inventory/version facts MAY participate in the subject closure, but a positive or negative operation smoke receipt MUST NOT be required to create the dry plan that schedules that same operation. Smoke receipts are qualification evidence, not subject identity.
 
+For repository-owned local qualification images, the subject closure MUST bind both the immutable image digest and the recipe digest recomputed from the current source closure. A missing recipe digest MUST leave the subject partial; a recipe digest that differs from the current source MUST mark it drifted. Neither condition MAY be repaired by reusing, overwriting, retagging or falling back to an older image.
+
 #### Scenario: Provider account changes under the same logical ID
 - **WHEN** the account locator digest changes while `provider.llm.primary` remains the catalog ID
 - **THEN** the prior subject, dry plan and qualification evidence are inapplicable
+
+#### Scenario: Existing local image belongs to an older recipe
+- **WHEN** an immutable image digest is still present but its safe subject projection omits the current recipe digest or binds a different recipe digest
+- **THEN** discovery reports the subject as partial or drifted and no qualification occurrence authority can be created from that dry plan
 
 ### Requirement: The dry plan closes exact batch authority before credentials or effects
 An `ExternalQualificationDryPlan` MUST bind source identity, readiness catalog and plan digests, batch and exact unit set, resolved real subjects, credential locators without material, probe and fault sequence, retry policy, effect allowlist, budget, cleanup, TTL, storage policy and `live_effect_authorized=false`. An independent verifier MUST reject incomplete units, unresolved identities, secret-bearing fields, fallback, unbounded effects or evidence that any planned effect already occurred.

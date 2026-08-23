@@ -94,7 +94,7 @@
         {"field_id": "host", "value": "rootless-linux-amd64-vfs"},
         {"field_id": "available_image", "value": "openzyme-pipeline-sandbox-bio-audit-20260720"}
       ],
-      "missing_fields": ["approved_qualification_image_digest", "container_policy_digest"]
+      "missing_fields": ["approved_qualification_image_digest", "base_image_recipe_digest", "container_policy_digest"]
     },
     {
       "projection_id": "hpc-control",
@@ -117,7 +117,7 @@
       "status": "missing",
       "component_ids": ["enzymedesign.hmmer.local"],
       "safe_fields": [],
-      "missing_fields": ["hmmer_image_digest", "hmmer_version"]
+      "missing_fields": ["hmmer_image_digest", "hmmer_image_recipe_digest", "hmmer_version"]
     },
     {
       "projection_id": "hmmer-hpc",
@@ -135,7 +135,7 @@
       "status": "missing",
       "component_ids": ["enzymedesign.vina.local"],
       "safe_fields": [],
-      "missing_fields": ["vina_image_digest", "vina_version"]
+      "missing_fields": ["docking_image_recipe_digest", "vina_image_digest", "vina_version"]
     },
     {
       "projection_id": "vina-hpc",
@@ -153,7 +153,7 @@
       "status": "missing",
       "component_ids": ["enzymedesign.fpocket.local"],
       "safe_fields": [],
-      "missing_fields": ["fpocket_image_digest", "fpocket_version"]
+      "missing_fields": ["docking_image_recipe_digest", "fpocket_image_digest", "fpocket_version"]
     },
     {
       "projection_id": "fpocket-hpc",
@@ -171,7 +171,7 @@
       "status": "missing",
       "component_ids": ["enzymedesign.docking.preprocess"],
       "safe_fields": [],
-      "missing_fields": ["preprocess_image_digest", "rdkit_version", "meeko_version", "openbabel_version"]
+      "missing_fields": ["docking_image_recipe_digest", "preprocess_image_digest", "rdkit_version", "meeko_version", "openbabel_version"]
     },
     {
       "projection_id": "alphafold-hpc",
