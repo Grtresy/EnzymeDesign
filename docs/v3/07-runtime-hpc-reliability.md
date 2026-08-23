@@ -62,6 +62,8 @@ API；formal occurrence credential 只由 Compute admission 为 exact workload/r
 HPC qualification 将当前 opaque toolchain digest 扩为 immutable inventory generation，逐项记录 software/
 hardware/data/asset/license capability、version、operations、environment/binary/qualification digest 和 validity。
 只有 operator/admin 能 publish/adopt/revoke；Session 通过 capability binding revision 采用 exact generation。
+版本 banner 必须先由 Adapter 规范化为 capability-specific canonical version，再与 source-bound qualification unit 的
+`subject_version_spec` 比较；banner 无法解析、version field 缺失或不满足 spec 都不能产生 resolved subject。
 
 HMMER/Vina 等 Product Plugin 声明 capability/version/operation/same-target requirements，不 import HPC 或 Slurm。
 Resolver 只有在 Plugin、inventory、route、Agent authority 与 workspace 均满足时才暴露 formal tool；Agent 必须

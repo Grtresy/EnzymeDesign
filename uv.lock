@@ -258,6 +258,7 @@ dependencies = [
     { name = "openzyme-science-research" },
     { name = "openzyme-store-sqlite" },
     { name = "openzyme-workspace-git-lfs" },
+    { name = "packaging" },
 ]
 
 [package.optional-dependencies]
@@ -296,6 +297,7 @@ requires-dist = [
     { name = "openzyme-science-research", editable = "packages/openzyme-science-research" },
     { name = "openzyme-store-sqlite", editable = "packages/openzyme-store-sqlite" },
     { name = "openzyme-workspace-git-lfs", editable = "packages/openzyme-workspace-git-lfs" },
+    { name = "packaging", specifier = ">=26,<27" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.0" },
 ]
 provides-extras = ["dev"]

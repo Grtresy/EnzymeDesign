@@ -74,6 +74,9 @@ def test_openssh_identity_observation_uses_exact_files_without_ambient_fallback(
     assert observation.software_image_digest("software.hmmer") == (
         "sha256:" + "a" * 64
     )
+    assert observation.software_version("software.hmmer") == "3.4"
+    assert observation.software_version("software.vina") == "1.1.2"
+    assert observation.software_version("software.fpocket") == "4.0"
     assert observation.apptainer_version == "apptainer version 1.4.5"
     assert commands.argv[:3] == ("ssh", "-F", "/dev/null")
     assert commands.argv[3:5] == ("-p", "22222")
@@ -106,6 +109,36 @@ def test_openssh_identity_observation_rejects_invalid_port_before_command(
 
     assert error.value.error_code == "qualification_hpc_credential_identity_invalid"
     assert commands.argv == ()
+
+
+def test_openssh_identity_observation_rejects_unparseable_software_version(
+    tmp_path: Path,
+) -> None:
+    identity_file = tmp_path / "id_ed25519"
+    identity_file.write_text("fake-test-key", encoding="utf-8")
+    identity_file.chmod(0o600)
+    known_hosts_file = tmp_path / "known_hosts"
+    known_hosts_file.write_text("fake-test-host-key", encoding="utf-8")
+    commands = _Commands()
+    original_run = commands.run
+
+    def malformed(argv: tuple[str, ...]) -> tuple[int, str, str]:
+        returncode, stdout, stderr = original_run(argv)
+        return returncode, stdout.replace("AutoDock Vina 1.1.2", "Vina unknown"), stderr
+
+    commands.run = malformed  # type: ignore[method-assign]
+    port = OpenSshHpcQualificationIdentityObservationPort(command_port=commands)
+
+    with pytest.raises(ExternalQualificationError) as error:
+        port.observe(
+            host_alias="Diannan",
+            partition="3090",
+            credential_material=_Material(identity_file, known_hosts_file),
+        )
+
+    assert error.value.error_code == (
+        "qualification_hpc_software_version_unparseable"
+    )
 
 
 class _WorkspaceCommands:

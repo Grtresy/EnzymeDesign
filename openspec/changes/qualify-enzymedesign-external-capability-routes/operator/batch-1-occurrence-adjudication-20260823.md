@@ -23,6 +23,7 @@
 4. 本地 docking image 缺 Meeko 所需 SciPy 与 Open Babel wheel 所需 Xrender runtime。recipe 固定补入 `scipy==1.14.1` 和 `libxrender1`；旧 image digest 不得冒充新 recipe，后续需要新的 image preparation/deployment authority。
 5. Tavily 返回 `provider_unavailable` 且 effect certainty 为 `dispatch_in_doubt`；同 attempt reconcile 后仍非终态。该 attempt 不重派发。受保护 diagnostic 现可记录 Adapter 已去敏的 provider status/summary，public outcome 仍不泄露该内容。
 6. 旧 report 只保存 cleanup 和 budget digest。新 occurrence evidence 会在 protected SQLite 中持久化 exact cleanup resources 与逐 unit budget settlement payload，并在完整恢复时校验。
+7. 旧 discovery 只绑定 HPC software fact/image digest，没有把 observed version 与 selected Plugin requirement 比较。unit schema 现升级为 `external_qualification_unit@2`，显式绑定 `subject_version_spec`；HPC banner 规范化为 per-capability version，缺失/不可解析/不满足 spec 均保持 blocked。
 
 ## 待 operator 决策
 

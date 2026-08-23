@@ -9,6 +9,11 @@ import math
 from pathlib import Path
 from typing import Protocol
 
+from packaging.specifiers import InvalidSpecifier
+from packaging.specifiers import SpecifierSet
+from packaging.version import InvalidVersion
+from packaging.version import Version
+
 from openzyme_contracts import ExternalIdentityGap
 from openzyme_contracts import ExternalIdentityPreparationAction
 from openzyme_contracts import ExternalIdentityPreparationOccurrenceAuthorization
@@ -52,6 +57,16 @@ BATCH_1_PROFILES = (
     "research-provider",
 )
 BATCH_2_PROFILES = ("alphafold",)
+
+_SUBJECT_VERSION_FIELDS = {
+    "software.alphafold3": "alphafold_version",
+    "software.autodock-vina": "vina_version",
+    "software.fpocket": "fpocket_version",
+    "software.hmmer": "hmmer_version",
+    "software.meeko": "meeko_version",
+    "software.openbabel": "openbabel_version",
+    "software.rdkit": "rdkit_version",
+}
 
 
 class ExternalQualificationBatch(StrEnum):
@@ -484,12 +499,16 @@ def discover_external_subject_identities(
         if not affected:
             continue
         safe_field_ids = {item.field_id for item in projection.safe_fields}
+        affected_units = tuple(
+            unit
+            for unit in readiness_plan.units
+            if unit.unit_digest in affected
+        )
         if (
             projection.status is ExternalSubjectIdentityStatus.RESOLVED
             and any(
                 unit.credential_locator is not None
-                for unit in readiness_plan.units
-                if unit.unit_digest in affected
+                for unit in affected_units
             )
             and "credential_locator_id" not in safe_field_ids
         ):
@@ -504,11 +523,64 @@ def discover_external_subject_identities(
                 "one readiness unit is claimed by multiple safe projections",
             )
         observed_units.update(affected)
+        effective_status = projection.status
+        effective_missing_fields = projection.missing_fields
+        version_requirements: dict[str, str] = {}
+        for unit in affected_units:
+            if unit.subject_version_spec is None:
+                continue
+            previous = version_requirements.setdefault(
+                unit.capability_id,
+                unit.subject_version_spec,
+            )
+            if previous != unit.subject_version_spec:
+                raise ExternalQualificationError(
+                    "qualification_subject_version_policy_collision",
+                    "one subject capability has different version policies",
+                )
+        if (
+            version_requirements
+            and projection.status is ExternalSubjectIdentityStatus.RESOLVED
+        ):
+            safe_values = {
+                item.field_id: item.value for item in projection.safe_fields
+            }
+            missing = set(projection.missing_fields)
+            drifted = False
+            for capability_id, version_spec in sorted(version_requirements.items()):
+                version_field = _SUBJECT_VERSION_FIELDS.get(capability_id)
+                if version_field is None:
+                    raise ExternalQualificationError(
+                        "qualification_subject_version_field_undeclared",
+                        "versioned subject capability lacks a safe version field",
+                    )
+                observed_version = safe_values.get(version_field)
+                if observed_version is None:
+                    missing.add(version_field)
+                    continue
+                try:
+                    satisfies = SpecifierSet(version_spec).contains(
+                        Version(observed_version),
+                        prereleases=True,
+                    )
+                except (InvalidSpecifier, InvalidVersion):
+                    satisfies = False
+                if not satisfies:
+                    drifted = True
+                    missing.add(f"{version_field}_satisfies_declared_spec")
+            if drifted:
+                effective_status = ExternalSubjectIdentityStatus.DRIFTED
+            elif missing:
+                effective_status = ExternalSubjectIdentityStatus.PARTIAL
+            effective_missing_fields = tuple(sorted(missing))
         observation_source_digest = canonical_sha256_digest(
             {
                 "snapshot_source_digest": snapshot.source_digest,
                 "projection_id": projection.projection_id,
                 "safe_fields": [item.to_dict() for item in projection.safe_fields],
+                "subject_version_requirements": dict(
+                    sorted(version_requirements.items())
+                ),
             }
         )
         observations.append(
@@ -516,11 +588,11 @@ def discover_external_subject_identities(
                 observation_id=f"observation.{projection.projection_id}",
                 logical_subject_id=projection.logical_subject_id,
                 subject_kind=projection.subject_kind,
-                status=projection.status,
+                status=effective_status,
                 source_id=f"snapshot.{snapshot.snapshot_id}",
                 source_digest=observation_source_digest,
                 safe_fields=projection.safe_fields,
-                missing_fields=projection.missing_fields,
+                missing_fields=effective_missing_fields,
                 affected_unit_digests=affected,
             )
         )

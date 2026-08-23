@@ -40,6 +40,26 @@ DIANNAN_WORKSPACE_RUNTIME_POLICY_ID = (
     "policy.openzyme.hpc.diannan.workspace-runtime"
 )
 
+_SOFTWARE_VERSION_PATTERNS = {
+    "software.hmmer": re.compile(r"\bHMMER\s+([0-9]+(?:\.[0-9]+){1,2})\b"),
+    "software.vina": re.compile(
+        r"\b(?:AutoDock\s+)?Vina\s+v?([0-9]+(?:\.[0-9]+){1,2})\b"
+    ),
+    "software.fpocket": re.compile(
+        r"\bfpocket\s+([0-9]+(?:\.[0-9]+){1,2})\b"
+    ),
+}
+
+
+def _normalized_software_version(software_id: str, observation: str) -> str:
+    match = _SOFTWARE_VERSION_PATTERNS[software_id].search(observation)
+    if match is None:
+        raise ExternalQualificationError(
+            "qualification_hpc_software_version_unparseable",
+            "SSH target software version observation is not canonicalizable",
+        )
+    return match.group(1)
+
 
 def _safe_remote_absolute_path(value: str) -> bool:
     return (
@@ -297,9 +317,18 @@ printf '%s\\n' "$system" "$partition" "$apptainer_version" "$hmmer_digest" "$hmm
             environment_digest=environment_digest,
             inventory_generation_digest=inventory_digest,
             software_versions=(
-                ("software.fpocket", lines[8]),
-                ("software.hmmer", lines[4]),
-                ("software.vina", lines[6]),
+                (
+                    "software.fpocket",
+                    _normalized_software_version("software.fpocket", lines[8]),
+                ),
+                (
+                    "software.hmmer",
+                    _normalized_software_version("software.hmmer", lines[4]),
+                ),
+                (
+                    "software.vina",
+                    _normalized_software_version("software.vina", lines[6]),
+                ),
             ),
             software_image_digests=(
                 ("software.fpocket", f"sha256:{lines[7]}"),

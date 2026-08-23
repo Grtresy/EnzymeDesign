@@ -376,6 +376,22 @@ def build_enzymedesign_external_qualification_catalog(
         if activation.manifest is not None
         for spec in activation.manifest.qualification_specs
     }
+    subject_version_specs: dict[str, str] = {}
+    for activation in exact.plugins.activations:
+        if activation.manifest is None:
+            continue
+        for requirement in activation.manifest.requires:
+            if requirement.version_spec is None:
+                continue
+            previous = subject_version_specs.setdefault(
+                requirement.capability_id,
+                requirement.version_spec,
+            )
+            if previous != requirement.version_spec:
+                raise ExternalQualificationError(
+                    "qualification_subject_version_policy_collision",
+                    "selected Plugins declare different subject version policies",
+                )
     blueprints = _blueprints()
     if credential_locator_ids is not None and set(credential_locator_ids) != set(
         EXTERNAL_QUALIFICATION_CREDENTIAL_SLOTS
@@ -497,6 +513,9 @@ def build_enzymedesign_external_qualification_catalog(
             qualification_spec_digest=qualification_spec_digest,
             validator_id=f"{blueprint.qualification_spec_id}.validator",
             expected_result_schema_digest=expected_schema_digest,
+            subject_version_spec=subject_version_specs.get(
+                blueprint.capability_id
+            ),
             credential_locator=locator,
         )
         catalog.append((blueprint.profile_id, unit))

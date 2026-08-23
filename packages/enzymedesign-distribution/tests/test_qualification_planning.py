@@ -1,3 +1,4 @@
+from dataclasses import replace
 import json
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from enzymedesign_distribution import load_operator_identity_resolution_selectio
 from enzymedesign_distribution import qualification_plan_bundle
 from openzyme_contracts import ExternalQualificationError
 from openzyme_contracts import ExternalQualificationOperationObservation
+from openzyme_contracts import ExternalSubjectIdentityStatus
 from openzyme_contracts import ExternalIdentityPreparationResult
 from openzyme_contracts import SafeIdentityField
 from openzyme_contracts import canonical_sha256_digest
@@ -191,6 +193,65 @@ def test_safe_snapshot_parser_rejects_unallowlisted_secret_field(
         load_safe_identity_snapshot(unsafe)
     assert captured.value.error_code == "qualification_safe_snapshot_field_forbidden"
     assert "secret-material" not in str(captured.value)
+
+
+def test_resolved_subject_with_out_of_range_version_becomes_drifted_gap() -> None:
+    snapshot = load_safe_identity_snapshot(SNAPSHOT)
+    generic_fields = next(
+        projection.safe_fields
+        for projection in snapshot.projections
+        if projection.projection_id == "bio-uniprot-public"
+    )
+    vina = next(
+        projection
+        for projection in snapshot.projections
+        if projection.projection_id == "vina-local"
+    )
+    drifted_vina = replace(
+        vina,
+        status=ExternalSubjectIdentityStatus.RESOLVED,
+        safe_fields=(
+            *generic_fields,
+            SafeIdentityField("vina_image_digest", "sha256:" + "2" * 64),
+            SafeIdentityField("vina_version", "1.1.2"),
+        ),
+        missing_fields=(),
+    )
+    snapshot = replace(
+        snapshot,
+        projections=tuple(
+            drifted_vina
+            if item.projection_id == drifted_vina.projection_id
+            else item
+            for item in snapshot.projections
+        ),
+    )
+    readiness = build_enzymedesign_external_qualification_plan(
+        plan_id="qualification.readiness.version-drift",
+        created_at=snapshot.observed_at,
+        enabled_optional_profiles=OPTIONAL_PROFILES,
+    )
+    from enzymedesign_distribution import discover_external_subject_identities
+
+    discovery = discover_external_subject_identities(
+        readiness_plan=readiness,
+        snapshot=snapshot,
+    )
+    observation = next(
+        item
+        for item in discovery.observations
+        if item.logical_subject_id == "local"
+        and any(
+            unit.component_id == "enzymedesign.vina.local"
+            and unit.unit_digest in item.affected_unit_digests
+            for unit in readiness.units
+        )
+    )
+
+    assert observation.status is ExternalSubjectIdentityStatus.DRIFTED
+    assert observation.missing_fields == (
+        "vina_version_satisfies_declared_spec",
+    )
 
 
 def test_operator_selection_parser_rejects_secret_shaped_identity(
@@ -475,7 +536,7 @@ def test_preparation_factory_rejects_cross_action_credential_locator() -> None:
     assert builder_calls == 1
 
 
-def test_safe_preparation_results_enable_effect_free_batch_1_rediscovery() -> None:
+def test_safe_preparation_without_target_versions_keeps_batch_1_blocked() -> None:
     from enzymedesign_distribution import ExternalQualificationBatch
     from enzymedesign_distribution import apply_external_identity_preparation_results
     from enzymedesign_distribution import build_external_identity_gaps
@@ -572,18 +633,31 @@ def test_safe_preparation_results_enable_effect_free_batch_1_rediscovery() -> No
         batch=ExternalQualificationBatch.BATCH_1,
     )
 
-    assert dry_plan.authorizable is True
-    assert all(
-        observation.status.value == "resolved"
+    assert dry_plan.authorizable is False
+    hpc_science = {
+        observation.observation_id: observation
         for observation in rediscovery.observations
-        if not set(observation.affected_unit_digests).intersection(
-            {
-                unit.unit_digest
-                for unit in exact_readiness.units
-                if unit.component_id == "enzymedesign.alphafold.hpc"
-            }
-        )
+        if observation.observation_id
+        in {
+            "observation.hmmer-hpc",
+            "observation.vina-hpc",
+            "observation.fpocket-hpc",
+        }
+    }
+    assert set(hpc_science) == {
+        "observation.hmmer-hpc",
+        "observation.vina-hpc",
+        "observation.fpocket-hpc",
+    }
+    assert all(
+        observation.status is ExternalSubjectIdentityStatus.PARTIAL
+        for observation in hpc_science.values()
     )
+    assert {
+        field
+        for observation in hpc_science.values()
+        for field in observation.missing_fields
+    } == {"hmmer_version", "vina_version", "fpocket_version"}
     assert set(dry_plan.credential_locator_ids) == {
         "credential.llm.micuapi.qualification",
         "credential.tavily.qualification",

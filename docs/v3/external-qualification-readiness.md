@@ -35,8 +35,10 @@ capability_id
 ```
 
 同一对象还绑定 component/Driver、contract、qualification spec、validator、expected result schema 与可选
-credential locator scope。一个 operation 的结果不能扩大为 capability 全部 operations；route、target/provider、
-source/build/config 任一漂移都需要新 plan 和新 receipt。
+credential locator scope。`external_qualification_unit@2` 还把该 capability 的 exact `subject_version_spec` 纳入
+unit digest；软件 subject observation 必须提供 capability-specific canonical version field，并在 effect-free discovery
+中满足该 spec，否则 observation 降为 `partial` 或 `drifted`。一个 operation 的结果不能扩大为 capability 全部
+operations；route、target/provider、source/build/config 任一漂移都需要新 plan 和新 receipt。
 
 product catalog 不复制 Distribution 选择。builder 先激活当前 exact composition，再从 selected Adapter manifest、
 Plugin `QualificationSpec` 与 Driver binding 读取 component/source/build/contract identity；catalog blueprint 只描述
@@ -179,6 +181,9 @@ terminal validator。live coordinator 在 protected SQLite 中逐 unit 持久 ou
 SSH effect 前与 qualified helper identity 精确相等；cleanup resources 与逐 unit budget settlement payload 同 digest 一并
 持久化，恢复时缺失即 fail closed。当前 Diannan Vina SIF 的观测版本为 `1.1.2`，不满足声明的 `>=1.2,<2`，所以在
 operator 决定 compatible SIF 或 route-specific 版本设计前保持阻断，不能仅凭 SIF digest 进入新 dry plan。
+HPC identity observer 现在把 HMMER/Vina/fpocket 的原始 version banner 规范化为单独的 canonical version 字段；
+原始 banner 仍只进入 inventory generation digest。无法解析的 banner 返回
+`qualification_hpc_software_version_unparseable`，不能以 opaque software fact 绕过版本约束。
 
 ## 后续强制暂停点
 

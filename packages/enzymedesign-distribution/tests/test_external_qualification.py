@@ -21,6 +21,11 @@ def test_catalog_closes_exact_selected_external_components_and_operations() -> N
     assert {profile for profile, _ in catalog} == {BASE_PROFILE, *OPTIONAL_PROFILES}
     assert len({unit.unit_digest for _, unit in catalog}) == len(catalog)
     assert {
+        unit.subject_version_spec
+        for _, unit in catalog
+        if unit.capability_id == "software.autodock-vina"
+    } == {">=1.2,<2"}
+    assert {
         "openzyme.runtime.llm",
         "openzyme.research.tavily",
         "enzymedesign.bio-provider-http",
@@ -38,7 +43,7 @@ def test_catalog_closes_exact_selected_external_components_and_operations() -> N
         "enzymedesign.docking.preprocess",
     } == {unit.component_id for _, unit in catalog}
     assert external_qualification_catalog_digest() == (
-        "sha256:9bdad16c5d9465c3cc7362e603d11d5a7c3d9a08b0543dd34b9168fda64c96d2"
+        "sha256:9681536f47d5db9ce1a8acbccc7c11d2dd8b0b41a5c2fc13d5cc2dabdaf10912"
     )
 
 

@@ -27,13 +27,24 @@ _GENERIC_CLOSURE_FIELDS = {
     "policy_digest",
 }
 
-_HPC_SCIENTIFIC_PROJECTIONS: Mapping[str, tuple[str, str, str]] = {
-    "hmmer-hpc": ("software.hmmer", "hmmer_software_fact", "hmmer_sif_digest"),
-    "vina-hpc": ("software.vina", "vina_software_fact", "vina_sif_digest"),
+_HPC_SCIENTIFIC_PROJECTIONS: Mapping[str, tuple[str, str, str, str]] = {
+    "hmmer-hpc": (
+        "software.hmmer",
+        "hmmer_software_fact",
+        "hmmer_sif_digest",
+        "hmmer_version",
+    ),
+    "vina-hpc": (
+        "software.vina",
+        "vina_software_fact",
+        "vina_sif_digest",
+        "vina_version",
+    ),
     "fpocket-hpc": (
         "software.fpocket",
         "fpocket_software_fact",
         "fpocket_sif_digest",
+        "fpocket_version",
     ),
 }
 
@@ -60,8 +71,8 @@ def validate_hpc_live_bridge_snapshot(snapshot: SafeIdentitySnapshot) -> None:
     required = {
         "hpc-control": _HPC_CONTROL_LIVE_BRIDGE_FIELDS,
         **{
-            projection_id: (image_digest_field,)
-            for projection_id, (_, _, image_digest_field) in (
+            projection_id: (image_digest_field, version_field)
+            for projection_id, (_, _, image_digest_field, version_field) in (
                 _HPC_SCIENTIFIC_PROJECTIONS.items()
             )
         },
@@ -167,6 +178,7 @@ def augment_prepared_snapshot_with_workspace_runtime(
         software_id,
         software_fact_field,
         image_digest_field,
+        version_field,
     ) in _HPC_SCIENTIFIC_PROJECTIONS.items():
         projection = projections_by_id[projection_id]
         domain_fields = {
@@ -189,6 +201,7 @@ def augment_prepared_snapshot_with_workspace_runtime(
                     }
                 ),
                 image_digest_field: hpc_observation.software_image_digest(software_id),
+                version_field: hpc_observation.software_version(software_id),
                 "environment_or_inventory_digest": (
                     hpc_observation.environment_digest
                 ),

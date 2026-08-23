@@ -246,6 +246,9 @@ canonical Plugin/Kernel surfaces；旧 function handler/repository/writer packag
   只消费 deterministic fixture；unknown effect 只 reconcile 同一 attempt，rejecting credential resolver
   不返回 material。`ready_non_live` receipt 不能作为真实 qualification receipt adopt，运行时 admission 对
   missing/expired/drifted unit 只给出 `blocked_qualification`，不切换 route/subject；
+  当前 unit schema 已升级为 `external_qualification_unit@2`，并把 Plugin resource requirement 的 exact
+  `subject_version_spec` 纳入 digest。真实 software observation 必须暴露规范化版本并满足该 spec；opaque fact/image
+  digest 不能代替版本相容性，缺失、不可解析或不满足时保持 `partial`/`drifted`；
 - 真实 route qualification 的第一实施阶段仍是 plan-only：只从显式 allowlisted safe snapshot 形成
   source-bound subject observation；LLM/Tavily/Git/Podman/HPC/科学软件的 partial/missing identity 都产生
   `ExternalIdentityGap` 和待操作员选择的候选方案。Batch 1 固定闭合 `base + research-provider + hpc-primary +

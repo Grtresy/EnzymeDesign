@@ -137,9 +137,9 @@ def _hpc_observation() -> HpcQualificationIdentityObservation:
         environment_digest="sha256:" + "1" * 64,
         inventory_generation_digest="sha256:" + "2" * 64,
         software_versions=(
-            ("software.fpocket", "fpocket 4.2.2"),
-            ("software.hmmer", "HMMER 3.4"),
-            ("software.vina", "AutoDock Vina 1.2.7"),
+            ("software.fpocket", "4.2.2"),
+            ("software.hmmer", "3.4"),
+            ("software.vina", "1.2.7"),
         ),
         software_image_digests=(
             ("software.fpocket", "sha256:" + "3" * 64),
@@ -187,12 +187,15 @@ def test_workspace_runtime_deployment_evidence_rebinds_hpc_subject() -> None:
     assert projection_fields["hmmer-hpc"]["hmmer_sif_digest"] == (
         "sha256:" + "4" * 64
     )
+    assert projection_fields["hmmer-hpc"]["hmmer_version"] == "3.4"
     assert projection_fields["vina-hpc"]["vina_sif_digest"] == (
         "sha256:" + "5" * 64
     )
+    assert projection_fields["vina-hpc"]["vina_version"] == "1.2.7"
     assert projection_fields["fpocket-hpc"]["fpocket_sif_digest"] == (
         "sha256:" + "3" * 64
     )
+    assert projection_fields["fpocket-hpc"]["fpocket_version"] == "4.2.2"
     validate_hpc_live_bridge_snapshot(refreshed)
 
 

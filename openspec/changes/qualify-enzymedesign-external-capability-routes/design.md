@@ -49,6 +49,8 @@ gap packet 展示后，operator 又明确选择：LLM 采用当前 intended acco
 
 每个 observation 分为 `resolved`、`partial`、`missing`、`unsafe`、`drifted`。`resolved` 仍不是 qualified；它只允许 unit 进入 dry-plan 构造。
 
+`external_qualification_unit@2` 必须从 selected Plugin resource requirement 复制 exact `subject_version_spec` 并纳入 unit digest。safe subject projection 对每个 versioned capability 提供独立 canonical version field；一个 preprocess image 可以同时闭合 RDKit、Meeko、Open Babel 三个不同 spec，不能把整个 target 压成单一版本。HPC Adapter 负责把原始 banner 规范化，原始文本只进入 inventory digest。version field 缺失为 `partial`，不可解析或不满足 spec 为 `drifted`；两者都生成 gap 并阻止 authority，而不是接受 opaque software fact。
+
 备选方案是让 live backend 在 dispatch 时补全 identity。该方案会在 effect 发生后才发现 endpoint/target 漂移，无法 source-bind budget 和 authorization，因此不采用。
 
 ### 2. 缺失 identity 必须形成 operator decision packet

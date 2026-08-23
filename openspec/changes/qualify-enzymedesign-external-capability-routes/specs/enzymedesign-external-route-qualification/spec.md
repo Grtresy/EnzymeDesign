@@ -3,6 +3,8 @@
 ### Requirement: Identity discovery is source-bound and effect-free
 The qualification system MUST discover only allowlisted, credential-free Provider and target identity fields from named source observations. Discovery MUST NOT resolve credential material, contact a network service, start a container, open SSH, call a scheduler or execute scientific software, and every observation MUST be classified as `resolved`, `partial`, `missing`, `unsafe` or `drifted` without implying qualification.
 
+Every versioned qualification unit MUST bind the selected Plugin resource requirement's exact version spec. A software subject MUST expose one canonical version field per affected capability, and effect-free discovery MUST classify a missing version as `partial` and an unparseable or out-of-range version as `drifted`; an opaque software fact or image digest MUST NOT satisfy the version requirement.
+
 #### Scenario: Safe configuration contains a secret canary
 - **WHEN** discovery receives an allowlisted endpoint field beside a credential-bearing canary field
 - **THEN** the report contains the endpoint and source digest but neither reads nor serializes the canary
@@ -10,6 +12,10 @@ The qualification system MUST discover only allowlisted, credential-free Provide
 #### Scenario: A target display name is available without inventory closure
 - **WHEN** discovery observes an SSH host and partition but no structured inventory generation or native proofs
 - **THEN** the target identity is `partial` and no real-subject digest is issued
+
+#### Scenario: Target software exists outside the selected version policy
+- **WHEN** an exact Vina image is observed as version `1.1.2` while the selected unit requires `>=1.2,<2`
+- **THEN** the observation is `drifted`, the affected unit remains blocked, and no qualification authority may treat the image digest as version evidence
 
 ### Requirement: Missing identity produces a bounded operator decision packet
 Every partial, missing, unsafe or drifted identity required by an enabled profile MUST produce an `ExternalIdentityGap` bound to affected exact units and source digests. The gap MUST list mutually exclusive resolution candidates, their prerequisites, effects, credentials, cost and security implications, identify one recommendation, and MUST remain unresolved until an explicit operator decision binds one candidate.

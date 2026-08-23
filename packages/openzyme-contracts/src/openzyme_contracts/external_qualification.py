@@ -17,7 +17,7 @@ from .identity import require_identifier
 from .reliability import ExternalEffectCertainty
 
 
-EXTERNAL_QUALIFICATION_UNIT_SCHEMA = "external_qualification_unit@1"
+EXTERNAL_QUALIFICATION_UNIT_SCHEMA = "external_qualification_unit@2"
 EXTERNAL_QUALIFICATION_PLAN_SCHEMA = "external_qualification_plan@1"
 EXTERNAL_QUALIFICATION_PROBE_REQUEST_SCHEMA = "external_qualification_probe_request@1"
 EXTERNAL_QUALIFICATION_PROBE_OUTCOME_SCHEMA = "external_qualification_probe_outcome@1"
@@ -122,6 +122,7 @@ class ExternalQualificationUnit:
     qualification_spec_digest: str
     validator_id: str
     expected_result_schema_digest: str
+    subject_version_spec: str | None = None
     credential_locator: QualificationCredentialLocator | None = None
     unit_digest: str = ""
 
@@ -153,6 +154,12 @@ class ExternalQualificationUnit:
             "unit_digest",
         ):
             require_digest(getattr(self, field_name), field_name=field_name)
+        if self.subject_version_spec is not None and (
+            not self.subject_version_spec
+            or self.subject_version_spec != self.subject_version_spec.strip()
+            or len(self.subject_version_spec) > 128
+        ):
+            raise ValueError("subject_version_spec must be one bounded exact spec")
         if self.unit_digest != "sha256:" + "0" * 64 and self.unit_digest != (
             canonical_sha256_digest(self.identity_payload)
         ):
@@ -179,6 +186,7 @@ class ExternalQualificationUnit:
             "qualification_spec_digest": self.qualification_spec_digest,
             "validator_id": self.validator_id,
             "expected_result_schema_digest": self.expected_result_schema_digest,
+            "subject_version_spec": self.subject_version_spec,
             "credential_locator": (
                 None
                 if self.credential_locator is None

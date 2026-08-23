@@ -182,8 +182,6 @@ def main() -> int:
         snapshot=refreshed,
         selection_set=None,
     )
-    if rediscovery["summary"]["batch_1_authorizable"] is not True:  # type: ignore[index]
-        raise ValueError("Batch 1 remains blocked after workspace runtime rediscovery")
     dry_plan = next(
         item
         for item in rediscovery["dry_plans"]
@@ -231,7 +229,10 @@ def main() -> int:
         f"{hpc_observation.inventory_generation_digest}"
     )
     print(f"batch_1_qualification_dry_plan_digest={dry_plan['dry_plan_digest']}")
-    print("batch_1_authorizable=true")
+    print(
+        "batch_1_authorizable="
+        f"{str(rediscovery['summary']['batch_1_authorizable']).lower()}"  # type: ignore[index]
+    )
     print("target_read_performed=true")
     print("mutation_performed=false")
     print("qualified=false")
