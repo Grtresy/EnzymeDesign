@@ -693,29 +693,51 @@ class SlurmAlphaFoldQualificationRoute:
                 f"{workload.workload_digest.removeprefix('sha256:')[:12]}"
             )
             submit_script = (
-                "sbatch --wait --parsable -p 3090 -t 00:30:00 "
+                "sbatch --parsable -p 3090 -t 00:30:00 "
                 "--gpus=1 --cpus-per-task=8 --mem=64G "
                 f"-J {shlex.quote(job_name)} --chdir={shlex.quote(cwd)} "
                 f"-o {shlex.quote(cwd + '/slurm-%j.out')} "
                 f"-e {shlex.quote(cwd + '/slurm-%j.err')} "
                 f"--wrap {shlex.quote(command)}"
             )
-            returncode, stdout, _stderr = self.command_port.run_remote(submit_script)
-            if returncode != 0:
-                job_id = stdout.strip().split(";", 1)[0]
-                if re.fullmatch(r"[0-9]+", job_id) is not None:
-                    self.command_port.run_remote(
-                        "printf '%s\\n' OPENZYME_AF3_SACCT; "
-                        f"sacct -n -X -j {job_id} "
-                        "-o JobIDRaw,State,ExitCode,Elapsed,NodeList -P; "
-                        "printf '%s\\n' OPENZYME_AF3_STDOUT; "
-                        f"tail -c 32768 {shlex.quote(cwd + '/slurm-' + job_id + '.out')} 2>&1 || true; "
-                        "printf '%s\\n' OPENZYME_AF3_STDERR; "
-                        f"tail -c 32768 {shlex.quote(cwd + '/slurm-' + job_id + '.err')} 2>&1 || true"
-                    )
+            job_id = self._run(submit_script).split(";", 1)[0]
+            if re.fullmatch(r"[0-9]+", job_id) is None:
+                raise ExternalQualificationError(
+                    "qualification_alphafold_job_id_invalid",
+                    "AlphaFold Slurm submit returned an invalid job identity",
+                )
+            poll_script = (
+                "for i in $(seq 1 120); do "
+                f"state=$(sacct -n -X -j {job_id} -o State -P | head -n 1 | cut -d'|' -f1); "
+                "case \"$state\" in "
+                "COMPLETED*) printf '%s\\n' \"$state\"; exit 0;; "
+                "FAILED*|CANCELLED*|TIMEOUT*|OUT_OF_MEMORY*) "
+                "printf '%s\\n' OPENZYME_AF3_SACCT; "
+                f"sacct -n -X -j {job_id} "
+                "-o JobIDRaw,State,ExitCode,Elapsed,NodeList -P; "
+                "printf '%s\\n' OPENZYME_AF3_STDOUT; "
+                f"tail -c 32768 {shlex.quote(cwd + '/slurm-' + job_id + '.out')} 2>&1 || true; "
+                "printf '%s\\n' OPENZYME_AF3_STDERR; "
+                f"tail -c 32768 {shlex.quote(cwd + '/slurm-' + job_id + '.err')} 2>&1 || true; "
+                "exit 2;; esac; sleep 15; done; exit 3"
+            )
+            poll_returncode, poll_stdout, _poll_stderr = (
+                self.command_port.run_remote(poll_script)
+            )
+            if poll_returncode == 3:
+                raise ExternalQualificationError(
+                    "qualification_alphafold_job_observation_timeout_in_doubt",
+                    "AlphaFold Slurm job did not reach terminal state in 30 minutes",
+                )
+            if poll_returncode != 0:
                 raise ExternalQualificationError(
                     "qualification_alphafold_job_failed",
                     "AlphaFold Slurm job failed; protected diagnostics were captured",
+                )
+            if not poll_stdout.strip().startswith("COMPLETED"):
+                raise ExternalQualificationError(
+                    "qualification_alphafold_job_terminal_state_invalid",
+                    "AlphaFold Slurm terminal state is invalid",
                 )
             outputs: list[dict[str, object]] = []
             for output_path in workload.expected_output_paths:

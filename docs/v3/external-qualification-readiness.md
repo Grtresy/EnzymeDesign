@@ -199,9 +199,10 @@ terminal scientific route 无 redispatch，仍同时执行缺失 authority、ope
 路由级 resource drift、expected output 缺失、GPU mismatch 和 cleanup failure 由 deterministic negative regression
 闭合。只有 Batch 1 含明确 reconcile operation 的 unit 才可声明 same-attempt reconcile，其他 batch 不得借此放宽。
 固定 monomer 采用该 target 已有成功 AlphaFold 3 输入证明一致的单链 schema（`id: "A"`），不以未证明的 homomer
-list 形态替代。`sbatch --wait` 非零时，route 必须在清理前以 job id 读取 bounded `sacct`、Slurm stdout/stderr，
-经受保护 diagnostic writer 持久化后才删除 occurrence workspace；公共 outcome 只暴露稳定 error code。日志抓取失败
-不触发重跑，也不允许为保留日志而跳过既定 cleanup。
+list 形态替代。route 使用一次 `sbatch --parsable` 获取 opaque job id，随后只以该 id 有界轮询 `sacct`，不依赖
+可能悬挂的 `sbatch --wait` session。失败状态必须在清理前由同一非零 observation 命令带回 bounded Slurm
+stdout/stderr，使受保护 diagnostic writer 必然持久化后才删除 occurrence workspace；公共 outcome 只暴露稳定 error
+code。轮询、日志抓取或 SSH timeout 都不触发 redispatch，也不允许为保留日志而跳过既定 cleanup。
 若一次只读观测已终态、但后续本地 rediscovery 因源码缺陷失败，新 source/plan/authority 不得删除或盲目覆盖既有
 私有配置；executor 只允许在重新观测的全部 resource identity 完全相等且旧配置 digest/owner/mode 完整时，原子更新
 plan/authority 绑定及由当前 source 重新编译的 `fixed_monomer_input_digest`，并记录 prior config digest。任一稳定

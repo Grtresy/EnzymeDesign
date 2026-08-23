@@ -348,12 +348,19 @@ class _AlphaFoldRemote:
             return 0, f"128\n{'a' * 64}\n", ""
         if script.startswith("cat ") and "gpu-identity.txt" in script:
             return 0, "NVIDIA GeForce RTX 3090, GPU-test, 550.54, 8.6\n", ""
-        if script.startswith("sbatch --wait --parsable"):
-            if self.fail_job:
-                return 1, "9001\n", ""
+        if script.startswith("sbatch --parsable"):
             return 0, "9001\n", ""
-        if "OPENZYME_AF3_SACCT" in script:
-            return 0, "9001|FAILED|1:0|00:00:10|node-test\n", ""
+        if script.startswith("for i in $(seq 1 120)"):
+            if self.fail_job:
+                return (
+                    2,
+                    "OPENZYME_AF3_SACCT\n"
+                    "9001|FAILED|1:0|00:00:10|node-test\n"
+                    "OPENZYME_AF3_STDOUT\n"
+                    "OPENZYME_AF3_STDERR\ninvalid input\n",
+                    "",
+                )
+            return 0, "COMPLETED\n", ""
         return 0, "", ""
 
 
@@ -416,8 +423,9 @@ def test_alphafold_route_runs_fixed_single_gpu_inference_and_cleans_workspace() 
 
     assert outcome.succeeded is True
     submit = next(
-        script for script in remote.scripts if script.startswith("sbatch --wait")
+        script for script in remote.scripts if script.startswith("sbatch --parsable")
     )
+    assert "--wait" not in submit
     assert "-p 3090 -t 00:30:00" in submit
     assert "--gpus=1" in submit
     assert "--norun_data_pipeline" in submit
@@ -440,7 +448,7 @@ def test_alphafold_route_rejects_resource_drift_before_dispatch() -> None:
 
     assert outcome.succeeded is False
     assert outcome.error_code == "qualification_alphafold_resource_identity_drift"
-    assert not any(script.startswith("sbatch --wait") for script in remote.scripts)
+    assert not any(script.startswith("sbatch --parsable") for script in remote.scripts)
     assert remote.scripts[-1].startswith("rm -rf --")
 
 

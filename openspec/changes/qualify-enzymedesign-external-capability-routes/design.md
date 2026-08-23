@@ -86,9 +86,10 @@ AlphaFold Batch 2 的单一 `predict` 是 terminal scientific route，不声明�
 以 fail-closed/no-redispatch policy 闭合 `response.loss`，并保留 auth、operation、schema、timeout pre-effect 负例。
 resource/GPU/output/cleanup 失败由 route regression 闭合。只有实际声明 reconcile operation 的 Batch 1 unit 才采用
 same-attempt reconcile。
-固定 20 aa 输入采用 Diannan 既有成功 AlphaFold 3 样例已证明的单链 `id: "A"` schema。Slurm job 非零时必须
-在 workspace cleanup 前按已返回 job id 捕获 bounded `sacct`、stdout 与 stderr 到 protected diagnostic，随后仍执行
-cleanup；公共 receipt 不暴露 raw log，诊断抓取也不能触发 retry、换 route 或保留残留 workspace。
+固定 20 aa 输入采用 Diannan 既有成功 AlphaFold 3 样例已证明的单链 `id: "A"` schema。route 以单次
+`sbatch --parsable` 提交并按 exact job id 有界轮询 `sacct`，不使用可能悬挂的 `sbatch --wait`。失败 observation
+在 workspace cleanup 前以同一非零命令携带 bounded stdout/stderr 到 protected diagnostic，随后仍执行 cleanup；
+公共 receipt 不暴露 raw log，轮询或诊断也不能触发 redispatch、换 route 或保留残留 workspace。
 
 ### 3. Subject identity 是类型化闭包，不是显示名称或 probe 结果
 
