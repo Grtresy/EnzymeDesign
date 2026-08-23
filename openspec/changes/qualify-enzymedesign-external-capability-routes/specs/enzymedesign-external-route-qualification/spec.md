@@ -13,9 +13,13 @@ Every versioned qualification unit MUST bind the selected Plugin resource requir
 - **WHEN** discovery observes an SSH host and partition but no structured inventory generation or native proofs
 - **THEN** the target identity is `partial` and no real-subject digest is issued
 
-#### Scenario: Target software exists outside the selected version policy
-- **WHEN** an exact Vina image is observed as version `1.1.2` while the selected unit requires `>=1.2,<2`
-- **THEN** the observation is `drifted`, the affected unit remains blocked, and no qualification authority may treat the image digest as version evidence
+#### Scenario: Target software exists outside the exact route version policy
+- **WHEN** a local Vina unit observes a version outside `>=1.2,<2`, or the Diannan HPC Vina unit observes a version other than `1.1.2`
+- **THEN** the observation is `drifted`, only the affected route remains blocked, and no qualification authority may treat the image digest as version evidence
+
+#### Scenario: Vina route CLI or result profile drifts
+- **WHEN** the Diannan `1.1.2` route omits its legacy `--log` contract, or the local modern route uses `--log`, lacks a poses score remark, or reports another result profile
+- **THEN** admission or terminal validation fails without retrying another argv, switching route or performing fallback
 
 ### Requirement: Missing identity produces a bounded operator decision packet
 Every partial, missing, unsafe or drifted identity required by an enabled profile MUST produce an `ExternalIdentityGap` bound to affected exact units and source digests. The gap MUST list mutually exclusive resolution candidates, their prerequisites, effects, credentials, cost and security implications, identify one recommendation, and MUST remain unresolved until an explicit operator decision binds one candidate.

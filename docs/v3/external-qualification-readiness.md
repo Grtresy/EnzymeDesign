@@ -184,8 +184,10 @@ terminal validator。live coordinator 在 protected SQLite 中逐 unit 持久 ou
 不可写 `/data/openzyme` workspace、HMMER/fpocket output path、本地 docking image runtime dependency 与私有诊断投影问题。
 修正后，Git publication ref 按 occurrence 隔离；HPC locator 的 `ssh_user`、`workspace_root`、`isolation_command` 必须在
 SSH effect 前与 qualified helper identity 精确相等；cleanup resources 与逐 unit budget settlement payload 同 digest 一并
-持久化，恢复时缺失即 fail closed。当前 Diannan Vina SIF 的观测版本为 `1.1.2`，不满足声明的 `>=1.2,<2`，所以在
-operator 决定 compatible SIF 或 route-specific 版本设计前保持阻断，不能仅凭 SIF digest 进入新 dry plan。
+持久化，恢复时缺失即 fail closed。Vina 已采用 route-specific 双版本：Diannan HPC 固定 `==1.1.2` 与 legacy
+`--log`/poses+log profile；本地固定 `>=1.2,<2` 与 modern 无 `--log`/poses-remark-derived score profile。
+Plugin route requirement、Kernel admission、Driver workload/result digest 和 qualification subject 必须一致；任一路
+漂移只阻断该 route，不能仅凭 SIF digest 进入 dry plan，也不能切换 route/profile 或 fallback。
 HPC identity observer 现在把 HMMER/Vina/fpocket 的原始 version banner 规范化为单独的 canonical version 字段；
 原始 banner 仍只进入 inventory generation digest。无法解析的 banner 返回
 `qualification_hpc_software_version_unparseable`，不能以 opaque software fact 绕过版本约束。

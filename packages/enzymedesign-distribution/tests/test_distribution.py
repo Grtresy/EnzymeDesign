@@ -313,6 +313,15 @@ class _ProductFormalRunnerPort:
                 "result_summary": {
                     "result_contract_digest": request.result_validator.result_contract_digest,
                     "raw_shell": False,
+                    **(
+                        {
+                            "vina_result_profile": "legacy-log-v1",
+                            "score_semantics": "legacy-log-file-v1",
+                        }
+                        if request.route.route_id
+                        == "enzymedesign.vina.hpc-primary@1"
+                        else {}
+                    ),
                 },
             }
         )
@@ -686,7 +695,7 @@ def _publish_product_inventory(
         )
         for suffix, capability_id, version in (
             ("hmmer", "software.hmmer", "3.4"),
-            ("vina", "software.autodock-vina", "1.2.5"),
+            ("vina", "software.autodock-vina", "1.1.2"),
         )
     )
     inventory = TargetToolchainInventory.create(
@@ -712,12 +721,12 @@ def _publish_product_inventory(
                 capability_id="software.autodock-vina",
                 kind=ResourceCapabilityKind.SOFTWARE,
                 contract_version="1",
-                version="1.2.5",
+                version="1.1.2",
                 operations=("dock", "score"),
                 environment_digest=receipts[1].environment_digest,
                 qualification_digest=receipts[1].receipt_digest,
                 implementation_digest=canonical_sha256_digest(
-                    {"binary": "vina-1.2.5"}
+                    {"binary": "vina-1.1.2"}
                 ),
             ),
         ),

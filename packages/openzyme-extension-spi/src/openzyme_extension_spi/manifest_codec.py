@@ -74,12 +74,14 @@ def _closed(
     *,
     field_name: str,
     fields: frozenset[str],
+    optional: frozenset[str] = frozenset(),
 ) -> None:
     observed = set(value)
-    if observed != fields:
+    required = fields.difference(optional)
+    if not required.issubset(observed) or not observed.issubset(fields):
         raise ValueError(
             f"{field_name} fields are closed; "
-            f"missing={sorted(fields - observed)}, "
+            f"missing={sorted(required - observed)}, "
             f"unknown={sorted(observed - fields)}"
         )
 
@@ -387,8 +389,10 @@ def _route(value: Any, *, field_name: str) -> RouteContribution:
                 "route_contract_digest",
                 "target_id",
                 "driver_id",
+                "requirements",
             }
         ),
+        optional=frozenset({"requirements"}),
     )
     target = data["target_id"]
     driver = data["driver_id"]
@@ -419,6 +423,10 @@ def _route(value: Any, *, field_name: str) -> RouteContribution:
             None
             if driver is None
             else _text(driver, field_name=f"{field_name}.driver_id")
+        ),
+        requirements=tuple(
+            _requirement(item, field_name=f"{field_name}.requirements[]")
+            for item in data.get("requirements", ())
         ),
     )
 

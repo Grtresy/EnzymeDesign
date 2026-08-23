@@ -2,7 +2,7 @@
 
 `enzymedesign-vina` 是 EnzymeDesign 的 AutoDock Vina Product Plugin 与 subordinate Driver 包。exact Plugin
 manifest、local/HPC Driver manifests、`enzymedesign.vina.dock` runtime、
-`software.autodock-vina>=1.2,<2` qualification spec、typed workload compiler 和 non-live tests 已实现，并由
+`software.autodock-vina>=1.1.2,<2` 产品级 capability、typed workload compiler 和 non-live tests 已实现，并由
 EnzymeDesign Distribution 精确选择。旧 `openzyme-tools` catalog 已删除，preprocess 已迁入独立
 EnzymeDesign Plugin。Plugin runtime bundle 现在同时提供 dock tool runtime 和 manifest/Driver 一一对应的
 local/HPC capability route runtimes，可通过 Kernel exact mount。EnzymeDesign Distribution 的正式 application
@@ -16,9 +16,16 @@ Plugin 只声明 `openzyme.execution.revision-job@1` 与 resource capability `so
 Plugin、route、inventory、authority 和 workspace readiness 求交。
 
 local/HPC Driver 都是 compile/validate-only。closed request 必须提供 immutable receptor PDBQT、ligand PDBQT 和
-Vina config 三个 revision inputs，Driver 生成固定 argv 和 root-relative poses/log outputs，并绑定 resource/
-environment policy、result contract 与软件 requirement。caller 提交 argv、shell command、credential、Host/remote
+Vina config 三个 revision inputs。Diannan HPC route 精确要求 `==1.1.2`，使用 legacy `--log` 并验证 poses 与 log；
+本地 route 精确要求 `>=1.2,<2`，不向 Vina 传 `--log`，而是从 poses PDBQT 的
+`REMARK VINA RESULT:` 行生成带 `poses-remark-derived-file-v1` 标记的 score artifact。两条 route 分别绑定
+workload/result contract digest、profile 与 score semantics。caller 提交 argv、shell command、credential、Host/remote
 path 或 scheduler ID 会在 dispatch 前被拒绝。Driver 不选 target、不 dispatch、不 retry、不 fallback。
+
+Plugin 顶层版本范围只表达产品支持闭包；每个 route 另带 owner-local resource requirement。Kernel 仅在 exact
+Session target inventory 同时满足该 route 的版本、operation 与 contract 时发布 route ref。任一路版本、参数或
+结果 profile 漂移均为 `blocked_qualification`/contract failure，不能改走另一 route、猜测另一代 CLI 或重试为
+另一种 argv。
 
 正式 docking 只能进入 Compute lifecycle。通过 `hpc.workspace.exec` 直接运行 Vina 是 exploratory Shell，其 receipt
 不能通过 formal result validator，也不能成为 Science adoption、publication 或 Task finish evidence。任何 tool/

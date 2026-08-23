@@ -1,10 +1,10 @@
 {
   "identity": {
-    "build_digest": "sha256:f11ad3d4a7edeb518156c170bbc5873cb666785db0536dfa64ff6e8177984b21",
+    "build_digest": "sha256:5146db7d682b0805b3a95e41bed027c550f3b42efed5aa5a3616e2abb7700392",
     "component_id": "enzymedesign.vina.hpc",
     "component_kind": "driver",
     "component_version": "0.1.0",
-    "contract_digest": "sha256:692256542b92e73a8cffa8d28adb3497439138a616d986cbb96382f5fa5e16a5",
+    "contract_digest": "sha256:0f8347b4d06ee7cda590222fa93973072de7ec6ad70fc64f5e1016fb151f79b1",
     "distribution_name": "enzymedesign-vina",
     "distribution_version": "0.1.0"
   },
@@ -13,8 +13,8 @@
   "required_port_contracts": [
     "openzyme.workspace-process-port@1"
   ],
-  "result_contract_digest": "sha256:7fb1182b8f3dbee65351fcdcd051600638d8f8b655fec7a221ddee3aaf17e291",
+  "result_contract_digest": "sha256:d9f17c827d50ce5e868a0a4fe9bec083a014c4824f57f9e3afdf14d78af86861",
   "route_kind": "hpc",
   "schema_version": "openzyme_driver_manifest@1",
-  "workload_contract_digest": "sha256:4d19f77faaf06c4a266b2cf3da854341fa6c2628838abd557af0d258e1759fa9"
+  "workload_contract_digest": "sha256:4918bcf477b30611ec6938c154d1e44ee29811eefffcab4fee41a84e47247e0b"
 }

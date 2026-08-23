@@ -155,6 +155,11 @@ cutover 仍只由 offline migration/activation receipt 证明。
 3. `AuthorityGrant` / `AgentAuthorityLease`：某 Agent 当前被允许做什么；
 4. `ToolAffordance`：在 exact Session/member/turn/binding/workspace/health 下工具是否真正可调用。
 
+Plugin 顶层 resource requirement 可以表达产品支持闭包；当不同 Driver/target 采用不同但明确受支持的软件合同时，
+每个 `RouteContribution` 还必须声明 owner-local exact resource requirement。Kernel 只为 Session 已绑定 target 且其
+inventory fact 同时满足 route 的 contract、operation 与 version spec 时生成 `RouteRef`。route requirement 漂移只
+产生该 route 的 `blocked_qualification`，不得运行时探测后改写 argv、选择相邻 Driver、切换 target 或 fallback。
+
 `DeclaredToolCatalog` 由 Kernel base tools 和已激活 Plugin manifests 决定并固定 contract digest；每个 bounded
 turn 再生成 `ToolAffordanceSnapshot`。模型 function list 只含 `AVAILABLE` 与
 `AVAILABLE_WITH_APPROVAL`；blocked 工具仅通过安全 `capabilities.inspect` 查看原因；`HIDDEN` 对两者都不可见。

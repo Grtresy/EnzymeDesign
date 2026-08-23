@@ -62,6 +62,7 @@
 - [x] 7.2b Add Git/LFS, Podman, SSH and Slurm owner bridge boundaries that reject component/route/subject drift, hosted Git sync, unpinned images, non-isolated resources and missing same-attempt reconciliation
 - [ ] 7.2 Implement and verify Adapter-owned live probe bridges for LLM, Tavily, Bio HTTP, Git/LFS, Podman, SSH and Slurm without fallback
 - [x] 7.3a Add Driver-owned formal-Compute-only binding guards for HMMER, Vina, fpocket and preprocessing; reject raw or binding-drifted operation Ports under deterministic fake execution
+- [x] 7.3b Implement route-specific Vina profiles: Diannan `==1.1.2` legacy `--log`, local `>=1.2,<2` modern poses-remark results, exact Kernel admission and no route/profile fallback
 - [ ] 7.3 Implement and verify Driver-owned real smoke bridges for HMMER, Vina, fpocket and preprocessing through the selected Compute route
 - [ ] 7.4 Execute authorized Batch 1 occurrences, same-attempt reconciliation, required negative tests, cleanup and budget settlement
 - [ ] 7.5 Execute separately authorized AlphaFold Batch 2 minimal GPU inference and closure checks

@@ -377,6 +377,7 @@ def build_enzymedesign_external_qualification_catalog(
         for spec in activation.manifest.qualification_specs
     }
     subject_version_specs: dict[str, str] = {}
+    route_subject_version_specs: dict[tuple[str, str], str] = {}
     for activation in exact.plugins.activations:
         if activation.manifest is None:
             continue
@@ -392,6 +393,22 @@ def build_enzymedesign_external_qualification_catalog(
                     "qualification_subject_version_policy_collision",
                     "selected Plugins declare different subject version policies",
                 )
+        for route in activation.manifest.routes:
+            if route.driver_id is None:
+                continue
+            for requirement in route.requirements:
+                if requirement.version_spec is None:
+                    continue
+                key = (route.driver_id, requirement.capability_id)
+                previous = route_subject_version_specs.setdefault(
+                    key,
+                    requirement.version_spec,
+                )
+                if previous != requirement.version_spec:
+                    raise ExternalQualificationError(
+                        "qualification_route_version_policy_collision",
+                        "one selected Driver has different route version policies",
+                    )
     blueprints = _blueprints()
     if credential_locator_ids is not None and set(credential_locator_ids) != set(
         EXTERNAL_QUALIFICATION_CREDENTIAL_SLOTS
@@ -513,8 +530,9 @@ def build_enzymedesign_external_qualification_catalog(
             qualification_spec_digest=qualification_spec_digest,
             validator_id=f"{blueprint.qualification_spec_id}.validator",
             expected_result_schema_digest=expected_schema_digest,
-            subject_version_spec=subject_version_specs.get(
-                blueprint.capability_id
+            subject_version_spec=route_subject_version_specs.get(
+                (blueprint.component_id, blueprint.capability_id),
+                subject_version_specs.get(blueprint.capability_id),
             ),
             credential_locator=locator,
         )

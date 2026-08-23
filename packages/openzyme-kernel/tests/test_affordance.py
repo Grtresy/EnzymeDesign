@@ -139,6 +139,38 @@ def _fixture() -> tuple[
                 route_contract_digest=_digest("route"),
                 target_id="hpc:primary",
                 driver_id="enzymedesign.hmmer.hpc",
+                requirements=(
+                    CapabilityRequirement(
+                        capability_id="software.hmmer",
+                        contract_spec="@1",
+                        kind=CapabilityRequirementKind.RESOURCE,
+                        operations=("hmmsearch",),
+                        version_spec="==3.4",
+                        same_target_as="openzyme.execution.revision-job",
+                    ),
+                ),
+            ),
+            RouteContribution(
+                route_id="local:unbound/hmmer:future",
+                owner_component_id="openzyme.hpc",
+                capability_ids=(
+                    "openzyme.execution.revision-job",
+                    "software.hmmer",
+                ),
+                route_kind="openzyme.compute.local",
+                route_contract_digest=_digest("unbound-route"),
+                target_id="local:unbound",
+                driver_id="enzymedesign.hmmer.local",
+                requirements=(
+                    CapabilityRequirement(
+                        capability_id="software.hmmer",
+                        contract_spec="@1",
+                        kind=CapabilityRequirementKind.RESOURCE,
+                        operations=("hmmsearch",),
+                        version_spec="==9.9",
+                        same_target_as="openzyme.execution.revision-job",
+                    ),
+                ),
             ),
         ),
     )
@@ -237,6 +269,7 @@ def _fixture() -> tuple[
 def _context(
     *,
     include_resource: bool = True,
+    resource_version: str = "3.4",
     unavailable: bool = False,
     hidden: bool = False,
     policy_decisions: tuple[ToolSubjectPolicyDecision, ...] = (),
@@ -254,7 +287,9 @@ def _context(
         extension_bundle=extension_registry,
         binding=binding,
         route_catalog=route_catalog,  # type: ignore[arg-type]
-        resource_facts=(resource,) if include_resource else (),
+        resource_facts=(replace(resource, version=resource_version),)
+        if include_resource
+        else (),
     )
     return ToolAffordanceContext(
         session_id="session-1",
@@ -328,6 +363,21 @@ def test_resource_and_route_make_formal_tool_available() -> None:
     assert admission.target_id == "hpc:primary"
     assert admission.driver_id == "enzymedesign.hmmer.hpc"
     assert admission.route_digest is not None
+
+
+def test_route_specific_version_rejects_globally_compatible_target() -> None:
+    snapshot = resolve_tool_affordance_snapshot(
+        _context(resource_version="3.3"),
+        snapshot_id="snapshot-route-version-drift",
+        created_at="2026-08-19T00:00:01Z",
+    )
+
+    assert snapshot.model_visible_tool_names == ()
+    assert snapshot.affordances[0].state is ToolAffordanceState.BLOCKED_QUALIFICATION
+    assert snapshot.affordances[0].blockers[0].code == (
+        "software_requirement_unsatisfied"
+    )
+    assert snapshot.affordances[0].blockers[0].requirement == "software.hmmer==3.4"
 
 
 def test_missing_resource_blocks_model_list_but_is_inspectable() -> None:

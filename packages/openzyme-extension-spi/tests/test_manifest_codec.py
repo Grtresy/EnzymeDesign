@@ -106,11 +106,16 @@ def _plugin() -> PluginManifest:
             RouteContribution(
                 route_id=f"{plugin_id}.hpc-primary",
                 owner_component_id=plugin_id,
-                capability_ids=(plugin_id, "software.hmmer"),
+                capability_ids=(
+                    plugin_id,
+                    "openzyme.execution.revision-job",
+                    "software.hmmer",
+                ),
                 route_kind="hpc",
                 route_contract_digest=_digest("hmmer-route"),
                 target_id="hpc-primary",
                 driver_id=f"{plugin_id}.hpc",
+                requirements=(hmmer,),
             ),
         ),
     )
@@ -153,6 +158,28 @@ def test_manifest_codec_rejects_unknown_duplicate_and_unsupported_schema() -> No
 
     with pytest.raises(ValueError, match="unsupported"):
         parse_component_manifest_json('{"schema_version":"future@9"}')
+
+
+def test_route_requirement_rejects_unlisted_same_target_capability() -> None:
+    with pytest.raises(ValueError, match="same-target resource capabilities"):
+        RouteContribution(
+            route_id="enzymedesign.hmmer.local",
+            owner_component_id="enzymedesign.hmmer",
+            capability_ids=("software.hmmer",),
+            route_kind="local",
+            route_contract_digest=_digest("hmmer-local-route"),
+            target_id="local",
+            driver_id="enzymedesign.hmmer.local",
+            requirements=(
+                CapabilityRequirement(
+                    capability_id="software.hmmer",
+                    contract_spec="@1",
+                    kind=CapabilityRequirementKind.RESOURCE,
+                    version_spec=">=3.3,<4",
+                    same_target_as="openzyme.execution.revision-job",
+                ),
+            ),
+        )
 
 
 def test_locator_verification_binds_package_version_kind_and_manifest_digest() -> None:

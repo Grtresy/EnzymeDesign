@@ -25,11 +25,12 @@
 6. 旧 report 只保存 cleanup 和 budget digest。新 occurrence evidence 会在 protected SQLite 中持久化 exact cleanup resources 与逐 unit budget settlement payload，并在完整恢复时校验。
 7. 旧 discovery 只绑定 HPC software fact/image digest，没有把 observed version 与 selected Plugin requirement 比较。unit schema 现升级为 `external_qualification_unit@2`，显式绑定 `subject_version_spec`；HPC banner 规范化为 per-capability version，缺失/不可解析/不满足 spec 均保持 blocked。
 
-## 待 operator 决策
+## Operator 已决策：route-specific 双版本
 
-Diannan 现有 `/home/grtresy/containers/vina.sif` 只读观测为 `AutoDock Vina 1.1.2`，不满足 Distribution 当前声明的 `>=1.2,<2`。仓内不能静默放宽版本，也不能在远端自动安装或重建。新 dry plan 前必须二选一：
+已批准 D-V1：Diannan `/home/grtresy/containers/vina.sif` 固定 `==1.1.2`，采用 legacy `--log` 与
+poses/log 结果合同；本地 route 固定 `>=1.2,<2`，采用不含 `--log` 的 modern CLI，并从 poses
+`REMARK VINA RESULT:` 形成正式 score artifact。Plugin 顶层范围仅表达支持闭包，route admission、workload、
+result 与 qualification subject 分别绑定 exact profile。
 
-1. 保持 `>=1.2,<2`，由 operator 提供已存在的 compatible SIF path/digest；在此之前 HPC Vina 保持 blocked。
-2. 明确批准 route-specific Vina 1.1.2 支持设计，同时处理 local 1.2.7 不接受 `--log` 与两代 CLI/result semantics 的差异，再重新验证 Driver contract。
-
-无论选择哪项，都需要新的 source seal、effect-free rediscovery、dry plan 和单独 occurrence authorization。
+该决策不授权远端安装、重建、route 切换或 fallback。仍需要新的 source seal、effect-free rediscovery、必要的本地
+image preparation plan、重建 dry plan 和单独 occurrence authorization。

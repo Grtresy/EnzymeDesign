@@ -280,8 +280,10 @@ canonical Plugin/Kernel surfaces；旧 function handler/repository/writer packag
   本地 Git ref 按 occurrence 隔离、HPC login/workspace/helper material 与已资格 runtime identity 在 SSH 前精确闭合，
   并把 cleanup resource payload 和逐 unit budget settlement 连同 digest 持久化。本地 qualification image subject
   同时绑定 immutable image digest 与当前源码重算的 recipe digest；缺失或漂移保持 `partial`/`drifted`，recipe 变化
-  使用新 output ref，禁止覆盖、重标记或回退旧镜像。Diannan 当前 Vina SIF 观测为
-  `1.1.2`，不满足 Distribution 的 `>=1.2,<2`，在明确版本决策前保持阻断，不从 digest 存在推导软件资格；
+  使用新 output ref，禁止覆盖、重标记或回退旧镜像。Vina route 显式分为 Diannan HPC `==1.1.2` legacy
+  `--log`/poses+log 与本地 `>=1.2,<2` modern 无 `--log`/poses-remark-derived score；Plugin route requirement、
+  Kernel exact target admission、Driver workload/result digest 和 qualification subject 逐 route 绑定，禁止自动切换、
+  profile retry 或 fallback，且不从 SIF/image digest 存在推导软件资格；
 - `openzyme-workspace-git-lfs` 已成为 `AgentGitWorkspace` identity/observation/restore 与 Git-LFS
   policy/pointer/closure/verification/receipt 机制 DTO 的唯一代码 owner；旧 Domain shim 已删除，仓内生产
   caller 使用 Adapter namespace。private/public ref 与 immutable-byte backend、

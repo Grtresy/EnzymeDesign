@@ -24,7 +24,7 @@ def test_catalog_closes_exact_selected_external_components_and_operations() -> N
         unit.subject_version_spec
         for _, unit in catalog
         if unit.capability_id == "software.autodock-vina"
-    } == {">=1.2,<2"}
+    } == {"==1.1.2", ">=1.2,<2"}
     assert {
         "openzyme.runtime.llm",
         "openzyme.research.tavily",
@@ -43,7 +43,7 @@ def test_catalog_closes_exact_selected_external_components_and_operations() -> N
         "enzymedesign.docking.preprocess",
     } == {unit.component_id for _, unit in catalog}
     assert external_qualification_catalog_digest() == (
-        "sha256:9681536f47d5db9ce1a8acbccc7c11d2dd8b0b41a5c2fc13d5cc2dabdaf10912"
+        "sha256:c08d86d3d9056a5b8fad29972aa7b055f97f01369499bd4494d15bc9a228ddae"
     )
 
 

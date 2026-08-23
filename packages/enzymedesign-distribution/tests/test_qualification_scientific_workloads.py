@@ -29,7 +29,7 @@ def _request(operation: str) -> ExternalQualificationProbeRequest:
     (
         ("enzymedesign.hmmer.local", "hmmbuild", "local", "hmmbuild"),
         ("enzymedesign.hmmer.hpc", "hmmsearch", "hpc-primary", "hmmsearch"),
-        ("enzymedesign.vina.local", "dock", "local", "vina"),
+        ("enzymedesign.vina.local", "dock", "local", "python"),
         ("enzymedesign.vina.hpc", "dock", "hpc-primary", "vina"),
         ("enzymedesign.fpocket.local", "detect", "local", "fpocket"),
         ("enzymedesign.fpocket.hpc", "detect", "hpc-primary", "fpocket"),

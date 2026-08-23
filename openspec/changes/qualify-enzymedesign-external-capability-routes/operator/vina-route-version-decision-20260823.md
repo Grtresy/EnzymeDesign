@@ -1,8 +1,13 @@
 # Vina route/version 决策包（2026-08-23）
 
-## 当前事实
+## Operator 决策
 
-- `enzymedesign.vina` 的 Plugin、workload contract 和两个 Driver 当前统一声明 `software.autodock-vina >=1.2,<2`。
+已批准 **D-V1：显式双 profile**。Diannan HPC 固定 Vina `1.1.2` 与 legacy `--log` 合同；本地固定
+`>=1.2,<2` 与 modern CLI/result 合同。禁止自动切换、运行时探测式改写、retry-as-fallback 或 target fallback。
+
+## 决策时事实
+
+- 决策前 `enzymedesign.vina` 的 Plugin、workload contract 和两个 Driver 统一声明 `software.autodock-vina >=1.2,<2`。
 - `VinaDriver` 不区分 route kind，统一编译 `vina ... --out <poses> --log <score>`，result contract 要求 `poses_path` 与 `score_path`。
 - 本地 repository-owned image 精确为 Vina 1.2.7；首次真实 occurrence 已证明该 CLI 拒绝 `--log`，返回 `Command line parse error: unrecognised option '--log'`。
 - Diannan `/home/grtresy/containers/vina.sif` 的只读版本观测为 Vina 1.1.2；它与当前 `>=1.2,<2` 声明不相容，但 legacy CLI 与现有 `--log` workload shape 相容。
@@ -21,7 +26,7 @@
 
 1. Plugin 顶层 requirement 表示被支持版本的闭包，但 route admission 必须采用 Driver-specific version policy；不能只靠较宽的 Plugin range。
 2. `VinaDriver` 根据自身 manifest 的 exact `route_kind` 编译固定 profile，绝不根据运行时探测结果猜测或重试另一个 argv。
-3. result contract 升级并显式记录 `score_artifact_kind = legacy-log | poses-remarks`；两类输出都由 Driver validator 校验，不能把 stdout 文本直接当正式结果。
+3. result contract 分离并显式记录 exact `vina_result_profile` 与 `score_semantics`；两类输出都由 Driver validator 校验，不能把 stdout 文本直接当正式结果。
 4. qualification compiler、target inventory、subject digest、workload/result contract digest 和 receipts 全部绑定对应 profile。
 5. local/HPC 任一路版本或 profile 漂移只产生 `blocked_qualification`；不得自动切换另一路。
 
@@ -39,6 +44,9 @@
 
 优点：版本策略统一。代价：需要外部 target state 变化；在 compatible SIF 出现前 HPC Vina 持续 blocked，并不比 D-V1 少做 modern result semantics。
 
-## 授权边界
+## 实施与授权边界
 
-该文件只是 decision packet，不选择任何方案，不修改 manifest/Driver，不授权本地 image rebuild、SSH/Slurm/scientific effect 或 cutover。operator 选择后必须产生新的 source seal、effect-free discovery、dry plan 和独立 qualification occurrence authorization；旧 `ae24...b776` plan/authority 永久不可复用。
+源码已按 D-V1 实现 route-owned resource requirements、Kernel exact target/version admission、两个 Driver profile、
+分离的 workload/result digests、modern poses remark extractor 和 profile-sensitive terminal validator。该批准只授权
+上述仓内合同实现，不授权本地 image rebuild、SSH/Slurm/scientific effect 或 cutover。必须从新的 source seal 生成
+effect-free discovery、preparation plan、dry plan 和各自独立 authority；旧 `ae24...b776` plan/authority 永久不可复用。

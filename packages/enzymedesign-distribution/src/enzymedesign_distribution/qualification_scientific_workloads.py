@@ -20,6 +20,8 @@ from enzymedesign_structure import FpocketDriver
 from enzymedesign_structure import locate_hpc_driver_manifest as locate_fpocket_hpc_manifest
 from enzymedesign_structure import locate_local_driver_manifest as locate_fpocket_local_manifest
 from enzymedesign_vina import VINA_DRIVER_REQUEST_CONTRACT_DIGEST
+from enzymedesign_vina import VINA_LEGACY_RESULT_SCHEMA_DIGEST
+from enzymedesign_vina import VINA_MODERN_RESULT_SCHEMA_DIGEST
 from enzymedesign_vina import VINA_TOOL_SPEC
 from enzymedesign_vina import VinaDriver
 from enzymedesign_vina import locate_hpc_driver_manifest as locate_vina_hpc_manifest
@@ -227,17 +229,41 @@ class SelectedDriverScientificQualificationCompiler:
                 "qualification_compute_compiled_workload_missing",
                 "terminal scientific result has no exact compiled Driver workload",
             ) from exc
+        result_payload: dict[str, object] = {
+            "result_contract_digest": compiled.result_contract_digest,
+            "raw_shell": False,
+            "route_receipt_digest": outcome.receipt_digest,
+        }
+        if compiled.driver_id.startswith("enzymedesign.vina."):
+            try:
+                result_profile, score_semantics = {
+                    VINA_LEGACY_RESULT_SCHEMA_DIGEST: (
+                        "legacy-log-v1",
+                        "legacy-log-file-v1",
+                    ),
+                    VINA_MODERN_RESULT_SCHEMA_DIGEST: (
+                        "modern-poses-remark-v1",
+                        "poses-remark-derived-file-v1",
+                    ),
+                }[compiled.result_contract_digest]
+            except KeyError as exc:
+                raise ExternalQualificationError(
+                    "qualification_vina_result_profile_missing",
+                    "Vina workload lacks its exact route result profile",
+                ) from exc
+            result_payload.update(
+                {
+                    "vina_result_profile": result_profile,
+                    "score_semantics": score_semantics,
+                }
+            )
         result = ToolResult(
             call_id=f"call.{workload.workload_id}",
             tool_name="qualification.scientific.result",
             ok=True,
             status="completed",
             summary="Scientific qualification completed through formal Compute.",
-            payload={
-                "result_contract_digest": compiled.result_contract_digest,
-                "raw_shell": False,
-                "route_receipt_digest": outcome.receipt_digest,
-            },
+            payload=result_payload,
         )
         self.driver.validate_result(compiled, result)
 
@@ -433,7 +459,11 @@ def build_selected_driver_scientific_compiler(
             return DriverInvocationRequest(
                 driver_id=component_id,
                 owning_plugin_id="enzymedesign.vina",
-                route_id=request.operation,
+                route_id=(
+                    "enzymedesign.vina.hpc-primary@1"
+                    if is_hpc
+                    else "enzymedesign.vina.local@1"
+                ),
                 tool_name=VINA_TOOL_SPEC.tool_name,
                 tool_contract_digest=VINA_TOOL_SPEC.contract_digest,
                 request_contract_digest=VINA_DRIVER_REQUEST_CONTRACT_DIGEST,

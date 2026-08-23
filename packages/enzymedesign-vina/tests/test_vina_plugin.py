@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from importlib.resources import files
 import importlib.metadata
+import os
+from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -9,7 +13,8 @@ from enzymedesign_vina import VINA_COMPONENT_MANIFEST_DIGEST
 from enzymedesign_vina import VINA_DRIVER_REQUEST_CONTRACT_DIGEST
 from enzymedesign_vina import VINA_HPC_DRIVER_MANIFEST_DIGEST
 from enzymedesign_vina import VINA_LOCAL_DRIVER_MANIFEST_DIGEST
-from enzymedesign_vina import VINA_RESULT_SCHEMA_DIGEST
+from enzymedesign_vina import VINA_LEGACY_RESULT_SCHEMA_DIGEST
+from enzymedesign_vina import VINA_MODERN_RESULT_SCHEMA_DIGEST
 from enzymedesign_vina import VINA_TOOL_SPEC
 from enzymedesign_vina import VinaDriver
 from enzymedesign_vina import VinaToolRuntime
@@ -61,8 +66,15 @@ def test_vina_manifest_declares_compute_and_same_target_software_requirement() -
         item for item in plugin.requires if item.capability_id == "software.autodock-vina"
     )
     assert software.kind is CapabilityRequirementKind.RESOURCE
-    assert software.version_spec == ">=1.2,<2"
+    assert software.version_spec == ">=1.1.2,<2"
     assert software.same_target_as == "openzyme.execution.revision-job"
+    route_versions = {
+        route.route_id: route.requirements[0].version_spec for route in plugin.routes
+    }
+    assert route_versions == {
+        "enzymedesign.vina.hpc-primary@1": "==1.1.2",
+        "enzymedesign.vina.local@1": ">=1.2,<2",
+    }
     requirements = importlib.metadata.requires("enzymedesign-vina") or []
     assert all(
         all(name not in requirement for name in ("openzyme-core", "openzyme-hpc", "slurm", "ssh"))
@@ -94,11 +106,16 @@ def _input(path: str, revision_id: str):
     }
 
 
-def _request(*, extra=None):
+def _request(
+    *,
+    driver_id: str = "enzymedesign.vina.hpc",
+    route_id: str = "enzymedesign.vina.hpc-primary@1",
+    extra=None,
+):
     return DriverInvocationRequest(
-        driver_id="enzymedesign.vina.hpc",
+        driver_id=driver_id,
         owning_plugin_id="enzymedesign.vina",
-        route_id="hpc-primary.revision-job",
+        route_id=route_id,
         tool_name=VINA_TOOL_SPEC.tool_name,
         tool_contract_digest=VINA_TOOL_SPEC.contract_digest,
         request_contract_digest=VINA_DRIVER_REQUEST_CONTRACT_DIGEST,
@@ -143,6 +160,131 @@ def test_vina_hpc_driver_compiles_closed_workload_without_hpc_identity() -> None
     )
     assert "target_id" not in compiled.workload
     assert "credential" not in compiled.workload
+
+
+def test_vina_local_driver_compiles_modern_poses_remark_profile() -> None:
+    manifest = _manifest(locate_local_driver_manifest())
+    assert isinstance(manifest, DriverManifest)
+    compiled = VinaDriver(manifest).compile(
+        _request(
+            driver_id="enzymedesign.vina.local",
+            route_id="enzymedesign.vina.local@1",
+        )
+    )
+
+    argv = list(compiled.workload["argv"])
+    assert argv[:2] == ["python", "-c"]
+    assert "REMARK VINA RESULT:" in argv[2]
+    assert "--log" not in argv
+    assert argv[-2:] == [
+        "results/vina/poses.pdbqt",
+        "results/vina/vina.log",
+    ]
+    assert compiled.workload["capability_requirements"][0]["version_spec"] == (
+        ">=1.2,<2"
+    )
+    assert compiled.workload["result_contract"]["contract_id"] == (
+        "enzymedesign.vina.result.modern@1"
+    )
+    assert compiled.result_contract_digest == VINA_MODERN_RESULT_SCHEMA_DIGEST
+
+
+@pytest.mark.parametrize(
+    ("vina_output", "expected_returncode"),
+    (
+        ("REMARK VINA RESULT:    -7.5      0.000      0.000\n", 0),
+        ("REMARK generated without a score\n", 65),
+    ),
+)
+def test_vina_modern_extractor_requires_poses_score_remark(
+    tmp_path: Path,
+    vina_output: str,
+    expected_returncode: int,
+) -> None:
+    manifest = _manifest(locate_local_driver_manifest())
+    assert isinstance(manifest, DriverManifest)
+    compiled = VinaDriver(manifest).compile(
+        _request(
+            driver_id="enzymedesign.vina.local",
+            route_id="enzymedesign.vina.local@1",
+        )
+    )
+    argv = list(compiled.workload["argv"])
+    fake_vina = tmp_path / "vina"
+    fake_vina.write_text(
+        "#!/usr/bin/env python3\n"
+        "import pathlib, sys\n"
+        "output = pathlib.Path(sys.argv[sys.argv.index('--out') + 1])\n"
+        "output.parent.mkdir(parents=True, exist_ok=True)\n"
+        f"output.write_text({vina_output!r}, encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    fake_vina.chmod(0o755)
+    (tmp_path / "results/vina").mkdir(parents=True)
+    completed = subprocess.run(
+        [sys.executable, *argv[1:]],
+        cwd=tmp_path,
+        env={**os.environ, "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == expected_returncode
+    score_path = tmp_path / "results/vina/vina.log"
+    if expected_returncode == 0:
+        assert score_path.read_text(encoding="utf-8") == (
+            "score_semantics=poses-remark-derived-file-v1\n" + vina_output
+        )
+    else:
+        assert not score_path.exists()
+
+
+def test_vina_driver_rejects_cross_route_profile() -> None:
+    manifest = _manifest(locate_hpc_driver_manifest())
+    assert isinstance(manifest, DriverManifest)
+    with pytest.raises(ValueError, match="contract drifted"):
+        VinaDriver(manifest).compile(
+            _request(route_id="enzymedesign.vina.local@1")
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("vina_result_profile", "legacy-log-v1"),
+        ("score_semantics", "legacy-log-file-v1"),
+        ("result_contract_digest", VINA_LEGACY_RESULT_SCHEMA_DIGEST),
+    ),
+)
+def test_vina_modern_result_rejects_profile_drift(field: str, value: str) -> None:
+    manifest = _manifest(locate_local_driver_manifest())
+    assert isinstance(manifest, DriverManifest)
+    driver = VinaDriver(manifest)
+    workload = driver.compile(
+        _request(
+            driver_id="enzymedesign.vina.local",
+            route_id="enzymedesign.vina.local@1",
+        )
+    )
+    payload = {
+        "result_contract_digest": VINA_MODERN_RESULT_SCHEMA_DIGEST,
+        "vina_result_profile": "modern-poses-remark-v1",
+        "score_semantics": "poses-remark-derived-file-v1",
+        "raw_shell": False,
+    }
+    payload[field] = value
+    result = ToolResult(
+        call_id="modern-result-drift",
+        tool_name=VINA_TOOL_SPEC.tool_name,
+        ok=True,
+        status="settled",
+        summary="modern Vina result",
+        payload=payload,
+    )
+
+    with pytest.raises(ValueError, match="formal result contract drifted"):
+        driver.validate_result(workload, result)
 
 
 @pytest.mark.parametrize("extra", ({"argv": ["vina"]}, {"host_path": "/tmp/a"}))
@@ -215,7 +357,12 @@ def test_vina_tool_and_result_keep_raw_shell_non_formal() -> None:
         ok=True,
         status="settled",
         summary="exploratory Vina shell",
-        payload={"result_contract_digest": VINA_RESULT_SCHEMA_DIGEST, "raw_shell": True},
+        payload={
+            "result_contract_digest": VINA_LEGACY_RESULT_SCHEMA_DIGEST,
+            "vina_result_profile": "legacy-log-v1",
+            "score_semantics": "legacy-log-file-v1",
+            "raw_shell": True,
+        },
     )
     with pytest.raises(ValueError, match="formal result contract drifted"):
         driver.validate_result(workload, raw)

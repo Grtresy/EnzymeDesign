@@ -3,11 +3,11 @@
   "finish_validators": [],
   "http_routes": [],
   "identity": {
-    "build_digest": "sha256:f1e239d8c8985fb79ee8c623d7265a907e836350ab591de1779713ef27ac1520",
+    "build_digest": "sha256:c3570ef38e2e8cd17c493746102f33da099fc9f17ac1572bf1051451617c6c5d",
     "component_id": "enzymedesign.vina",
     "component_kind": "plugin",
     "component_version": "0.1.0",
-    "contract_digest": "sha256:0212c3844847261ef4299e55644e5f6f4d9613316df4c09cd856c36a50062c3d",
+    "contract_digest": "sha256:49ef543cc0f7746ef758b4f7531256f78b32004b3e5e9171467805a57c6113dd",
     "distribution_name": "enzymedesign-vina",
     "distribution_version": "0.1.0"
   },
@@ -91,7 +91,7 @@
         "score"
       ],
       "same_target_as": "openzyme.execution.revision-job",
-      "version_spec": ">=1.2,<2"
+      "version_spec": ">=1.1.2,<2"
     }
   ],
   "routes": [
@@ -99,19 +99,39 @@
       "capability_ids": ["enzymedesign.vina", "openzyme.execution.revision-job", "software.autodock-vina"],
       "driver_id": "enzymedesign.vina.hpc",
       "owner_component_id": "enzymedesign.vina",
-      "route_contract_digest": "sha256:e7d9879a055153bd9a58aef384697a46a1e6ef5ed5db1cd061233e1a708cb78a",
+      "route_contract_digest": "sha256:c901ceb24bc79e80f31c41144e617058da7731c98f55320e390b6e9404920f9f",
       "route_id": "enzymedesign.vina.hpc-primary@1",
       "route_kind": "hpc",
-      "target_id": "hpc-primary"
+      "target_id": "hpc-primary",
+      "requirements": [
+        {
+          "capability_id": "software.autodock-vina",
+          "contract_spec": "@1",
+          "kind": "resource",
+          "operations": ["dock", "score"],
+          "same_target_as": "openzyme.execution.revision-job",
+          "version_spec": "==1.1.2"
+        }
+      ]
     },
     {
       "capability_ids": ["enzymedesign.vina", "openzyme.execution.revision-job", "software.autodock-vina"],
       "driver_id": "enzymedesign.vina.local",
       "owner_component_id": "enzymedesign.vina",
-      "route_contract_digest": "sha256:73a452b081e3f4d81f867c28ccd70dc2d8cc252bb46085a8a353cc761fbb4be4",
+      "route_contract_digest": "sha256:20d7d9f04f4596675765bb24067eba5722617199ab62485fc695247c63f021ab",
       "route_id": "enzymedesign.vina.local@1",
       "route_kind": "local",
-      "target_id": "local:podman"
+      "target_id": "local:podman",
+      "requirements": [
+        {
+          "capability_id": "software.autodock-vina",
+          "contract_spec": "@1",
+          "kind": "resource",
+          "operations": ["dock", "score"],
+          "same_target_as": "openzyme.execution.revision-job",
+          "version_spec": ">=1.2,<2"
+        }
+      ]
     }
   ],
   "schema_version": "openzyme_plugin_manifest@1",
@@ -291,7 +311,7 @@
             "score"
           ],
           "same_target_as": "openzyme.execution.revision-job",
-          "version_spec": ">=1.2,<2"
+          "version_spec": ">=1.1.2,<2"
         }
       ],
       "requires_explicit_route": true,

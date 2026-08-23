@@ -31,6 +31,9 @@ ALLOWED_PROFILE_EXTERNAL_DISTRIBUTIONS = frozenset(
         # distribution checks below prove that Standard never acquires them.
         "biopython",
         "numpy",
+        # Product Distribution uses PEP 440 specifiers to bind observed
+        # software versions to exact qualification units and route profiles.
+        "packaging",
     }
 )
 

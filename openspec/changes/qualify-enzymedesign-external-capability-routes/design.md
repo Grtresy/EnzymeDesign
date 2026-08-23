@@ -149,7 +149,12 @@ Repository-owned scientific image recipes 从各自官方 Git URL 完整取得�
 
 首次授权 Batch 1 occurrence 的裁决进一步收紧了实现：本地 Git publish ref 按 occurrence workspace 形成稳定 namespace，后续 LFS fetch 绑定同一 exact remote-tracking ref，不能复用固定 `qualification` branch；HPC credential material 中的 `ssh_user`、`workspace_root` 和 `isolation_command` 必须在构造 SSH state 前逐字等于已资格 helper 的 principal、workspace parent 和 absolute path。live report 不能只投影 cleanup/budget digest，受保护 SQLite 还必须持久化 exact cleanup resources 与逐 unit budget settlement payload，恢复时缺失或漂移即停止。Provider public outcome 继续只保留安全 error code，受保护 diagnostic 可额外记录 Adapter 已去敏的 provider status/summary。科学 workload 的 expected output 必须来自实际 argv/程序 cwd：HMMER build 采用 argv output，fpocket 采用 cwd 下 `structure_out/structure_info.txt`；本地 docking image recipe 补齐 pinned SciPy 与 Open Babel 所需 Xrender runtime，新 output ref 为 `localhost/openzyme-qualification-docking:20260823-r2`，safe identity 另行绑定 `docking_image_recipe_digest`。以上变化只为生成新的 source-bound plan，绝不复用已终态 authority。
 
-同一次只读 target observation 发现 `Diannan` 现有 `/home/grtresy/containers/vina.sif` 报告 `AutoDock Vina 1.1.2`，而 Distribution 声明为 `>=1.2,<2`。现有 digest 只能证明“观察到该 SIF”，不能证明版本满足 route requirement；在 operator 明确选择保持版本下限并提供兼容 SIF，或另行批准 1.1.2 的 route-specific 支持设计前，HPC Vina unit 必须保持 `blocked_identity`/`blocked_qualification`，不得静默放宽版本、重建远端工具或切换 route。
+operator 已选择 Vina route-specific 双版本：产品级 capability 支持闭包为 `>=1.1.2,<2`，Diannan HPC route
+精确要求 `==1.1.2` 并使用 legacy `--log`/poses+log result profile；本地 route 精确要求 `>=1.2,<2`，使用
+modern 无 `--log` argv，并从 poses `REMARK VINA RESULT:` 形成带固定 semantics 的 score artifact。每条 route
+在 Plugin manifest 中拥有独立 resource requirement，Kernel 只为 exact bound target/version 发布 route ref；
+Driver manifest、workload/result digest、qualification unit 和 subject identity 均绑定相同 profile。任一路漂移只
+阻断该 route，不自动切换、探测式改写 argv、重试另一 profile、重建远端工具或 fallback。
 
 ### 11. Receipt 只能由真实终态 evidence 形成
 

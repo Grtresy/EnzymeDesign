@@ -1,10 +1,10 @@
 {
   "identity": {
-    "build_digest": "sha256:5df23a2b405384e990705ad0f19218e7a1805a99700ab122e652ce549d26f09f",
+    "build_digest": "sha256:cf9a59165283a2e0616f3985c77f48852374b9c76c6f906e033d60266ef03e11",
     "component_id": "enzymedesign.vina.local",
     "component_kind": "driver",
     "component_version": "0.1.0",
-    "contract_digest": "sha256:f6b17f0ec7df53dc5b394dd6d9d46284e05c7fee3abf1c01e48b7666cb123e3a",
+    "contract_digest": "sha256:be238dd96d9acd13e4c53187a0fa3fe5c709e12d30bc5f111b4243904b4b43e8",
     "distribution_name": "enzymedesign-vina",
     "distribution_version": "0.1.0"
   },
@@ -13,8 +13,8 @@
   "required_port_contracts": [
     "openzyme.workspace-process-port@1"
   ],
-  "result_contract_digest": "sha256:7fb1182b8f3dbee65351fcdcd051600638d8f8b655fec7a221ddee3aaf17e291",
+  "result_contract_digest": "sha256:610c7a39c15ee1f5547951444159b084f07c8ef834809bd9d88aa4332abe1ae5",
   "route_kind": "local",
   "schema_version": "openzyme_driver_manifest@1",
-  "workload_contract_digest": "sha256:4d19f77faaf06c4a266b2cf3da854341fa6c2628838abd557af0d258e1759fa9"
+  "workload_contract_digest": "sha256:e26e86cc25b1880fdc31e78e3ab4acb9526cd037536c3de2e7fe973652b006f8"
 }

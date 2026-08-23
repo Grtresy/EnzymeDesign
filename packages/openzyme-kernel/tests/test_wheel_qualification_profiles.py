@@ -70,6 +70,7 @@ def test_wheel_profiles_have_closed_independent_installation_sets() -> None:
         "biopython",
         "fastapi",
         "numpy",
+        "packaging",
         "pydantic",
     }
     assert external_closures["standard_only"] == {"fastapi", "pydantic"}

@@ -260,6 +260,7 @@ class RouteContribution:
     route_contract_digest: str
     target_id: str | None = None
     driver_id: str | None = None
+    requirements: tuple[CapabilityRequirement, ...] = ()
 
     def __post_init__(self) -> None:
         for field_name in ("route_id", "owner_component_id", "route_kind"):
@@ -281,9 +282,28 @@ class RouteContribution:
             require_identifier(self.target_id, field_name="target_id")
         if self.driver_id is not None:
             require_identifier(self.driver_id, field_name="driver_id")
+        requirements = tuple(
+            sorted(self.requirements, key=lambda item: item.capability_id)
+        )
+        if len({item.capability_id for item in requirements}) != len(requirements):
+            raise ValueError("route requirements must have unique capability IDs")
+        if any(
+            item.kind is not CapabilityRequirementKind.RESOURCE
+            or item.capability_id not in self.capability_ids
+            or (
+                item.same_target_as is not None
+                and item.same_target_as not in self.capability_ids
+            )
+            for item in requirements
+        ):
+            raise ValueError(
+                "route requirements must constrain declared same-target resource "
+                "capabilities"
+            )
+        object.__setattr__(self, "requirements", requirements)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "route_id": self.route_id,
             "owner_component_id": self.owner_component_id,
             "capability_ids": list(self.capability_ids),
@@ -292,6 +312,11 @@ class RouteContribution:
             "target_id": self.target_id,
             "driver_id": self.driver_id,
         }
+        if self.requirements:
+            payload["requirements"] = [
+                requirement.to_dict() for requirement in self.requirements
+            ]
+        return payload
 
 
 @dataclass(frozen=True, slots=True)

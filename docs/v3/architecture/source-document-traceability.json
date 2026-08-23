@@ -778,7 +778,7 @@
         "owner",
         "persistence"
       ],
-      "document_bundle_digest": "sha256:22f9bae18687c8ce3bb869bbf8d53ccb982daef6ce91d165b6e9d4131bfe7955",
+      "document_bundle_digest": "sha256:f9aae4ce62c9f4cecb4794db4005212d045c4b02c335ec1e1f5f31b2e6ea1613",
       "document_refs": [
         "docs/OpenZyme架构设计.md",
         "docs/v3/architecture-qualification/README.md",

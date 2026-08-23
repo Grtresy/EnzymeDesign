@@ -231,6 +231,26 @@ class CapabilityRegistry:
                 for fact in canonical_resources
                 if route.target_id is not None and fact.target_id == route.target_id
             )
+            if route.requirements and (
+                route.target_id is None
+                or any(
+                    not any(
+                        fact.capability_id == requirement.capability_id
+                        and _contract_matches(
+                            fact.contract_version,
+                            requirement.contract_spec,
+                        )
+                        and set(requirement.operations).issubset(fact.operations)
+                        and version_satisfies(
+                            fact.version,
+                            requirement.version_spec,
+                        )
+                        for fact in target_resources
+                    )
+                    for requirement in route.requirements
+                )
+            ):
+                continue
             extension_proofs = tuple(
                 fact
                 for fact in extension_bundle.capability_facts
@@ -512,10 +532,37 @@ def resolve_tool_capabilities(
             continue
         routes.append(route)
     if entry.requires_explicit_route and not routes:
-        blockers.append(
+        bound_target_ids = {
+            binding.target_id for binding in registry.binding.inventory_bindings
+        }
+        route_requirement_blockers = tuple(
             CapabilityResolutionBlocker(
-                code="compatible_route_missing",
-                capability_id=entry.contract.tool_name,
+                code="software_requirement_unsatisfied",
+                capability_id=requirement.capability_id,
+                requirement=(
+                    f"{requirement.capability_id}"
+                    f"{requirement.version_spec or ''}"
+                ),
+                target_id=route.target_id,
+            )
+            for route in registry.declared_routes
+            if required_capability_ids.issubset(route.capability_ids)
+            and route.target_id is not None
+            and route.target_id in bound_target_ids
+            for requirement in route.requirements
+            if not _resource_matches(
+                requirement,
+                registry,
+                target_id=route.target_id,
+            )
+        )
+        blockers.extend(
+            route_requirement_blockers
+            or (
+                CapabilityResolutionBlocker(
+                    code="compatible_route_missing",
+                    capability_id=entry.contract.tool_name,
+                ),
             )
         )
     return CapabilityRouteResolution(
