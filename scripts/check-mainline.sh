@@ -30,6 +30,10 @@ echo "NO OTHER AUTHORITY: this command is not architecture admission, AOX launch
 echo "AUTHORITATIVE EVIDENCE ROOT: $evidence_root" >&2
 echo "ROLLBACK COMPARISON: ./scripts/check-mainline-legacy.sh (never current authority when invoked directly)." >&2
 
+readiness_report="$evidence_parent/external-qualification-readiness.json"
+./scripts/check-external-qualification-readiness.sh "$readiness_report"
+echo "REQUIRED EXTERNAL QUALIFICATION READINESS VERIFIED: $readiness_report" >&2
+
 uv run python scripts/run-test-gate.py \
   mainline_authoritative \
   "$evidence_root" \

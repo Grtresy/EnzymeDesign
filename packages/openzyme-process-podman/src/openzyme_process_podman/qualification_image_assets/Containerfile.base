@@ -1,0 +1,11 @@
+ARG BASE_IMAGE_REF
+FROM ${BASE_IMAGE_REF}
+
+ARG DEBIAN_SNAPSHOT=20260820T000000Z
+RUN printf 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/%s bookworm main\n' "${DEBIAN_SNAPSHOT}" > /etc/apt/sources.list \
+    && rm -f /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Check-Valid-Until=false update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git git-lfs openssh-client rsync \
+    && rm -rf /var/lib/apt/lists/*
+
+LABEL org.openzyme.qualification.image-group="base"

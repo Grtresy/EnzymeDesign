@@ -1,0 +1,61 @@
+{
+  "schema_version": "openzyme_qualification_image_manifest@1",
+  "manifest_id": "enzymedesign.batch-1.qualification-images",
+  "platform": "linux/amd64",
+  "base_image_ref": "docker.io/library/python@sha256:46cb7cc2877e60fbd5e21a9ae6115c30ace7a077b9f8772da879e4590c18c2e3",
+  "uv_lock_digest": "sha256:08ea390c480ef23d2f79282042849a989577ee7ff5de9f996a5ff76b60ae1c45",
+  "recipes": [
+    {
+      "image_group": "base",
+      "containerfile": "Containerfile.base",
+      "output_image_ref": "localhost/openzyme-qualification-base:20260823",
+      "sources": [],
+      "expected_versions": {
+        "python": "3.12",
+        "git_lfs": "installed-from-debian-snapshot-20260820"
+      }
+    },
+    {
+      "image_group": "hmmer",
+      "containerfile": "Containerfile.hmmer",
+      "output_image_ref": "localhost/openzyme-qualification-hmmer:3.4-20260823",
+      "sources": [
+        {
+          "source_id": "hmmer",
+          "url": "https://github.com/EddyRivasLab/hmmer.git",
+          "version": "3.4",
+          "commit": "9acd8b6758a0ca5d21db6d167e0277484341929b"
+        }
+      ],
+      "expected_versions": {
+        "hmmer": "3.4"
+      }
+    },
+    {
+      "image_group": "docking",
+      "containerfile": "Containerfile.docking",
+      "output_image_ref": "localhost/openzyme-qualification-docking:20260823",
+      "sources": [
+        {
+          "source_id": "autodock_vina",
+          "url": "https://github.com/ccsb-scripps/AutoDock-Vina.git",
+          "version": "1.2.7",
+          "commit": "8eb40404f4f45608acb3b01427587ac049f27c1f"
+        },
+        {
+          "source_id": "fpocket",
+          "url": "https://github.com/Discngine/fpocket.git",
+          "version": "4.2.3",
+          "commit": "4bb0d8447f62fee77e2c3c29f54b5fcaf5e2c066"
+        }
+      ],
+      "expected_versions": {
+        "vina": "1.2.7",
+        "fpocket": "4.2.3",
+        "rdkit": "2026.3.1",
+        "meeko": "0.7.1",
+        "openbabel": "3.1.1.23"
+      }
+    }
+  ]
+}

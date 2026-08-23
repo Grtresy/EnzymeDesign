@@ -2,6 +2,8 @@
 
 from .workspace import *  # noqa: F403
 from .workspace import __all__ as _workspace_exports
+from .qualification import *  # noqa: F403
+from .qualification import __all__ as _qualification_exports
 
 COMPONENT_ID = "openzyme.hpc.ssh"
 COMPONENT_KIND = "adapter"
@@ -12,4 +14,5 @@ __all__ = [
     "COMPONENT_KIND",
     "MIGRATION_STATE",
     *_workspace_exports,
+    *_qualification_exports,
 ]

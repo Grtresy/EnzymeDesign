@@ -1,0 +1,186 @@
+{
+  "schema_version": "enzymedesign_safe_identity_snapshot@1",
+  "snapshot_id": "current-checkout-20260822",
+  "source_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "observed_at": "2026-08-22T12:00:00+00:00",
+  "projections": [
+    {
+      "projection_id": "llm-primary",
+      "logical_subject_id": "provider.llm.primary",
+      "subject_kind": "provider",
+      "status": "partial",
+      "component_ids": ["openzyme.runtime.llm"],
+      "safe_fields": [
+        {"field_id": "endpoint", "value": "https://www.micuapi.ai/v1"},
+        {"field_id": "model", "value": "gpt-5.5"},
+        {"field_id": "api_variant", "value": "chat-completions"}
+      ],
+      "missing_fields": ["account_or_project_locator_digest", "credential_scope_digest"]
+    },
+    {
+      "projection_id": "tavily-primary",
+      "logical_subject_id": "provider.tavily.primary",
+      "subject_kind": "provider",
+      "status": "partial",
+      "component_ids": ["openzyme.research.tavily"],
+      "safe_fields": [
+        {"field_id": "query_topic", "value": "general"},
+        {"field_id": "max_results", "value": "3"}
+      ],
+      "missing_fields": ["service_endpoint_identity", "account_locator_digest", "credential_scope_digest"]
+    },
+    {
+      "projection_id": "bio-uniprot-public",
+      "logical_subject_id": "provider.uniprot.public",
+      "subject_kind": "provider",
+      "status": "resolved",
+      "component_ids": ["enzymedesign.bio-provider-http"],
+      "safe_fields": [
+        {"field_id": "endpoint_or_runtime_id", "value": "https.rest.uniprot.org"},
+        {"field_id": "account_or_deployment_digest", "value": "sha256:12e5bc5e3d1f43fb01383f7828620878553be4f4b78d4f50926215063499b20c"},
+        {"field_id": "api_or_route_variant", "value": "uniprot-rest-read-v1"},
+        {"field_id": "environment_or_inventory_digest", "value": "sha256:35993bb5d4fbc2d83c70965c30266e4cd0ea1056088e1298672971fd1bd065c5"},
+        {"field_id": "policy_digest", "value": "sha256:797834db59825ae19967c101ef4ee51a13f7172cda2e97a70bd0986635fb85c8"}
+      ],
+      "missing_fields": []
+    },
+    {
+      "projection_id": "bio-rcsb-public",
+      "logical_subject_id": "provider.rcsb.public",
+      "subject_kind": "provider",
+      "status": "resolved",
+      "component_ids": ["enzymedesign.bio-provider-http"],
+      "safe_fields": [
+        {"field_id": "endpoint_or_runtime_id", "value": "https.rcsb.public"},
+        {"field_id": "account_or_deployment_digest", "value": "sha256:12e5bc5e3d1f43fb01383f7828620878553be4f4b78d4f50926215063499b20c"},
+        {"field_id": "api_or_route_variant", "value": "rcsb-search-data-files-v1"},
+        {"field_id": "environment_or_inventory_digest", "value": "sha256:9b201871b009d7c13cc67613222ff5c7c172211fe39d3bb4e2da1604996c4bfa"},
+        {"field_id": "policy_digest", "value": "sha256:797834db59825ae19967c101ef4ee51a13f7172cda2e97a70bd0986635fb85c8"}
+      ],
+      "missing_fields": []
+    },
+    {
+      "projection_id": "bio-interpro-public",
+      "logical_subject_id": "provider.interpro.public",
+      "subject_kind": "provider",
+      "status": "resolved",
+      "component_ids": ["enzymedesign.bio-provider-http"],
+      "safe_fields": [
+        {"field_id": "endpoint_or_runtime_id", "value": "https.ebi.interpro"},
+        {"field_id": "account_or_deployment_digest", "value": "sha256:12e5bc5e3d1f43fb01383f7828620878553be4f4b78d4f50926215063499b20c"},
+        {"field_id": "api_or_route_variant", "value": "interpro-rest-read-v1"},
+        {"field_id": "environment_or_inventory_digest", "value": "sha256:5a3a31f2073ff849bece33b85ee563883ab7054213730b3d590d867cfed13f6a"},
+        {"field_id": "policy_digest", "value": "sha256:797834db59825ae19967c101ef4ee51a13f7172cda2e97a70bd0986635fb85c8"}
+      ],
+      "missing_fields": []
+    },
+    {
+      "projection_id": "git-primary",
+      "logical_subject_id": "git.primary",
+      "subject_kind": "target",
+      "status": "missing",
+      "component_ids": ["openzyme.workspace.git.lfs"],
+      "safe_fields": [],
+      "missing_fields": ["local_repository_endpoint", "local_lfs_endpoint_identity", "repository_policy_digest", "local_process_scope_digest"]
+    },
+    {
+      "projection_id": "podman-base",
+      "logical_subject_id": "local.podman",
+      "subject_kind": "target",
+      "status": "partial",
+      "component_ids": ["openzyme.process.podman"],
+      "safe_fields": [
+        {"field_id": "runtime", "value": "podman-4.3.1"},
+        {"field_id": "host", "value": "rootless-linux-amd64-vfs"},
+        {"field_id": "available_image", "value": "openzyme-pipeline-sandbox-bio-audit-20260720"}
+      ],
+      "missing_fields": ["approved_qualification_image_digest", "container_policy_digest"]
+    },
+    {
+      "projection_id": "hpc-control",
+      "logical_subject_id": "hpc-primary",
+      "subject_kind": "target",
+      "status": "partial",
+      "component_ids": ["openzyme.hpc.ssh", "openzyme.hpc.slurm"],
+      "safe_fields": [
+        {"field_id": "deployment", "value": "aox-live-local"},
+        {"field_id": "host_alias", "value": "Diannan"},
+        {"field_id": "partition", "value": "3090"},
+        {"field_id": "transport", "value": "controlmaster-v1"}
+      ],
+      "missing_fields": ["executor_workspace_v2_profile", "inventory_generation_digest", "credential_provider_identity", "authenticator_identity", "slurm_account_or_qos_policy"]
+    },
+    {
+      "projection_id": "hmmer-local",
+      "logical_subject_id": "local",
+      "subject_kind": "target",
+      "status": "missing",
+      "component_ids": ["enzymedesign.hmmer.local"],
+      "safe_fields": [],
+      "missing_fields": ["hmmer_image_digest", "hmmer_version"]
+    },
+    {
+      "projection_id": "hmmer-hpc",
+      "logical_subject_id": "hpc-primary",
+      "subject_kind": "target",
+      "status": "partial",
+      "component_ids": ["enzymedesign.hmmer.hpc"],
+      "safe_fields": [{"field_id": "target_alias", "value": "Diannan-3090"}],
+      "missing_fields": ["hpc_inventory_generation_digest", "hmmer_software_fact"]
+    },
+    {
+      "projection_id": "vina-local",
+      "logical_subject_id": "local",
+      "subject_kind": "target",
+      "status": "missing",
+      "component_ids": ["enzymedesign.vina.local"],
+      "safe_fields": [],
+      "missing_fields": ["vina_image_digest", "vina_version"]
+    },
+    {
+      "projection_id": "vina-hpc",
+      "logical_subject_id": "hpc-primary",
+      "subject_kind": "target",
+      "status": "partial",
+      "component_ids": ["enzymedesign.vina.hpc"],
+      "safe_fields": [{"field_id": "target_alias", "value": "Diannan-3090"}],
+      "missing_fields": ["hpc_inventory_generation_digest", "vina_software_fact"]
+    },
+    {
+      "projection_id": "fpocket-local",
+      "logical_subject_id": "local",
+      "subject_kind": "target",
+      "status": "missing",
+      "component_ids": ["enzymedesign.fpocket.local"],
+      "safe_fields": [],
+      "missing_fields": ["fpocket_image_digest", "fpocket_version"]
+    },
+    {
+      "projection_id": "fpocket-hpc",
+      "logical_subject_id": "hpc-primary",
+      "subject_kind": "target",
+      "status": "partial",
+      "component_ids": ["enzymedesign.fpocket.hpc"],
+      "safe_fields": [{"field_id": "target_alias", "value": "Diannan-3090"}],
+      "missing_fields": ["hpc_inventory_generation_digest", "fpocket_software_fact"]
+    },
+    {
+      "projection_id": "preprocess-podman",
+      "logical_subject_id": "local.podman",
+      "subject_kind": "target",
+      "status": "missing",
+      "component_ids": ["enzymedesign.docking.preprocess"],
+      "safe_fields": [],
+      "missing_fields": ["preprocess_image_digest", "rdkit_version", "meeko_version", "openbabel_version"]
+    },
+    {
+      "projection_id": "alphafold-hpc",
+      "logical_subject_id": "hpc-primary",
+      "subject_kind": "target",
+      "status": "partial",
+      "component_ids": ["enzymedesign.alphafold.hpc"],
+      "safe_fields": [{"field_id": "target_alias", "value": "Diannan-3090"}],
+      "missing_fields": ["alphafold_gpu_image_digest", "model_parameters_digest", "database_closure_digest", "gpu_capability_fact", "fixed_monomer_input_digest"]
+    }
+  ]
+}

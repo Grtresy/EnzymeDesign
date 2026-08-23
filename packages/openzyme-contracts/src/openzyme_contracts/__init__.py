@@ -57,6 +57,66 @@ from .failures import PrivateDiagnosticRecord
 from .diagnostics import safe_public_machine_identifier
 from .diagnostics import sanitize_public_diagnostic_payload
 from .diagnostics import sanitize_public_diagnostic_text
+from .external_qualification import ExternalQualificationError
+from .external_qualification import ExternalQualificationEvidence
+from .external_qualification import ExternalQualificationFailure
+from .external_qualification import ExternalQualificationLifecycle
+from .external_qualification import ExternalQualificationPlan
+from .external_qualification import ExternalQualificationProbeDisposition
+from .external_qualification import ExternalQualificationProbeOutcome
+from .external_qualification import ExternalQualificationProbeRequest
+from .external_qualification import ExternalQualificationProfileRef
+from .external_qualification import ExternalQualificationReadinessReceipt
+from .external_qualification import ExternalQualificationReadinessReport
+from .external_qualification import ExternalQualificationReadinessStatus
+from .external_qualification import ExternalQualificationSubjectKind
+from .external_qualification import ExternalQualificationUnit
+from .external_qualification import QualificationCredentialLocator
+from .external_qualification import QualifiedExternalCapabilityFact
+from .external_qualification import adopt_qualified_external_capability
+from .external_qualification import verify_external_qualification_readiness
+from .external_route_qualification import BoundExternalQualificationOperationBridge
+from .external_route_qualification import ExternalIdentityGap
+from .external_route_qualification import ExternalIdentityPreparationAction
+from .external_route_qualification import (
+    ExternalIdentityPreparationOccurrenceAuthorization,
+)
+from .external_route_qualification import ExternalIdentityPreparationPlan
+from .external_route_qualification import ExternalIdentityPreparationResult
+from .external_route_qualification import ExternalIdentityResolutionCandidate
+from .external_route_qualification import ExternalIdentityResolutionDecision
+from .external_route_qualification import ExternalQualificationBridgeBinding
+from .external_route_qualification import ExternalBoundQualificationOperationPort
+from .external_route_qualification import ExternalQualificationBudgetPolicy
+from .external_route_qualification import ExternalQualificationDryPlan
+from .external_route_qualification import ExternalQualificationEffectPolicy
+from .external_route_qualification import ExternalQualificationFaultPolicy
+from .external_route_qualification import ExternalQualificationOccurrenceAuthorization
+from .external_route_qualification import ExternalQualificationOperationObservation
+from .external_route_qualification import ExternalQualificationOperationPort
+from .external_route_qualification import ExternalScientificQualificationOperationPort
+from .external_route_qualification import ExternalQualificationSafeReceipt
+from .external_route_qualification import ExternalQualificationStoragePolicy
+from .external_route_qualification import ExternalQualificationTtlPolicy
+from .external_route_qualification import ExternalQualificationUnitSubjectBinding
+from .external_route_qualification import ExternalRealSubjectIdentity
+from .external_route_qualification import ExternalSubjectIdentityDiscoveryReport
+from .external_route_qualification import ExternalSubjectIdentityObservation
+from .external_route_qualification import ExternalSubjectIdentityStatus
+from .external_route_qualification import SafeIdentityField
+from .external_route_qualification import create_external_identity_preparation_success
+from .external_route_qualification import verify_external_identity_decision
+from .external_route_qualification import (
+    verify_external_identity_preparation_occurrence_authorization,
+)
+from .external_route_qualification import verify_external_identity_preparation_plan
+from .external_route_qualification import (
+    verify_external_qualification_probe_request_binding,
+)
+from .external_route_qualification import verify_external_qualification_dry_plan
+from .external_route_qualification import (
+    verify_external_qualification_occurrence_authorization,
+)
 from .failures import likely_causes_for_error_code
 from .failures import parse_failure_observation
 from .identity import ContractValidationError
@@ -373,6 +433,46 @@ __all__ = [
     "EngineInvocation",
     "EngineInvocationStatus",
     "ExternalEffectCertainty",
+    "ExternalQualificationError",
+    "ExternalQualificationEvidence",
+    "ExternalQualificationFailure",
+    "ExternalQualificationLifecycle",
+    "ExternalQualificationPlan",
+    "ExternalQualificationProbeDisposition",
+    "ExternalQualificationProbeOutcome",
+    "ExternalQualificationProbeRequest",
+    "ExternalQualificationProfileRef",
+    "ExternalQualificationReadinessReceipt",
+    "ExternalQualificationReadinessReport",
+    "ExternalQualificationReadinessStatus",
+    "ExternalQualificationSubjectKind",
+    "ExternalQualificationUnit",
+    "BoundExternalQualificationOperationBridge",
+    "ExternalIdentityGap",
+    "ExternalIdentityPreparationAction",
+    "ExternalIdentityPreparationOccurrenceAuthorization",
+    "ExternalIdentityPreparationPlan",
+    "ExternalIdentityPreparationResult",
+    "ExternalIdentityResolutionCandidate",
+    "ExternalIdentityResolutionDecision",
+    "ExternalQualificationBridgeBinding",
+    "ExternalBoundQualificationOperationPort",
+    "ExternalQualificationBudgetPolicy",
+    "ExternalQualificationDryPlan",
+    "ExternalQualificationEffectPolicy",
+    "ExternalQualificationFaultPolicy",
+    "ExternalQualificationOccurrenceAuthorization",
+    "ExternalQualificationOperationObservation",
+    "ExternalQualificationOperationPort",
+    "ExternalScientificQualificationOperationPort",
+    "ExternalQualificationSafeReceipt",
+    "ExternalQualificationStoragePolicy",
+    "ExternalQualificationTtlPolicy",
+    "ExternalQualificationUnitSubjectBinding",
+    "ExternalRealSubjectIdentity",
+    "ExternalSubjectIdentityDiscoveryReport",
+    "ExternalSubjectIdentityObservation",
+    "ExternalSubjectIdentityStatus",
     "FailureActorKind",
     "FailureClass",
     "FailureObservation",
@@ -430,6 +530,18 @@ __all__ = [
     "safe_public_machine_identifier",
     "sanitize_public_diagnostic_payload",
     "sanitize_public_diagnostic_text",
+    "SafeIdentityField",
+    "create_external_identity_preparation_success",
+    "QualificationCredentialLocator",
+    "QualifiedExternalCapabilityFact",
+    "adopt_qualified_external_capability",
+    "verify_external_qualification_readiness",
+    "verify_external_identity_decision",
+    "verify_external_identity_preparation_occurrence_authorization",
+    "verify_external_identity_preparation_plan",
+    "verify_external_qualification_probe_request_binding",
+    "verify_external_qualification_dry_plan",
+    "verify_external_qualification_occurrence_authorization",
     "PrivateRefAdvanceKind",
     "ProtocolFileHandoff",
     "PublicationFetchIdentity",

@@ -1,0 +1,68 @@
+{
+  "schema_version": "enzymedesign_external_identity_resolution_selections@1",
+  "selection_set_id": "operator-confirmed-20260822",
+  "operator_id": "operator.enzymedesign-owner",
+  "decided_at": "2026-08-22T14:37:12Z",
+  "snapshot_id": "current-checkout-20260822",
+  "constraints": [
+    "alphafold-batch-2-only",
+    "first-effect-requires-new-authorization",
+    "git-local-only-no-hosted-sync",
+    "plan-only-current-authority"
+  ],
+  "storage_selection_id": "use-protected-operator-state-root",
+  "selections": [
+    {
+      "projection_id": "alphafold-hpc",
+      "candidate_id": "complete-executor-workspace-v2-inventory"
+    },
+    {
+      "projection_id": "fpocket-hpc",
+      "candidate_id": "complete-executor-workspace-v2-inventory"
+    },
+    {
+      "projection_id": "fpocket-local",
+      "candidate_id": "adopt-local-scientific-image"
+    },
+    {
+      "projection_id": "git-primary",
+      "candidate_id": "create-local-isolated-git-lfs-repository"
+    },
+    {
+      "projection_id": "hmmer-hpc",
+      "candidate_id": "complete-executor-workspace-v2-inventory"
+    },
+    {
+      "projection_id": "hmmer-local",
+      "candidate_id": "adopt-local-scientific-image"
+    },
+    {
+      "projection_id": "hpc-control",
+      "candidate_id": "complete-executor-workspace-v2-inventory"
+    },
+    {
+      "projection_id": "llm-primary",
+      "candidate_id": "bind-current-provider-qualification-locator"
+    },
+    {
+      "projection_id": "podman-base",
+      "candidate_id": "adopt-digest-pinned-qualification-image"
+    },
+    {
+      "projection_id": "preprocess-podman",
+      "candidate_id": "adopt-digest-pinned-qualification-image"
+    },
+    {
+      "projection_id": "tavily-primary",
+      "candidate_id": "bind-official-tavily-account"
+    },
+    {
+      "projection_id": "vina-hpc",
+      "candidate_id": "complete-executor-workspace-v2-inventory"
+    },
+    {
+      "projection_id": "vina-local",
+      "candidate_id": "adopt-local-scientific-image"
+    }
+  ]
+}

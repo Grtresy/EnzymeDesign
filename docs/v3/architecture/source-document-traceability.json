@@ -778,7 +778,7 @@
         "owner",
         "persistence"
       ],
-      "document_bundle_digest": "sha256:98dc8aa4768e9c7b380ffdd50fef5827e98add94e0e881e9d55bffddc0d22acf",
+      "document_bundle_digest": "sha256:4dd7ef9a2166ddfdf2640779c467c9ff88273af7d52cf1afe5f1d87bfa3e309b",
       "document_refs": [
         "docs/OpenZyme架构设计.md",
         "docs/v3/architecture-qualification/README.md",
@@ -787,7 +787,7 @@
       ],
       "owner": "openzyme.host.api",
       "seam_id": "three-profile-architecture-qualification",
-      "source_bundle_digest": "sha256:b72a20c931a22b92db6ec77e0c416e7c60e4ede786f5e85c8cfd13e83e569175",
+      "source_bundle_digest": "sha256:3b4b211ac02e4a9b201f72cfccab647bf1bd7d0ac2efbf86f02829971fcd42e9",
       "source_refs": [
         "apps/openzyme-host-api/src/openzyme_host_api/architecture_qualification.py",
         "apps/openzyme-host-api/src/openzyme_host_api/architecture_qualification_report.py",
@@ -902,6 +902,57 @@
         "packages/openzyme-standard/tests/test_composition.py",
         "packages/openzyme-standard/tests/test_standard_v2_host.py",
         "packages/openzyme-workspace-git-lfs/tests/test_revision_backend.py"
+      ]
+    },
+    {
+      "document_refs": [
+        "docs/OpenZyme架构设计.md",
+        "docs/v3/external-qualification-readiness.md",
+        "docs/v3/enzymedesign-distribution.md",
+        "packages/enzymedesign-distribution/README.md",
+        "packages/openzyme-store-sqlite/README.md"
+      ],
+      "owner": "enzymedesign",
+      "seam_id": "external-route-qualification-plan-only",
+      "source_refs": [
+        "packages/openzyme-contracts/src/openzyme_contracts/external_qualification.py",
+        "packages/openzyme-contracts/src/openzyme_contracts/external_route_qualification.py",
+        "packages/enzymedesign-distribution/src/enzymedesign_distribution/external_qualification.py",
+        "packages/enzymedesign-distribution/src/enzymedesign_distribution/qualification_bridges.py",
+        "packages/enzymedesign-distribution/src/enzymedesign_distribution/qualification_operator_state.py",
+        "packages/enzymedesign-distribution/src/enzymedesign_distribution/qualification_planning.py",
+        "packages/enzymedesign-distribution/src/enzymedesign_distribution/qualification_preparation_runtime.py",
+        "packages/openzyme-runtime-llm/src/openzyme_runtime_llm/qualification.py",
+        "packages/openzyme-research-tavily/src/openzyme_research_tavily/qualification.py",
+        "packages/enzymedesign-bio-provider-adapters/src/enzymedesign_bio_provider_adapters/qualification.py",
+        "packages/openzyme-workspace-git-lfs/src/openzyme_workspace_git_lfs/qualification.py",
+        "packages/openzyme-process-podman/src/openzyme_process_podman/qualification.py",
+        "packages/openzyme-process-podman/src/openzyme_process_podman/qualification_images.py",
+        "packages/openzyme-hpc-ssh/src/openzyme_hpc_ssh/qualification.py",
+        "packages/openzyme-hpc-slurm/src/openzyme_hpc_slurm/qualification.py",
+        "packages/enzymedesign-hmmer/src/enzymedesign_hmmer/qualification.py",
+        "packages/enzymedesign-vina/src/enzymedesign_vina/qualification.py",
+        "packages/enzymedesign-structure/src/enzymedesign_structure/qualification.py",
+        "packages/enzymedesign-docking-preprocess/src/enzymedesign_docking_preprocess/qualification.py",
+        "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/external_qualification_ledger.py",
+        "scripts/bootstrap-external-qualification-operator-state.py",
+        "scripts/build-external-qualification-dry-plan.py",
+        "scripts/create-external-identity-preparation-authorization.py",
+        "scripts/execute-external-identity-preparation.py",
+        ".github/workflows/external-qualification-live.yml"
+      ],
+      "test_refs": [
+        "packages/openzyme-contracts/tests/test_external_route_qualification.py",
+        "packages/enzymedesign-distribution/tests/test_qualification_bridges.py",
+        "packages/enzymedesign-distribution/tests/test_owner_qualification_bridges.py",
+        "packages/enzymedesign-distribution/tests/test_qualification_planning.py",
+        "packages/enzymedesign-distribution/tests/test_qualification_operator_state.py",
+        "packages/enzymedesign-distribution/tests/test_qualification_ci_boundary.py",
+        "packages/openzyme-runtime-llm/tests/test_qualification_bridge.py",
+        "packages/openzyme-research-tavily/tests/test_qualification_bridge.py",
+        "packages/enzymedesign-bio-provider-adapters/tests/test_qualification_bridge.py",
+        "packages/openzyme-process-podman/tests/test_qualification_images.py",
+        "packages/openzyme-store-sqlite/tests/test_external_qualification_ledger.py"
       ]
     }
   ],

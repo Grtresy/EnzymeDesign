@@ -46,6 +46,9 @@ schema/wheel/composition proof、deployment epoch、Session pin 和对应 operat
     separation 与只读 Task finish validator 边界。
 23. [enzymedesign-distribution.md](enzymedesign-distribution.md)：EnzymeDesign exact composition、产品能力、
     AOX 注入、HMMER/HPC 路由与 non-live 验收边界。
+24. [external-qualification-readiness.md](external-qualification-readiness.md)：外部资格六维单元、profile、
+    credential locator、recording backend、real-subject identity gap、两批 dry plan、receipt/admission 与
+    required non-live/manual gate。
 
 实现 V3 时的固定规则：
 
@@ -64,6 +67,7 @@ schema/wheel/composition proof、deployment epoch、Session pin 和对应 operat
   前拒绝，普通 startup 不执行 legacy upgrade。
 - focused test 不能替代 architecture qualification 和 `./scripts/check-mainline.sh`。
 - live/provider/HPC 行为需要单独 opt-in，不能从非 live gate 推断。
+- `ready_non_live` 是独立证据层；它不能 adopt 成 `qualified`，也不能推导 `cutover` 或 live occurrence。
 - Standard/EnzymeDesign 是 Distribution，不是语义层；已安装但未被 manifest 选择的组件不形成能力。
 - 四类 capability fact、declared catalog 与 per-turn affordance 互不替代；dispatch 前必须重验 exact route。
 - 架构拆分基线使用 `uv run python scripts/check-openzyme-architecture.py` 校验，但该 gate 不替代最终

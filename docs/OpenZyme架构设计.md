@@ -78,12 +78,14 @@ Kernel + Adapters + Plugins + Drivers + delivery surfaces = Distribution
 Plugin 集合为空；EnzymeDesign 可以把通用或垂直 Plugin 标为产品必需，但不能把 Standard 当作源码层
 依赖或隐式继承能力。
 
-manifest 选择、runtime mount、target qualification、真实部署 cutover 与一次 live 外部调用是五个不同事实：
+manifest 选择、runtime mount、non-live readiness、target/provider qualification、真实部署 cutover 与一次
+live 外部调用是六个不同事实：
 
 | 状态 | 含义 |
 | --- | --- |
 | `selected` | exact manifest 选择组件，尚不保证实例已构造 |
 | `runtime_mounted` | exact runtime identity 和 surface 已装配，尚不保证外部 target 可用 |
+| `ready_non_live` | exact 外部资格目录、profile、Port、fixture、reconcile、credential 与 receipt verifier 已在禁止 live 的条件下闭合；尚未连接真实 subject |
 | `qualified` | exact target/provider 的当前 receipt 满足要求，尚不表示 Session 已采用或流量已切换 |
 | `cutover` | 真实部署已经采用该实现，尚不授权某次 live effect |
 | `live` | 一次明确授权的外部调用实际发生；成功仍不自动形成 publication、Science adoption 或 Task terminal |
@@ -238,6 +240,30 @@ canonical Plugin/Kernel surfaces；旧 function handler/repository/writer packag
   capability/workspace/path facts，并为其他 application 与外部 I/O 使用 no-op/fake Port，因此只证明
   `real mounted EnzymeDesign product graph with formal HMMER/Vina cross-layer slice`，不证明 14 个 Plugin 的
   全部正式命令自然创建所有前置事实，也不等于真实 HPC/Slurm target qualified、cutover 或 live；
+- EnzymeDesign 现在另有 external qualification readiness 层：从 exact activated Distribution 推导 45 个
+  `capability + operation + route + target/provider + source/build/config digest` 单元，分为 required `base`
+  和显式启用的 `research-provider`、`hpc-primary`、`hmmer`、`docking`、`alphafold` profiles。recording backend
+  只消费 deterministic fixture；unknown effect 只 reconcile 同一 attempt，rejecting credential resolver
+  不返回 material。`ready_non_live` receipt 不能作为真实 qualification receipt adopt，运行时 admission 对
+  missing/expired/drifted unit 只给出 `blocked_qualification`，不切换 route/subject；
+- 真实 route qualification 的第一实施阶段仍是 plan-only：只从显式 allowlisted safe snapshot 形成
+  source-bound subject observation；LLM/Tavily/Git/Podman/HPC/科学软件的 partial/missing identity 都产生
+  `ExternalIdentityGap` 和待操作员选择的候选方案。Batch 1 固定闭合 `base + research-provider + hpc-primary +
+  hmmer + docking`，AlphaFold 是独立 Batch 2。dry plan 固定零 retry、无 fallback、
+  `live_effect_authorized=false`；预算是宽松熔断而非测试压缩目标，LLM/Tavily occurrence 硬上限分别为
+  USD 25/USD 10，batch 硬上限 USD 100。operator candidate 选择与 subject 闭合之间新增独立
+  `ExternalIdentityPreparationPlan`：本地 Git/LFS 建仓、Provider locator/account、digest-pinned image 与 HPC
+  profile/inventory 只能由 exact preparation authorization 执行，且不能产生 `qualified`。当前 Git scope 只允许
+  本地隔离 repository/LFS endpoint，禁止 hosted sync。Preparation 完成并重新发现 identity 后才重建
+  qualification dry plan；准备 runtime 采用 `0700` operator state root、`0600` 私有文件与 exact locator，无
+  ambient credential fallback。Batch 1 只有 LLM/Tavily locator、本地 Git/LFS、`base`/`hmmer`/`docking` 三镜像组
+  和 `Diannan/3090` qualification-only HPC identity 七个 action；成功只形成 protected
+  `ExternalIdentityPreparationResult`。effect-free rediscovery 还必须把 `nonlive.locator.*` 重绑为专用
+  LLM/Tavily/HPC locator、移除本地 Git credential placeholder 并重建 unit digest。两级 backend 都必须在各自 exact plan digest/window/batch authorization 缺失时于
+  credential resolution 前失败。真实 receipt 即使完成也只证明 `qualified`，不能更新
+  Session binding 或替代另一个 cutover change。正式本地入口拆成 root/layout-only bootstrap、canonical authorization
+  writer 与 source-bound Batch 1 executor；executor 必须先预检全部 exact locator，再按稳定 occurrence identity 写 protected
+  ledger。已有 residual state 而无 terminal result 时停止人工 reconcile，不覆盖、不重发、不 fallback；
 - `openzyme-workspace-git-lfs` 已成为 `AgentGitWorkspace` identity/observation/restore 与 Git-LFS
   policy/pointer/closure/verification/receipt 机制 DTO 的唯一代码 owner；旧 Domain shim 已删除，仓内生产
   caller 使用 Adapter namespace。private/public ref 与 immutable-byte backend、
@@ -752,7 +778,8 @@ Kernel、Host startup 或 Agent runtime 导入为业务能力。真实设备操�
 
 ## 11. 验收边界
 
-架构验收至少包括：focused unit/integration tests、12-family architecture qualification、
+架构验收至少包括：focused unit/integration tests、12-family architecture qualification、external
+qualification readiness、
 fresh-install/restart、old-startup rejection、isolated offline migration/removal fixture、静态
 source/schema/catalog scan、OpenSpec strict validation、前端 test/build 和
 `./scripts/check-mainline.sh`。
@@ -777,7 +804,9 @@ collaboration qualification，因此不得把 Store writer admission 误记为�
 owner closure，并校验 source-to-document traceability；它是迁移门禁，不等于最终 cutover proof。
 
 focused gate 通过不等于主线验收；mainline 失败时不得生成 acceptance receipt。live LLM、
-provider、HPC 和 seeded smoke 需要独立 opt-in，也不能由非 live 结果推断完成。真实部署的
+provider、HPC 和 seeded smoke 同时需要 marker/profile opt-in 与独立 `OPENZYME_ALLOW_LIVE=1` operator gate，
+也不能由 non-live 结果推断完成。普通 PR/dev CI 只运行 `OPENZYME_ALLOW_LIVE=0` 的 required readiness；
+manual workflow 在本阶段仍为 plan-only，不读取 secrets、不调用真实 backend。真实部署的
 迁移或删除必须另有明确目标、维护窗口、备份和 operator 授权；源码实现本身不构成执行授权。
 
 ## 12. 不变量

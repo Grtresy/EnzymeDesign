@@ -62,6 +62,7 @@ submit/cancel 也分别使用持久 SQLite ledger，跨 Adapter epoch 只 reconc
 | --- | --- | --- |
 | `selected` | exact Distribution manifest 选择了组件 | runtime 已构造或 target 可用 |
 | `runtime_mounted` | exact runtime identity/surface 已装配 | 外部 target 已通过资格或部署已切换 |
+| `ready_non_live` | exact 资格单元/profile/Port/fixture/receipt verifier 在禁止 live 下闭合 | 真实 target/provider/software 可用 |
 | `qualified` | exact target/provider 的当前 receipt 满足要求 | Session 已采用该 inventory 或生产流量已切换 |
 | `cutover` | 真实部署已采用该 Adapter/Plugin/configuration | 某次 live 外部调用已获授权 |
 | `live` | 一次明确授权的真实外部调用实际发生 | 结果自动成为 publication、Science adoption 或 Task terminal |
@@ -76,6 +77,62 @@ no-op Slurm/credentials 和其他 Plugin applications，并直接 seed 部分合
 
 HMMER/Vina package 的 `current_composition_owner=enzymedesign` 表示当前源码确由该 Distribution mount；
 `migration_state=target_implemented_not_cutover` 则独立说明真实部署尚未切换，两者不可互相替代。
+
+产品另提供 `build_enzymedesign_external_qualification_catalog()` 与
+`build_enzymedesign_external_qualification_plan()`。catalog 从当前 activated Distribution 的 exact Adapter、
+Plugin `QualificationSpec` 与 Driver manifest identity 派生 45 个不可拆分单元，不维护第二套 component
+selection graph。单元固定绑定 capability、单一 operation、route、target/provider subject、source/build/config、
+contract、validator 和 credential locator scope。profiles 为：
+
+| profile | 单元数 | 边界 |
+| --- | ---: | --- |
+| `base` | 18 | LLM bounded turn、Git/LFS、Podman、UniProt/RCSB/InterPro HTTP readiness |
+| `research-provider` | 1 | Tavily bounded query |
+| `hpc-primary` | 12 | SSH helper/workspace 与 Slurm submit/observe/cancel/reconcile |
+| `hmmer` | 4 | local/HPC `hmmbuild` 与 `hmmsearch` |
+| `docking` | 9 | local/HPC Vina/fpocket 与 RDKit/Meeko/Open Babel exact operations |
+| `alphafold` | 1 | HPC AlphaFold predict capability/resources smoke |
+
+普通 CI 运行 `./scripts/check-external-qualification-readiness.sh`，显式清除 credential-bearing environment、
+设置 `OPENZYME_ALLOW_LIVE=0`，并用 recording backend 完成 success、auth/config failure、timeout、schema/operation
+mismatch、response-loss/reconcile negative fixtures。输出 claim 固定为 `ready_non_live`，逐 operation 披露
+`deterministic_substitute=true`、`qualified=false`、`cutover=false`、`live_occurrence=false`。真实 qualification
+change 现已实现 plan-only identity discovery：当前安全快照对 45 个 unit 做无凭据、无网络、无进程 effect 的
+source-bound 观察，已闭合的公共 Bio endpoint 仍只算 `resolved identity`，其他 Provider/target/software 缺口形成
+typed operator decision packet，不能自动选择推荐方案。
+
+operator 已选择 LLM/Tavily 推荐方案、local-only Git/LFS、digest-pinned Podman/scientific images、`Diannan/3090`
+与 protected operator state root。选择只形成 source-bound decision。需要建账号/locator、创建本地 repository、
+build/pull image 或补齐 HPC profile/inventory 时，Distribution 先生成独立 `ExternalIdentityPreparationPlan`；其
+authorization 不能产生 qualification receipt，也不能替代后续 qualification occurrence authorization。科学软件
+version/image/inventory 是 subject identity，真实 smoke result 是 qualification evidence，两者不得循环依赖。
+
+当前 preparation runtime 已显式组合七个 Batch 1 owner action。受保护状态根为当前 uid 所有的 `0700` 目录，私有
+文件为 `0600` 且禁止 symlink；凭据只由 exact plan locator 解析。Podman 只接受仓库内 `base`、`hmmer`、`docking`
+三个 source/lock/digest-bound recipe。HPC 只生成独立 `aox-qualification-diannan`、`executor_workspace@2`
+qualification-only 配置，并保持 activation 与 scheduler submit 关闭；existing runner config 不会被覆盖。构造 runtime
+本身不读 credentials、不建仓、不 build image、不 SSH，也不创建 ledger。
+
+Owner terminal output 使用 `ExternalIdentityPreparationResult` 写入 protected SQLite。后续 effect-free rediscovery
+验证 exact action coverage，并用专用 LLM/Tavily/HPC locator 重建 qualification units；本地 Git/LFS 不携带 non-live
+credential placeholder。Preparation receipt 仍不是 `qualified` receipt，real probe 需要另一份 exact authorization。
+正式本地入口由 root/layout-only bootstrap、canonical authorization writer 与 source-bound Batch 1 executor 三段组成。
+executor 在 mutation 前一次性预检全部 locator，不允许 partial credential setup 导致先建仓后失败；已有 image 或 HPC
+qualification config 但缺少 terminal ledger result 时必须阻塞人工 reconcile，不能覆盖后伪装成首次 occurrence。成功只生成
+`prepared_not_qualified` 私有 packet 和 effect-free rediscovery，不更新 Distribution adoption。
+
+Batch 1 固定为 `base + research-provider + hpc-primary + hmmer + docking`，Batch 2 独立包含 AlphaFold。
+`ExternalQualificationDryPlan` 对每批绑定 exact unit/gap、宽松熔断预算、effect allowlist、fault/reconcile、cleanup、
+TTL/storage 与 `max_retries=0`。LLM/Tavily occurrence 的现金硬上限分别是 USD 25/USD 10，batch 现金硬上限是
+USD 100；较低 warning 只记录诊断，不缩小资格测试。manual workflow 仍固定 `OPENZYME_ALLOW_LIVE=0`，缺少另行的
+exact occurrence authorization 时在凭据解析前 fail closed。完成真实 qualification 只得到 `qualified`；cutover
+需要第二个 change 和独立确认。
+
+资格 bridge 的当前实现边界也保持分层：Distribution 的 exact-unit router 在 owner builder 前验证 occurrence
+authorization 及 unit/subject/route/input/schema/credential locator；LLM、Tavily、公共 Bio HTTP 已编译到 typed
+Adapter 调用，基础设施与科学 owner 已有防 identity 漂移、hosted Git sync、未固定 image、非隔离资源、raw
+scientific execution 和重复 dispatch 的 guard。真实 Git/Podman/SSH/Slurm typed operation builder 与科学 fixed-smoke
+workload 尚未执行或裁决，只有 preparation 后形成 exact subject 才能继续实现并在独立 qualification authority 下运行。
 
 ## 产品能力
 
@@ -118,6 +175,9 @@ checkpoint/publish、Science operation 已显式 adopt、Task owner 已调用 `t
 ## Non-live 验证
 
 ```bash
+.venv/bin/python scripts/verify-external-qualification-readiness.py /tmp/enzymedesign-readiness.json
+./scripts/check-external-qualification-readiness.sh
+
 .venv/bin/pytest -q \
   packages/enzymedesign-aox/tests \
   packages/enzymedesign-aox-executor/tests \

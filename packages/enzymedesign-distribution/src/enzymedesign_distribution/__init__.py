@@ -18,6 +18,14 @@ from .formal_compute import ExactComputeRouteRouter
 from .formal_compute import FormalComputeDriverBinding
 from .formal_compute import FormalComputeSourceBinding
 from .formal_compute import FormalComputeSourceBindingResolver
+from .external_qualification import BASE_PROFILE
+from .external_qualification import EXTERNAL_QUALIFICATION_CREDENTIAL_SLOTS
+from .external_qualification import EXACT_EXTERNAL_QUALIFICATION_CREDENTIAL_LOCATORS
+from .external_qualification import OPTIONAL_PROFILES
+from .external_qualification import REQUIRED_NEGATIVE_TESTS
+from .external_qualification import build_enzymedesign_external_qualification_catalog
+from .external_qualification import build_enzymedesign_external_qualification_plan
+from .external_qualification import external_qualification_catalog_digest
 from .formal_compute import build_enzymedesign_formal_compute_application
 from .composition import EnzymeDesignScientificContributions
 from .composition import EnzymeDesignDeploymentStartup
@@ -31,6 +39,64 @@ from .composition import verify_enzymedesign_deployment_startup_read_only
 from .runtime_mount import EnzymeDesignPluginRuntimeSurfaceSet
 from .runtime_mount import build_enzymedesign_runtime_bundles
 from .runtime_mount import mount_enzymedesign_extension_surfaces
+from .qualification_runtime import ExternalQualificationProbePort
+from .qualification_runtime import ExternalQualificationReadinessCoordinator
+from .qualification_runtime import QualificationCredentialResolverPort
+from .qualification_runtime import QualificationDisclosureMatrix
+from .qualification_runtime import RecordingQualificationProbeBackend
+from .qualification_runtime import RejectingQualificationCredentialResolver
+from .qualification_admission import EnzymeDesignExternalQualificationAdmission
+from .qualification_bridges import QualificationProbeBridgeBuilder
+from .qualification_bridges import SelectedQualificationProbeBridge
+from .qualification_bridges import SelectedQualificationProbeRouter
+from .qualification_bridges import build_external_qualification_probe_request
+from .qualification_bridges import external_qualification_live_input_digest
+from .qualification_planning import BATCH_1_PROFILES
+from .qualification_planning import BATCH_2_PROFILES
+from .qualification_planning import ExternalQualificationBatch
+from .qualification_planning import OperatorIdentityResolutionSelection
+from .qualification_planning import OperatorIdentityResolutionSelectionSet
+from .qualification_planning import PlanOnlyQualificationBackendFactory
+from .qualification_planning import PlanOnlyIdentityPreparationBackendFactory
+from .qualification_planning import QualificationCredentialMaterialResolver
+from .qualification_planning import QualificationBudgetLedger
+from .qualification_planning import QualificationBudgetReservation
+from .qualification_planning import QualificationProbeBridgeMetadata
+from .qualification_planning import SafeIdentitySnapshot
+from .qualification_planning import SafeSubjectProjection
+from .qualification_planning import build_external_identity_gaps
+from .qualification_planning import apply_external_identity_preparation_results
+from .qualification_planning import build_external_identity_preparation_plan
+from .qualification_planning import build_external_identity_resolution_decisions
+from .qualification_planning import build_external_qualification_dry_plan
+from .qualification_planning import build_plan_only_probe_bridge_metadata
+from .qualification_planning import discover_external_subject_identities
+from .qualification_planning import load_safe_identity_snapshot
+from .qualification_planning import load_operator_identity_resolution_selections
+from .qualification_planning import qualification_plan_bundle
+from .qualification_operator_state import (
+    ProtectedQualificationCredentialBundleResolver,
+)
+from .qualification_operator_state import ProtectedQualificationCredentialMaterial
+from .qualification_operator_state import QUALIFICATION_CREDENTIAL_BUNDLE_SCHEMA
+from .qualification_operator_state import QUALIFICATION_OPERATOR_LAYOUT_SCHEMA
+from .qualification_operator_state import QUALIFICATION_STATE_ROOT_ENV
+from .qualification_operator_state import QualificationOperatorStateLayout
+from .qualification_preparation_runtime import (
+    EnzymeDesignIdentityPreparationBatchExecution,
+)
+from .qualification_preparation_runtime import (
+    EnzymeDesignHpcIdentityPreparationExecutor,
+)
+from .qualification_preparation_runtime import (
+    build_enzymedesign_identity_preparation_backend_factory,
+)
+from .qualification_preparation_runtime import (
+    execute_enzymedesign_identity_preparation_batch,
+)
+from .qualification_preparation_runtime import (
+    preflight_enzymedesign_identity_preparation_credentials,
+)
 from .session_composition_reader import EnzymeDesignSessionCompositionReader
 
 __all__ = [
@@ -47,19 +113,65 @@ __all__ = [
     "EnzymeDesignSessionCompositionReader",
     "EnzymeDesignPluginRuntimeSurfaceSet",
     "EnzymeDesignFormalComputeToolApplication",
+    "EnzymeDesignExternalQualificationAdmission",
+    "EnzymeDesignIdentityPreparationBatchExecution",
+    "EnzymeDesignHpcIdentityPreparationExecutor",
+    "ExternalQualificationProbePort",
+    "ExternalQualificationReadinessCoordinator",
     "CanonicalFormalComputeAdmissionVerifier",
     "CanonicalFormalComputeSourceBindingResolver",
+    "BASE_PROFILE",
+    "EXTERNAL_QUALIFICATION_CREDENTIAL_SLOTS",
+    "EXACT_EXTERNAL_QUALIFICATION_CREDENTIAL_LOCATORS",
+    "BATCH_1_PROFILES",
+    "BATCH_2_PROFILES",
+    "ExternalQualificationBatch",
+    "OperatorIdentityResolutionSelection",
+    "OperatorIdentityResolutionSelectionSet",
     "EnzymeDesignFormalComputeApplicationBinding",
     "ExactComputeRouteRouter",
     "FormalComputeDriverBinding",
     "FormalComputeSourceBinding",
     "FormalComputeSourceBindingResolver",
+    "OPTIONAL_PROFILES",
+    "REQUIRED_NEGATIVE_TESTS",
+    "QualificationCredentialResolverPort",
+    "QualificationDisclosureMatrix",
+    "QualificationCredentialMaterialResolver",
+    "QualificationBudgetLedger",
+    "QualificationBudgetReservation",
+    "QualificationProbeBridgeMetadata",
+    "QualificationProbeBridgeBuilder",
+    "RecordingQualificationProbeBackend",
+    "RejectingQualificationCredentialResolver",
+    "PlanOnlyQualificationBackendFactory",
+    "PlanOnlyIdentityPreparationBackendFactory",
+    "ProtectedQualificationCredentialBundleResolver",
+    "ProtectedQualificationCredentialMaterial",
+    "QUALIFICATION_CREDENTIAL_BUNDLE_SCHEMA",
+    "QUALIFICATION_OPERATOR_LAYOUT_SCHEMA",
+    "QUALIFICATION_STATE_ROOT_ENV",
+    "QualificationOperatorStateLayout",
+    "SafeIdentitySnapshot",
+    "SafeSubjectProjection",
+    "SelectedQualificationProbeBridge",
+    "SelectedQualificationProbeRouter",
     "EnzymeDesignDeploymentStartup",
     "EnzymeDesignTargetInventoryQueryPort",
     "activate_enzymedesign_composition",
     "build_enzymedesign_scientific_contributions",
     "build_enzymedesign_application_runtime",
     "build_enzymedesign_formal_compute_application",
+    "build_enzymedesign_external_qualification_catalog",
+    "build_enzymedesign_external_qualification_plan",
+    "build_external_identity_gaps",
+    "apply_external_identity_preparation_results",
+    "build_external_identity_preparation_plan",
+    "build_enzymedesign_identity_preparation_backend_factory",
+    "build_external_identity_resolution_decisions",
+    "build_external_qualification_dry_plan",
+    "build_external_qualification_probe_request",
+    "build_plan_only_probe_bridge_metadata",
     "build_enzymedesign_runtime_bundles",
     "build_enzymedesign_fresh_install_seed",
     "build_enzymedesign_v2_host_app",
@@ -68,4 +180,12 @@ __all__ = [
     "mount_enzymedesign_extension_surfaces",
     "select_enzymedesign_component_locators",
     "verify_enzymedesign_deployment_startup_read_only",
+    "external_qualification_catalog_digest",
+    "external_qualification_live_input_digest",
+    "execute_enzymedesign_identity_preparation_batch",
+    "discover_external_subject_identities",
+    "load_safe_identity_snapshot",
+    "load_operator_identity_resolution_selections",
+    "qualification_plan_bundle",
+    "preflight_enzymedesign_identity_preparation_credentials",
 ]

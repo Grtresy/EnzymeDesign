@@ -5,6 +5,12 @@ manifest-driven and requires explicit repository locations.
 """
 
 from .manifest_locator import GIT_LFS_COMPONENT_MANIFEST_DIGEST
+from .qualification import GIT_LFS_QUALIFICATION_OPERATIONS
+from .qualification import GitLfsQualificationOperationPort
+from .qualification import GitLfsQualificationProbeBridge
+from .qualification import LocalGitLfsPreparationCommandPort
+from .qualification import LocalIsolatedGitLfsPreparationExecutor
+from .qualification import SubprocessLocalGitLfsPreparationCommandPort
 
 from .agent_workspaces import AGENT_GIT_WORKSPACE_OBSERVATION_SCHEMA_VERSION
 from .agent_workspaces import AGENT_GIT_WORKSPACE_RESTORE_COMPARISON_SCHEMA_VERSION
@@ -235,6 +241,9 @@ __all__ = [
     "GitLfsClientEnvironment",
     "GitLfsClientQualification",
     "GitLfsClientQualificationError",
+    "GIT_LFS_QUALIFICATION_OPERATIONS",
+    "GitLfsQualificationOperationPort",
+    "GitLfsQualificationProbeBridge",
     "GitLfsClosureEntry",
     "GitLfsClosureError",
     "GitLfsClosureManifest",
@@ -275,6 +284,8 @@ __all__ = [
     "GitRepositoryLocator",
     "GitRevisionBackendError",
     "LocalGitRevisionBackend",
+    "LocalGitLfsPreparationCommandPort",
+    "LocalIsolatedGitLfsPreparationExecutor",
     "LocalGitlessComputeTreePreparer",
     "LfsObjectMismatchError",
     "LFS_JSON_MEDIA_TYPE",
@@ -314,6 +325,7 @@ __all__ = [
     "RepositoryTransportError",
     "RepositoryTransportRequestError",
     "RepositoryStorageError",
+    "SubprocessLocalGitLfsPreparationCommandPort",
     "RevisionGitAttributes",
     "REPOSITORY_CREDENTIAL_SCHEMA_VERSION",
     "REPOSITORY_PROVISION_CREDENTIAL_SCHEMA_VERSION",

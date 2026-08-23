@@ -52,8 +52,37 @@ inventory，经 affordance/route、实际 mounted Drivers 和 durable Compute li
 真实 SSH/Slurm/HPC target 已 `qualified`、已 `cutover` 或任何 live 调用获授权。
 
 状态词固定如下：`selected` 仅表示 manifest 选中；`runtime_mounted` 表示 exact runtime identity 已装配；
-`qualified` 表示特定 target/provider 有当前有效 receipt；`cutover` 表示真实部署已采用该实现；`live` 表示某次
+`ready_non_live` 表示外部资格单元/profile/Port/fixture/receipt verifier 在禁止 live 下闭合；`qualified` 表示
+特定 target/provider 有当前有效真实 receipt；`cutover` 表示真实部署已采用该实现；`live_occurrence` 表示某次
 外部调用另获授权并实际发生。后一个状态不能由前一个状态自动推导。
+
+`build_enzymedesign_external_qualification_catalog()` 从当前 activated composition 的 8 Adapter、Plugin
+`QualificationSpec` 与 selected Driver manifest 派生 45 个精确 operation 单元；required `base` 加显式 enabled
+optional profiles 形成 closed plan。`RecordingQualificationProbeBackend`、rejecting credential resolver 和独立
+verifier 只生成 `ready_non_live` evidence；它们不能生成或 adopt `qualified`/`cutover`/live receipt。仓库 required
+gate 是 `./scripts/check-external-qualification-readiness.sh`，普通 CI 固定 `OPENZYME_ALLOW_LIVE=0`。
+
+`qualification_planning` 在此基础上只消费显式 secret-safe snapshot，不读取 raw `.env`，也不访问网络、container、
+SSH、scheduler 或科学程序。它生成 typed identity observation/gap/candidate packet，并为 Batch 1
+（`base + research-provider + hpc-primary + hmmer + docking`）和独立 AlphaFold Batch 2 建立 source-bound dry plan。
+预算采用宽松 circuit breaker：LLM/Tavily occurrence 分别以 USD 25/USD 10 为硬上限，batch 为 USD 100；warning
+只记录诊断。operator selections 先生成独立 `ExternalIdentityPreparationPlan`；当前 Git action 只允许创建本地隔离
+repository/LFS endpoint，不允许 hosted sync。Preparation plan 与 qualification dry plan 各自固定零 retry、无
+fallback，并要求独立 exact occurrence authorization；任一 plan-only backend factory 在授权前都不会调用 credential
+resolver。Preparation 只能补齐 subject identity，不能产生 `qualified`。
+
+本地 preparation 使用三个显式 operator 入口：`bootstrap-external-qualification-operator-state.py` 只创建 root/layout，
+`create-external-identity-preparation-authorization.py` 只规范化已批准授权，
+`execute-external-identity-preparation.py` 才在 `OPENZYME_ALLOW_LIVE=1`、当前 source/packet/authorization 全部一致后读取
+exact credential bundle 并执行 Batch 1。执行器先预检全部 locator，再逐 action 写 protected ledger；已有 residual state
+不自动覆盖或改用别的 target。输出状态固定为 `prepared_not_qualified`。
+
+当前还实现了 authorization-bound exact-unit qualification router：它在调用任何 owner builder 前验证 dry-plan、
+batch、validity window、readiness plan、unit、subject、route、input/schema、credential locator 和 authorization
+digest，并禁止重复 dispatch 或跨 unit reconcile。LLM、Tavily 与公共 Bio HTTP 已有 typed Adapter bridge；
+Git/LFS、Podman、SSH、Slurm 以及 HMMER/Vina/fpocket/preprocess 已有严格 owner binding guard。后者的真实 typed
+operation builder 与 fixed scientific smoke 仍依赖 preparation 后的 exact local repository、image 和 target
+identity，当前 fake-Port 绿色结果不属于 live qualification。
 
 `build_enzymedesign_scientific_contributions()` 是 Product composition factory：它构造 AOX
 workflow registry、scientific finalization handler 与 exact executor receipt validator，再通过

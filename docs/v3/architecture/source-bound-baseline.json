@@ -1,8 +1,20 @@
 {
   "schema_id": "openzyme_source_bound_architecture_baseline@1",
   "component_inventory_digest": "sha256:45ef292313b323fb2bb7fd82266e63cad60e90e1c3c6cb616e1bd1ca96436a65",
-  "import_graph_digest": "sha256:be4252b8c30e0c6f9c9a098eb3c2e881c0a26681b6fad92a04b2ffdef593c5a5",
+  "import_graph_digest": "sha256:77e41fe22e22d59a561a13c19d6e2212267649c8a60fc40b5ff96fa6e674a482",
   "accepted_import_graph_transitions": [
+    {
+      "phase": "20_external_qualification_owner_bridges",
+      "added_edges": [
+        {
+          "source": "enzymedesign-bio-provider-adapters",
+          "target": "openzyme-contracts",
+          "reason": "The Bio HTTP Adapter converts exact external qualification requests and terminal observations through the shared effect and evidence contracts"
+        }
+      ],
+      "removed_edges": [],
+      "direction_check": "adapter_to_public_contracts_only; no_contracts_or_distribution_reverse_dependency"
+    },
     {
       "phase": "19_4_enzymedesign_formal_compute_bridge",
       "added_edges": [

@@ -1,0 +1,31 @@
+name: Required non-live qualification readiness
+
+on:
+  pull_request:
+  push:
+    branches:
+      - dev
+
+permissions:
+  contents: read
+
+jobs:
+  readiness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      OPENZYME_ALLOW_LIVE: "0"
+      OPENZYME_LOAD_ENV_FILES: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Verify deterministic external qualification readiness
+        run: ./scripts/check-external-qualification-readiness.sh /tmp/enzymedesign-readiness.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: enzymedesign-non-live-readiness
+          path: /tmp/enzymedesign-readiness.json
+          if-no-files-found: error

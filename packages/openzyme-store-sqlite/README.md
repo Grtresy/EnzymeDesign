@@ -17,6 +17,9 @@ Kernel control store 的 SQLite Adapter。
   Workspace effect 的 reserve/settle ledger。ledger 使用 exact provider/operation/intent/session/workspace
   generation identity、CAS `ledger_version` 和 content-bound receipt；它是 Adapter persistence mechanism，
   不成为 Plugin state 或新的 canonical Task/Science 真值。
+- external qualification 的 protected SQLite ledger 也由本 Adapter 拥有，只保存 contract 已验证的 safe dry plan
+  和 safe receipt JSON；private diagnostic root 与 credential material 不写入公共 payload。Distribution 只编排
+  plan 和 Port，不能直接 import `sqlite3` 或把 qualification evidence 变成 Session adoption/cutover。
 - `verify_session_composition_state_read_only()` 对每个 Session pin、连续 binding revision、固定
   Extension/route catalog 与 adopted target inventory reference 做零写入闭包，orphan 或 drift
   直接拒绝。

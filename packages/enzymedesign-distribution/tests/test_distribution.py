@@ -468,6 +468,19 @@ def _operational_selection(
     )
 
 
+def test_operational_selection_blocks_unadopted_external_qualification() -> None:
+    selection = _operational_selection()
+
+    with pytest.raises(KernelContractError) as captured:
+        selection.require_external_qualification(
+            unit_digest="sha256:" + "1" * 64,
+            route_id="enzymedesign.hmmer.hpc.hmmbuild@1",
+            subject_id="hpc-primary",
+        )
+    assert captured.value.code == "blocked_qualification"
+    assert captured.value.details["fallback_performed"] is False
+
+
 def _runtime_surface_set(
     *,
     formal_application=None,  # noqa: ANN001

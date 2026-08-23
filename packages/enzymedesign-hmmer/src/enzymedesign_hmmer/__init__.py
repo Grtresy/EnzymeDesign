@@ -8,6 +8,8 @@ from .manifest_locator import *  # noqa: F403
 from .manifest_locator import __all__ as _locator_exports
 from .runtime import *  # noqa: F403
 from .runtime import __all__ as _runtime_exports
+from .qualification import *  # noqa: F403
+from .qualification import __all__ as _qualification_exports
 
 COMPONENT_ID = "enzymedesign.hmmer"
 COMPONENT_KIND = "product_plugin"
@@ -21,4 +23,5 @@ __all__ = [
     *_driver_exports,
     *_locator_exports,
     *_runtime_exports,
+    *_qualification_exports,
 ]

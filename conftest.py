@@ -75,6 +75,11 @@ def _live_skip_reason(marker: str) -> str | None:
             f"{marker} tests are disabled; set "
             f"OPENZYME_TEST_ENABLE_{marker.upper()}=true explicitly."
         )
+    if marker != "quality_eval" and not _enabled("OPENZYME_ALLOW_LIVE"):
+        return (
+            f"{marker} tests require the independent operator gate "
+            "OPENZYME_ALLOW_LIVE=true."
+        )
     if marker == "live_llm" and not os.environ.get("OPENZYME_LLM_API_KEY"):
         return "live_llm tests require OPENZYME_LLM_API_KEY."
     if marker == "live_tavily" and not os.environ.get("TAVILY_API_KEY"):
@@ -103,6 +108,7 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
         "live_tavily",
         "live_hpc",
         "live_e2e",
+        "seeded_live_smoke",
         "quality_eval",
     ):
         if item.get_closest_marker(marker):

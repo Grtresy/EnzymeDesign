@@ -7,6 +7,7 @@ import pytest
 from openzyme_contracts import ExternalEffectCertainty
 from openzyme_extension_spi import QualificationSpec
 from openzyme_hpc import InventoryGeneration
+from openzyme_hpc import HpcQualificationIdentityObservation
 from openzyme_hpc import QualificationProbeKind
 from openzyme_hpc import QualificationProbeOutcome
 from openzyme_hpc import QualificationProbeRequest
@@ -288,3 +289,22 @@ def test_nonterminal_probe_never_publishes_inventory() -> None:
 
     assert error.value.error_code == "target_qualification_not_terminal"
     assert repository.inventories == []
+
+
+def test_hpc_identity_observation_is_generic_and_canonical() -> None:
+    observation = HpcQualificationIdentityObservation(
+        host_alias="target-primary",
+        partition="qualification",
+        environment_digest="sha256:" + "5" * 64,
+        inventory_generation_digest="sha256:" + "6" * 64,
+        software_versions=(
+            ("software.two", "2.0"),
+            ("software.one", "1.0"),
+        ),
+    )
+
+    assert observation.software_versions == (
+        ("software.one", "1.0"),
+        ("software.two", "2.0"),
+    )
+    assert observation.software_version("software.one") == "1.0"

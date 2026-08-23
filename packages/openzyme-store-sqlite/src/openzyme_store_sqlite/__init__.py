@@ -39,6 +39,8 @@ from .composite_startup import verify_composite_store_schema_read_only
 from .extension_state import ExtensionStateStore
 from .extension_state import ExtensionStateStoreError
 from .extension_state import SQLiteExtensionStateProjectionQuery
+from .external_qualification_ledger import ProtectedQualificationLedgerPort
+from .external_qualification_ledger import SQLiteProtectedQualificationLedger
 from .workspace_operation_ledger import SQLiteWorkspaceOperationLedger
 from .workspace_operation_ledger import SQLiteWorkspaceOperationLedgerError
 from .revision_path_queries import SQLiteRevisionPathVerificationQuery
@@ -185,6 +187,8 @@ __all__ = [
     "ExtensionStateStore",
     "ExtensionStateStoreError",
     "SQLiteExtensionStateProjectionQuery",
+    "ProtectedQualificationLedgerPort",
+    "SQLiteProtectedQualificationLedger",
     "FINAL_SCHEMA_GENERATION",
     "FINAL_SCHEMA_MANIFEST_DIGEST",
     "FRESH_INSTALL_BOOTSTRAP_RECEIPT_DIGEST",

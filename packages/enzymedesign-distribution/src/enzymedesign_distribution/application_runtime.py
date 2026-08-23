@@ -5,6 +5,7 @@ from typing import Any
 from typing import Protocol
 
 from openzyme_contracts import ClockPort
+from openzyme_contracts import ExternalQualificationError
 from openzyme_contracts import IdGeneratorPort
 from openzyme_contracts import SessionCapabilityBindingRevision
 from openzyme_contracts import WorkspaceRevisionBackendPort
@@ -69,6 +70,7 @@ from .host_gateway import EnzymeDesignHostKernelCommandGateway
 from .host_gateway import EnzymeDesignSessionBootstrapAuthorityPort
 from .operational_routes import EnzymeDesignKernelOperationalRouteApplication
 from .operational_routes import build_enzymedesign_operational_route_applications
+from .qualification_admission import EnzymeDesignExternalQualificationAdmission
 from .runtime_admission import EnzymeDesignKernelRuntimeAdmissionSource
 from .runtime_drain import EnzymeDesignBoundedRuntimeDrainApplication
 from .runtime_mount import EnzymeDesignPluginRuntimeSurfaceSet
@@ -308,6 +310,45 @@ class EnzymeDesignOperationalAdapterSelection:
     workspace_provider_id: str = "openzyme.workspace.git-lfs"
     slurm_target_id: str = "hpc-primary"
     podman_binary: str = "/usr/bin/podman"
+    external_qualification_admission: (
+        EnzymeDesignExternalQualificationAdmission | None
+    ) = None
+
+    def require_external_qualification(
+        self,
+        *,
+        unit_digest: str,
+        route_id: str,
+        subject_id: str,
+    ) -> object:
+        if self.external_qualification_admission is None:
+            raise KernelContractError(
+                "blocked_qualification",
+                "the operational runtime has no adopted external qualification set",
+                details={
+                    "unit_digest": unit_digest,
+                    "route_id": route_id,
+                    "subject_id": subject_id,
+                    "fallback_performed": False,
+                },
+            )
+        try:
+            return self.external_qualification_admission.admit_occurrence(
+                unit_digest=unit_digest,
+                route_id=route_id,
+                subject_id=subject_id,
+            )
+        except ExternalQualificationError as exc:
+            raise KernelContractError(
+                "blocked_qualification",
+                str(exc),
+                details={
+                    "unit_digest": unit_digest,
+                    "route_id": route_id,
+                    "subject_id": subject_id,
+                    "fallback_performed": False,
+                },
+            ) from exc
 
 
 @dataclass(frozen=True, slots=True)

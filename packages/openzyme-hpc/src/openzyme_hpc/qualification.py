@@ -18,6 +18,57 @@ from .inventory import TargetCapabilityFact
 from .inventory import TargetToolchainInventory
 
 
+class HpcQualificationCredentialMaterial(Protocol):
+    locator_id: str
+    locator_version: str
+    material_kind: str
+
+    def field_value(self, field_name: str) -> str: ...
+
+
+@dataclass(frozen=True, slots=True)
+class HpcQualificationIdentityObservation:
+    host_alias: str
+    partition: str
+    environment_digest: str
+    inventory_generation_digest: str
+    software_versions: tuple[tuple[str, str], ...]
+
+    def __post_init__(self) -> None:
+        for value, name in (
+            (self.environment_digest, "environment_digest"),
+            (self.inventory_generation_digest, "inventory_generation_digest"),
+        ):
+            require_digest(value, field_name=name)
+        require_identifier(self.host_alias, field_name="host_alias")
+        require_identifier(self.partition, field_name="partition")
+        versions = tuple(sorted(self.software_versions))
+        if not versions or len({item[0] for item in versions}) != len(versions):
+            raise ValueError("HPC software observations must be non-empty and unique")
+        for software_id, value in versions:
+            require_identifier(software_id, field_name="software_id")
+            if not value or len(value) > 128:
+                raise ValueError("HPC software versions must be bounded")
+        object.__setattr__(self, "software_versions", versions)
+
+    def software_version(self, software_id: str) -> str:
+        require_identifier(software_id, field_name="software_id")
+        try:
+            return dict(self.software_versions)[software_id]
+        except KeyError as exc:
+            raise KeyError("HPC identity observation lacks required software") from exc
+
+
+class HpcQualificationIdentityObservationPort(Protocol):
+    def observe(
+        self,
+        *,
+        host_alias: str,
+        partition: str,
+        credential_material: HpcQualificationCredentialMaterial,
+    ) -> HpcQualificationIdentityObservation: ...
+
+
 class TargetQualificationActorKind(StrEnum):
     OPERATOR = "operator"
     ADMIN = "admin"
@@ -366,6 +417,9 @@ class TargetQualificationWorkflow:
 
 __all__ = [
     "ControlledQualificationProbePort",
+    "HpcQualificationCredentialMaterial",
+    "HpcQualificationIdentityObservation",
+    "HpcQualificationIdentityObservationPort",
     "QualificationProbeKind",
     "QualificationProbeOutcome",
     "QualificationProbeRequest",

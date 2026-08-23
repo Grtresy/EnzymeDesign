@@ -1,0 +1,23 @@
+ARG BASE_IMAGE_REF
+FROM ${BASE_IMAGE_REF} AS builder
+
+ARG DEBIAN_SNAPSHOT=20260820T000000Z
+ARG HMMER_COMMIT
+RUN printf 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/%s bookworm main\n' "${DEBIAN_SNAPSHOT}" > /etc/apt/sources.list \
+    && rm -f /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Check-Valid-Until=false update \
+    && apt-get install -y --no-install-recommends autoconf automake build-essential git \
+    && git clone --filter=blob:none https://github.com/EddyRivasLab/hmmer.git /src/hmmer \
+    && git -C /src/hmmer checkout --detach "${HMMER_COMMIT}" \
+    && test "$(git -C /src/hmmer rev-parse HEAD)" = "${HMMER_COMMIT}" \
+    && cd /src/hmmer \
+    && autoreconf -i \
+    && ./configure --prefix=/opt/hmmer \
+    && make -j2 \
+    && make install
+
+FROM ${BASE_IMAGE_REF}
+COPY --from=builder /opt/hmmer /opt/hmmer
+ENV PATH="/opt/hmmer/bin:${PATH}"
+LABEL org.openzyme.qualification.image-group="hmmer" \
+      org.openzyme.qualification.hmmer-version="3.4"

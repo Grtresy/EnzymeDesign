@@ -1099,12 +1099,20 @@ def _source_file_digest(
 
 
 def _openspec_change_digest(*, repo_root: Path) -> str:
-    change_root = (
+    candidates = (
         repo_root
-        / "openspec/changes/separate-openzyme-kernel-from-capability-extensions"
+        / "openspec/changes/separate-openzyme-kernel-from-capability-extensions",
+        repo_root
+        / "openspec/changes/archive/2026-08-22-separate-openzyme-kernel-from-capability-extensions",
     )
-    if change_root.is_symlink() or not change_root.is_dir():
+    roots = tuple(
+        candidate
+        for candidate in candidates
+        if not candidate.is_symlink() and candidate.is_dir()
+    )
+    if len(roots) != 1:
         raise _error("qualification OpenSpec change root is unavailable")
+    change_root = roots[0]
     relative_paths = sorted(
         path.relative_to(repo_root).as_posix()
         for path in change_root.rglob("*")

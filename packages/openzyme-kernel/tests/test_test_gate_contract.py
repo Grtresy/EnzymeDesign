@@ -100,9 +100,39 @@ def test_current_mainline_wrapper_runs_authority_then_pure_verifier(
 
     assert completed.returncode == 0
     commands = [line.split() for line in log_path.read_text().splitlines()]
-    assert len(commands) == 2
-    evidence_root = commands[0][4]
+    assert len(commands) == 4
     assert commands[0] == [
+        "run",
+        "pytest",
+        "packages/openzyme-contracts/tests/test_external_qualification.py",
+        "packages/openzyme-contracts/tests/test_external_route_qualification.py",
+        "packages/enzymedesign-distribution/tests/test_external_qualification.py",
+        "packages/enzymedesign-distribution/tests/test_qualification_planning.py",
+        "packages/enzymedesign-distribution/tests/test_qualification_operator_state.py",
+        "packages/enzymedesign-distribution/tests/test_qualification_bridges.py",
+        "packages/enzymedesign-distribution/tests/test_owner_qualification_bridges.py",
+        "packages/enzymedesign-distribution/tests/test_qualification_runtime.py",
+        "packages/enzymedesign-distribution/tests/test_qualification_admission.py",
+        "packages/enzymedesign-distribution/tests/test_qualification_ci_boundary.py",
+        "packages/openzyme-store-sqlite/tests/test_external_qualification_ledger.py",
+        "packages/openzyme-process-podman/tests/test_qualification_images.py",
+        "packages/openzyme-workspace-git-lfs/tests/test_qualification_preparation.py",
+        "packages/openzyme-hpc/tests/test_qualification.py",
+        "packages/openzyme-hpc-ssh/tests/test_qualification_identity_observation.py",
+        "packages/openzyme-runtime-llm/tests/test_qualification_bridge.py",
+        "packages/openzyme-research-tavily/tests/test_qualification_bridge.py",
+        "packages/enzymedesign-bio-provider-adapters/tests/test_qualification_bridge.py",
+        "-q",
+    ]
+    readiness_report = commands[1][3]
+    assert commands[1] == [
+        "run",
+        "python",
+        "scripts/verify-external-qualification-readiness.py",
+        readiness_report,
+    ]
+    evidence_root = commands[2][4]
+    assert commands[2] == [
         "run",
         "python",
         "scripts/run-test-gate.py",
@@ -110,7 +140,7 @@ def test_current_mainline_wrapper_runs_authority_then_pure_verifier(
         evidence_root,
         *mode_argv,
     ]
-    assert commands[1] == [
+    assert commands[3] == [
         "run",
         "python",
         "scripts/run-test-gate.py",
@@ -118,6 +148,7 @@ def test_current_mainline_wrapper_runs_authority_then_pure_verifier(
         evidence_root,
     ]
     assert Path(evidence_root).parent.parent == temporary_root
+    assert Path(readiness_report).parent == Path(evidence_root).parent
     assert "CURRENT AUTHORITY" in completed.stderr
     assert "NO OTHER AUTHORITY" in completed.stderr
     assert "CURRENT NON-LIVE MERGE AUTHORITY VERIFIED" in completed.stderr
