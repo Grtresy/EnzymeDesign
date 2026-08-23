@@ -253,6 +253,7 @@ def test_live_coordinator_records_reconcile_terminal_receipts_and_restores_witho
     calls = {"dispatch": 0, "reconcile": 0, "restore": 0}
     cleanup = _Cleanup()
     first = ExternalLiveQualificationCoordinator(
+        source_identity_digest=DIGEST,
         dry_plan=dry_plan,
         readiness_plan=readiness,
         authorization=authorization,
@@ -275,6 +276,7 @@ def test_live_coordinator_records_reconcile_terminal_receipts_and_restores_witho
 
     restored_calls = {"dispatch": 0, "reconcile": 0, "restore": 0}
     restored = ExternalLiveQualificationCoordinator(
+        source_identity_digest=DIGEST,
         dry_plan=dry_plan,
         readiness_plan=readiness,
         authorization=authorization,
@@ -297,6 +299,7 @@ def test_live_coordinator_restores_cleanup_context_after_outcome_only_crash(
     readiness, dry_plan, authorization = _plans()
     first_ledger = SQLiteProtectedQualificationLedger(tmp_path / "first.sqlite3")
     first = ExternalLiveQualificationCoordinator(
+        source_identity_digest=DIGEST,
         dry_plan=dry_plan,
         readiness_plan=readiness,
         authorization=authorization,
@@ -323,6 +326,7 @@ def test_live_coordinator_restores_cleanup_context_after_outcome_only_crash(
     calls = {"dispatch": 0, "reconcile": 0, "restore": 0}
 
     restored = ExternalLiveQualificationCoordinator(
+        source_identity_digest=DIGEST,
         dry_plan=dry_plan,
         readiness_plan=readiness,
         authorization=authorization,
@@ -345,6 +349,7 @@ def test_followup_occurrences_bind_exact_subsets_and_aggregate_receipts(
     first_calls = {"dispatch": 0, "reconcile": 0, "restore": 0}
     first_built: list[str] = []
     first = ExternalLiveQualificationCoordinator(
+        source_identity_digest=DIGEST,
         dry_plan=dry_plan,
         readiness_plan=readiness,
         authorization=first_authorization,
@@ -372,6 +377,7 @@ def test_followup_occurrences_bind_exact_subsets_and_aggregate_receipts(
 
     try:
         ExternalLiveQualificationCoordinator(
+            source_identity_digest=DIGEST,
             dry_plan=dry_plan,
             readiness_plan=readiness,
             authorization=first_authorization,
@@ -394,6 +400,7 @@ def test_followup_occurrences_bind_exact_subsets_and_aggregate_receipts(
     partial = verify_live_qualification_receipt_set(
         dry_plan=dry_plan,
         readiness_plan=readiness,
+        source_identity_digest=DIGEST,
         operator_id="operator.enzymedesign-owner",
         authorizations=(first_authorization,),
         ledger=ledger,
@@ -401,6 +408,25 @@ def test_followup_occurrences_bind_exact_subsets_and_aggregate_receipts(
     )
     assert partial.qualified is False
     assert partial.missing_unit_digests == (response_unit.unit_digest,)
+    source_drifted = verify_live_qualification_receipt_set(
+        dry_plan=dry_plan,
+        readiness_plan=readiness,
+        source_identity_digest="sha256:" + "2" * 64,
+        operator_id="operator.enzymedesign-owner",
+        authorizations=(first_authorization,),
+        ledger=ledger,
+        verified_at=OBSERVED_AT,
+    )
+    assert source_drifted.qualified is False
+    assert source_drifted.missing_unit_digests == tuple(
+        sorted((first_unit.unit_digest, response_unit.unit_digest))
+    )
+    assert source_drifted.rejected_receipts == (
+        (
+            first.receipts[0].receipt_digest,
+            "qualification_receipt_set_source_identity_drift",
+        ),
+    )
 
     second_authorization = ExternalQualificationOccurrenceAuthorization.create(
         authorization_id="authorization.live-runtime.followup",
@@ -411,6 +437,7 @@ def test_followup_occurrences_bind_exact_subsets_and_aggregate_receipts(
     )
     second_calls = {"dispatch": 0, "reconcile": 0, "restore": 0}
     second = ExternalLiveQualificationCoordinator(
+        source_identity_digest=DIGEST,
         dry_plan=dry_plan,
         readiness_plan=readiness,
         authorization=second_authorization,
@@ -435,6 +462,7 @@ def test_followup_occurrences_bind_exact_subsets_and_aggregate_receipts(
     complete = verify_live_qualification_receipt_set(
         dry_plan=dry_plan,
         readiness_plan=readiness,
+        source_identity_digest=DIGEST,
         operator_id="operator.enzymedesign-owner",
         authorizations=(first_authorization, second_authorization),
         ledger=ledger,

@@ -40,6 +40,7 @@ class ProtectedQualificationLedgerPort(Protocol):
         *,
         dry_plan_digest: str,
         authorization_digest: str,
+        source_identity_digest: str,
         unit_digests: tuple[str, ...],
     ) -> None: ...
 
@@ -48,13 +49,13 @@ class ProtectedQualificationLedgerPort(Protocol):
         *,
         dry_plan_digest: str,
         authorization_digest: str,
-    ) -> tuple[str, ...] | None: ...
+    ) -> tuple[str, tuple[str, ...]] | None: ...
 
     def restore_occurrence_scopes_for_dry_plan(
         self,
         *,
         dry_plan_digest: str,
-    ) -> Mapping[str, tuple[str, ...]]: ...
+    ) -> Mapping[str, tuple[str, tuple[str, ...]]]: ...
 
     def record_preparation_result(
         self, result: ExternalIdentityPreparationResult
@@ -138,6 +139,7 @@ class SQLiteProtectedQualificationLedger:
                 CREATE TABLE IF NOT EXISTS external_qualification_occurrence_scopes (
                     dry_plan_digest TEXT NOT NULL,
                     authorization_digest TEXT NOT NULL,
+                    source_identity_digest TEXT NOT NULL,
                     unit_digests_json TEXT NOT NULL,
                     PRIMARY KEY (dry_plan_digest, authorization_digest)
                 );
@@ -149,11 +151,13 @@ class SQLiteProtectedQualificationLedger:
         *,
         dry_plan_digest: str,
         authorization_digest: str,
+        source_identity_digest: str,
         unit_digests: tuple[str, ...],
     ) -> None:
         for field_name, value in (
             ("dry_plan_digest", dry_plan_digest),
             ("authorization_digest", authorization_digest),
+            ("source_identity_digest", source_identity_digest),
         ):
             require_digest(value, field_name=field_name)
         canonical_units = tuple(sorted(unit_digests))
@@ -164,19 +168,25 @@ class SQLiteProtectedQualificationLedger:
         payload = json.dumps(canonical_units, separators=(",", ":"))
         with self._connect() as connection:
             existing = connection.execute(
-                "SELECT unit_digests_json FROM external_qualification_occurrence_scopes "
+                "SELECT source_identity_digest, unit_digests_json "
+                "FROM external_qualification_occurrence_scopes "
                 "WHERE dry_plan_digest = ? AND authorization_digest = ?",
                 (dry_plan_digest, authorization_digest),
             ).fetchone()
             if existing is not None:
-                if existing[0] != payload:
+                if existing != (source_identity_digest, payload):
                     raise ValueError("qualification occurrence scope cannot drift")
                 return
             connection.execute(
                 "INSERT INTO external_qualification_occurrence_scopes "
-                "(dry_plan_digest, authorization_digest, unit_digests_json) "
-                "VALUES (?, ?, ?)",
-                (dry_plan_digest, authorization_digest, payload),
+                "(dry_plan_digest, authorization_digest, source_identity_digest, "
+                "unit_digests_json) VALUES (?, ?, ?, ?)",
+                (
+                    dry_plan_digest,
+                    authorization_digest,
+                    source_identity_digest,
+                    payload,
+                ),
             )
 
     def restore_occurrence_scope(
@@ -184,45 +194,50 @@ class SQLiteProtectedQualificationLedger:
         *,
         dry_plan_digest: str,
         authorization_digest: str,
-    ) -> tuple[str, ...] | None:
+    ) -> tuple[str, tuple[str, ...]] | None:
         require_digest(dry_plan_digest, field_name="dry_plan_digest")
         require_digest(authorization_digest, field_name="authorization_digest")
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT unit_digests_json FROM external_qualification_occurrence_scopes "
+                "SELECT source_identity_digest, unit_digests_json "
+                "FROM external_qualification_occurrence_scopes "
                 "WHERE dry_plan_digest = ? AND authorization_digest = ?",
                 (dry_plan_digest, authorization_digest),
             ).fetchone()
         if row is None:
             return None
-        values = json.loads(row[0])
+        values = json.loads(row[1])
         if not isinstance(values, list) or not all(
             isinstance(item, str) for item in values
         ):
             raise ValueError("qualification occurrence scope payload is invalid")
-        return tuple(values)
+        return str(row[0]), tuple(values)
 
     def restore_occurrence_scopes_for_dry_plan(
         self,
         *,
         dry_plan_digest: str,
-    ) -> dict[str, tuple[str, ...]]:
+    ) -> dict[str, tuple[str, tuple[str, ...]]]:
         require_digest(dry_plan_digest, field_name="dry_plan_digest")
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT authorization_digest, unit_digests_json "
+                "SELECT authorization_digest, source_identity_digest, "
+                "unit_digests_json "
                 "FROM external_qualification_occurrence_scopes "
                 "WHERE dry_plan_digest = ? ORDER BY authorization_digest",
                 (dry_plan_digest,),
             ).fetchall()
-        scopes: dict[str, tuple[str, ...]] = {}
-        for authorization_digest, payload_json in rows:
+        scopes: dict[str, tuple[str, tuple[str, ...]]] = {}
+        for authorization_digest, source_identity_digest, payload_json in rows:
             values = json.loads(payload_json)
             if not isinstance(values, list) or not all(
                 isinstance(item, str) for item in values
             ):
                 raise ValueError("qualification occurrence scope payload is invalid")
-            scopes[str(authorization_digest)] = tuple(values)
+            scopes[str(authorization_digest)] = (
+                str(source_identity_digest),
+                tuple(values),
+            )
         return scopes
 
     def record_occurrence_evidence(

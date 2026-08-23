@@ -129,7 +129,7 @@ exact occurrence authorization 时在凭据解析前 fail closed。完成真实 
 需要第二个 change 和独立确认。
 
 资格恢复不允许通过新 authority 全量重发已经有 current receipt 的 unit。后续 occurrence 可把完整 dry plan 内的
-exact failed-unit 子集在首次 effect 前持久化并只执行该子集；同一 authority 的 scope 不可改变。subset 全绿只表示
+exact checkout source identity 与 failed-unit 子集在首次 effect 前持久化并只执行该子集；同一 authority 的 source/scope 不可改变。subset 全绿只表示
 该 occurrence 闭合，batch `qualified` 仍由独立 receipt-set verifier 跨 occurrences 检查全部 unit 的 exact authority、
 scope、negative gate、budget、cleanup 和 TTL 后给出，且不会产生 adoption 或 cutover。
 

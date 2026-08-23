@@ -318,6 +318,7 @@ def main() -> int:
         dry_plan=dry_plan,
         authorization=authorization,
         ledger=ledger,
+        source_identity_digest=source.digest,
         selected_unit_digests=(
             None if args.unit_digest is None else tuple(args.unit_digest)
         ),
@@ -444,6 +445,7 @@ def main() -> int:
             revocation=revocation,
         )
         report = ExternalLiveQualificationCoordinator(
+            source_identity_digest=source.digest,
             dry_plan=dry_plan,
             readiness_plan=readiness,
             authorization=authorization,
@@ -491,6 +493,7 @@ def main() -> int:
     receipt_set = verify_live_qualification_receipt_set(
         dry_plan=dry_plan,
         readiness_plan=readiness,
+        source_identity_digest=source.digest,
         operator_id="operator.enzymedesign-owner",
         authorizations=tuple(authorizations),
         ledger=ledger,

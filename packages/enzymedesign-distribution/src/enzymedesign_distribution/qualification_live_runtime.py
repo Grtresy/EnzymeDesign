@@ -20,6 +20,7 @@ from openzyme_contracts import ExternalQualificationProbeRequest
 from openzyme_contracts import ExternalQualificationSafeReceipt
 from openzyme_contracts import ExternalQualificationUnit
 from openzyme_contracts import canonical_sha256_digest
+from openzyme_contracts import require_digest
 from openzyme_contracts import verify_external_qualification_occurrence_authorization
 from openzyme_contracts import verify_external_qualification_probe_request_binding
 
@@ -36,6 +37,7 @@ class LiveQualificationLedgerPort(Protocol):
         *,
         dry_plan_digest: str,
         authorization_digest: str,
+        source_identity_digest: str,
         unit_digests: tuple[str, ...],
     ) -> None: ...
 
@@ -44,13 +46,13 @@ class LiveQualificationLedgerPort(Protocol):
         *,
         dry_plan_digest: str,
         authorization_digest: str,
-    ) -> tuple[str, ...] | None: ...
+    ) -> tuple[str, tuple[str, ...]] | None: ...
 
     def restore_occurrence_scopes_for_dry_plan(
         self,
         *,
         dry_plan_digest: str,
-    ) -> Mapping[str, tuple[str, ...]]: ...
+    ) -> Mapping[str, tuple[str, tuple[str, ...]]]: ...
 
     def record_probe_outcome(
         self,
@@ -115,6 +117,7 @@ class LiveQualificationCleanupPort(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class LiveQualificationExecutionReport:
+    source_identity_digest: str
     dry_plan_digest: str
     authorization_digest: str
     negative_test_receipt_digest: str
@@ -131,6 +134,7 @@ class LiveQualificationExecutionReport:
     def create(cls, **values):
         payload = {
             "schema_version": "external_live_qualification_execution_report@3",
+            "source_identity_digest": values["source_identity_digest"],
             "dry_plan_digest": values["dry_plan_digest"],
             "authorization_digest": values["authorization_digest"],
             "negative_test_receipt_digest": values[
@@ -163,6 +167,7 @@ class LiveQualificationExecutionReport:
     def to_dict(self) -> dict[str, object]:
         return {
             "schema_version": "external_live_qualification_execution_report@3",
+            "source_identity_digest": self.source_identity_digest,
             "dry_plan_digest": self.dry_plan_digest,
             "authorization_digest": self.authorization_digest,
             "negative_test_receipt_digest": self.negative_test_receipt_digest,
@@ -185,6 +190,7 @@ class LiveQualificationExecutionReport:
 
 @dataclass(frozen=True, slots=True)
 class LiveQualificationReceiptSetReport:
+    source_identity_digest: str
     dry_plan_digest: str
     verified_at: str
     selected_receipts: tuple[ExternalQualificationSafeReceipt, ...]
@@ -203,6 +209,7 @@ class LiveQualificationReceiptSetReport:
         authorization_digests = tuple(sorted(values["authorization_digests"]))
         payload = {
             "schema_version": "external_live_qualification_receipt_set@1",
+            "source_identity_digest": values["source_identity_digest"],
             "dry_plan_digest": values["dry_plan_digest"],
             "verified_at": values["verified_at"],
             "selected_receipts": [item.to_dict() for item in selected_receipts],
@@ -214,6 +221,7 @@ class LiveQualificationReceiptSetReport:
             "authorization_digests": list(authorization_digests),
         }
         return cls(
+            source_identity_digest=values["source_identity_digest"],
             dry_plan_digest=values["dry_plan_digest"],
             verified_at=values["verified_at"],
             selected_receipts=selected_receipts,
@@ -230,6 +238,7 @@ class LiveQualificationReceiptSetReport:
     def to_dict(self) -> dict[str, object]:
         return {
             "schema_version": "external_live_qualification_receipt_set@1",
+            "source_identity_digest": self.source_identity_digest,
             "dry_plan_digest": self.dry_plan_digest,
             "verified_at": self.verified_at,
             "selected_receipts": [item.to_dict() for item in self.selected_receipts],
@@ -250,6 +259,7 @@ def bind_live_qualification_occurrence_scope(
     dry_plan: ExternalQualificationDryPlan,
     authorization: ExternalQualificationOccurrenceAuthorization,
     ledger: LiveQualificationLedgerPort,
+    source_identity_digest: str,
     selected_unit_digests: tuple[str, ...] | None,
 ) -> tuple[str, ...]:
     planned_unit_digests = {
@@ -271,6 +281,7 @@ def bind_live_qualification_occurrence_scope(
             "qualification_occurrence_scope_invalid",
             "qualification occurrence scope must be a non-empty dry-plan subset",
         )
+    require_digest(source_identity_digest, field_name="source_identity_digest")
     restored_scope = ledger.restore_occurrence_scope(
         dry_plan_digest=dry_plan.dry_plan_digest,
         authorization_digest=authorization.authorization_digest,
@@ -279,13 +290,14 @@ def bind_live_qualification_occurrence_scope(
         ledger.record_occurrence_scope(
             dry_plan_digest=dry_plan.dry_plan_digest,
             authorization_digest=authorization.authorization_digest,
+            source_identity_digest=source_identity_digest,
             unit_digests=selected,
         )
         restored_scope = ledger.restore_occurrence_scope(
             dry_plan_digest=dry_plan.dry_plan_digest,
             authorization_digest=authorization.authorization_digest,
         )
-    if restored_scope != selected:
+    if restored_scope != (source_identity_digest, selected):
         raise ExternalQualificationError(
             "qualification_occurrence_scope_drift",
             "persisted qualification occurrence scope differs from the request",
@@ -297,6 +309,7 @@ def verify_live_qualification_receipt_set(
     *,
     dry_plan: ExternalQualificationDryPlan,
     readiness_plan: ExternalQualificationPlan,
+    source_identity_digest: str,
     operator_id: str,
     authorizations: tuple[ExternalQualificationOccurrenceAuthorization, ...],
     ledger: LiveQualificationLedgerPort,
@@ -349,13 +362,17 @@ def verify_live_qualification_receipt_set(
         binding = bindings.get(receipt.unit_digest)
         authorization = authorization_by_digest.get(receipt.authorization_digest)
         evidence = occurrence_evidence.get(receipt.authorization_digest)
-        scope = occurrence_scopes.get(receipt.authorization_digest)
+        raw_scope = occurrence_scopes.get(receipt.authorization_digest)
+        scope_source_identity_digest = None if raw_scope is None else raw_scope[0]
+        scope = None if raw_scope is None else raw_scope[1]
         if unit is None or binding is None:
             error_code = "qualification_receipt_set_unknown_unit"
         elif authorization is None:
             error_code = "qualification_receipt_set_authorization_missing"
         elif scope is None or receipt.unit_digest not in scope:
             error_code = "qualification_receipt_set_scope_missing"
+        elif scope_source_identity_digest != source_identity_digest:
+            error_code = "qualification_receipt_set_source_identity_drift"
         elif evidence is None:
             error_code = "qualification_receipt_set_occurrence_evidence_missing"
         elif (
@@ -444,6 +461,7 @@ def verify_live_qualification_receipt_set(
             )
     selected_units = {item.unit_digest for item in selected}
     return LiveQualificationReceiptSetReport.create(
+        source_identity_digest=source_identity_digest,
         dry_plan_digest=dry_plan.dry_plan_digest,
         verified_at=verified_at,
         selected_receipts=tuple(selected),
@@ -600,6 +618,7 @@ def exercise_live_qualification_negative_gate(
 
 @dataclass(slots=True)
 class ExternalLiveQualificationCoordinator:
+    source_identity_digest: str
     dry_plan: ExternalQualificationDryPlan
     readiness_plan: ExternalQualificationPlan
     authorization: ExternalQualificationOccurrenceAuthorization
@@ -629,6 +648,7 @@ class ExternalLiveQualificationCoordinator:
             dry_plan=self.dry_plan,
             authorization=self.authorization,
             ledger=self.ledger,
+            source_identity_digest=self.source_identity_digest,
             selected_unit_digests=selected_unit_digests,
         )
         negative_digest = exercise_live_qualification_negative_gate(
@@ -685,6 +705,7 @@ class ExternalLiveQualificationCoordinator:
                     "persisted qualification occurrence evidence has drifted",
                 )
             return LiveQualificationExecutionReport.create(
+                source_identity_digest=self.source_identity_digest,
                 dry_plan_digest=self.dry_plan.dry_plan_digest,
                 authorization_digest=self.authorization.authorization_digest,
                 negative_test_receipt_digest=negative_digest,
@@ -832,6 +853,7 @@ class ExternalLiveQualificationCoordinator:
             receipts.append(receipt)
         self.ledger.record_safe_receipts(tuple(receipts))
         return LiveQualificationExecutionReport.create(
+            source_identity_digest=self.source_identity_digest,
             dry_plan_digest=self.dry_plan.dry_plan_digest,
             authorization_digest=self.authorization.authorization_digest,
             negative_test_receipt_digest=negative_digest,
