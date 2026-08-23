@@ -386,6 +386,82 @@ def test_resolved_local_image_requires_current_source_recipe_digest(
     assert observation.missing_fields == (expected_missing_field,)
 
 
+def test_stale_image_recipe_predicate_prepares_the_observed_digest_field() -> None:
+    from enzymedesign_distribution import ExternalQualificationBatch
+    from enzymedesign_distribution import build_external_identity_gaps
+    from enzymedesign_distribution import build_external_identity_preparation_plan
+    from enzymedesign_distribution import build_external_identity_resolution_decisions
+    from enzymedesign_distribution import discover_external_subject_identities
+
+    snapshot = load_safe_identity_snapshot(SNAPSHOT)
+    generic_fields = next(
+        projection.safe_fields
+        for projection in snapshot.projections
+        if projection.projection_id == "bio-uniprot-public"
+    )
+    vina = next(
+        projection
+        for projection in snapshot.projections
+        if projection.projection_id == "vina-local"
+    )
+    snapshot = replace(
+        snapshot,
+        projections=tuple(
+            replace(
+                vina,
+                status=ExternalSubjectIdentityStatus.RESOLVED,
+                safe_fields=(
+                    *generic_fields,
+                    SafeIdentityField(
+                        "docking_image_recipe_digest",
+                        "sha256:" + "0" * 64,
+                    ),
+                    SafeIdentityField("vina_image_digest", "sha256:" + "2" * 64),
+                    SafeIdentityField("vina_version", "1.2.7"),
+                ),
+                missing_fields=(),
+            )
+            if item.projection_id == vina.projection_id
+            else item
+            for item in snapshot.projections
+        ),
+    )
+    readiness = build_enzymedesign_external_qualification_plan(
+        plan_id="qualification.readiness.recipe-replacement",
+        created_at=snapshot.observed_at,
+        enabled_optional_profiles=OPTIONAL_PROFILES,
+    )
+    discovery = discover_external_subject_identities(
+        readiness_plan=readiness,
+        snapshot=snapshot,
+    )
+    gaps = build_external_identity_gaps(discovery)
+    selection_set = load_operator_identity_resolution_selections(SELECTIONS)
+    plan = build_external_identity_preparation_plan(
+        readiness_plan=readiness,
+        discovery=discovery,
+        gaps=gaps,
+        decisions=build_external_identity_resolution_decisions(
+            gaps=gaps,
+            snapshot=snapshot,
+            selection_set=selection_set,
+        ),
+        selection_set=selection_set,
+        batch=ExternalQualificationBatch.BATCH_1,
+    )
+
+    docking = next(
+        action
+        for action in plan.actions
+        if action.action_id == "prepare.batch-1.image-docking"
+    )
+    assert "docking_image_recipe_digest" in docking.expected_identity_fields
+    assert (
+        "docking_image_recipe_digest_matches_current_source"
+        not in docking.expected_identity_fields
+    )
+
+
 def test_operator_selection_parser_rejects_secret_shaped_identity(
     tmp_path: Path,
 ) -> None:
@@ -563,6 +639,8 @@ def test_preparation_factory_rejects_cross_action_credential_locator() -> None:
                 owner_action.expected_identity_fields  # type: ignore[union-attr]
             )
         )
+        if str(kwargs["occurrence_id"]).endswith("coverage-test"):
+            safe_fields = safe_fields[:-1]
         output_digest = canonical_sha256_digest(
             {
                 "schema_version": "external_identity_preparation_safe_output@1",
@@ -653,6 +731,24 @@ def test_preparation_factory_rejects_cross_action_credential_locator() -> None:
     assert resolver.calls == 0
     assert builder_calls == 0
 
+    with pytest.raises(ExternalQualificationError) as coverage_captured:
+        factory.build(
+            plan=plan,
+            authorization=authorization,
+            observed_at="2026-08-22T14:37:12+00:00",
+            occurrence_id="occurrence.preparation.coverage-test",
+            action_id=action.action_id,
+            input_binding_digest=action.input_binding_digest,
+            locator_id=action.credential_locator_id,
+        )
+    assert coverage_captured.value.error_code == (
+        "qualification_preparation_result_field_coverage_mismatch"
+    )
+    assert coverage_captured.value.mutation_applied is True
+    assert coverage_captured.value.effect_certainty == "terminal_known"  # type: ignore[attr-defined]
+    assert resolver.calls == 1
+    assert builder_calls == 1
+
     result = factory.build(
         plan=plan,
         authorization=authorization,
@@ -664,8 +760,8 @@ def test_preparation_factory_rejects_cross_action_credential_locator() -> None:
     )
     assert isinstance(result, ExternalIdentityPreparationResult)
     assert result.observation.operation == action.effect_id
-    assert resolver.calls == 1
-    assert builder_calls == 1
+    assert resolver.calls == 2
+    assert builder_calls == 2
 
 
 def test_safe_preparation_without_target_versions_keeps_batch_1_blocked() -> None:

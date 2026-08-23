@@ -72,6 +72,18 @@ _SUBJECT_VERSION_FIELDS = {
 }
 
 
+def _preparation_result_field_id(requirement_id: str) -> str:
+    """Map a discovery validation predicate to its owner-observed field."""
+
+    for suffix in (
+        "_matches_current_source",
+        "_satisfies_declared_spec",
+    ):
+        if requirement_id.endswith(suffix):
+            return requirement_id.removesuffix(suffix)
+    return requirement_id
+
+
 def _current_image_recipe_requirements() -> dict[str, dict[str, str]]:
     recipes = {
         item.image_group: item.recipe_digest
@@ -444,10 +456,14 @@ def apply_external_identity_preparation_results(
         if not projection.missing_fields:
             projections.append(projection)
             continue
+        required_result_fields = {
+            _preparation_result_field_id(field_id)
+            for field_id in projection.missing_fields
+        }
         matching = tuple(
             action
             for action in preparation_plan.actions
-            if set(projection.missing_fields).issubset(action.expected_identity_fields)
+            if required_result_fields.issubset(action.expected_identity_fields)
         )
         if not matching:
             projections.append(projection)
@@ -462,7 +478,7 @@ def apply_external_identity_preparation_results(
         prepared_fields = {
             item.field_id: item.value for item in result.safe_identity_fields
         }
-        if set(projection.missing_fields).difference(prepared_fields):
+        if required_result_fields.difference(prepared_fields):
             raise ExternalQualificationError(
                 "qualification_preparation_projection_incomplete",
                 "prepared result does not resolve the projection's exact missing fields",
@@ -473,7 +489,7 @@ def apply_external_identity_preparation_results(
         }
         projection_identity_fields = {
             item.field_id for item in projection.safe_fields
-        }.union(projection.missing_fields)
+        }.union(required_result_fields)
         domain_fields.update(
             {
                 field_id: prepared_fields[field_id]
@@ -1141,7 +1157,10 @@ def build_external_identity_preparation_plan(
                 "the approved Git subject is local-only and cannot target a hosted service",
             )
         projection_id = gap.gap_id.removeprefix("gap.observation.")
-        expected_identity_fields = set(gap.missing_fields)
+        expected_identity_fields = {
+            _preparation_result_field_id(field_id)
+            for field_id in gap.missing_fields
+        }
         if requires_credential:
             expected_identity_fields.add("credential_locator_id")
         if candidate.candidate_id == "complete-executor-workspace-v2-inventory":
@@ -1666,17 +1685,23 @@ class PlanOnlyIdentityPreparationBackendFactory:
             or observation.request_digest != request_digest
             or observation.operation != action.effect_id
         ):
-            raise ExternalQualificationError(
+            error = ExternalQualificationError(
                 "qualification_preparation_result_binding_mismatch",
                 "owner preparation result differs from the exact occurrence",
             )
+            error.mutation_applied = observation.external_effect_performed
+            setattr(error, "effect_certainty", observation.effect_certainty)
+            raise error
         if tuple(
             item.field_id for item in result.safe_identity_fields
         ) != action.expected_identity_fields:
-            raise ExternalQualificationError(
+            error = ExternalQualificationError(
                 "qualification_preparation_result_field_coverage_mismatch",
                 "owner preparation result must cover the action's expected identity fields",
             )
+            error.mutation_applied = observation.external_effect_performed
+            setattr(error, "effect_certainty", observation.effect_certainty)
+            raise error
         if self._result_recorder is not None:
             self._result_recorder(result)
         return result
