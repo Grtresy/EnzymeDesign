@@ -12,6 +12,8 @@ from pathlib import Path
 
 from enzymedesign_distribution import QUALIFICATION_STATE_ROOT_ENV
 from enzymedesign_distribution import QualificationOperatorStateLayout
+from enzymedesign_distribution import SafeIdentitySnapshot
+from enzymedesign_distribution import validate_hpc_live_bridge_snapshot
 from openzyme_contracts import ExternalQualificationOccurrenceAuthorization
 from test_gate.source import collect_source_identity
 
@@ -68,6 +70,12 @@ def main() -> int:
         or packet.get("fallback_performed") is not False
     ):
         raise SystemExit("post-preparation packet is not exact current source evidence")
+    prepared_snapshot = packet.get("prepared_snapshot")
+    if not isinstance(prepared_snapshot, dict):
+        raise SystemExit("post-preparation packet lacks a safe prepared snapshot")
+    validate_hpc_live_bridge_snapshot(
+        SafeIdentitySnapshot.from_dict(prepared_snapshot)
+    )
     authorization = ExternalQualificationOccurrenceAuthorization.create(
         authorization_id=args.authorization_id,
         dry_plan_digest=dry_plan_digest,

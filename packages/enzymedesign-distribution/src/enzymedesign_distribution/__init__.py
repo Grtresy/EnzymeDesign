@@ -111,6 +111,7 @@ from .qualification_preparation_runtime import (
 from .qualification_workspace_runtime import (
     augment_prepared_snapshot_with_workspace_runtime,
 )
+from .qualification_workspace_runtime import validate_hpc_live_bridge_snapshot
 from .qualification_workspace_runtime import workspace_runtime_safe_identity_fields
 from .session_composition_reader import EnzymeDesignSessionCompositionReader
 
@@ -186,6 +187,7 @@ __all__ = [
     "EnzymeDesignTargetInventoryQueryPort",
     "activate_enzymedesign_composition",
     "augment_prepared_snapshot_with_workspace_runtime",
+    "validate_hpc_live_bridge_snapshot",
     "build_enzymedesign_scientific_contributions",
     "build_enzymedesign_application_runtime",
     "build_enzymedesign_formal_compute_application",

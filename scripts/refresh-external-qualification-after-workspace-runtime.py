@@ -22,6 +22,7 @@ from enzymedesign_distribution import build_enzymedesign_external_qualification_
 from enzymedesign_distribution import qualification_plan_bundle
 from openzyme_contracts import canonical_sha256_digest
 from openzyme_hpc_ssh import OpenSshQualificationState
+from openzyme_hpc_ssh import OpenSshHpcQualificationIdentityObservationPort
 from openzyme_hpc_ssh import SubprocessOpenSshQualificationCommandPort
 from openzyme_hpc_ssh import WorkspaceRuntimeDeploymentAuthorization
 from openzyme_hpc_ssh import WorkspaceRuntimeDeploymentPlan
@@ -154,9 +155,17 @@ def main() -> int:
         deployment_receipt_digest=receipt.receipt_digest,
         native_qualification_digest=receipt.native_qualification_digest,
     )
+    hpc_observation = OpenSshHpcQualificationIdentityObservationPort(
+        command_port=SubprocessOpenSshQualificationCommandPort(),
+    ).observe(
+        host_alias="Diannan",
+        partition="3090",
+        credential_material=material,
+    )
     refreshed = augment_prepared_snapshot_with_workspace_runtime(
         snapshot=snapshot,
         identity=identity,
+        hpc_observation=hpc_observation,
         deployment_plan=plan,
         deployment_receipt=receipt,
         source_identity_digest=source.digest,
@@ -216,6 +225,11 @@ def main() -> int:
     _write_private(args.packet_output, document)
     print(f"source_identity_digest={source.digest}")
     print(f"workspace_runtime_observation_digest={identity.observation_digest}")
+    print(f"hpc_environment_digest={hpc_observation.environment_digest}")
+    print(
+        "hpc_inventory_generation_digest="
+        f"{hpc_observation.inventory_generation_digest}"
+    )
     print(f"batch_1_qualification_dry_plan_digest={dry_plan['dry_plan_digest']}")
     print("batch_1_authorizable=true")
     print("target_read_performed=true")

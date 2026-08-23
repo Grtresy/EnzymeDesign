@@ -24,6 +24,7 @@ from enzymedesign_distribution import QualificationOperatorStateLayout
 from enzymedesign_distribution import SafeIdentitySnapshot
 from enzymedesign_distribution import SelectedLiveQualificationBridgeFactory
 from enzymedesign_distribution import SelectedQualificationProbeRouter
+from enzymedesign_distribution import validate_hpc_live_bridge_snapshot
 from enzymedesign_distribution import build_enzymedesign_external_qualification_plan
 from enzymedesign_distribution import build_external_identity_gaps
 from enzymedesign_distribution import build_external_qualification_dry_plan
@@ -215,6 +216,7 @@ def main() -> int:
     if not isinstance(prepared_snapshot, dict):
         raise ValueError("post-preparation packet lacks one safe prepared snapshot")
     snapshot = SafeIdentitySnapshot.from_dict(prepared_snapshot)
+    validate_hpc_live_bridge_snapshot(snapshot)
     readiness = build_enzymedesign_external_qualification_plan(
         plan_id="qualification.batch-1.exact-readiness",
         created_at=snapshot.observed_at,
