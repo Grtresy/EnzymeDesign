@@ -280,6 +280,7 @@ def test_credential_preflight_covers_every_exact_locator_before_mutation(
                     "locator_version": "v1",
                     "fields": {
                         "ssh_host": "hpc.invalid",
+                        "ssh_port": "22222",
                         "ssh_user": "qualification-user",
                         "identity_file": "/private/id",
                         "known_hosts_file": "/private/known-hosts",
@@ -320,6 +321,7 @@ class _HpcMaterial:
 
     def field_value(self, field_name: str) -> str:
         return {
+            "ssh_port": "22222",
             "credential_provider_id": "qualification-file-provider-v1",
             "authenticator_id": "openssh-identities-only-v1",
             "login_alias": "diannan-qualification",
@@ -334,6 +336,7 @@ class _HpcObservation:
     def observe(self, **_kwargs: object) -> HpcQualificationIdentityObservation:
         return HpcQualificationIdentityObservation(
             host_alias="Diannan",
+            ssh_port=22222,
             partition="3090",
             environment_digest="sha256:" + "5" * 64,
             inventory_generation_digest="sha256:" + "6" * 64,
@@ -374,6 +377,7 @@ def test_hpc_identity_preparation_writes_only_qualification_config(
     assert config_path.stat().st_mode & 0o777 == 0o600
     payload = config_path.read_text(encoding="utf-8")
     assert '"configuration_mode":"qualification-only"' in payload
+    assert '"ssh_port":22222' in payload
     assert '"activated":false' in payload
     assert '"scheduler_submit_enabled":false' in payload
     assert {item.field_id for item in result.safe_identity_fields} == {

@@ -294,6 +294,7 @@ def test_nonterminal_probe_never_publishes_inventory() -> None:
 def test_hpc_identity_observation_is_generic_and_canonical() -> None:
     observation = HpcQualificationIdentityObservation(
         host_alias="target-primary",
+        ssh_port=22222,
         partition="qualification",
         environment_digest="sha256:" + "5" * 64,
         inventory_generation_digest="sha256:" + "6" * 64,

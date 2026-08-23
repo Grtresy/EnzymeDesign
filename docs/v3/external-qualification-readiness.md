@@ -138,8 +138,9 @@ Batch 1 preparation 精确为七个 action：LLM locator、Tavily locator、本�
 `docking` 三组镜像，以及一个聚合的 `Diannan/3090` HPC identity action。三组镜像 recipe 绑定
 `docker.io/library/python@sha256:46cb7cc2877e60fbd5e21a9ae6115c30ace7a077b9f8772da879e4590c18c2e3`、
 当前 `uv.lock` digest 和 official source commit；构造代码不会自动 build。HPC action 只生成独立
-`aox-qualification-diannan` 配置，保持 `activated=false`、`scheduler_submit_enabled=false`，使用 `ssh -F /dev/null`、
-`BatchMode=yes`、`IdentitiesOnly=yes` 与 exact identity/known-hosts files；不覆盖当前 runner 配置。
+`aox-qualification-diannan` 配置，保持 `activated=false`、`scheduler_submit_enabled=false`，使用 exact credential-bound
+host/port（当前 `Diannan` 端口为 `22222`）、`ssh -F /dev/null`、`BatchMode=yes`、`IdentitiesOnly=yes` 与 exact
+identity/known-hosts files；不覆盖当前 runner 配置。
 
 Preparation success 写入 `ExternalIdentityPreparationResult` 和 protected SQLite ledger。effect-free rediscovery 验证每个
 result 的 plan、authorization、owner、input 和字段覆盖后才生成新的 safe snapshot。随后必须重建 exact catalog：

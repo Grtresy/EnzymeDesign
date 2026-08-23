@@ -29,12 +29,15 @@ class HpcQualificationCredentialMaterial(Protocol):
 @dataclass(frozen=True, slots=True)
 class HpcQualificationIdentityObservation:
     host_alias: str
+    ssh_port: int
     partition: str
     environment_digest: str
     inventory_generation_digest: str
     software_versions: tuple[tuple[str, str], ...]
 
     def __post_init__(self) -> None:
+        if not 1 <= self.ssh_port <= 65535:
+            raise ValueError("ssh_port must be between 1 and 65535")
         for value, name in (
             (self.environment_digest, "environment_digest"),
             (self.inventory_generation_digest, "inventory_generation_digest"),

@@ -1,5 +1,8 @@
 from pathlib import Path
 
+import pytest
+
+from openzyme_contracts import ExternalQualificationError
 from openzyme_hpc_ssh import OpenSshHpcQualificationIdentityObservationPort
 
 
@@ -11,6 +14,7 @@ class _Material:
     def __init__(self, identity_file: Path, known_hosts_file: Path) -> None:
         self._values = {
             "ssh_host": "diannan.internal",
+            "ssh_port": "22222",
             "ssh_user": "qualification",
             "identity_file": str(identity_file),
             "known_hosts_file": str(known_hosts_file),
@@ -51,10 +55,36 @@ def test_openssh_identity_observation_uses_exact_files_without_ambient_fallback(
     )
 
     assert observation.host_alias == "Diannan"
+    assert observation.ssh_port == 22222
     assert observation.partition == "3090"
     assert observation.inventory_generation_digest.startswith("sha256:")
     assert commands.argv[:3] == ("ssh", "-F", "/dev/null")
+    assert commands.argv[3:5] == ("-p", "22222")
     assert "BatchMode=yes" in commands.argv
     assert "IdentitiesOnly=yes" in commands.argv
     assert f"IdentityFile={identity_file}" in commands.argv
     assert f"UserKnownHostsFile={known_hosts_file}" in commands.argv
+
+
+def test_openssh_identity_observation_rejects_invalid_port_before_command(
+    tmp_path: Path,
+) -> None:
+    identity_file = tmp_path / "id_ed25519"
+    identity_file.write_text("fake-test-key", encoding="utf-8")
+    identity_file.chmod(0o600)
+    known_hosts_file = tmp_path / "known_hosts"
+    known_hosts_file.write_text("fake-test-host-key", encoding="utf-8")
+    material = _Material(identity_file, known_hosts_file)
+    material._values["ssh_port"] = "65536"
+    commands = _Commands()
+    port = OpenSshHpcQualificationIdentityObservationPort(command_port=commands)
+
+    with pytest.raises(ExternalQualificationError) as error:
+        port.observe(
+            host_alias="Diannan",
+            partition="3090",
+            credential_material=material,
+        )
+
+    assert error.value.error_code == "qualification_hpc_credential_identity_invalid"
+    assert commands.argv == ()

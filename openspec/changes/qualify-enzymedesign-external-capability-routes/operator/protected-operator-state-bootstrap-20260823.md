@@ -32,12 +32,12 @@ operator 选择一个不在源码仓库内的绝对路径，通过 `OPENZYME_QUA
 
 - `credential.llm.micuapi.qualification`：`token`、`account_locator_id`、`scope_id`；
 - `credential.tavily.qualification`：`token`、`account_locator_id`、`scope_id`；
-- `credential.hpc.diannan.qualification`：`ssh_host`、`ssh_user`、`identity_file`、`known_hosts_file`、
+- `credential.hpc.diannan.qualification`：`ssh_host`、`ssh_port`、`ssh_user`、`identity_file`、`known_hosts_file`、
   `credential_provider_id`、`authenticator_id`、`login_alias`、`workspace_root`、`sidecar_root`、
   `isolation_command`、`slurm_policy_id`。
 
 HPC identity file 必须是 current uid 的 regular file 且 group/other mode bits 为零；known-hosts file 必须是 direct
-regular file。SSH observer 固定 `-F /dev/null`、`BatchMode=yes`、`IdentitiesOnly=yes`、
+regular file。SSH observer 固定 exact `ssh_port`、`-F /dev/null`、`BatchMode=yes`、`IdentitiesOnly=yes`、
 `StrictHostKeyChecking=yes`，不使用 `SSH_AUTH_SOCK` 或用户 ssh config fallback。
 
 ## 首次 effect 门

@@ -60,6 +60,7 @@ _PREPARATION_CREDENTIAL_REQUIREMENTS: Mapping[
         "v1",
         (
             "ssh_host",
+            "ssh_port",
             "ssh_user",
             "identity_file",
             "known_hosts_file",
@@ -281,6 +282,7 @@ class EnzymeDesignHpcIdentityPreparationExecutor:
             "configuration_mode": "qualification-only",
             "deployment_id": "aox-qualification-diannan",
             "target_alias": observation.host_alias,
+            "ssh_port": observation.ssh_port,
             "partition": observation.partition,
             "credential_locator_id": credential_material.locator_id,
             "executor_workspace": {

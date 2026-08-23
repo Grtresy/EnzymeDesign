@@ -48,6 +48,7 @@ class SshQualificationCredentialMaterial(Protocol):
 @dataclass(frozen=True, slots=True)
 class SshHpcIdentityObservation:
     host_alias: str
+    ssh_port: int
     partition: str
     environment_digest: str
     inventory_generation_digest: str
@@ -93,6 +94,7 @@ class OpenSshHpcQualificationIdentityObservationPort:
             )
         host = credential_material.field_value("ssh_host")
         user = credential_material.field_value("ssh_user")
+        raw_port = credential_material.field_value("ssh_port")
         identity_file = Path(
             credential_material.field_value("identity_file")
         ).absolute()
@@ -102,11 +104,18 @@ class OpenSshHpcQualificationIdentityObservationPort:
         if (
             re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,254}", host) is None
             or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", user) is None
+            or re.fullmatch(r"[1-9][0-9]{0,4}", raw_port) is None
             or not identity_file.is_file()
             or identity_file.is_symlink()
             or not known_hosts_file.is_file()
             or known_hosts_file.is_symlink()
         ):
+            raise ExternalQualificationError(
+                "qualification_hpc_credential_identity_invalid",
+                "SSH identity material is incomplete or unsafe",
+            )
+        ssh_port = int(raw_port)
+        if ssh_port > 65535:
             raise ExternalQualificationError(
                 "qualification_hpc_credential_identity_invalid",
                 "SSH identity material is incomplete or unsafe",
@@ -120,6 +129,8 @@ class OpenSshHpcQualificationIdentityObservationPort:
             self.ssh_binary,
             "-F",
             "/dev/null",
+            "-p",
+            str(ssh_port),
             "-o",
             "BatchMode=yes",
             "-o",
@@ -147,6 +158,7 @@ class OpenSshHpcQualificationIdentityObservationPort:
         environment_digest = canonical_sha256_digest(
             {
                 "target_alias": host_alias,
+                "ssh_port": ssh_port,
                 "partition": partition,
                 "system": lines[0],
             }
@@ -162,6 +174,7 @@ class OpenSshHpcQualificationIdentityObservationPort:
         )
         return SshHpcIdentityObservation(
             host_alias=host_alias,
+            ssh_port=ssh_port,
             partition=partition,
             environment_digest=environment_digest,
             inventory_generation_digest=inventory_digest,

@@ -6,7 +6,7 @@
 
 gap packet 展示后，operator 又明确选择：LLM 采用当前 intended account 的资格 locator；Tavily 采用 dedicated qualification account；Git/LFS 只创建本地隔离仓库且不向 GitHub 或其他托管平台同步；Podman/科学软件采用 digest-pinned image；HPC 采用 `Diannan/3090`；protected evidence 采用 operator state root。该选择只冻结 candidate，不表示 subject 已存在、identity 已闭合或任何 effect 已获授权。
 
-具体实现继续收紧为：operator state root 必须由当前 uid 持有、精确 `0700` 且禁止 symlink，layout、credential bundle、SQLite ledger 与私有配置精确 `0600`；凭据只从 `credential.llm.micuapi.qualification`、`credential.tavily.qualification`、`credential.hpc.diannan.qualification` 三个 plan-bound locator 解析，不读取 ambient environment fallback。Podman preparation 只有 `base`、`hmmer`、`docking` 三个 repository-owned recipe group，统一绑定 digest-pinned Python base、当前 `uv.lock` 与官方 HMMER/Vina/fpocket source commit。HPC preparation 生成独立 `aox-qualification-diannan` 配置，保持 `activated=false`、`scheduler_submit_enabled=false`，并使用 exact identity file/known-hosts file 做只读 `Diannan/3090` identity observation；不得覆盖既有 runner 配置。
+具体实现继续收紧为：operator state root 必须由当前 uid 持有、精确 `0700` 且禁止 symlink，layout、credential bundle、SQLite ledger 与私有配置精确 `0600`；凭据只从 `credential.llm.micuapi.qualification`、`credential.tavily.qualification`、`credential.hpc.diannan.qualification` 三个 plan-bound locator 解析，不读取 ambient environment fallback。Podman preparation 只有 `base`、`hmmer`、`docking` 三个 repository-owned recipe group，统一绑定 digest-pinned Python base、当前 `uv.lock` 与官方 HMMER/Vina/fpocket source commit。HPC preparation 生成独立 `aox-qualification-diannan` 配置，保持 `activated=false`、`scheduler_submit_enabled=false`，并使用 exact host/port（当前端口为 `22222`）、identity file/known-hosts file 做只读 `Diannan/3090` identity observation；不得覆盖既有 runner 配置。
 
 只读发现得到的当前事实如下：
 

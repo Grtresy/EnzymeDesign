@@ -257,7 +257,8 @@ canonical Plugin/Kernel surfaces；旧 function handler/repository/writer packag
   本地隔离 repository/LFS endpoint，禁止 hosted sync。Preparation 完成并重新发现 identity 后才重建
   qualification dry plan；准备 runtime 采用 `0700` operator state root、`0600` 私有文件与 exact locator，无
   ambient credential fallback。Batch 1 只有 LLM/Tavily locator、本地 Git/LFS、`base`/`hmmer`/`docking` 三镜像组
-  和 `Diannan/3090` qualification-only HPC identity 七个 action；成功只形成 protected
+  和 `Diannan/3090` qualification-only HPC identity 七个 action；SSH subject 显式绑定 host/port（当前端口
+  `22222`）且不读取用户 SSH config fallback；成功只形成 protected
   `ExternalIdentityPreparationResult`。effect-free rediscovery 还必须把 `nonlive.locator.*` 重绑为专用
   LLM/Tavily/HPC locator、移除本地 Git credential placeholder 并重建 unit digest。两级 backend 都必须在各自 exact plan digest/window/batch authorization 缺失时于
   credential resolution 前失败。真实 receipt 即使完成也只证明 `qualified`，不能更新
