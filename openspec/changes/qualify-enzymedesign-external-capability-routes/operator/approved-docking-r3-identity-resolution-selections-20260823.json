@@ -6,6 +6,9 @@
   "snapshot_id": "prepared.batch-1.90d75ac96d2fb144",
   "constraints": [
     "alphafold-batch-2-only",
+    "first-effect-requires-new-authorization",
+    "git-local-only-no-hosted-sync",
+    "plan-only-current-authority",
     "same-type-preparation-and-qualification-authorized",
     "independent-source-and-digest-bound-authority-per-occurrence",
     "max-retries-zero",
