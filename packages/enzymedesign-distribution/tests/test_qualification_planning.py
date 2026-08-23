@@ -245,6 +245,40 @@ def test_alphafold_preparation_projects_version_and_resource_identity() -> None:
     assert observation.missing_fields == ()
 
 
+def test_alphafold_config_reconciles_only_authority_fields(tmp_path: Path) -> None:
+    from enzymedesign_distribution.qualification_preparation_runtime import (
+        _persist_exact_alphafold_config,
+    )
+
+    parent = tmp_path / "alphafold-qualification"
+    parent.mkdir(mode=0o700)
+    path = parent / "config.json"
+
+    def config(plan: str, authority: str, resource: str) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "schema_version": "enzymedesign_alphafold_qualification_config@1",
+            "image_digest": resource,
+            "preparation_plan_digest": plan,
+            "preparation_authorization_digest": authority,
+        }
+        payload["config_digest"] = canonical_sha256_digest(payload)
+        return payload
+
+    initial = config("sha256:" + "1" * 64, "sha256:" + "2" * 64, "resource-a")
+    assert _persist_exact_alphafold_config(path, initial) is None
+    assert path.stat().st_mode & 0o777 == 0o600
+
+    rebound = config("sha256:" + "3" * 64, "sha256:" + "4" * 64, "resource-a")
+    assert _persist_exact_alphafold_config(path, rebound) == initial["config_digest"]
+    assert json.loads(path.read_text(encoding="utf-8")) == rebound
+
+    drifted = config("sha256:" + "5" * 64, "sha256:" + "6" * 64, "resource-b")
+    with pytest.raises(ExternalQualificationError) as captured:
+        _persist_exact_alphafold_config(path, drifted)
+    assert captured.value.error_code == "qualification_alphafold_config_subject_drift"
+    assert json.loads(path.read_text(encoding="utf-8")) == rebound
+
+
 def test_operator_decisions_preserve_local_only_git_and_two_phase_authority() -> None:
     bundle = _bundle()
     selection_set = bundle["operator_selection_set"]

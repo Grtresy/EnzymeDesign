@@ -194,6 +194,9 @@ source commit/dirty digest 与 Apptainer version，并以 exact digest 生成 ow
 `max_retries=0`、无 fallback，并在结束时验证实际 GPU identity、CIF、summary confidence 及 cleanup。流程不执行
 license acceptance，缺少既有合法资源时保持 `blocked_identity`，不能自动下载、重建或选择另一 target。Batch 2 的
 独立 preparation/qualification authority 与 7 天 receipt 不能替代 Batch 1 receipt，更不能直接形成 cutover。
+若一次只读观测已终态、但后续本地 rediscovery 因源码缺陷失败，新 source/plan/authority 不得删除或盲目覆盖既有
+私有配置；executor 只允许在重新观测的全部 resource identity 完全相等且旧配置 digest/owner/mode 完整时，原子更新
+plan/authority 绑定并记录 prior config digest。任一稳定资源字段漂移都停止 reconcile，禁止把该路径当作 retry 或 fallback。
 
 首次真实 Batch 1 occurrence 已终态裁决，不得复用 authority。它证明部分真实 route 可用，同时暴露了固定 Git branch、
 不可写 `/data/openzyme` workspace、HMMER/fpocket output path、本地 docking image runtime dependency 与私有诊断投影问题。

@@ -83,6 +83,118 @@ _PREPARATION_CREDENTIAL_REQUIREMENTS: Mapping[
 }
 
 
+def _persist_exact_alphafold_config(
+    path: Path,
+    config: Mapping[str, object],
+) -> str | None:
+    """Create or compare-and-replace one exact protected AF3 config."""
+
+    parent = path.parent
+    if parent.exists() or parent.is_symlink():
+        metadata = parent.lstat()
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o700
+        ):
+            raise ExternalQualificationError(
+                "qualification_operator_state_permissions_unsafe",
+                "AlphaFold qualification config parent is unsafe",
+            )
+    else:
+        parent.mkdir(mode=0o700, parents=False)
+
+    expected = dict(config)
+    expected_digest = expected.get("config_digest")
+    unsigned_expected = dict(expected)
+    unsigned_expected.pop("config_digest", None)
+    if expected_digest != canonical_sha256_digest(unsigned_expected):
+        raise ExternalQualificationError(
+            "qualification_alphafold_config_digest_invalid",
+            "AlphaFold qualification config digest is invalid",
+        )
+
+    prior_digest: str | None = None
+    replace_existing = False
+    if path.exists() or path.is_symlink():
+        metadata = path.lstat()
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+        ):
+            raise ExternalQualificationError(
+                "qualification_operator_state_permissions_unsafe",
+                "AlphaFold qualification config is unsafe",
+            )
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ExternalQualificationError(
+                "qualification_alphafold_config_reconcile_failed",
+                "AlphaFold qualification config cannot be reconciled",
+            ) from exc
+        if not isinstance(loaded, dict):
+            raise ExternalQualificationError(
+                "qualification_alphafold_config_reconcile_failed",
+                "AlphaFold qualification config is not one object",
+            )
+        prior_digest_value = loaded.get("config_digest")
+        unsigned_loaded = dict(loaded)
+        unsigned_loaded.pop("config_digest", None)
+        if prior_digest_value != canonical_sha256_digest(unsigned_loaded):
+            raise ExternalQualificationError(
+                "qualification_alphafold_config_reconcile_failed",
+                "AlphaFold qualification config integrity failed",
+            )
+        transient_fields = {
+            "preparation_authorization_digest",
+            "preparation_plan_digest",
+        }
+        stable_loaded = {
+            key: value
+            for key, value in unsigned_loaded.items()
+            if key not in transient_fields
+        }
+        stable_expected = {
+            key: value
+            for key, value in unsigned_expected.items()
+            if key not in transient_fields
+        }
+        if stable_loaded != stable_expected:
+            raise ExternalQualificationError(
+                "qualification_alphafold_config_subject_drift",
+                "AlphaFold qualification resource config differs from observation",
+            )
+        prior_digest = str(prior_digest_value)
+        if loaded == expected:
+            return prior_digest
+        replace_existing = True
+
+    encoded = (json.dumps(expected, sort_keys=True, indent=2) + "\n").encode()
+    target = path
+    if replace_existing:
+        target = parent / (
+            f".{path.name}.{str(expected_digest).removeprefix('sha256:')[:16]}.tmp"
+        )
+    descriptor = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        os.write(descriptor, encoded)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    if replace_existing:
+        os.replace(target, path)
+    directory = os.open(parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    return prior_digest
+
+
 @dataclass(frozen=True, slots=True)
 class _PreloadedQualificationCredentialResolver:
     materials: Mapping[str, object] = field(repr=False)
@@ -500,33 +612,7 @@ class EnzymeDesignHpcIdentityPreparationExecutor:
         }
         config["config_digest"] = canonical_sha256_digest(config)
         path = self.alphafold_private_config_path
-        if path.exists() or path.is_symlink():
-            raise ExternalQualificationError(
-                "qualification_alphafold_config_already_exists",
-                "AlphaFold qualification config requires exact reconciliation",
-            )
-        parent = path.parent
-        if parent.exists() or parent.is_symlink():
-            metadata = parent.lstat()
-            if (
-                stat.S_ISLNK(metadata.st_mode)
-                or not stat.S_ISDIR(metadata.st_mode)
-                or metadata.st_uid != os.getuid()
-                or stat.S_IMODE(metadata.st_mode) != 0o700
-            ):
-                raise ExternalQualificationError(
-                    "qualification_operator_state_permissions_unsafe",
-                    "AlphaFold qualification config parent is unsafe",
-                )
-        else:
-            parent.mkdir(mode=0o700, parents=False)
-        encoded = (json.dumps(config, sort_keys=True, indent=2) + "\n").encode()
-        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        try:
-            os.write(descriptor, encoded)
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        prior_config_digest = _persist_exact_alphafold_config(path, config)
         fields = tuple(
             SafeIdentityField(field_id, value)
             for field_id, value in sorted(
@@ -562,6 +648,8 @@ class EnzymeDesignHpcIdentityPreparationExecutor:
                 "occurrence_id": occurrence_id,
                 "inventory_generation_digest": observation.inventory_generation_digest,
                 "config_digest": config["config_digest"],
+                "prior_config_digest": prior_config_digest,
+                "config_reconciled": prior_config_digest is not None,
                 "license_acceptance_performed": False,
             },
             external_effect_performed=True,
