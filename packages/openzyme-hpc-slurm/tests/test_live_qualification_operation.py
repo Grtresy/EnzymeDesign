@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from dataclasses import field
+import hashlib
 import subprocess
 
 from openzyme_contracts import ExternalQualificationProbeRequest
@@ -272,3 +273,41 @@ def test_scientific_cleanup_timeout_is_one_terminal_route_failure() -> None:
     assert outcome.error_code == "qualification_compute_remote_cleanup_timeout"
     assert outcome.effect_certainty == "dispatch_in_doubt"
     assert any(".openzyme-qualification-owner" in script for script in remote.scripts)
+
+
+@dataclass
+class _ScientificInputRecordingRemote:
+    content: bytes
+    scripts: list[str] = field(default_factory=list)
+
+    def run_remote(self, script: str):
+        self.scripts.append(script)
+        if script.startswith("wc -c <"):
+            digest = hashlib.sha256(self.content).hexdigest()
+            return 0, f"{len(self.content)}\n{digest}\n", ""
+        return 0, "", ""
+
+
+def test_scientific_input_staging_chunks_large_inputs_below_argv_limit() -> None:
+    from openzyme_hpc_slurm import SlurmScientificQualificationRoute
+
+    content = b"A" * 216_160
+    remote = _ScientificInputRecordingRemote(content)
+    route = SlurmScientificQualificationRoute(
+        workspace_root=".local/state/openzyme-qualification/science-chunked",
+        workspace_owner_id="science-chunked",
+        partition="3090",
+        command_port=remote,
+        input_resolver=_EmptyInputResolver(),
+        software_image_path="/home/grtresy/images/vina.sif",
+        software_image_digest="sha256:" + "0" * 64,
+    )
+
+    route._stage_input(
+        ".local/state/openzyme-qualification/science-chunked/input.pdbqt",
+        content,
+    )
+
+    chunk_scripts = [script for script in remote.scripts if "base64 -d >>" in script]
+    assert len(chunk_scripts) > 1
+    assert max(len(script) for script in chunk_scripts) < 40_000

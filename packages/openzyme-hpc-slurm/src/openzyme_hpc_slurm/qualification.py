@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import field
 import base64
+import hashlib
 import re
 import shlex
 import subprocess
@@ -417,11 +418,7 @@ class SlurmScientificQualificationRoute:
                         "scientific qualification input bytes drifted",
                     )
                 remote_path = f"{run_root}/{workload.cwd}/{item.path}"
-                encoded = base64.b64encode(content).decode("ascii")
-                self._run(
-                    f"mkdir -p {shlex.quote(remote_path.rsplit('/', 1)[0])}; "
-                    f"printf '%s' {shlex.quote(encoded)} | base64 -d > {shlex.quote(remote_path)}"
-                )
+                self._stage_input(remote_path, content)
             cwd = f"{run_root}/{workload.cwd}"
             for output_path in workload.expected_output_paths:
                 remote_path = f"{cwd}/{output_path}"
@@ -534,6 +531,24 @@ class SlurmScientificQualificationRoute:
             f"printf '%s' {owner_id} > {owner_marker} && "
             f"chmod 600 {owner_marker}; fi"
         )
+
+    def _stage_input(self, remote_path: str, content: bytes) -> None:
+        parent = shlex.quote(remote_path.rsplit("/", 1)[0])
+        target = shlex.quote(remote_path)
+        self._run(f"mkdir -p {parent}; : > {target}")
+        encoded = base64.b64encode(content).decode("ascii")
+        for offset in range(0, len(encoded), 32_768):
+            chunk = shlex.quote(encoded[offset : offset + 32_768])
+            self._run(f"printf '%s' {chunk} | base64 -d >> {target}")
+        observed = self._run(
+            f"wc -c < {target}; sha256sum {target} | cut -d' ' -f1"
+        ).splitlines()
+        expected_sha256 = hashlib.sha256(content).hexdigest()
+        if observed != [str(len(content)), expected_sha256]:
+            raise ExternalQualificationError(
+                "qualification_compute_remote_input_verification_failed",
+                "scientific qualification staged input differs from exact source bytes",
+            )
 
     def reconcile(
         self,
