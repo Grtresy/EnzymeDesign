@@ -145,6 +145,23 @@ class SQLiteProtectedQualificationLedger:
                 );
                 """
             )
+            scope_columns = {
+                str(row[1])
+                for row in connection.execute(
+                    "PRAGMA table_info(external_qualification_occurrence_scopes)"
+                ).fetchall()
+            }
+            if "source_identity_digest" not in scope_columns:
+                connection.execute(
+                    "ALTER TABLE external_qualification_occurrence_scopes "
+                    "ADD COLUMN source_identity_digest TEXT"
+                )
+                connection.execute(
+                    "UPDATE external_qualification_occurrence_scopes "
+                    "SET source_identity_digest = ? "
+                    "WHERE source_identity_digest IS NULL",
+                    ("sha256:" + "0" * 64,),
+                )
 
     def record_occurrence_scope(
         self,

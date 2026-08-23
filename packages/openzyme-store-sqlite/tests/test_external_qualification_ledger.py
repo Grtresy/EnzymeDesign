@@ -1,4 +1,5 @@
 import json
+import sqlite3
 
 from openzyme_contracts import ExternalQualificationBudgetPolicy
 from openzyme_contracts import ExternalQualificationDryPlan
@@ -16,6 +17,36 @@ from openzyme_store_sqlite import SQLiteProtectedQualificationLedger
 
 
 DIGEST = "sha256:" + "1" * 64
+
+
+def test_occurrence_scope_schema_adds_fail_closed_source_binding_to_legacy_table(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "qualification.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE external_qualification_occurrence_scopes (
+                dry_plan_digest TEXT NOT NULL,
+                authorization_digest TEXT NOT NULL,
+                unit_digests_json TEXT NOT NULL,
+                PRIMARY KEY (dry_plan_digest, authorization_digest)
+            );
+            """
+        )
+        connection.execute(
+            "INSERT INTO external_qualification_occurrence_scopes "
+            "(dry_plan_digest, authorization_digest, unit_digests_json) "
+            "VALUES (?, ?, ?)",
+            (DIGEST, "sha256:" + "2" * 64, json.dumps([DIGEST])),
+        )
+
+    ledger = SQLiteProtectedQualificationLedger(database_path)
+
+    assert ledger.restore_occurrence_scope(
+        dry_plan_digest=DIGEST,
+        authorization_digest="sha256:" + "2" * 64,
+    ) == ("sha256:" + "0" * 64, (DIGEST,))
 
 
 def _plan() -> ExternalQualificationDryPlan:
