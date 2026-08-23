@@ -71,6 +71,18 @@ _SUBJECT_VERSION_FIELDS = {
     "software.rdkit": "rdkit_version",
 }
 
+_ADDITIONAL_PREPARATION_PROJECTION_FIELDS = {
+    "alphafold-hpc": frozenset(
+        {
+            "alphafold_inventory_generation_digest",
+            "alphafold_source_commit",
+            "alphafold_source_dirty_digest",
+            "alphafold_version",
+            "alphafold_wrapper_digest",
+        }
+    ),
+}
+
 
 def _preparation_result_field_id(requirement_id: str) -> str:
     """Map a discovery validation predicate to its owner-observed field."""
@@ -489,7 +501,13 @@ def apply_external_identity_preparation_results(
         }
         projection_identity_fields = {
             item.field_id for item in projection.safe_fields
-        }.union(required_result_fields)
+        }.union(
+            required_result_fields,
+            _ADDITIONAL_PREPARATION_PROJECTION_FIELDS.get(
+                projection.projection_id,
+                frozenset(),
+            ),
+        )
         domain_fields.update(
             {
                 field_id: prepared_fields[field_id]

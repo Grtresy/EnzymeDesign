@@ -139,6 +139,112 @@ def test_alphafold_batch_2_preparation_is_read_only_and_exact() -> None:
     assert "alphafold_version" in action.expected_identity_fields
 
 
+def test_alphafold_preparation_projects_version_and_resource_identity() -> None:
+    from enzymedesign_distribution import ExternalQualificationBatch
+    from enzymedesign_distribution import apply_external_identity_preparation_results
+    from enzymedesign_distribution import build_external_identity_gaps
+    from enzymedesign_distribution import build_external_identity_preparation_plan
+    from enzymedesign_distribution import build_external_identity_resolution_decisions
+    from enzymedesign_distribution import discover_external_subject_identities
+    from enzymedesign_distribution import project_external_identity_discovery_snapshot
+    from openzyme_contracts import create_external_identity_preparation_success
+
+    snapshot = load_safe_identity_snapshot(SNAPSHOT)
+    original = load_operator_identity_resolution_selections(SELECTIONS)
+    selections = replace(
+        original,
+        selection_set_id="operator-confirmed-alphafold-projection-test",
+        selections=tuple(
+            replace(
+                item,
+                candidate_id="observe-existing-alphafold3-resource-closure",
+            )
+            if item.projection_id == "alphafold-hpc"
+            else item
+            for item in original.selections
+        ),
+    )
+    readiness = build_enzymedesign_external_qualification_plan(
+        plan_id="qualification.readiness.alphafold-projection",
+        created_at=snapshot.observed_at,
+        enabled_optional_profiles=OPTIONAL_PROFILES,
+    )
+    discovery = discover_external_subject_identities(
+        readiness_plan=readiness,
+        snapshot=snapshot,
+    )
+    gaps = build_external_identity_gaps(discovery)
+    plan = build_external_identity_preparation_plan(
+        readiness_plan=readiness,
+        discovery=discovery,
+        gaps=gaps,
+        decisions=build_external_identity_resolution_decisions(
+            gaps=gaps,
+            snapshot=snapshot,
+            selection_set=selections,
+        ),
+        selection_set=selections,
+        batch=ExternalQualificationBatch.BATCH_2_ALPHAFOLD,
+    )
+    action = plan.actions[0]
+    values = {
+        field_id: (
+            "credential.hpc.diannan.qualification"
+            if field_id == "credential_locator_id"
+            else "3.0.1"
+            if field_id == "alphafold_version"
+            else "a" * 40
+            if field_id == "alphafold_source_commit"
+            else "sha256:" + "1" * 64
+        )
+        for field_id in action.expected_identity_fields
+    }
+    result = create_external_identity_preparation_success(
+        occurrence_id="occurrence.preparation.alphafold-projection",
+        preparation_plan_digest=plan.preparation_plan_digest,
+        authorization_digest="sha256:" + "2" * 64,
+        action_id=action.action_id,
+        owner_component_id=action.owner_component_id,
+        effect_id=action.effect_id,
+        input_binding_digest=action.input_binding_digest,
+        request_digest="sha256:" + "3" * 64,
+        safe_identity_fields=tuple(
+            SafeIdentityField(field_id, values[field_id])
+            for field_id in action.expected_identity_fields
+        ),
+        receipt_payload={"action_id": action.action_id},
+        external_effect_performed=True,
+        credential_material_accessed=True,
+    )
+    prepared = apply_external_identity_preparation_results(
+        snapshot=project_external_identity_discovery_snapshot(
+            snapshot=snapshot,
+            discovery=discovery,
+        ),
+        preparation_plan=plan,
+        results=(result,),
+        observed_at="2026-08-24T00:00:00+08:00",
+    )
+    projection = next(
+        item for item in prepared.projections if item.projection_id == "alphafold-hpc"
+    )
+    fields = {item.field_id: item.value for item in projection.safe_fields}
+
+    assert fields["alphafold_version"] == "3.0.1"
+    assert fields["alphafold_wrapper_digest"] == "sha256:" + "1" * 64
+    rediscovered = discover_external_subject_identities(
+        readiness_plan=readiness,
+        snapshot=prepared,
+    )
+    observation = next(
+        item
+        for item in rediscovered.observations
+        if item.observation_id == "observation.alphafold-hpc"
+    )
+    assert observation.status is ExternalSubjectIdentityStatus.RESOLVED
+    assert observation.missing_fields == ()
+
+
 def test_operator_decisions_preserve_local_only_git_and_two_phase_authority() -> None:
     bundle = _bundle()
     selection_set = bundle["operator_selection_set"]
