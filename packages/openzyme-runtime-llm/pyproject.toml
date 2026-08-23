@@ -5,6 +5,8 @@ description = "LLM/provider bounded-turn Adapter"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+  "langchain>=1.0,<2.0",
+  "langchain-openai>=1.0,<2.0",
   "openzyme-contracts",
   "openzyme-extension-spi",
   "openzyme-runtime-spi",
@@ -12,10 +14,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-openai = [
-  "langchain>=1.0,<2.0",
-  "langchain-openai>=1.0,<2.0",
-]
 dev = [
   "pytest>=9.0.0",
 ]

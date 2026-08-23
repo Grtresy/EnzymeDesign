@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from dataclasses import field
+import subprocess
 
 from openzyme_contracts import ExternalQualificationProbeRequest
 from openzyme_hpc_slurm import OpenSshSlurmQualificationOperation
@@ -73,3 +74,39 @@ def test_slurm_qualification_submit_observe_cancel_and_restore_reconcile() -> No
     assert restored.reconcile(request).succeeded is True
     assert state.cleanup()["command_accepted"] is True
     assert all("-p 3090" in script for script in remote.scripts if "sbatch" in script)
+
+
+@dataclass
+class _TimeoutThenObserveRemote:
+    scripts: list[str] = field(default_factory=list)
+
+    def run_remote(self, script: str):
+        self.scripts.append(script)
+        if script.startswith("job=$(sbatch"):
+            raise subprocess.TimeoutExpired(script, 120)
+        if script.startswith("timeout 30s sacct"):
+            return 0, "204|CANCELLED by 1000\n", ""
+        return 0, "", ""
+
+
+def test_slurm_cancel_timeout_reconciles_exact_attempt_without_redispatch() -> None:
+    remote = _TimeoutThenObserveRemote()
+    state = SlurmQualificationState(
+        workspace=".local/state/openzyme-qualification/batch-1-timeout",
+        partition="3090",
+        command_port=remote,
+    )
+    operation = OpenSshSlurmQualificationOperation(
+        component_id="openzyme.hpc.slurm",
+        route_id="openzyme.hpc.slurm.cancel@1",
+        subject_digest=DIGEST,
+        state=state,
+    )
+    request = _request("cancel")
+
+    dispatched = operation.dispatch(request)
+    assert dispatched.terminal is False
+    assert dispatched.effect_certainty == "dispatch_in_doubt"
+    assert operation.reconcile(request).succeeded is True
+    assert sum(script.startswith("job=$(sbatch") for script in remote.scripts) == 1
+    assert state.cancel_job_name is not None
