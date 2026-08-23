@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
+import subprocess
 from typing import Mapping
 
 from enzymedesign_bio_provider_adapters import BioHttpQualificationProbeBridge
@@ -165,7 +166,19 @@ class SelectedLiveQualificationBridgeFactory:
             ("openzyme.hpc.ssh", self._ssh_state),
         ):
             if state is not None:
-                receipts[component_id] = state.cleanup()
+                try:
+                    receipts[component_id] = state.cleanup()
+                except (ExternalQualificationError, OSError, subprocess.TimeoutExpired) as exc:
+                    receipts[component_id] = {
+                        "cleanup_attempted": True,
+                        "cleanup_succeeded": False,
+                        "error_code": getattr(
+                            exc,
+                            "error_code",
+                            "qualification_cleanup_command_failed",
+                        ),
+                        "exception_type": type(exc).__name__,
+                    }
         return receipts
 
     def _bind_authorization(self, binding: ExternalQualificationBridgeBinding) -> str:

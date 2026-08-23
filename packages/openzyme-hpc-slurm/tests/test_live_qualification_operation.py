@@ -110,3 +110,47 @@ def test_slurm_cancel_timeout_reconciles_exact_attempt_without_redispatch() -> N
     assert operation.reconcile(request).succeeded is True
     assert sum(script.startswith("job=$(sbatch") for script in remote.scripts) == 1
     assert state.cancel_job_name is not None
+
+
+@dataclass
+class _ScientificCleanupTimeoutRemote:
+    def run_remote(self, script: str):
+        if script.startswith("rm -rf --"):
+            raise subprocess.TimeoutExpired(script, 120)
+        return 0, "0" * 64 + "\n", ""
+
+
+@dataclass
+class _EmptyInputResolver:
+    def resolve(self, content_digest: str) -> bytes:
+        raise AssertionError(content_digest)
+
+
+def test_scientific_cleanup_timeout_is_one_terminal_route_failure() -> None:
+    from openzyme_contracts import ExternalScientificQualificationWorkload
+    from openzyme_hpc_slurm import SlurmScientificQualificationRoute
+
+    route = SlurmScientificQualificationRoute(
+        workspace_root=".local/state/openzyme-qualification/science-timeout",
+        partition="3090",
+        command_port=_ScientificCleanupTimeoutRemote(),
+        input_resolver=_EmptyInputResolver(),
+        software_image_path="/home/grtresy/images/hmmer.sif",
+        software_image_digest="sha256:" + "0" * 64,
+    )
+    workload = ExternalScientificQualificationWorkload.create(
+        workload_id="workload.cleanup-timeout",
+        driver_component_id="enzymedesign.hmmer.hpc",
+        operation="hmmbuild",
+        route_kind="hpc-primary",
+        argv=("hmmbuild", "output.hmm", "input.fasta"),
+        cwd="analysis/hmmer",
+        inputs=(),
+        expected_output_paths=("output.hmm",),
+        compiled_workload_digest=DIGEST,
+    )
+
+    outcome = route.dispatch(workload)
+
+    assert outcome.succeeded is False
+    assert outcome.error_code == "qualification_compute_remote_cleanup_timeout"

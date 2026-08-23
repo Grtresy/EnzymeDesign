@@ -317,6 +317,8 @@ class SlurmScientificQualificationRoute:
         workload: ExternalScientificQualificationWorkload,
     ) -> ExternalScientificQualificationRouteOutcome:
         run_root = f"{self.workspace_root}/scientific/{workload.workload_id}"
+        outcome: ExternalScientificQualificationRouteOutcome | None = None
+        cleanup_error_code: str | None = None
         try:
             observed_image_digest = self._run(
                 f"sha256sum {shlex.quote(self.software_image_path)} | cut -d' ' -f1"
@@ -394,7 +396,7 @@ class SlurmScientificQualificationRoute:
                 "outputs": outputs,
                 "route_kind": self.route_kind,
             }
-            return ExternalScientificQualificationRouteOutcome(
+            outcome = ExternalScientificQualificationRouteOutcome(
                 workload_digest=workload.workload_digest,
                 terminal=True,
                 succeeded=True,
@@ -407,16 +409,25 @@ class SlurmScientificQualificationRoute:
                 credential_material_accessed=True,
             )
         except ExternalQualificationError as exc:
-            return self._failure(workload, exc.error_code)
-        finally:
-            returncode, _stdout, _stderr = self.command_port.run_remote(
-                f"rm -rf -- {shlex.quote(run_root)}"
+            outcome = self._failure(workload, exc.error_code)
+        except subprocess.TimeoutExpired:
+            outcome = self._failure(
+                workload,
+                "qualification_compute_remote_timeout_in_doubt",
             )
-            if returncode != 0:
-                raise ExternalQualificationError(
-                    "qualification_compute_remote_cleanup_failed",
-                    "scientific Slurm qualification workspace cleanup failed",
+        finally:
+            try:
+                returncode, _stdout, _stderr = self.command_port.run_remote(
+                    f"rm -rf -- {shlex.quote(run_root)}"
                 )
+                if returncode != 0:
+                    cleanup_error_code = "qualification_compute_remote_cleanup_failed"
+            except subprocess.TimeoutExpired:
+                cleanup_error_code = "qualification_compute_remote_cleanup_timeout"
+        if cleanup_error_code is not None:
+            return self._failure(workload, cleanup_error_code)
+        assert outcome is not None
+        return outcome
 
     def reconcile(
         self,

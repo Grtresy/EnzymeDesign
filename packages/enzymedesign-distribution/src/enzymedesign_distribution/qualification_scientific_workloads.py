@@ -531,7 +531,7 @@ def build_selected_driver_scientific_compiler(
                     "environment_policy_digest": policy_digest,
                     "inputs": (
                         _input_metadata(
-                            "inputs/structure.pdb",
+                            "structure.pdb",
                             _content_digest(_STRUCTURE_PDB),
                             "revision-structure",
                         ),
@@ -546,7 +546,7 @@ def build_selected_driver_scientific_compiler(
             route_kind=route_kind,
             invocation_builder=invocation,
             input_builder=lambda _request: (
-                _fixed_input("inputs/structure.pdb", _STRUCTURE_PDB),
+                _fixed_input("structure.pdb", _STRUCTURE_PDB),
             ),
             output_builder=lambda _compiled: (
                 "structure_out/structure_info.txt",

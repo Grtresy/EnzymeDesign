@@ -133,4 +133,6 @@ def test_scientific_compilers_expect_the_programs_actual_output_paths() -> None:
     ).compile(_request("detect"))
 
     assert hmmbuild.expected_output_paths == ("results/hmmer/model.hmm",)
+    assert tuple(item.path for item in fpocket.inputs) == ("structure.pdb",)
+    assert fpocket.argv == ("fpocket", "-f", "structure.pdb")
     assert fpocket.expected_output_paths == ("structure_out/structure_info.txt",)
