@@ -8,6 +8,7 @@ from typing import Protocol
 from openzyme_contracts import ExternalQualificationDryPlan
 from openzyme_contracts import ExternalQualificationSafeReceipt
 from openzyme_contracts import ExternalIdentityPreparationResult
+from openzyme_contracts import require_digest
 
 
 class ProtectedQualificationLedgerPort(Protocol):
@@ -119,11 +120,15 @@ class SQLiteProtectedQualificationLedger:
         return tuple(json.loads(row[0]) for row in rows)
 
     def restore_preparation_results(
-        self, preparation_plan_digest: str
+        self,
+        preparation_plan_digest: str,
+        authorization_digest: str,
     ) -> tuple[ExternalIdentityPreparationResult, ...]:
+        require_digest(authorization_digest, field_name="authorization_digest")
         return tuple(
             ExternalIdentityPreparationResult.from_dict(payload)
             for payload in self.read_preparation_results(preparation_plan_digest)
+            if payload.get("authorization_digest") == authorization_digest
         )
 
 

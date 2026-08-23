@@ -91,11 +91,37 @@ def test_adapter_owned_ledger_records_safe_preparation_result_once(tmp_path) -> 
         credential_material_accessed=True,
     )
 
+    next_occurrence = create_external_identity_preparation_success(
+        occurrence_id="occurrence.preparation.store.next",
+        preparation_plan_digest=DIGEST,
+        authorization_digest="sha256:" + "5" * 64,
+        action_id="prepare.batch-1.provider",
+        owner_component_id="provider.owner",
+        effect_id="provider.locator.configure",
+        input_binding_digest="sha256:" + "3" * 64,
+        request_digest="sha256:" + "6" * 64,
+        safe_identity_fields=(SafeIdentityField("locator_digest", DIGEST),),
+        receipt_payload={"locator_digest": DIGEST},
+        external_effect_performed=True,
+        credential_material_accessed=True,
+    )
+
     ledger.record_preparation_result(result)
     ledger.record_preparation_result(result)
+    ledger.record_preparation_result(next_occurrence)
     stored = ledger.read_preparation_results(DIGEST)
 
-    assert len(stored) == 1
-    assert stored[0]["result_digest"] == result.result_digest
+    assert len(stored) == 2
+    assert {item["result_digest"] for item in stored} == {
+        result.result_digest,
+        next_occurrence.result_digest,
+    }
     assert "secret-canary" not in json.dumps(stored)
-    assert ledger.restore_preparation_results(DIGEST) == (result,)
+    assert ledger.restore_preparation_results(
+        DIGEST,
+        result.authorization_digest,
+    ) == (result,)
+    assert ledger.restore_preparation_results(
+        DIGEST,
+        next_occurrence.authorization_digest,
+    ) == (next_occurrence,)

@@ -312,7 +312,10 @@ def main() -> int:
         _validate_private_file(layout.ledger_path)
         existing_results = SQLiteProtectedQualificationLedger(
             layout.ledger_path
-        ).restore_preparation_results(plan.preparation_plan_digest)
+        ).restore_preparation_results(
+            plan.preparation_plan_digest,
+            authorization.authorization_digest,
+        )
     factory = build_enzymedesign_identity_preparation_backend_factory(
         layout=layout,
         allowed_locator_ids=plan.credential_locator_ids,
