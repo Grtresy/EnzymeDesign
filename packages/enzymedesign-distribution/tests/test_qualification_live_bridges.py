@@ -4,6 +4,7 @@ import pytest
 
 from enzymedesign_distribution import SelectedLiveQualificationBridgeFactory
 from openzyme_contracts import ExternalQualificationBridgeBinding
+from openzyme_contracts import ExternalQualificationError
 from openzyme_contracts import canonical_sha256_digest
 from openzyme_hpc_ssh import SshWorkspaceRuntimeQualificationIdentity
 
@@ -97,11 +98,16 @@ def factory(tmp_path):
                 "credential.hpc.diannan.qualification",
                 {
                     "ssh_host": "diannan",
-                    "ssh_user": "operator",
+                    "ssh_user": "grtresy",
                     "ssh_port": "22222",
                     "identity_file": str(identity),
                     "known_hosts_file": str(known_hosts),
-                    "workspace_root": "/qualification/workspaces",
+                    "workspace_root": (
+                        "/home/grtresy/.local/state/openzyme-executor-workspaces"
+                    ),
+                    "isolation_command": (
+                        "/home/grtresy/.local/libexec/openzyme-workspace-runtime"
+                    ),
                     "hmmer_sif": "/qualification/containers/hmmer.sif",
                     "vina_sif": "/qualification/containers/vina.sif",
                     "fpocket_sif": "/qualification/containers/fpocket.sif",
@@ -215,3 +221,37 @@ def test_live_factory_builds_exact_owner_bridge_without_performing_effect(
     bridge = factory.builders()[component_id](binding)
 
     assert bridge.binding.binding_digest == binding.binding_digest
+
+
+@pytest.mark.parametrize(
+    ("field_name", "field_value"),
+    (
+        ("workspace_root", "/data/openzyme/qualification/workspaces"),
+        ("isolation_command", "/usr/local/libexec/openzyme-workspace-isolation"),
+        ("ssh_user", "different-principal"),
+    ),
+)
+def test_live_factory_rejects_hpc_material_outside_qualified_workspace_runtime(
+    factory,
+    field_name: str,
+    field_value: str,
+) -> None:
+    material = factory.credential_resolver.materials[
+        "credential.hpc.diannan.qualification"
+    ]
+    material.fields[field_name] = field_value
+    binding = _binding(
+        "openzyme.hpc.ssh",
+        "helper-identity",
+        "openzyme.hpc.ssh.helper-identity@1",
+        "credential.hpc.diannan.qualification",
+    )
+
+    with pytest.raises(
+        ExternalQualificationError,
+        match="differs from the qualified workspace runtime",
+    ) as error:
+        factory.builders()[binding.component_id](binding)
+    assert error.value.error_code == (
+        "qualification_hpc_workspace_runtime_binding_mismatch"
+    )

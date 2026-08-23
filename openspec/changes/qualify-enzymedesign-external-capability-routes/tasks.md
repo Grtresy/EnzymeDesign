@@ -53,7 +53,7 @@
 - [x] 6.6 Implement the exact `openzyme-workspace-runtime@1` target helper with root/principal/owner/handle fencing, durable same-occurrence state, atomic cleanup and deterministic positive/negative tests
 - [x] 6.7 Build an independently verified Diannan `/home/grtresy/.local/libexec/openzyme-workspace-runtime` deployment plan that binds exact principal/home/path, direct-user-libexec mechanism, destination pre-state, backup and rollback owner; reject runtime path fallback
 - [x] 6.8 Obtain a distinct one-shot helper deployment authorization, execute compare-and-install, run native positive/negative qualification and either persist the exact deployment receipt or complete exact rollback
-- [ ] 6.9 Rediscover the helper build, root policy, principal and native proof identities effect-free before rebuilding the Batch 1 dry plan
+- [x] 6.9 Rediscover the helper build, root policy, principal and native proof identities effect-free before rebuilding the Batch 1 dry plan
 
 ## 7. Future real qualification after authorization
 

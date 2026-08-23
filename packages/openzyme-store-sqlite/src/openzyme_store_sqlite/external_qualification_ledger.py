@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sqlite3
+from typing import Mapping
 from typing import Protocol
 
 from openzyme_contracts import ExternalQualificationDryPlan
@@ -41,6 +42,16 @@ class ProtectedQualificationLedgerPort(Protocol):
         outcome: ExternalQualificationProbeOutcome,
     ) -> None: ...
 
+    def record_occurrence_evidence(
+        self,
+        *,
+        dry_plan_digest: str,
+        authorization_digest: str,
+        cleanup_receipt_digest: str,
+        cleanup_resources: Mapping[str, dict[str, object]],
+        budget_settlements: Mapping[str, dict[str, object]],
+    ) -> None: ...
+
 
 class SQLiteProtectedQualificationLedger:
     """Adapter-owned protected ledger; public values are contract-safe JSON only."""
@@ -77,8 +88,79 @@ class SQLiteProtectedQualificationLedger:
                     payload_json TEXT NOT NULL,
                     UNIQUE (dry_plan_digest, authorization_digest, unit_digest)
                 );
+                CREATE TABLE IF NOT EXISTS external_qualification_occurrence_evidence (
+                    dry_plan_digest TEXT NOT NULL,
+                    authorization_digest TEXT NOT NULL,
+                    cleanup_receipt_digest TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY (dry_plan_digest, authorization_digest)
+                );
                 """
             )
+
+    def record_occurrence_evidence(
+        self,
+        *,
+        dry_plan_digest: str,
+        authorization_digest: str,
+        cleanup_receipt_digest: str,
+        cleanup_resources: Mapping[str, dict[str, object]],
+        budget_settlements: Mapping[str, dict[str, object]],
+    ) -> None:
+        for field_name, value in (
+            ("dry_plan_digest", dry_plan_digest),
+            ("authorization_digest", authorization_digest),
+            ("cleanup_receipt_digest", cleanup_receipt_digest),
+        ):
+            require_digest(value, field_name=field_name)
+        payload = {
+            "schema_version": "external_qualification_occurrence_evidence@1",
+            "dry_plan_digest": dry_plan_digest,
+            "authorization_digest": authorization_digest,
+            "cleanup_receipt_digest": cleanup_receipt_digest,
+            "cleanup_resources": cleanup_resources,
+            "budget_settlements": budget_settlements,
+        }
+        payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT payload_json FROM external_qualification_occurrence_evidence "
+                "WHERE dry_plan_digest = ? AND authorization_digest = ?",
+                (dry_plan_digest, authorization_digest),
+            ).fetchone()
+            if existing is not None:
+                if existing[0] != payload_json:
+                    raise ValueError(
+                        "qualification occurrence evidence cannot be overwritten"
+                    )
+                return
+            connection.execute(
+                "INSERT INTO external_qualification_occurrence_evidence "
+                "(dry_plan_digest, authorization_digest, cleanup_receipt_digest, "
+                "payload_json) VALUES (?, ?, ?, ?)",
+                (
+                    dry_plan_digest,
+                    authorization_digest,
+                    cleanup_receipt_digest,
+                    payload_json,
+                ),
+            )
+
+    def restore_occurrence_evidence(
+        self,
+        *,
+        dry_plan_digest: str,
+        authorization_digest: str,
+    ) -> dict[str, object] | None:
+        require_digest(dry_plan_digest, field_name="dry_plan_digest")
+        require_digest(authorization_digest, field_name="authorization_digest")
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM external_qualification_occurrence_evidence "
+                "WHERE dry_plan_digest = ? AND authorization_digest = ?",
+                (dry_plan_digest, authorization_digest),
+            ).fetchone()
+        return None if row is None else json.loads(row[0])
 
     def record_probe_outcome(
         self,

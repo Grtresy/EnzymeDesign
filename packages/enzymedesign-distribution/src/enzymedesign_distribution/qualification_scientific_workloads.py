@@ -420,7 +420,7 @@ def build_selected_driver_scientific_compiler(
                 ))
             ),
             output_builder=lambda compiled: (
-                str(compiled.workload["argv"][3 if search else 2]),
+                str(compiled.workload["argv"][3 if search else 1]),
             ),
         )
     if component_id.startswith("enzymedesign.vina."):
@@ -519,7 +519,7 @@ def build_selected_driver_scientific_compiler(
                 _fixed_input("inputs/structure.pdb", _STRUCTURE_PDB),
             ),
             output_builder=lambda _compiled: (
-                "inputs/structure_out/structure_info.txt",
+                "structure_out/structure_info.txt",
             ),
         )
     raise ValueError("unsupported selected scientific Driver component")

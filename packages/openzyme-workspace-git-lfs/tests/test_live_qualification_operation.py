@@ -84,3 +84,48 @@ def test_local_git_lfs_qualification_runs_real_isolated_repository_and_restores_
         "repository_preserved": True,
     }
     assert repository.is_dir()
+
+
+def test_local_git_lfs_qualification_namespaces_publication_by_occurrence_workspace(
+    tmp_path,
+) -> None:
+    repository = tmp_path / "qualification.git"
+    subprocess.run(
+        ("git", "init", "--bare", str(repository)),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ("git", "--git-dir", str(repository), "lfs", "install", "--local"),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    refs: list[str] = []
+    for occurrence in ("first", "second"):
+        state = LocalGitLfsQualificationState(
+            repository=repository,
+            workspace=tmp_path / f"workspace-{occurrence}",
+            command_port=SubprocessLocalGitLfsQualificationCommandPort(),
+        )
+        refs.append(state.qualification_ref)
+        for operation in ("clone", "checkpoint", "publish", "lfs-fetch"):
+            outcome = LocalGitLfsQualificationOperation(
+                component_id="openzyme.workspace.git.lfs",
+                route_id=f"openzyme.workspace.git.lfs.{operation}@1",
+                subject_digest=DIGEST,
+                state=state,
+            ).dispatch(_request(operation))
+            assert outcome.succeeded is True
+        assert state.cleanup()["workspace_removed"] is True
+
+    assert refs[0] != refs[1]
+    for ref in refs:
+        observed = subprocess.run(
+            ("git", "--git-dir", str(repository), "rev-parse", ref),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert observed.stdout.strip()

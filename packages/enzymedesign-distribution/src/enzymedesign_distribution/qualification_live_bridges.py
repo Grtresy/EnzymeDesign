@@ -278,11 +278,27 @@ class SelectedLiveQualificationBridgeFactory:
     def _hpc_material(self) -> ProtectedQualificationCredentialMaterial:
         return self.credential_resolver.resolve(locator_id=_HPC_LOCATOR)
 
-    def _ensure_ssh(self, binding: ExternalQualificationBridgeBinding) -> OpenSshQualificationState:
+    def _ensure_ssh(
+        self, binding: ExternalQualificationBridgeBinding
+    ) -> OpenSshQualificationState:
         suffix = self._bind_authorization(binding)
         if self._ssh_state is None:
+            material = self._hpc_material()
+            expected = self.workspace_runtime_identity
+            actual_workspace_root = material.field_value("workspace_root")
+            actual_helper_path = material.field_value("isolation_command")
+            actual_user = material.field_value("ssh_user")
+            if (
+                actual_workspace_root != expected.workspace_parent
+                or actual_helper_path != expected.helper_path
+                or actual_user != expected.file_owner
+            ):
+                raise ExternalQualificationError(
+                    "qualification_hpc_workspace_runtime_binding_mismatch",
+                    "HPC credential material differs from the qualified workspace runtime",
+                )
             self._ssh_state = OpenSshQualificationState(
-                credential_material=self._hpc_material(),
+                credential_material=material,
                 workspace_id=f"batch-1-{suffix}",
                 command_port=RecordingSshCommandPort(
                     SubprocessOpenSshQualificationCommandPort(),

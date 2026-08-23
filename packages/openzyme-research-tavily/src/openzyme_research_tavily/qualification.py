@@ -179,6 +179,25 @@ class TavilyQualificationProbeBridge:
             ) from exc
         return self._outcome(request, receipt)
 
+    def private_diagnostic_context(
+        self, request: ExternalQualificationProbeRequest
+    ) -> dict[str, object]:
+        """Return secret-safe provider failure detail for protected diagnostics only."""
+
+        try:
+            receipt = self.provider.reconcile(request.attempt_id)
+        except KeyError:
+            return {"provider_observation_present": False}
+        return {
+            "provider_observation_present": True,
+            "provider_id": receipt.provider_id,
+            "provider_status": receipt.status,
+            "provider_error_code": receipt.error_code,
+            "provider_summary": receipt.summary,
+            "provider_effect_certainty": receipt.effect_certainty.value,
+            "provider_response_digest": receipt.response_digest,
+        }
+
     def _provider_request(
         self, request: ExternalQualificationProbeRequest
     ) -> ResearchProviderRequest:

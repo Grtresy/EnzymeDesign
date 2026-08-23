@@ -118,3 +118,19 @@ def test_real_program_fixtures_are_nontrivial_and_wheel_owned() -> None:
     assert max(vina_sizes) > 100_000
     assert min(vina_sizes) > 100
     assert fpocket_sizes[0] > 40_000
+
+
+def test_scientific_compilers_expect_the_programs_actual_output_paths() -> None:
+    hmmbuild = build_selected_driver_scientific_compiler(
+        component_id="enzymedesign.hmmer.local",
+        operation="hmmbuild",
+        route_kind="local",
+    ).compile(_request("hmmbuild"))
+    fpocket = build_selected_driver_scientific_compiler(
+        component_id="enzymedesign.fpocket.local",
+        operation="detect",
+        route_kind="local",
+    ).compile(_request("detect"))
+
+    assert hmmbuild.expected_output_paths == ("results/hmmer/model.hmm",)
+    assert fpocket.expected_output_paths == ("structure_out/structure_info.txt",)

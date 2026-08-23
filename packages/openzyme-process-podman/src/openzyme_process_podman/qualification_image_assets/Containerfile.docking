@@ -22,9 +22,9 @@ ARG DEBIAN_SNAPSHOT=20260820T000000Z
 RUN printf 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/%s bookworm main\n' "${DEBIAN_SNAPSHOT}" > /etc/apt/sources.list \
     && rm -f /etc/apt/sources.list.d/debian.sources \
     && apt-get -o Acquire::Check-Valid-Until=false update \
-    && apt-get install -y --no-install-recommends libboost-filesystem1.74.0 libboost-program-options1.74.0 libnetcdf19 \
+    && apt-get install -y --no-install-recommends libboost-filesystem1.74.0 libboost-program-options1.74.0 libnetcdf19 libxrender1 \
     && rm -rf /var/lib/apt/lists/* \
-    && python -m pip install --no-cache-dir meeko==0.7.1 openbabel-wheel==3.1.1.23 rdkit==2026.3.1
+    && python -m pip install --no-cache-dir meeko==0.7.1 openbabel-wheel==3.1.1.23 rdkit==2026.3.1 scipy==1.14.1
 COPY --from=native-builder /src/vina/build/linux/release/vina /usr/local/bin/vina
 COPY --from=native-builder /src/fpocket/bin/fpocket /usr/local/bin/fpocket
 LABEL org.openzyme.qualification.image-group="docking" \

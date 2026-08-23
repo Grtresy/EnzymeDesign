@@ -108,6 +108,8 @@ Each paid or resource-bearing occurrence MUST declare a warning threshold and a 
 ### Requirement: Effects, cleanup and controlled faults are exact
 Every mutating probe MUST use an isolated qualification resource, bind a cleanup action and deadline, and record residual-state observation. Fault injection MUST occur only at declared Adapter control points, preserve same-attempt identity for response-loss reconciliation, and MUST NOT use shared network chaos, quota exhaustion, automatic retry, alternate credentials, Providers, targets or routes.
 
+Local Git publication refs MUST be namespaced by the exact qualification occurrence. An HPC workspace bridge MUST reject credential material whose login principal, workspace root or absolute helper path differs from the qualified workspace-runtime identity before any SSH effect.
+
 #### Scenario: Slurm acceptance response is lost
 - **WHEN** a controlled interceptor drops the response after exact job acceptance
 - **THEN** the coordinator reconciles the same submit attempt and never submits a replacement job
@@ -118,6 +120,8 @@ Every mutating probe MUST use an isolated qualification resource, bind a cleanup
 
 ### Requirement: Real evidence is terminal, protected and qualification-only
 Successful qualification evidence MUST bind the real backend and subject, exact unit and attempt, terminal result validation, required negative-test closure, authorization digest, budget settlement, cleanup observation, issued and valid-until timestamps and protected diagnostic identity. Canonical safe receipts MUST be stored in a protected SQLite ledger and MAY be exported as secret-safe JSON; credential material and private diagnostics MUST remain outside public artifacts. Such evidence establishes only `qualified` for its exact unit and MUST NOT adopt a resource, cut over a deployment or authorize later live occurrences.
+
+The protected occurrence record MUST retain the exact cleanup-resource observations and per-unit budget-settlement payloads behind their canonical digests. A restored receipt set without the same occurrence payload, or with a different cleanup digest, MUST fail closed rather than reconstructing an unverifiable report.
 
 #### Scenario: Positive probe passes without required negative closure
 - **WHEN** the real operation succeeds but its declared negative test is missing or blocked

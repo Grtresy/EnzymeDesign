@@ -49,6 +49,11 @@ plan/authority/receipt、native qualification、build、root-policy 与 OS princ
 occurrence 会从 exact path 重新执行 `version`/`policy-digest` 并比较全部 identity。只检查通用 shell 命令、
 文件存在或 PATH 可见性不构成资格证据；公开 snapshot 只记录绝对路径的 identity digest。
 
+qualification credential material 还必须在首次 SSH effect 前逐字绑定同一 runtime identity：`ssh_user` 等于已观测
+principal/owner，`workspace_root` 等于 helper 的 root-policy workspace parent，`isolation_command` 等于已部署 absolute
+helper path。任何一个字段漂移都返回 `qualification_hpc_workspace_runtime_binding_mismatch`；不得尝试 `/data`、`/usr/local`、
+`PATH` 或其他用户目录作为 fallback。sidecar 等附属根同样使用显式用户级配置，但不能代替 workspace root identity。
+
 普通 login Shell 与 scheduler 永远分开：`hpc.workspace.exec` 不能调用/模拟 `sbatch`、`scancel` 或 runner
 API；formal occurrence credential 只由 Compute admission 为 exact workload/route 签发。
 

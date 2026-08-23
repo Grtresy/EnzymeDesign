@@ -258,6 +258,19 @@ class LocalGitLfsQualificationState:
             removed = True
         return {"workspace_removed": removed, "repository_preserved": True}
 
+    @property
+    def qualification_ref(self) -> str:
+        suffix = canonical_sha256_digest(
+            {"qualification_workspace": str(self.workspace)}
+        ).removeprefix("sha256:")[:16]
+        return f"refs/heads/qualification-{suffix}"
+
+    @property
+    def qualification_tracking_ref(self) -> str:
+        return self.qualification_ref.replace(
+            "refs/heads/", "refs/remotes/origin/", 1
+        )
+
 
 @dataclass(slots=True)
 class LocalGitLfsQualificationOperation:
@@ -277,7 +290,7 @@ class LocalGitLfsQualificationOperation:
             elif request.operation == "checkpoint":
                 self._checkpoint()
             elif request.operation == "publish":
-                self._publish("refs/heads/qualification")
+                self._publish(self.state.qualification_ref)
             elif request.operation == "lfs-fetch":
                 self._lfs_fetch()
             elif request.operation == "response-loss-reconcile":
@@ -394,10 +407,17 @@ class LocalGitLfsQualificationOperation:
     def _lfs_fetch(self) -> None:
         self._run(
             "git",
+            "fetch",
+            "origin",
+            f"{self.state.qualification_ref}:{self.state.qualification_tracking_ref}",
+            cwd=self.state.workspace,
+        )
+        self._run(
+            "git",
             "lfs",
             "fetch",
             "origin",
-            "refs/remotes/origin/qualification",
+            self.state.qualification_tracking_ref,
             cwd=self.state.workspace,
         )
         self._run("git", "lfs", "checkout", cwd=self.state.workspace)

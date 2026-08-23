@@ -125,6 +125,34 @@ def test_tavily_bridge_rejects_request_drift_before_provider_call() -> None:
     assert calls == 0
 
 
+def test_tavily_bridge_exposes_safe_failure_detail_only_to_private_diagnostics() -> (
+    None
+):
+    def unavailable(**kwargs):
+        del kwargs
+        raise RuntimeError("bounded provider unavailable")
+
+    bridge = TavilyQualificationProbeBridge(
+        binding=_binding(),
+        provider=TavilyResearchProvider(
+            configuration=TavilyConfiguration(
+                secret_locator="credential.tavily.qualification"
+            ),
+            search_callable=unavailable,
+        ),
+        deadline_at="2026-08-23T00:00:00+00:00",
+    )
+    request = _request()
+
+    outcome = bridge.dispatch(request)
+    private_context = bridge.private_diagnostic_context(request)
+
+    assert outcome.disposition is ExternalQualificationProbeDisposition.RECONCILE_REQUIRED
+    assert "provider_summary" not in outcome.to_dict()
+    assert private_context["provider_error_code"] == "provider_unavailable"
+    assert private_context["provider_summary"]
+
+
 class _PreparationMaterial:
     locator_id = "credential.tavily.qualification"
     locator_version = "v1"

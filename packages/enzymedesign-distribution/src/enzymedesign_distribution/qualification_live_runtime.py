@@ -58,6 +58,23 @@ class LiveQualificationLedgerPort(Protocol):
         authorization_digest: str,
     ) -> tuple[ExternalQualificationSafeReceipt, ...]: ...
 
+    def record_occurrence_evidence(
+        self,
+        *,
+        dry_plan_digest: str,
+        authorization_digest: str,
+        cleanup_receipt_digest: str,
+        cleanup_resources: Mapping[str, dict[str, object]],
+        budget_settlements: Mapping[str, dict[str, object]],
+    ) -> None: ...
+
+    def restore_occurrence_evidence(
+        self,
+        *,
+        dry_plan_digest: str,
+        authorization_digest: str,
+    ) -> Mapping[str, object] | None: ...
+
 
 class LiveQualificationCleanupPort(Protocol):
     def cleanup(self) -> Mapping[str, dict[str, object]]: ...
@@ -71,12 +88,14 @@ class LiveQualificationExecutionReport:
     outcomes: tuple[tuple[str, ExternalQualificationProbeOutcome], ...]
     receipts: tuple[ExternalQualificationSafeReceipt, ...]
     cleanup_receipt_digest: str
+    cleanup_resources: Mapping[str, dict[str, object]]
+    budget_settlements: Mapping[str, dict[str, object]]
     report_digest: str
 
     @classmethod
     def create(cls, **values):
         payload = {
-            "schema_version": "external_live_qualification_execution_report@1",
+            "schema_version": "external_live_qualification_execution_report@2",
             "dry_plan_digest": values["dry_plan_digest"],
             "authorization_digest": values["authorization_digest"],
             "negative_test_receipt_digest": values[
@@ -88,6 +107,8 @@ class LiveQualificationExecutionReport:
             ],
             "receipts": [item.to_dict() for item in values["receipts"]],
             "cleanup_receipt_digest": values["cleanup_receipt_digest"],
+            "cleanup_resources": values["cleanup_resources"],
+            "budget_settlements": values["budget_settlements"],
         }
         return cls(**values, report_digest=canonical_sha256_digest(payload))
 
@@ -97,7 +118,7 @@ class LiveQualificationExecutionReport:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "schema_version": "external_live_qualification_execution_report@1",
+            "schema_version": "external_live_qualification_execution_report@2",
             "dry_plan_digest": self.dry_plan_digest,
             "authorization_digest": self.authorization_digest,
             "negative_test_receipt_digest": self.negative_test_receipt_digest,
@@ -107,6 +128,8 @@ class LiveQualificationExecutionReport:
             ],
             "receipts": [item.to_dict() for item in self.receipts],
             "cleanup_receipt_digest": self.cleanup_receipt_digest,
+            "cleanup_resources": self.cleanup_resources,
+            "budget_settlements": self.budget_settlements,
             "qualified": self.qualified,
             "cutover": False,
             "report_digest": self.report_digest,
@@ -298,6 +321,15 @@ class ExternalLiveQualificationCoordinator:
         if len(restored) == len(selected_unit_digests) and len(
             restored_receipts
         ) == len(selected_unit_digests):
+            occurrence_evidence = self.ledger.restore_occurrence_evidence(
+                dry_plan_digest=self.dry_plan.dry_plan_digest,
+                authorization_digest=self.authorization.authorization_digest,
+            )
+            if occurrence_evidence is None:
+                raise ExternalQualificationError(
+                    "qualification_restored_occurrence_evidence_missing",
+                    "persisted qualification receipts lack occurrence evidence",
+                )
             cleanup_digests = {item.cleanup_receipt_digest for item in restored_receipts}
             negative_digests = {
                 item.negative_test_receipt_digest for item in restored_receipts
@@ -307,6 +339,12 @@ class ExternalLiveQualificationCoordinator:
                     "qualification_restored_receipt_closure_drift",
                     "persisted qualification receipt closure is inconsistent",
                 )
+            cleanup_digest = next(iter(cleanup_digests))
+            if occurrence_evidence.get("cleanup_receipt_digest") != cleanup_digest:
+                raise ExternalQualificationError(
+                    "qualification_restored_occurrence_evidence_drift",
+                    "persisted qualification occurrence evidence has drifted",
+                )
             return LiveQualificationExecutionReport.create(
                 dry_plan_digest=self.dry_plan.dry_plan_digest,
                 authorization_digest=self.authorization.authorization_digest,
@@ -315,7 +353,9 @@ class ExternalLiveQualificationCoordinator:
                 receipts=tuple(
                     sorted(restored_receipts, key=lambda item: item.unit_digest)
                 ),
-                cleanup_receipt_digest=next(iter(cleanup_digests)),
+                cleanup_receipt_digest=cleanup_digest,
+                cleanup_resources=occurrence_evidence["cleanup_resources"],
+                budget_settlements=occurrence_evidence["budget_settlements"],
             )
         units = tuple(
             sorted(
@@ -340,7 +380,7 @@ class ExternalLiveQualificationCoordinator:
             for unit in units
         }
         outcomes: dict[str, ExternalQualificationProbeOutcome] = {}
-        settlements: dict[str, str] = {}
+        settlements: dict[str, dict[str, object]] = {}
         try:
             for unit in units:
                 request = build_external_qualification_probe_request(
@@ -380,21 +420,19 @@ class ExternalLiveQualificationCoordinator:
                         reservation_id=reservation.reservation_id,
                         actual_amount=reservation.amount if charged else 0.0,
                     )
-                settlements[unit.unit_digest] = canonical_sha256_digest(
-                    {
-                        "unit_digest": unit.unit_digest,
-                        "reservations": [
-                            {
-                                "budget_id": item.budget_id,
-                                "reserved": item.amount,
-                                "settled": item.amount if charged else 0.0,
-                                "warning_crossed": item.warning_crossed,
-                            }
-                            for item in reservations[unit.unit_digest]
-                        ],
-                        "max_retries": 0,
-                    }
-                )
+                settlements[unit.unit_digest] = {
+                    "unit_digest": unit.unit_digest,
+                    "reservations": [
+                        {
+                            "budget_id": item.budget_id,
+                            "reserved": item.amount,
+                            "settled": item.amount if charged else 0.0,
+                            "warning_crossed": item.warning_crossed,
+                        }
+                        for item in reservations[unit.unit_digest]
+                    ],
+                    "max_retries": 0,
+                }
         finally:
             cleanup_payload = dict(self.cleanup_port.cleanup())
         cleanup_digest = canonical_sha256_digest(
@@ -403,6 +441,13 @@ class ExternalLiveQualificationCoordinator:
                 "dry_plan_digest": self.dry_plan.dry_plan_digest,
                 "resources": cleanup_payload,
             }
+        )
+        self.ledger.record_occurrence_evidence(
+            dry_plan_digest=self.dry_plan.dry_plan_digest,
+            authorization_digest=self.authorization.authorization_digest,
+            cleanup_receipt_digest=cleanup_digest,
+            cleanup_resources=cleanup_payload,
+            budget_settlements=settlements,
         )
         receipts: list[ExternalQualificationSafeReceipt] = []
         unit_bindings = {
@@ -433,7 +478,9 @@ class ExternalLiveQualificationCoordinator:
                 expected_result_schema_digest=unit.expected_result_schema_digest,
                 observed_result_schema_digest=outcome.observed_result_schema_digest,
                 negative_test_receipt_digest=negative_digest,
-                budget_settlement_digest=settlements[unit.unit_digest],
+                budget_settlement_digest=canonical_sha256_digest(
+                    settlements[unit.unit_digest]
+                ),
                 cleanup_receipt_digest=cleanup_digest,
                 effect_certainty=outcome.effect_certainty.value,
                 fallback_performed=False,
@@ -450,6 +497,8 @@ class ExternalLiveQualificationCoordinator:
             outcomes=tuple(sorted(outcomes.items())),
             receipts=tuple(sorted(receipts, key=lambda item: item.unit_digest)),
             cleanup_receipt_digest=cleanup_digest,
+            cleanup_resources=cleanup_payload,
+            budget_settlements=settlements,
         )
 
     def _record(

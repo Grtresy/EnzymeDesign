@@ -234,17 +234,23 @@ class DiagnosticQualificationBridge:
                 )
                 raise
             if outcome.disposition is not ExternalQualificationProbeDisposition.SUCCEEDED:
+                private_context: dict[str, object] = {
+                    "disposition": outcome.disposition.value,
+                    "effect_certainty": outcome.effect_certainty.value,
+                    "request_digest": request.request_digest,
+                }
+                detail = getattr(self.delegate, "private_diagnostic_context", None)
+                if callable(detail):
+                    provider_context = detail(request)
+                    if isinstance(provider_context, dict):
+                        private_context.update(provider_context)
                 self.context.writer.record(
                     diagnostic_id=diagnostic_id,
                     component=self.component_id,
                     phase=method,
                     kind="terminal-outcome",
                     error_code=outcome.error_code,
-                    private_context={
-                        "disposition": outcome.disposition.value,
-                        "effect_certainty": outcome.effect_certainty.value,
-                        "request_digest": request.request_digest,
-                    },
+                    private_context=private_context,
                 )
             return outcome
 

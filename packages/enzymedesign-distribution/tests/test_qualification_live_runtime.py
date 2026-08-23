@@ -250,6 +250,13 @@ def test_live_coordinator_records_reconcile_terminal_receipts_and_restores_witho
 
     assert first.qualified is True
     assert len(first.receipts) == 2
+    assert first.cleanup_resources["openzyme.workspace.git.lfs"] == {
+        "workspace_removed": True,
+        "repository_preserved": True,
+    }
+    assert set(first.budget_settlements) == {
+        unit.unit_digest for unit in readiness.units
+    }
     assert calls == {"dispatch": 2, "reconcile": 1, "restore": 0}
 
     restored_calls = {"dispatch": 0, "reconcile": 0, "restore": 0}
@@ -265,6 +272,8 @@ def test_live_coordinator_records_reconcile_terminal_receipts_and_restores_witho
 
     assert restored.qualified is True
     assert restored.report_digest == first.report_digest
+    assert restored.cleanup_resources == first.cleanup_resources
+    assert restored.budget_settlements == first.budget_settlements
     assert restored_calls == {"dispatch": 0, "reconcile": 0, "restore": 0}
 
 

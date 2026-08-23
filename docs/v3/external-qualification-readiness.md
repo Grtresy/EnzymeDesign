@@ -142,7 +142,7 @@ Vina、fpocket、preprocess 或 SSH/Slurm smoke receipt 属于 qualification evi
 
 Batch 1 preparation 精确为七个 action：LLM locator、Tavily locator、本地 Git/LFS repository、`base`、`hmmer`、
 `docking` 三组镜像，以及一个聚合的 `Diannan/3090` HPC identity action。三组镜像 recipe 绑定
-`docker.io/library/python@sha256:46cb7cc2877e60fbd5e21a9ae6115c30ace7a077b9f8772da879e4590c18c2e3`、
+`docker.io/library/python@sha256:356b0d18f9385f4bdcc673af60e1e64c9d1504952e4ec36ee32044c722a6bc4e`、
 当前 `uv.lock` digest 和 official source commit；构造代码不会自动 build。HPC action 只生成独立
 `aox-qualification-diannan` 配置，保持 `activated=false`、`scheduler_submit_enabled=false`，使用 exact credential-bound
 host/port（当前 `Diannan` 端口为 `22222`）、`ssh -F /dev/null`、`BatchMode=yes`、`IdentitiesOnly=yes` 与 exact
@@ -172,6 +172,13 @@ terminal validator。live coordinator 在 protected SQLite 中逐 unit 持久 ou
 结果或同一 in-doubt attempt，无法安全恢复的 Provider attempt 稳定阻断，禁止 redispatch。Diannan scientific route
 只使用 target 已安装软件，绝不安装、升级或重建远端工具；本地 route 只采用 preparation 已固定 digest 的 image。
 非 live/fake-command 回归只能证明绑定、请求构造、状态恢复和失败语义，不能表述为真实外部资格已通过。
+
+首次真实 Batch 1 occurrence 已终态裁决，不得复用 authority。它证明部分真实 route 可用，同时暴露了固定 Git branch、
+不可写 `/data/openzyme` workspace、HMMER/fpocket output path、本地 docking image runtime dependency 与私有诊断投影问题。
+修正后，Git publication ref 按 occurrence 隔离；HPC locator 的 `ssh_user`、`workspace_root`、`isolation_command` 必须在
+SSH effect 前与 qualified helper identity 精确相等；cleanup resources 与逐 unit budget settlement payload 同 digest 一并
+持久化，恢复时缺失即 fail closed。当前 Diannan Vina SIF 的观测版本为 `1.1.2`，不满足声明的 `>=1.2,<2`，所以在
+operator 决定 compatible SIF 或 route-specific 版本设计前保持阻断，不能仅凭 SIF digest 进入新 dry plan。
 
 ## 后续强制暂停点
 

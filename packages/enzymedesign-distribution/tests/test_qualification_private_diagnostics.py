@@ -97,6 +97,14 @@ class _Bridge:
         del request
         self.restored = True
 
+    def private_diagnostic_context(
+        self, request: ExternalQualificationProbeRequest
+    ) -> dict[str, object]:
+        return {
+            "provider_status": "failed",
+            "provider_summary": f"safe detail for {request.attempt_id}",
+        }
+
 
 def test_private_diagnostic_capture_is_bounded_protected_and_not_public(
     tmp_path: Path,
@@ -134,3 +142,5 @@ def test_private_diagnostic_capture_is_bounded_protected_and_not_public(
     assert len(command["bounded_stdout"].encode("utf-8")) <= 32_768
     assert command["bounded_stderr"] == f"stderr:{SECRET_CANARY}"
     assert terminal["error_code"] == "qualification_ssh_command_failed"
+    assert terminal["private_context"]["provider_status"] == "failed"
+    assert terminal["private_context"]["provider_summary"].startswith("safe detail")
