@@ -113,6 +113,62 @@ def test_slurm_cancel_timeout_reconciles_exact_attempt_without_redispatch() -> N
 
 
 @dataclass
+class _SubmitTimeoutThenObserveRemote:
+    scripts: list[str] = field(default_factory=list)
+
+    def run_remote(self, script: str):
+        self.scripts.append(script)
+        if script.startswith("sbatch --parsable"):
+            raise subprocess.TimeoutExpired(script, 120)
+        if script.startswith("timeout 30s sacct"):
+            return 0, "501|COMPLETED\n", ""
+        return 0, "", ""
+
+
+def test_slurm_submit_timeout_reconciles_attempt_name_without_redispatch() -> None:
+    remote = _SubmitTimeoutThenObserveRemote()
+    state = SlurmQualificationState(
+        workspace=".local/state/openzyme-qualification/batch-1-submit-timeout",
+        partition="3090",
+        command_port=remote,
+    )
+    operation = OpenSshSlurmQualificationOperation(
+        component_id="openzyme.hpc.slurm",
+        route_id="openzyme.hpc.slurm.submit@1",
+        subject_digest=DIGEST,
+        state=state,
+    )
+    request = _request("submit")
+
+    dispatched = operation.dispatch(request)
+    assert dispatched.terminal is False
+    assert dispatched.effect_certainty == "dispatch_in_doubt"
+    reconciled = operation.reconcile(request)
+
+    assert reconciled.succeeded is True
+    assert state.submitted_job_id == "501"
+    assert state.submit_job_name is not None
+    assert state.submit_job_name.startswith("openzyme-q-terminal-")
+    assert sum(script.startswith("sbatch --parsable") for script in remote.scripts) == 1
+
+    restored_state = SlurmQualificationState(
+        workspace=state.workspace,
+        partition="3090",
+        command_port=remote,
+    )
+    restored = OpenSshSlurmQualificationOperation(
+        component_id="openzyme.hpc.slurm",
+        route_id="openzyme.hpc.slurm.submit@1",
+        subject_digest=DIGEST,
+        state=restored_state,
+    )
+    restored.restore_dispatched_attempt(request)
+    assert restored_state.submit_job_name == state.submit_job_name
+    assert restored.reconcile(request).succeeded is True
+    assert sum(script.startswith("sbatch --parsable") for script in remote.scripts) == 1
+
+
+@dataclass
 class _ScientificCleanupTimeoutRemote:
     def run_remote(self, script: str):
         if script.startswith("rm -rf --"):

@@ -56,6 +56,7 @@ class SlurmQualificationState:
     partition: str
     command_port: SlurmQualificationRemoteCommandPort = field(repr=False)
     submitted_job_id: str | None = None
+    submit_job_name: str | None = None
     cancel_job_name: str | None = None
     reconcile_job_name: str | None = None
 
@@ -73,6 +74,8 @@ class SlurmQualificationState:
         )
         if self.cancel_job_name is not None:
             cleanup += f"; scancel -n {self.cancel_job_name} >/dev/null 2>&1 || true"
+        if self.submit_job_name is not None:
+            cleanup += f"; scancel -n {self.submit_job_name} >/dev/null 2>&1 || true"
         returncode, _stdout, _stderr = self.command_port.run_remote(cleanup)
         return {"scheduler_cleanup_attempted": True, "command_accepted": returncode == 0}
 
@@ -126,6 +129,55 @@ class OpenSshSlurmQualificationOperation:
     def reconcile(
         self, request: ExternalQualificationProbeRequest
     ) -> ExternalQualificationOperationObservation:
+        try:
+            return self._reconcile(request)
+        except subprocess.TimeoutExpired:
+            return self._observation(
+                request,
+                terminal=True,
+                succeeded=False,
+                effect_certainty="dispatch_in_doubt",
+                error_code="qualification_slurm_reconcile_timeout_in_doubt",
+            )
+        except ExternalQualificationError as exc:
+            return self._observation(
+                request,
+                terminal=True,
+                succeeded=False,
+                effect_certainty="terminal_known",
+                error_code=exc.error_code,
+            )
+
+    def _reconcile(
+        self,
+        request: ExternalQualificationProbeRequest,
+    ) -> ExternalQualificationOperationObservation:
+        if request.operation == "submit" and self.state.submit_job_name is not None:
+            output = self._run(
+                "timeout 30s sacct -n -X -S now-1hour "
+                f"-u \"$USER\" --name {self.state.submit_job_name} "
+                "-o JobIDRaw,State -P"
+            )
+            rows = tuple(line for line in output.splitlines() if line.strip())
+            fields = rows[0].split("|", 1) if len(rows) == 1 else ()
+            succeeded = (
+                len(fields) == 2
+                and re.fullmatch(r"[0-9]+", fields[0]) is not None
+                and bool(fields[1])
+            )
+            if succeeded:
+                self.state.submitted_job_id = fields[0]
+            return self._observation(
+                request,
+                terminal=True,
+                succeeded=succeeded,
+                effect_certainty="terminal_known",
+                error_code=(
+                    None
+                    if succeeded
+                    else "qualification_slurm_submit_reconcile_failed"
+                ),
+            )
         if request.operation == "cancel" and self.state.cancel_job_name is not None:
             output = self._run(
                 "timeout 30s sacct -n -X -S now-1hour "
@@ -165,6 +217,12 @@ class OpenSshSlurmQualificationOperation:
         self,
         request: ExternalQualificationProbeRequest,
     ) -> None:
+        if request.operation == "submit":
+            self.state.submit_job_name = self._attempt_job_name(
+                request,
+                prefix="openzyme-q-terminal",
+            )
+            return
         if request.operation == "cancel":
             self.state.cancel_job_name = self._attempt_job_name(
                 request,
@@ -174,7 +232,7 @@ class OpenSshSlurmQualificationOperation:
         if request.operation != "reconcile":
             raise ExternalQualificationError(
                 "qualification_probe_restore_not_reconcilable",
-                "only the Slurm response-loss operation can be restored",
+                "only a reconcilable Slurm operation can be restored",
             )
         suffix = canonical_sha256_digest(
             {"attempt_id": request.attempt_id}
@@ -194,9 +252,11 @@ class OpenSshSlurmQualificationOperation:
         workspace = self.state.workspace
         operation = request.operation
         if operation == "submit":
+            name = self._attempt_job_name(request, prefix="openzyme-q-terminal")
+            self.state.submit_job_name = name
             output = self._run(
                 f"sbatch --parsable -p {self.state.partition} -t 00:01:00 -c 1 "
-                f"-J openzyme-q-terminal -o {workspace}/terminal-%j.out "
+                f"-J {name} -o {workspace}/terminal-%j.out "
                 "--wrap 'printf OPENZYME_SLURM_OK'"
             )
             job_id = output.split(";", 1)[0]
