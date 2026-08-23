@@ -359,6 +359,7 @@ class OpenSshSlurmQualificationOperation:
 @dataclass(slots=True)
 class SlurmScientificQualificationRoute:
     workspace_root: str
+    workspace_owner_id: str
     partition: str
     command_port: SlurmQualificationRemoteCommandPort = field(repr=False)
     input_resolver: SlurmScientificQualificationInputResolver = field(repr=False)
@@ -369,6 +370,10 @@ class SlurmScientificQualificationRoute:
     def __post_init__(self) -> None:
         if (
             not _safe_scoped_remote_path(self.workspace_root)
+            or re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", self.workspace_owner_id
+            )
+            is None
             or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}", self.partition) is None
             or not self.software_image_path.startswith("/")
             or self.software_image_path.endswith("/")
@@ -389,6 +394,7 @@ class SlurmScientificQualificationRoute:
         outcome: ExternalScientificQualificationRouteOutcome | None = None
         cleanup_error_code: str | None = None
         try:
+            self._ensure_workspace_scope()
             observed_image_digest = self._run(
                 f"sha256sum {shlex.quote(self.software_image_path)} | cut -d' ' -f1"
             )
@@ -513,6 +519,21 @@ class SlurmScientificQualificationRoute:
             )
         assert outcome is not None
         return outcome
+
+    def _ensure_workspace_scope(self) -> None:
+        workspace = shlex.quote(self.workspace_root)
+        owner_marker = shlex.quote(
+            f"{self.workspace_root}/.openzyme-qualification-owner"
+        )
+        owner_id = shlex.quote(self.workspace_owner_id)
+        self._run(
+            f"if test -e {workspace}; then "
+            f"test -d {workspace} && test -f {owner_marker} && "
+            f"test \"$(cat {owner_marker})\" = {owner_id}; "
+            f"else mkdir -p -m 700 {workspace} && "
+            f"printf '%s' {owner_id} > {owner_marker} && "
+            f"chmod 600 {owner_marker}; fi"
+        )
 
     def reconcile(
         self,

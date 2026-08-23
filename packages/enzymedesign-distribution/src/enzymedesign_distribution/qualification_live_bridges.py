@@ -393,6 +393,7 @@ class SelectedLiveQualificationBridgeFactory:
                 image_group = "fpocket"
             route = SlurmScientificQualificationRoute(
                 workspace_root=ssh_state.remote_workspace,
+                workspace_owner_id=ssh_state.workspace_id,
                 partition="3090",
                 command_port=ssh_state,
                 input_resolver=SCIENTIFIC_QUALIFICATION_INPUTS,

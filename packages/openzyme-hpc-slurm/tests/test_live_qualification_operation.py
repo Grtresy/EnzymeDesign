@@ -225,7 +225,10 @@ def test_slurm_response_loss_timeout_reconciles_attempt_name_without_redispatch(
 
 @dataclass
 class _ScientificCleanupTimeoutRemote:
+    scripts: list[str] = field(default_factory=list)
+
     def run_remote(self, script: str):
+        self.scripts.append(script)
         if script.startswith("rm -rf --"):
             raise subprocess.TimeoutExpired(script, 120)
         return 0, "0" * 64 + "\n", ""
@@ -241,10 +244,12 @@ def test_scientific_cleanup_timeout_is_one_terminal_route_failure() -> None:
     from openzyme_contracts import ExternalScientificQualificationWorkload
     from openzyme_hpc_slurm import SlurmScientificQualificationRoute
 
+    remote = _ScientificCleanupTimeoutRemote()
     route = SlurmScientificQualificationRoute(
         workspace_root=".local/state/openzyme-qualification/science-timeout",
+        workspace_owner_id="science-timeout",
         partition="3090",
-        command_port=_ScientificCleanupTimeoutRemote(),
+        command_port=remote,
         input_resolver=_EmptyInputResolver(),
         software_image_path="/home/grtresy/images/hmmer.sif",
         software_image_digest="sha256:" + "0" * 64,
@@ -266,3 +271,4 @@ def test_scientific_cleanup_timeout_is_one_terminal_route_failure() -> None:
     assert outcome.succeeded is False
     assert outcome.error_code == "qualification_compute_remote_cleanup_timeout"
     assert outcome.effect_certainty == "dispatch_in_doubt"
+    assert any(".openzyme-qualification-owner" in script for script in remote.scripts)
