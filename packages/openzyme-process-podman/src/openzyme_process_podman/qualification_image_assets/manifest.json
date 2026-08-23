@@ -40,7 +40,7 @@
     {
       "image_group": "docking",
       "containerfile": "Containerfile.docking",
-      "output_image_ref": "localhost/openzyme-qualification-docking:20260823-r2",
+      "output_image_ref": "localhost/openzyme-qualification-docking:20260823-r3",
       "sources": [
         {
           "source_id": "autodock_vina",
@@ -58,6 +58,7 @@
       "expected_versions": {
         "vina": "1.2.7",
         "fpocket": "4.2.3",
+        "gemmi": "0.7.5",
         "rdkit": "2026.3.1",
         "meeko": "0.7.1",
         "openbabel": "3.1.1.23",

@@ -57,7 +57,9 @@ def test_docking_recipe_matches_pinned_legacy_build_system_and_fpocket_runtime()
     assert "cmake -S /src/vina/build/linux/release" not in containerfile
     assert "libnetcdf-dev" in containerfile
     assert "libnetcdf19" in containerfile
+    assert "libxext6" in containerfile
     assert "libxrender1" in containerfile
+    assert "gemmi==0.7.5" in containerfile
     assert "scipy==1.14.1" in containerfile
     assert "make -C /src/fpocket CXX=g++" in containerfile
     assert "make -C /src/fpocket CXX=g++ -j" not in containerfile

@@ -61,7 +61,7 @@ _VINA_CONFIG = (
     b"size_x = 20\nsize_y = 20\nsize_z = 20\n"
     b"exhaustiveness = 1\nnum_modes = 1\nseed = 20260823\n"
 )
-_STRUCTURE_PDB = _qualification_asset("fpocket-1crn.pdb.gz.b64")
+_STRUCTURE_PDB = _qualification_asset("fpocket-1uyd.pdb.gz.b64")
 _LIGAND_SDF = b"""OpenZyme qualification
   OpenZyme
 

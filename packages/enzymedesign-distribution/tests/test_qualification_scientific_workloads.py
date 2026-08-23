@@ -117,7 +117,7 @@ def test_real_program_fixtures_are_nontrivial_and_wheel_owned() -> None:
     fpocket_sizes = tuple(item.size_bytes for item in fpocket.inputs)
     assert max(vina_sizes) > 100_000
     assert min(vina_sizes) > 100
-    assert fpocket_sizes[0] > 40_000
+    assert fpocket_sizes[0] > 200_000
 
 
 def test_scientific_compilers_expect_the_programs_actual_output_paths() -> None:
