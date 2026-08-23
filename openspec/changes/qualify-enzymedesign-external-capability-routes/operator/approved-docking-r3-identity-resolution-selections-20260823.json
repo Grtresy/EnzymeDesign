@@ -1,0 +1,34 @@
+{
+  "schema_version": "enzymedesign_external_identity_resolution_selections@1",
+  "selection_set_id": "operator-confirmed-docking-r3-20260823",
+  "operator_id": "operator.enzymedesign-owner",
+  "decided_at": "2026-08-23T22:09:44+08:00",
+  "snapshot_id": "prepared.batch-1.90d75ac96d2fb144",
+  "constraints": [
+    "alphafold-batch-2-only",
+    "same-type-preparation-and-qualification-authorized",
+    "independent-source-and-digest-bound-authority-per-occurrence",
+    "max-retries-zero",
+    "no-fallback",
+    "no-cutover"
+  ],
+  "storage_selection_id": "use-protected-operator-state-root",
+  "selections": [
+    {
+      "projection_id": "alphafold-hpc",
+      "candidate_id": "complete-executor-workspace-v2-inventory"
+    },
+    {
+      "projection_id": "fpocket-local",
+      "candidate_id": "adopt-local-scientific-image"
+    },
+    {
+      "projection_id": "preprocess-podman",
+      "candidate_id": "adopt-digest-pinned-qualification-image"
+    },
+    {
+      "projection_id": "vina-local",
+      "candidate_id": "adopt-local-scientific-image"
+    }
+  ]
+}
