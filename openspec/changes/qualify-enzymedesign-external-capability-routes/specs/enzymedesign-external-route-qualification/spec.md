@@ -94,6 +94,8 @@ An `ExternalQualificationDryPlan` MUST bind source identity, readiness catalog a
 ### Requirement: Live occurrence authorization is separate and pre-effect
 Real qualification dispatch MUST require a durable one-shot `ExternalQualificationOccurrenceAuthorization` binding the exact dry-plan digest, batch and operator identity. The authorization MUST NOT expire by wall-clock passage; it remains usable only to start or resume that exact occurrence, and every terminal stored unit result MUST be restored without redispatch. Source, plan, batch or operator drift MUST invalidate it, and exact private revocation evidence MUST block it before credential resolution, budget reservation, owner bridge construction or external effect. A plan approval, environment flag, preparation authority or previous occurrence MUST NOT substitute.
 
+One authorization MAY execute an exact non-empty subset of its dry-plan units for bounded recovery, but the protected ledger MUST persist that subset before the first effect and reject any later widening, narrowing or replacement under the same authorization. Selecting a subset only reduces the authorized effect ceiling; it MUST NOT change the dry plan, reuse a terminal failed attempt, count as an automatic retry, or permit another route, subject or operation.
+
 #### Scenario: Plan-only workflow reaches the backend factory
 - **WHEN** the dry plan is valid but no occurrence authorization is supplied
 - **THEN** construction stops before credentials and records zero external effects
@@ -109,6 +111,15 @@ Real qualification dispatch MUST require a durable one-shot `ExternalQualificati
 #### Scenario: Qualification authority is explicitly revoked
 - **WHEN** exact private revocation evidence binds the qualification authorization and operator before the occurrence is terminal
 - **THEN** execution fails before credential resolution, budget reservation or external effect and performs no fallback
+
+#### Scenario: A failed-unit follow-up is authorized
+- **GIVEN** an earlier occurrence produced current receipts for some exact dry-plan units and terminal failures for others
+- **WHEN** a new one-shot authorization executes only the named failed units
+- **THEN** the new occurrence dispatches no previously successful unit, persists its exact subset before effect and keeps `max_retries=0` for every selected unit
+
+#### Scenario: A follow-up invocation changes its subset
+- **WHEN** the same authorization has already persisted one exact occurrence subset and a resume asks for a different subset
+- **THEN** execution fails before credential resolution, budget reservation or external effect
 
 ### Requirement: Budgets are generous circuit breakers at batch and occurrence scope
 Each paid or resource-bearing occurrence MUST declare a warning threshold and a higher hard limit, and each batch MUST declare an aggregate warning threshold and hard limit. Crossing a warning threshold MUST produce a diagnostic without weakening or rerouting the probe. Capacity MUST be reserved before dispatch and settled after terminal observation or reconciliation; only insufficient hard-limit capacity MAY produce `blocked_budget`, and the system MUST NOT reduce the required test or choose a cheaper Provider, target or route as fallback.
@@ -139,6 +150,8 @@ Successful qualification evidence MUST bind the real backend and subject, exact 
 
 The protected occurrence record MUST retain the exact cleanup-resource observations and per-unit budget-settlement payloads behind their canonical digests. A restored receipt set without the same occurrence payload, or with a different cleanup digest, MUST fail closed rather than reconstructing an unverifiable report.
 
+Batch qualification MAY aggregate current receipts from multiple one-shot occurrences only when every receipt binds the same exact dry plan and current unit/subject/route/schema closure. An independent receipt-set verifier MUST validate each receipt's authorization, persisted occurrence subset, negative gate, budget settlement, cleanup evidence and validity interval, select at most one deterministic current receipt per required unit, and leave every missing or rejected unit blocked. A successful subset occurrence MUST NOT itself emit a batch-level `qualified` claim.
+
 #### Scenario: Positive probe passes without required negative closure
 - **WHEN** the real operation succeeds but its declared negative test is missing or blocked
 - **THEN** no qualified receipt is issued
@@ -146,6 +159,14 @@ The protected occurrence record MUST retain the exact cleanup-resource observati
 #### Scenario: Qualified receipt is offered as cutover proof
 - **WHEN** deployment admission receives only a current real-subject qualification receipt
 - **THEN** it rejects cutover until a distinct cutover receipt is supplied
+
+#### Scenario: Current receipts span bounded occurrences
+- **WHEN** the exact dry plan has one current receipt per required unit across independently authorized full and failed-unit occurrences
+- **THEN** the receipt-set verifier may emit `qualified=true` for that exact batch while retaining every contributing authorization digest and still emits `cutover=false`
+
+#### Scenario: A subset occurrence succeeds without full plan coverage
+- **WHEN** every selected follow-up unit succeeds but one dry-plan unit still lacks a valid receipt
+- **THEN** the occurrence may report its selected closure as successful, while both its batch-level claim and the aggregate receipt-set verdict remain unqualified
 
 ### Requirement: Live qualification is manual and batch-isolated
 Ordinary CI MUST run discovery fixtures, gap and decision validation, dry-plan verification, plan-only backend guards and receipt tamper tests with `OPENZYME_ALLOW_LIVE=0`. Real qualification MUST run only in a protected manual workflow after exact occurrence authorization, and Batch 1 and AlphaFold Batch 2 MUST be triggered, budgeted and adjudicated independently.

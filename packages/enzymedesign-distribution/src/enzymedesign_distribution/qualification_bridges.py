@@ -101,6 +101,7 @@ class SelectedQualificationProbeRouter:
     operator_id: str
     observed_at: str
     bridge_builders: Mapping[str, QualificationProbeBridgeBuilder]
+    selected_unit_digests: tuple[str, ...] | None = None
     revocation: ExternalQualificationAuthorizationRevocation | None = None
     backend_id: str = "enzymedesign.selected-live-qualification-router@1"
     _bridges: dict[str, SelectedQualificationProbeBridge] = field(
@@ -134,7 +135,28 @@ class SelectedQualificationProbeRouter:
                 "qualification_bridge_unit_not_selected",
                 "authorized dry plan contains a unit outside the selected readiness plan",
             )
-        for unit_digest, subject_binding in bindings.items():
+        selected = (
+            set(bindings)
+            if self.selected_unit_digests is None
+            else set(self.selected_unit_digests)
+        )
+        if (
+            not selected
+            or len(selected)
+            != (
+                len(bindings)
+                if self.selected_unit_digests is None
+                else len(self.selected_unit_digests)
+            )
+            or not selected.issubset(bindings)
+        ):
+            raise ExternalQualificationError(
+                "qualification_occurrence_scope_invalid",
+                "live router scope must be a non-empty dry-plan subset",
+            )
+        self.selected_unit_digests = tuple(sorted(selected))
+        for unit_digest in self.selected_unit_digests:
+            subject_binding = bindings[unit_digest]
             if subject_binding.subject_digest is None or subject_binding.gap_ids:
                 raise ExternalQualificationError(
                     "blocked_identity",
@@ -219,6 +241,11 @@ class SelectedQualificationProbeRouter:
         self,
         request: ExternalQualificationProbeRequest,
     ) -> SelectedQualificationProbeBridge:
+        if request.unit_digest not in self._bridges:
+            raise ExternalQualificationError(
+                "qualification_probe_outside_occurrence_scope",
+                "qualification request is outside the persisted occurrence scope",
+            )
         try:
             bridge = self._bridges[request.unit_digest]
         except KeyError as exc:

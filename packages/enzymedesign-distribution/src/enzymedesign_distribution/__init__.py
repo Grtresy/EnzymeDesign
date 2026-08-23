@@ -59,7 +59,10 @@ from .qualification_scientific_workloads import build_selected_driver_scientific
 from .qualification_live_bridges import SelectedLiveQualificationBridgeFactory
 from .qualification_live_runtime import ExternalLiveQualificationCoordinator
 from .qualification_live_runtime import LiveQualificationExecutionReport
+from .qualification_live_runtime import LiveQualificationReceiptSetReport
+from .qualification_live_runtime import bind_live_qualification_occurrence_scope
 from .qualification_live_runtime import exercise_live_qualification_negative_gate
+from .qualification_live_runtime import verify_live_qualification_receipt_set
 from .qualification_bridges import build_external_qualification_probe_request
 from .qualification_bridges import external_qualification_live_input_digest
 from .qualification_planning import BATCH_1_PROFILES
@@ -183,7 +186,10 @@ __all__ = [
     "SelectedLiveQualificationBridgeFactory",
     "ExternalLiveQualificationCoordinator",
     "LiveQualificationExecutionReport",
+    "LiveQualificationReceiptSetReport",
+    "bind_live_qualification_occurrence_scope",
     "exercise_live_qualification_negative_gate",
+    "verify_live_qualification_receipt_set",
     "EnzymeDesignDeploymentStartup",
     "EnzymeDesignTargetInventoryQueryPort",
     "activate_enzymedesign_composition",

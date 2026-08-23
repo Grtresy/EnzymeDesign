@@ -278,7 +278,11 @@ canonical Plugin/Kernel surfaces；旧 function handler/repository/writer packag
   均属于当前 qualification change，但不构成 inventory adoption、runtime activation 或 cutover；
   首次真实 Batch 1 occurrence 已终态且 authority 不可复用；其部分成功 receipt 不构成 batch qualified。后续源码已要求
   本地 Git ref 按 occurrence 隔离、HPC login/workspace/helper material 与已资格 runtime identity 在 SSH 前精确闭合，
-  并把 cleanup resource payload 和逐 unit budget settlement 连同 digest 持久化。本地 qualification image subject
+  并把 cleanup resource payload 和逐 unit budget settlement 连同 digest 持久化。新的 one-shot authority 可在完整
+  dry plan effect 上限内把 exact failed-unit 子集于首次 effect 前 create-once 持久化；同一 authority 的 scope 漂移
+  必须在凭据解析前拒绝，已经存在 current receipt 的 unit 不得作为“恢复”被全量重发。batch `qualified` 只能由独立
+  receipt-set verifier 跨 occurrences 重验同一 dry-plan digest 下全部 unit 的 authority、scope、negative gate、budget、
+  cleanup、TTL 和 unit/subject/route/schema closure；subset occurrence 自身不能宣称整批通过。本地 qualification image subject
   同时绑定 immutable image digest 与当前源码重算的 recipe digest；缺失或漂移保持 `partial`/`drifted`，recipe 变化
   使用新 output ref，禁止覆盖、重标记或回退旧镜像。Vina route 显式分为 Diannan HPC `==1.1.2` legacy
   `--log`/poses+log 与本地 `>=1.2,<2` modern 无 `--log`/poses-remark-derived score；Plugin route requirement、

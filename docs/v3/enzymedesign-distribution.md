@@ -128,6 +128,11 @@ USD 100；较低 warning 只记录诊断，不缩小资格测试。manual workfl
 exact occurrence authorization 时在凭据解析前 fail closed。完成真实 qualification 只得到 `qualified`；cutover
 需要第二个 change 和独立确认。
 
+资格恢复不允许通过新 authority 全量重发已经有 current receipt 的 unit。后续 occurrence 可把完整 dry plan 内的
+exact failed-unit 子集在首次 effect 前持久化并只执行该子集；同一 authority 的 scope 不可改变。subset 全绿只表示
+该 occurrence 闭合，batch `qualified` 仍由独立 receipt-set verifier 跨 occurrences 检查全部 unit 的 exact authority、
+scope、negative gate、budget、cleanup 和 TTL 后给出，且不会产生 adoption 或 cutover。
+
 资格 bridge 的当前实现边界也保持分层：Distribution 的 exact-unit router 在 owner builder 前验证 occurrence
 authorization 及 unit/subject/route/input/schema/credential locator；LLM、Tavily、公共 Bio HTTP 已编译到 typed
 Adapter 调用，基础设施与科学 owner 已有防 identity 漂移、hosted Git sync、未固定 image、非隔离资源、raw

@@ -102,6 +102,8 @@ credential locator 必须逐 unit 绑定，而不能只出现在 batch 级列表
 
 identity preparation 完成并重新观察后，首次 qualification probe 仍要使用另一个持久一次性的 `ExternalQualificationOccurrenceAuthorization`，绑定 exact dry-plan digest、operator 和 batch，不设置 wall-clock 有效期。该 authority 只允许启动或恢复同一 exact occurrence：terminal unit 只能从 protected ledger 恢复，不得 redispatch；source、plan、batch、operator 任一漂移都会失效，也可由绑定 exact authority 的私有 revocation evidence 显式撤销。Preparation authorization、plan approval、环境变量或旧 occurrence 均不能替代；没有 qualification authorization 或 authority 已撤销时，live backend factory 只能返回 `blocked_live_authorization`，不得解析 credential、reserve budget 或构造 owner bridge。
 
+真实 Batch 1 证明 44 个相互独立的外部 unit 若被强制在一个长网络会话内同时成功，会把 `max_retries=0` 错误放大成 batch 级全量重发。恢复语义因此固定为：新的一次性 authority 仍以完整 dry plan 作为 effect 上限，但 occurrence 可在首次 effect 前把 exact 非空 unit 子集 create-once 写入 protected ledger；同一 authority 的子集漂移在 credential resolution 和 budget reserve 前拒绝。后续 failed-unit occurrence 只执行缺失 unit，不重发已有 current receipt 的 LLM、Tavily、Git、Podman 或其他 operation。Batch verdict 由独立 receipt-set verifier 跨 occurrence 验证同一 dry-plan digest 下每份 receipt 的 authority、scope、negative gate、budget、cleanup、TTL 和 exact unit/subject/route/schema closure；subset report 永不自行宣称整批 `qualified`。
+
 ### 6. 预算按 batch 和 occurrence 设置宽松硬上限
 
 预算用于阻止配置错误、循环或失控消费，不作为压缩正常资格测试的目标。每项同时记录告警阈值和高于告警阈值的硬上限；达到告警阈值只产生诊断，不缩小 probe、切换 route 或自动终止，只有达到硬上限才在下一次 dispatch 前以 `blocked_budget` 停止。

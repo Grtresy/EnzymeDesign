@@ -31,6 +31,27 @@ from .qualification_planning import QualificationBudgetLedger
 
 
 class LiveQualificationLedgerPort(Protocol):
+    def record_occurrence_scope(
+        self,
+        *,
+        dry_plan_digest: str,
+        authorization_digest: str,
+        unit_digests: tuple[str, ...],
+    ) -> None: ...
+
+    def restore_occurrence_scope(
+        self,
+        *,
+        dry_plan_digest: str,
+        authorization_digest: str,
+    ) -> tuple[str, ...] | None: ...
+
+    def restore_occurrence_scopes_for_dry_plan(
+        self,
+        *,
+        dry_plan_digest: str,
+    ) -> Mapping[str, tuple[str, ...]]: ...
+
     def record_probe_outcome(
         self,
         *,
@@ -58,6 +79,12 @@ class LiveQualificationLedgerPort(Protocol):
         authorization_digest: str,
     ) -> tuple[ExternalQualificationSafeReceipt, ...]: ...
 
+    def restore_safe_receipts_for_dry_plan(
+        self,
+        *,
+        dry_plan_digest: str,
+    ) -> tuple[ExternalQualificationSafeReceipt, ...]: ...
+
     def record_occurrence_evidence(
         self,
         *,
@@ -75,6 +102,12 @@ class LiveQualificationLedgerPort(Protocol):
         authorization_digest: str,
     ) -> Mapping[str, object] | None: ...
 
+    def restore_occurrence_evidence_for_dry_plan(
+        self,
+        *,
+        dry_plan_digest: str,
+    ) -> Mapping[str, Mapping[str, object]]: ...
+
 
 class LiveQualificationCleanupPort(Protocol):
     def cleanup(self) -> Mapping[str, dict[str, object]]: ...
@@ -90,12 +123,14 @@ class LiveQualificationExecutionReport:
     cleanup_receipt_digest: str
     cleanup_resources: Mapping[str, dict[str, object]]
     budget_settlements: Mapping[str, dict[str, object]]
+    selected_unit_digests: tuple[str, ...]
+    planned_unit_count: int
     report_digest: str
 
     @classmethod
     def create(cls, **values):
         payload = {
-            "schema_version": "external_live_qualification_execution_report@2",
+            "schema_version": "external_live_qualification_execution_report@3",
             "dry_plan_digest": values["dry_plan_digest"],
             "authorization_digest": values["authorization_digest"],
             "negative_test_receipt_digest": values[
@@ -109,16 +144,25 @@ class LiveQualificationExecutionReport:
             "cleanup_receipt_digest": values["cleanup_receipt_digest"],
             "cleanup_resources": values["cleanup_resources"],
             "budget_settlements": values["budget_settlements"],
+            "selected_unit_digests": list(values["selected_unit_digests"]),
+            "planned_unit_count": values["planned_unit_count"],
         }
         return cls(**values, report_digest=canonical_sha256_digest(payload))
 
     @property
-    def qualified(self) -> bool:
+    def occurrence_qualified(self) -> bool:
         return bool(self.receipts) and len(self.receipts) == len(self.outcomes)
+
+    @property
+    def qualified(self) -> bool:
+        return (
+            self.occurrence_qualified
+            and len(self.selected_unit_digests) == self.planned_unit_count
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "schema_version": "external_live_qualification_execution_report@2",
+            "schema_version": "external_live_qualification_execution_report@3",
             "dry_plan_digest": self.dry_plan_digest,
             "authorization_digest": self.authorization_digest,
             "negative_test_receipt_digest": self.negative_test_receipt_digest,
@@ -130,10 +174,285 @@ class LiveQualificationExecutionReport:
             "cleanup_receipt_digest": self.cleanup_receipt_digest,
             "cleanup_resources": self.cleanup_resources,
             "budget_settlements": self.budget_settlements,
+            "selected_unit_digests": list(self.selected_unit_digests),
+            "planned_unit_count": self.planned_unit_count,
+            "occurrence_qualified": self.occurrence_qualified,
             "qualified": self.qualified,
             "cutover": False,
             "report_digest": self.report_digest,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class LiveQualificationReceiptSetReport:
+    dry_plan_digest: str
+    verified_at: str
+    selected_receipts: tuple[ExternalQualificationSafeReceipt, ...]
+    missing_unit_digests: tuple[str, ...]
+    rejected_receipts: tuple[tuple[str, str], ...]
+    authorization_digests: tuple[str, ...]
+    report_digest: str
+
+    @classmethod
+    def create(cls, **values):
+        selected_receipts = tuple(
+            sorted(values["selected_receipts"], key=lambda item: item.unit_digest)
+        )
+        missing_unit_digests = tuple(sorted(values["missing_unit_digests"]))
+        rejected_receipts = tuple(sorted(values["rejected_receipts"]))
+        authorization_digests = tuple(sorted(values["authorization_digests"]))
+        payload = {
+            "schema_version": "external_live_qualification_receipt_set@1",
+            "dry_plan_digest": values["dry_plan_digest"],
+            "verified_at": values["verified_at"],
+            "selected_receipts": [item.to_dict() for item in selected_receipts],
+            "missing_unit_digests": list(missing_unit_digests),
+            "rejected_receipts": [
+                {"receipt_digest": digest, "error_code": error_code}
+                for digest, error_code in rejected_receipts
+            ],
+            "authorization_digests": list(authorization_digests),
+        }
+        return cls(
+            dry_plan_digest=values["dry_plan_digest"],
+            verified_at=values["verified_at"],
+            selected_receipts=selected_receipts,
+            missing_unit_digests=missing_unit_digests,
+            rejected_receipts=rejected_receipts,
+            authorization_digests=authorization_digests,
+            report_digest=canonical_sha256_digest(payload),
+        )
+
+    @property
+    def qualified(self) -> bool:
+        return bool(self.selected_receipts) and not self.missing_unit_digests
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": "external_live_qualification_receipt_set@1",
+            "dry_plan_digest": self.dry_plan_digest,
+            "verified_at": self.verified_at,
+            "selected_receipts": [item.to_dict() for item in self.selected_receipts],
+            "missing_unit_digests": list(self.missing_unit_digests),
+            "rejected_receipts": [
+                {"receipt_digest": digest, "error_code": error_code}
+                for digest, error_code in self.rejected_receipts
+            ],
+            "authorization_digests": list(self.authorization_digests),
+            "qualified": self.qualified,
+            "cutover": False,
+            "report_digest": self.report_digest,
+        }
+
+
+def bind_live_qualification_occurrence_scope(
+    *,
+    dry_plan: ExternalQualificationDryPlan,
+    authorization: ExternalQualificationOccurrenceAuthorization,
+    ledger: LiveQualificationLedgerPort,
+    selected_unit_digests: tuple[str, ...] | None,
+) -> tuple[str, ...]:
+    planned_unit_digests = {
+        item.unit_digest for item in dry_plan.unit_bindings
+    }
+    selected = tuple(
+        sorted(
+            planned_unit_digests
+            if selected_unit_digests is None
+            else selected_unit_digests
+        )
+    )
+    if (
+        not selected
+        or len(set(selected)) != len(selected)
+        or not set(selected).issubset(planned_unit_digests)
+    ):
+        raise ExternalQualificationError(
+            "qualification_occurrence_scope_invalid",
+            "qualification occurrence scope must be a non-empty dry-plan subset",
+        )
+    restored_scope = ledger.restore_occurrence_scope(
+        dry_plan_digest=dry_plan.dry_plan_digest,
+        authorization_digest=authorization.authorization_digest,
+    )
+    if restored_scope is None:
+        ledger.record_occurrence_scope(
+            dry_plan_digest=dry_plan.dry_plan_digest,
+            authorization_digest=authorization.authorization_digest,
+            unit_digests=selected,
+        )
+        restored_scope = ledger.restore_occurrence_scope(
+            dry_plan_digest=dry_plan.dry_plan_digest,
+            authorization_digest=authorization.authorization_digest,
+        )
+    if restored_scope != selected:
+        raise ExternalQualificationError(
+            "qualification_occurrence_scope_drift",
+            "persisted qualification occurrence scope differs from the request",
+        )
+    return selected
+
+
+def verify_live_qualification_receipt_set(
+    *,
+    dry_plan: ExternalQualificationDryPlan,
+    readiness_plan: ExternalQualificationPlan,
+    operator_id: str,
+    authorizations: tuple[ExternalQualificationOccurrenceAuthorization, ...],
+    ledger: LiveQualificationLedgerPort,
+    verified_at: str,
+) -> LiveQualificationReceiptSetReport:
+    verified_time = datetime.fromisoformat(verified_at.replace("Z", "+00:00"))
+    planned_unit_digests = {
+        item.unit_digest for item in dry_plan.unit_bindings
+    }
+    units = {
+        item.unit_digest: item
+        for item in readiness_plan.units
+        if item.unit_digest in planned_unit_digests
+    }
+    if set(units) != planned_unit_digests:
+        raise ExternalQualificationError(
+            "qualification_receipt_set_plan_coverage_drift",
+            "readiness plan does not cover the exact dry-plan unit set",
+        )
+    bindings = {item.unit_digest: item for item in dry_plan.unit_bindings}
+    authorization_by_digest: dict[
+        str, ExternalQualificationOccurrenceAuthorization
+    ] = {}
+    for authorization in authorizations:
+        if authorization.authorization_digest in authorization_by_digest:
+            raise ExternalQualificationError(
+                "qualification_receipt_set_authorization_duplicate",
+                "receipt-set authorization digests must be unique",
+            )
+        verify_external_qualification_occurrence_authorization(
+            dry_plan,
+            authorization,
+            observed_at=verified_at,
+            expected_operator_id=operator_id,
+        )
+        authorization_by_digest[authorization.authorization_digest] = authorization
+    occurrence_evidence = ledger.restore_occurrence_evidence_for_dry_plan(
+        dry_plan_digest=dry_plan.dry_plan_digest
+    )
+    occurrence_scopes = ledger.restore_occurrence_scopes_for_dry_plan(
+        dry_plan_digest=dry_plan.dry_plan_digest
+    )
+    candidates: dict[str, list[ExternalQualificationSafeReceipt]] = {}
+    rejected: list[tuple[str, str]] = []
+    for receipt in ledger.restore_safe_receipts_for_dry_plan(
+        dry_plan_digest=dry_plan.dry_plan_digest
+    ):
+        error_code: str | None = None
+        unit = units.get(receipt.unit_digest)
+        binding = bindings.get(receipt.unit_digest)
+        authorization = authorization_by_digest.get(receipt.authorization_digest)
+        evidence = occurrence_evidence.get(receipt.authorization_digest)
+        scope = occurrence_scopes.get(receipt.authorization_digest)
+        if unit is None or binding is None:
+            error_code = "qualification_receipt_set_unknown_unit"
+        elif authorization is None:
+            error_code = "qualification_receipt_set_authorization_missing"
+        elif scope is None or receipt.unit_digest not in scope:
+            error_code = "qualification_receipt_set_scope_missing"
+        elif evidence is None:
+            error_code = "qualification_receipt_set_occurrence_evidence_missing"
+        elif (
+            receipt.component_id != unit.component_id
+            or receipt.route_id != unit.route_id
+            or receipt.operation != unit.operation
+            or receipt.subject_digest != binding.subject_digest
+            or receipt.expected_result_schema_digest
+            != unit.expected_result_schema_digest
+            or receipt.observed_result_schema_digest
+            != unit.expected_result_schema_digest
+        ):
+            error_code = "qualification_receipt_set_binding_drift"
+        else:
+            observed_time = datetime.fromisoformat(
+                receipt.observed_at.replace("Z", "+00:00")
+            )
+            authorized_time = datetime.fromisoformat(
+                authorization.authorized_at.replace("Z", "+00:00")
+            )
+            valid_until = datetime.fromisoformat(
+                receipt.valid_until.replace("Z", "+00:00")
+            )
+            if (
+                observed_time < authorized_time
+                or observed_time > verified_time
+                or valid_until <= verified_time
+            ):
+                error_code = "qualification_receipt_set_expired_or_future"
+        if error_code is None:
+            assert evidence is not None
+            assert scope is not None
+            cleanup_resources = evidence.get("cleanup_resources")
+            settlements = evidence.get("budget_settlements")
+            settlement = (
+                settlements.get(receipt.unit_digest)
+                if isinstance(settlements, Mapping)
+                else None
+            )
+            if (
+                not set(scope).issubset(planned_unit_digests)
+                or not isinstance(settlements, Mapping)
+                or set(settlements) != set(scope)
+                or evidence.get("dry_plan_digest") != dry_plan.dry_plan_digest
+                or evidence.get("authorization_digest")
+                != receipt.authorization_digest
+            ):
+                error_code = "qualification_receipt_set_occurrence_scope_drift"
+            elif (
+                evidence.get("cleanup_receipt_digest")
+                != receipt.cleanup_receipt_digest
+                or not isinstance(cleanup_resources, Mapping)
+                or not _unit_cleanup_ok(unit, cleanup_resources)
+            ):
+                error_code = "qualification_receipt_set_cleanup_drift"
+            elif not isinstance(settlement, Mapping) or canonical_sha256_digest(
+                dict(settlement)
+            ) != receipt.budget_settlement_digest:
+                error_code = "qualification_receipt_set_budget_drift"
+            elif exercise_live_qualification_negative_gate(
+                dry_plan=dry_plan,
+                readiness_plan=readiness_plan,
+                authorization=authorization,
+                operator_id=operator_id,
+                observed_at=receipt.observed_at,
+            ) != receipt.negative_test_receipt_digest:
+                error_code = "qualification_receipt_set_negative_gate_drift"
+        if error_code is not None:
+            rejected.append((receipt.receipt_digest, error_code))
+            continue
+        candidates.setdefault(receipt.unit_digest, []).append(receipt)
+    selected: list[ExternalQualificationSafeReceipt] = []
+    for unit_digest in sorted(planned_unit_digests):
+        unit_candidates = candidates.get(unit_digest, ())
+        if unit_candidates:
+            selected.append(
+                max(
+                    unit_candidates,
+                    key=lambda item: (
+                        datetime.fromisoformat(
+                            item.observed_at.replace("Z", "+00:00")
+                        ),
+                        item.receipt_digest,
+                    ),
+                )
+            )
+    selected_units = {item.unit_digest for item in selected}
+    return LiveQualificationReceiptSetReport.create(
+        dry_plan_digest=dry_plan.dry_plan_digest,
+        verified_at=verified_at,
+        selected_receipts=tuple(selected),
+        missing_unit_digests=tuple(sorted(planned_unit_digests - selected_units)),
+        rejected_receipts=tuple(rejected),
+        authorization_digests=tuple(
+            sorted({item.authorization_digest for item in selected})
+        ),
+    )
 
 
 def exercise_live_qualification_negative_gate(
@@ -290,13 +609,27 @@ class ExternalLiveQualificationCoordinator:
     cleanup_port: LiveQualificationCleanupPort = field(repr=False)
     revocation: ExternalQualificationAuthorizationRevocation | None = None
 
-    def execute(self, *, observed_at: str) -> LiveQualificationExecutionReport:
+    def execute(
+        self,
+        *,
+        observed_at: str,
+        selected_unit_digests: tuple[str, ...] | None = None,
+    ) -> LiveQualificationExecutionReport:
         verify_external_qualification_occurrence_authorization(
             self.dry_plan,
             self.authorization,
             observed_at=observed_at,
             expected_operator_id=self.operator_id,
             revocation=self.revocation,
+        )
+        planned_unit_digests = {
+            item.unit_digest for item in self.dry_plan.unit_bindings
+        }
+        selected = bind_live_qualification_occurrence_scope(
+            dry_plan=self.dry_plan,
+            authorization=self.authorization,
+            ledger=self.ledger,
+            selected_unit_digests=selected_unit_digests,
         )
         negative_digest = exercise_live_qualification_negative_gate(
             dry_plan=self.dry_plan,
@@ -315,12 +648,18 @@ class ExternalLiveQualificationCoordinator:
             dry_plan_digest=self.dry_plan.dry_plan_digest,
             authorization_digest=self.authorization.authorization_digest,
         )
-        selected_unit_digests = {
-            item.unit_digest for item in self.dry_plan.unit_bindings
-        }
-        if len(restored) == len(selected_unit_digests) and len(
+        selected_unit_digest_set = set(selected)
+        if not set(restored).issubset(selected_unit_digest_set) or any(
+            item.unit_digest not in selected_unit_digest_set
+            for item in restored_receipts
+        ):
+            raise ExternalQualificationError(
+                "qualification_occurrence_scope_drift",
+                "persisted outcomes or receipts escape the occurrence scope",
+            )
+        if len(restored) == len(selected_unit_digest_set) and len(
             restored_receipts
-        ) == len(selected_unit_digests):
+        ) == len(selected_unit_digest_set):
             occurrence_evidence = self.ledger.restore_occurrence_evidence(
                 dry_plan_digest=self.dry_plan.dry_plan_digest,
                 authorization_digest=self.authorization.authorization_digest,
@@ -356,13 +695,15 @@ class ExternalLiveQualificationCoordinator:
                 cleanup_receipt_digest=cleanup_digest,
                 cleanup_resources=occurrence_evidence["cleanup_resources"],
                 budget_settlements=occurrence_evidence["budget_settlements"],
+                selected_unit_digests=selected,
+                planned_unit_count=len(planned_unit_digests),
             )
         units = tuple(
             sorted(
                 (
                     item
                     for item in self.readiness_plan.units
-                    if item.unit_digest in selected_unit_digests
+                    if item.unit_digest in selected_unit_digest_set
                 ),
                 key=_unit_execution_key,
             )
@@ -499,6 +840,8 @@ class ExternalLiveQualificationCoordinator:
             cleanup_receipt_digest=cleanup_digest,
             cleanup_resources=cleanup_payload,
             budget_settlements=settlements,
+            selected_unit_digests=selected,
+            planned_unit_count=len(planned_unit_digests),
         )
 
     def _record(
@@ -633,11 +976,25 @@ def _unit_cleanup_ok(
         "openzyme.hpc.ssh": ("workspace_removed",),
         "openzyme.hpc.slurm": ("scheduler_cleanup_attempted", "command_accepted"),
     }
-    required = checks.get(unit.component_id)
-    if required is None:
-        return True
-    payload = cleanup_payload.get(unit.component_id)
-    return payload is not None and all(payload.get(field_name) is True for field_name in required)
+    component_ids: tuple[str, ...]
+    if unit.component_id.endswith(".hpc"):
+        component_ids = ("openzyme.hpc.ssh", "openzyme.hpc.slurm")
+    elif unit.component_id.endswith(".local") or unit.component_id == (
+        "enzymedesign.docking.preprocess"
+    ):
+        component_ids = ("openzyme.process.podman",)
+    else:
+        component_ids = (unit.component_id,)
+    for component_id in component_ids:
+        required = checks.get(component_id)
+        if required is None:
+            continue
+        payload = cleanup_payload.get(component_id)
+        if payload is None or any(
+            payload.get(field_name) is not True for field_name in required
+        ):
+            return False
+    return True
 
 
 def _restores_cleanup_context(unit: ExternalQualificationUnit) -> bool:
@@ -653,6 +1010,9 @@ __all__ = [
     "ExternalLiveQualificationCoordinator",
     "LiveQualificationCleanupPort",
     "LiveQualificationExecutionReport",
+    "LiveQualificationReceiptSetReport",
     "LiveQualificationLedgerPort",
+    "bind_live_qualification_occurrence_scope",
     "exercise_live_qualification_negative_gate",
+    "verify_live_qualification_receipt_set",
 ]

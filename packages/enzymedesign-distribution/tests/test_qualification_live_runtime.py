@@ -2,9 +2,11 @@ from dataclasses import dataclass
 
 from enzymedesign_distribution import ExternalLiveQualificationCoordinator
 from enzymedesign_distribution import SelectedQualificationProbeRouter
+from enzymedesign_distribution import verify_live_qualification_receipt_set
 from openzyme_contracts import ExternalEffectCertainty
 from openzyme_contracts import ExternalQualificationBudgetPolicy
 from openzyme_contracts import ExternalQualificationDryPlan
+from openzyme_contracts import ExternalQualificationError
 from openzyme_contracts import ExternalQualificationEffectPolicy
 from openzyme_contracts import ExternalQualificationFaultPolicy
 from openzyme_contracts import ExternalQualificationOccurrenceAuthorization
@@ -20,6 +22,7 @@ from openzyme_contracts import ExternalQualificationUnitSubjectBinding
 from openzyme_contracts import ExternalRealSubjectIdentity
 from openzyme_contracts import canonical_sha256_digest
 from openzyme_store_sqlite import SQLiteProtectedQualificationLedger
+from enzymedesign_distribution.qualification_live_runtime import _unit_cleanup_ok
 
 
 DIGEST = "sha256:" + "1" * 64
@@ -214,8 +217,18 @@ class _Cleanup:
         }
 
 
-def _router(readiness, dry_plan, authorization, calls):
+def _router(
+    readiness,
+    dry_plan,
+    authorization,
+    calls,
+    *,
+    selected_unit_digests=None,
+    built_unit_digests=None,
+):
     def builder(binding):
+        if built_unit_digests is not None:
+            built_unit_digests.append(binding.unit_digest)
         return _Bridge(binding, calls)
 
     return SelectedQualificationProbeRouter(
@@ -228,6 +241,7 @@ def _router(readiness, dry_plan, authorization, calls):
             "enzymedesign.bio-provider-http": builder,
             "openzyme.workspace.git.lfs": builder,
         },
+        selected_unit_digests=selected_unit_digests,
     )
 
 
@@ -320,3 +334,162 @@ def test_live_coordinator_restores_cleanup_context_after_outcome_only_crash(
 
     assert restored.qualified is True
     assert calls == {"dispatch": 0, "reconcile": 0, "restore": 1}
+
+
+def test_followup_occurrences_bind_exact_subsets_and_aggregate_receipts(
+    tmp_path,
+) -> None:
+    readiness, dry_plan, first_authorization = _plans()
+    first_unit, response_unit = readiness.units
+    ledger = SQLiteProtectedQualificationLedger(tmp_path / "qualification.sqlite3")
+    first_calls = {"dispatch": 0, "reconcile": 0, "restore": 0}
+    first_built: list[str] = []
+    first = ExternalLiveQualificationCoordinator(
+        dry_plan=dry_plan,
+        readiness_plan=readiness,
+        authorization=first_authorization,
+        operator_id="operator.enzymedesign-owner",
+        router=_router(
+            readiness,
+            dry_plan,
+            first_authorization,
+            first_calls,
+            selected_unit_digests=(first_unit.unit_digest,),
+            built_unit_digests=first_built,
+        ),
+        ledger=ledger,
+        cleanup_port=_Cleanup(),
+    ).execute(
+        observed_at=OBSERVED_AT,
+        selected_unit_digests=(first_unit.unit_digest,),
+    )
+
+    assert first.occurrence_qualified is True
+    assert first.qualified is False
+    assert first.selected_unit_digests == (first_unit.unit_digest,)
+    assert first_calls == {"dispatch": 1, "reconcile": 0, "restore": 0}
+    assert first_built == [first_unit.unit_digest]
+
+    try:
+        ExternalLiveQualificationCoordinator(
+            dry_plan=dry_plan,
+            readiness_plan=readiness,
+            authorization=first_authorization,
+            operator_id="operator.enzymedesign-owner",
+            router=_router(
+                readiness,
+                dry_plan,
+                first_authorization,
+                first_calls,
+                selected_unit_digests=(first_unit.unit_digest,),
+            ),
+            ledger=ledger,
+            cleanup_port=_Cleanup(),
+        ).execute(observed_at=OBSERVED_AT)
+    except ExternalQualificationError as exc:
+        assert exc.error_code == "qualification_occurrence_scope_drift"
+    else:
+        raise AssertionError("same authority accepted a broader occurrence scope")
+
+    partial = verify_live_qualification_receipt_set(
+        dry_plan=dry_plan,
+        readiness_plan=readiness,
+        operator_id="operator.enzymedesign-owner",
+        authorizations=(first_authorization,),
+        ledger=ledger,
+        verified_at=OBSERVED_AT,
+    )
+    assert partial.qualified is False
+    assert partial.missing_unit_digests == (response_unit.unit_digest,)
+
+    second_authorization = ExternalQualificationOccurrenceAuthorization.create(
+        authorization_id="authorization.live-runtime.followup",
+        dry_plan_digest=dry_plan.dry_plan_digest,
+        batch_id="batch-1",
+        operator_id="operator.enzymedesign-owner",
+        authorized_at=OBSERVED_AT,
+    )
+    second_calls = {"dispatch": 0, "reconcile": 0, "restore": 0}
+    second = ExternalLiveQualificationCoordinator(
+        dry_plan=dry_plan,
+        readiness_plan=readiness,
+        authorization=second_authorization,
+        operator_id="operator.enzymedesign-owner",
+        router=_router(
+            readiness,
+            dry_plan,
+            second_authorization,
+            second_calls,
+            selected_unit_digests=(response_unit.unit_digest,),
+        ),
+        ledger=ledger,
+        cleanup_port=_Cleanup(),
+    ).execute(
+        observed_at=OBSERVED_AT,
+        selected_unit_digests=(response_unit.unit_digest,),
+    )
+
+    assert second.occurrence_qualified is True
+    assert second.qualified is False
+    assert second_calls == {"dispatch": 1, "reconcile": 1, "restore": 0}
+    complete = verify_live_qualification_receipt_set(
+        dry_plan=dry_plan,
+        readiness_plan=readiness,
+        operator_id="operator.enzymedesign-owner",
+        authorizations=(first_authorization, second_authorization),
+        ledger=ledger,
+        verified_at=OBSERVED_AT,
+    )
+
+    assert complete.qualified is True
+    assert len(complete.selected_receipts) == 2
+    assert complete.missing_unit_digests == ()
+    assert complete.authorization_digests == tuple(
+        sorted(
+            (
+                first_authorization.authorization_digest,
+                second_authorization.authorization_digest,
+            )
+        )
+    )
+
+
+def test_scientific_receipts_require_their_route_cleanup_closure() -> None:
+    local = _unit(
+        "enzymedesign.vina.local",
+        "dock",
+        "enzymedesign.vina.local.dock@1",
+        "podman.local",
+    )
+    hpc = _unit(
+        "enzymedesign.hmmer.hpc",
+        "hmmbuild",
+        "enzymedesign.hmmer.hpc.hmmbuild@1",
+        "hpc.diannan",
+    )
+
+    assert _unit_cleanup_ok(local, {}) is False
+    assert _unit_cleanup_ok(
+        local,
+        {"openzyme.process.podman": {"container_absent": True}},
+    ) is True
+    assert _unit_cleanup_ok(
+        hpc,
+        {
+            "openzyme.hpc.ssh": {"workspace_removed": True},
+            "openzyme.hpc.slurm": {
+                "scheduler_cleanup_attempted": True,
+                "command_accepted": False,
+            },
+        },
+    ) is False
+    assert _unit_cleanup_ok(
+        hpc,
+        {
+            "openzyme.hpc.ssh": {"workspace_removed": True},
+            "openzyme.hpc.slurm": {
+                "scheduler_cleanup_attempted": True,
+                "command_accepted": True,
+            },
+        },
+    ) is True

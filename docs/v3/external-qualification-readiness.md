@@ -198,6 +198,14 @@ HPC identity observer 现在把 HMMER/Vina/fpocket 的原始 version banner 规�
 原始 banner 仍只进入 inventory generation digest。无法解析的 banner 返回
 `qualification_hpc_software_version_unparseable`，不能以 opaque software fact 绕过版本约束。
 
+后续真实 occurrence 还证明了 batch 级“全量重跑直到 44 项同时成功”会把独立 Provider/SSH 瞬态错误变成隐式
+retry，并重复已经通过的付费或外部 effect。当前恢复合同允许新的 one-shot authority 在完整 dry plan 的上限内选择
+exact 非空 failed-unit 子集；子集必须在首次 effect 前 create-once 写入 protected SQLite，同一 authority 的任何子集
+漂移都在 credential resolution 前失败。subset occurrence 只说明所选 unit 是否闭合，不得输出 batch `qualified`。
+独立 receipt-set verifier 才能跨多个 occurrence 选择同一 dry-plan digest 下每个 unit 的当前 receipt，并逐份重验
+authorization、occurrence scope、negative gate、budget settlement、cleanup、TTL 与 unit/subject/route/schema；缺一项即保持
+`blocked_qualification`，且无论结果如何都仍是 `cutover=false`。
+
 ## 后续强制暂停点
 
 当前必须在首次 Provider、Git mutation、container、SSH、Slurm、HPC 或科学程序 effect 前，把 exact

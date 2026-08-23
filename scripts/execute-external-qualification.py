@@ -25,9 +25,11 @@ from enzymedesign_distribution import SafeIdentitySnapshot
 from enzymedesign_distribution import SelectedLiveQualificationBridgeFactory
 from enzymedesign_distribution import SelectedQualificationProbeRouter
 from enzymedesign_distribution import validate_hpc_live_bridge_snapshot
+from enzymedesign_distribution import verify_live_qualification_receipt_set
 from enzymedesign_distribution import build_enzymedesign_external_qualification_plan
 from enzymedesign_distribution import build_external_identity_gaps
 from enzymedesign_distribution import build_external_qualification_dry_plan
+from enzymedesign_distribution import bind_live_qualification_occurrence_scope
 from enzymedesign_distribution import discover_external_subject_identities
 from enzymedesign_distribution import exercise_live_qualification_negative_gate
 from openzyme_contracts import ExternalQualificationAuthorizationRevocation
@@ -48,6 +50,15 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("post_preparation_packet", type=Path)
     parser.add_argument("authorization", type=Path)
+    parser.add_argument(
+        "--unit-digest",
+        action="append",
+        default=None,
+        help=(
+            "Execute only this exact dry-plan unit in the occurrence; repeat for "
+            "a bounded follow-up subset. The full dry plan remains the authority ceiling."
+        ),
+    )
     return parser
 
 
@@ -303,6 +314,14 @@ def main() -> int:
     )
     _validate_private_file(layout.ledger_path)
     ledger = SQLiteProtectedQualificationLedger(layout.ledger_path)
+    selected_unit_digests = bind_live_qualification_occurrence_scope(
+        dry_plan=dry_plan,
+        authorization=authorization,
+        ledger=ledger,
+        selected_unit_digests=(
+            None if args.unit_digest is None else tuple(args.unit_digest)
+        ),
+    )
     preparation_plan_digest = packet.get("preparation_plan_digest")
     preparation_authorization_digest = packet.get(
         "preparation_authorization_digest"
@@ -421,6 +440,7 @@ def main() -> int:
             operator_id="operator.enzymedesign-owner",
             observed_at=observed_at,
             bridge_builders=factory.builders(),
+            selected_unit_digests=selected_unit_digests,
             revocation=revocation,
         )
         report = ExternalLiveQualificationCoordinator(
@@ -432,7 +452,10 @@ def main() -> int:
             ledger=ledger,
             cleanup_port=factory,
             revocation=revocation,
-        ).execute(observed_at=observed_at)
+        ).execute(
+            observed_at=observed_at,
+            selected_unit_digests=selected_unit_digests,
+        )
     except Exception as exc:
         diagnostic_id = _record_failure(
             layout=layout,
@@ -454,16 +477,45 @@ def main() -> int:
         / f"qualification-report-{authorization.authorization_id}.json"
     )
     _write_private_json(report_path, report.to_dict())
+    authorizations: list[ExternalQualificationOccurrenceAuthorization] = []
+    for candidate in sorted(layout.root.glob("qualification-authorization-*.json")):
+        _validate_private_file(candidate)
+        candidate_authorization = ExternalQualificationOccurrenceAuthorization.from_dict(
+            _load_object(candidate)
+        )
+        if candidate_authorization.dry_plan_digest != dry_plan.dry_plan_digest:
+            continue
+        if _load_revocation(layout, candidate_authorization) is not None:
+            continue
+        authorizations.append(candidate_authorization)
+    receipt_set = verify_live_qualification_receipt_set(
+        dry_plan=dry_plan,
+        readiness_plan=readiness,
+        operator_id="operator.enzymedesign-owner",
+        authorizations=tuple(authorizations),
+        ledger=ledger,
+        verified_at=_now(),
+    )
+    receipt_set_path = (
+        layout.private_evidence_root
+        / f"qualification-receipt-set-{authorization.authorization_id}.json"
+    )
+    _write_private_json(receipt_set_path, receipt_set.to_dict())
     print(f"qualification_report={report_path}")
+    print(f"qualification_receipt_set={receipt_set_path}")
     print(f"dry_plan_digest={report.dry_plan_digest}")
     print(f"authorization_digest={report.authorization_digest}")
     print(f"outcome_count={len(report.outcomes)}")
     print(f"receipt_count={len(report.receipts)}")
     print(f"report_digest={report.report_digest}")
+    print(f"occurrence_qualified={str(report.occurrence_qualified).lower()}")
     print(f"qualified={str(report.qualified).lower()}")
+    print(f"receipt_set_count={len(receipt_set.selected_receipts)}")
+    print(f"receipt_set_report_digest={receipt_set.report_digest}")
+    print(f"receipt_set_qualified={str(receipt_set.qualified).lower()}")
     print("cutover=false")
     print("fallback_performed=false")
-    return 0 if report.qualified else 2
+    return 0 if receipt_set.qualified else 2
 
 
 if __name__ == "__main__":
