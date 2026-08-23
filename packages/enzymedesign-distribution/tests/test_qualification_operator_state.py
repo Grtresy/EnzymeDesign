@@ -1,6 +1,8 @@
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -79,6 +81,43 @@ def test_layout_bootstrap_creates_only_owner_private_skeleton(tmp_path: Path) ->
     assert not layout.credential_bundle_path.exists()
     assert not layout.ledger_path.exists()
     assert {item.name for item in root.iterdir()} == {"layout.json"}
+
+
+def test_preparation_authorization_writer_ignores_permissive_umask(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "authorization-root"
+    root.mkdir(mode=0o700)
+    output = root / "authorization.json"
+    repo_root = Path(__file__).resolve().parents[3]
+    script = repo_root / "scripts/create-external-identity-preparation-authorization.py"
+    environment = dict(os.environ)
+    environment["OPENZYME_ALLOW_LIVE"] = "0"
+
+    subprocess.run(
+        (
+            sys.executable,
+            str(script),
+            str(output),
+            "--authorization-id",
+            "authorization.preparation.permissions-test",
+            "--preparation-plan-digest",
+            "sha256:" + "1" * 64,
+            "--batch-id",
+            "batch-1",
+            "--operator-id",
+            "operator.enzymedesign-owner",
+            "--authorized-at",
+            "2026-08-23T18:30:00+08:00",
+        ),
+        cwd=repo_root,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert output.stat().st_mode & 0o777 == 0o600
 
 
 def test_layout_rejects_group_readable_or_symlinked_state(tmp_path: Path) -> None:

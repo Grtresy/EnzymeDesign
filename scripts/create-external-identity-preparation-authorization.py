@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import stat
 
 from openzyme_contracts import ExternalIdentityPreparationOccurrenceAuthorization
 
@@ -24,13 +25,34 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _write_private_file(path: Path, payload: dict[str, object]) -> None:
+    parent = path.parent
+    if not parent.exists():
+        parent.mkdir(mode=0o700, parents=True)
+    metadata = parent.lstat()
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.getuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+    ):
+        raise SystemExit("authorization parent ownership or mode is unsafe")
+    if path.exists() or path.is_symlink():
+        raise SystemExit(f"authorization output already exists: {path}")
+    encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
+    descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        os.write(descriptor, encoded)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def main() -> int:
     args = _parser().parse_args()
     if os.environ.get("OPENZYME_ALLOW_LIVE") != "0":
         raise SystemExit("authorization creation requires OPENZYME_ALLOW_LIVE=0")
     output = args.output.resolve()
-    if output.exists():
-        raise SystemExit(f"authorization output already exists: {output}")
     authorization = ExternalIdentityPreparationOccurrenceAuthorization.create(
         authorization_id=args.authorization_id,
         preparation_plan_digest=args.preparation_plan_digest,
@@ -38,11 +60,7 @@ def main() -> int:
         operator_id=args.operator_id,
         authorized_at=args.authorized_at,
     )
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(
-        json.dumps(authorization.to_dict(), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    _write_private_file(output, authorization.to_dict())
     print(f"authorization={output}")
     print(f"authorization_digest={authorization.authorization_digest}")
     print("external_effect_performed=false")
