@@ -113,6 +113,10 @@ same-attempt reconcile、cleanup、TTL 与 protected storage。SQLite 持久化�
 每个 resolved unit 还单独绑定可选 credential locator；batch 级 locator 集合必须恰好等于这些 unit locator 的
 并集。generic request、owner bridge 和 authorized router 任一 locator 不一致都会在 effect 前失败，不能把 LLM、
 Tavily 或 HPC locator 交叉借用。
+首次 discovery CLI 默认保留 non-live locator，用于尚未执行 preparation 的安全快照。对既有
+`prepared_not_qualified` snapshot 因新 source/recipe/contract 重建 gap 或 dry plan 时，必须显式使用
+`--exact-prepared-locators`；该模式采用资格 locator，并将 local-only Git/LFS locator 精确设为 `None`。两种模式
+不可隐式猜测或互相 fallback，prepared snapshot 若误用 non-live Git locator 必须在构建期 fail closed。
 Identity preparation 同样逐 action 绑定 owner component、input schema、secret-safe fields、canonical
 input-binding digest 和至多一个 credential locator；计划级 locator 集合与 action 并集不相等、调用方 input digest
 漂移或 owner builder 不匹配时，必须在解析 credential 或产生 effect 前失败。

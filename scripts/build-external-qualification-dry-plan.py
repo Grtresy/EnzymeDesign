@@ -10,6 +10,9 @@ import os
 from pathlib import Path
 
 from enzymedesign_distribution import OPTIONAL_PROFILES
+from enzymedesign_distribution import (
+    EXACT_EXTERNAL_QUALIFICATION_CREDENTIAL_LOCATORS,
+)
 from enzymedesign_distribution import build_enzymedesign_external_qualification_plan
 from enzymedesign_distribution import load_safe_identity_snapshot
 from enzymedesign_distribution import load_operator_identity_resolution_selections
@@ -28,7 +31,24 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="Secret-safe operator selections; still does not authorize effects.",
     )
+    parser.add_argument(
+        "--exact-prepared-locators",
+        action="store_true",
+        help=(
+            "Rebuild from a prepared snapshot using the exact live-qualification "
+            "locator mapping, including no credential locator for local-only Git/LFS."
+        ),
+    )
     return parser
+
+
+def _readiness_credential_locator_ids(
+    *,
+    exact_prepared_locators: bool,
+) -> dict[str, str | None] | None:
+    if not exact_prepared_locators:
+        return None
+    return dict(EXACT_EXTERNAL_QUALIFICATION_CREDENTIAL_LOCATORS)
 
 
 def main() -> int:
@@ -48,6 +68,9 @@ def main() -> int:
         plan_id=f"qualification.readiness.{snapshot.snapshot_id}",
         created_at=snapshot.observed_at,
         enabled_optional_profiles=OPTIONAL_PROFILES,
+        credential_locator_ids=_readiness_credential_locator_ids(
+            exact_prepared_locators=args.exact_prepared_locators,
+        ),
     )
     document = qualification_plan_bundle(
         readiness_plan=readiness,

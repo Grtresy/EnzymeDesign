@@ -41,6 +41,39 @@ def _preparation_script_module():
     return module
 
 
+def _dry_plan_script_module():
+    script_path = REPO_ROOT / "scripts/build-external-qualification-dry-plan.py"
+    spec = importlib.util.spec_from_file_location(
+        "openzyme_external_qualification_dry_plan_script",
+        script_path,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    scripts_path = str(REPO_ROOT / "scripts")
+    sys.path.insert(0, scripts_path)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(scripts_path)
+    return module
+
+
+def test_prepared_dry_plan_mode_uses_exact_locator_mapping() -> None:
+    module = _dry_plan_script_module()
+
+    assert module._readiness_credential_locator_ids(
+        exact_prepared_locators=False
+    ) is None
+    exact = module._readiness_credential_locator_ids(
+        exact_prepared_locators=True
+    )
+    assert exact["git.primary"] is None
+    assert exact["llm.primary"] == "credential.llm.micuapi.qualification"
+    assert exact["research.tavily.primary"] == "credential.tavily.qualification"
+    assert exact["hpc.ssh.primary"] == "credential.hpc.diannan.qualification"
+    assert exact["hpc.slurm.primary"] == "credential.hpc.diannan.qualification"
+
+
 def test_live_marker_requires_independent_global_and_marker_opt_in(
     monkeypatch,
 ) -> None:
