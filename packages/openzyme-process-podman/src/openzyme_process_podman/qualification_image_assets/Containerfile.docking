@@ -15,7 +15,7 @@ RUN printf 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debia
     && git clone --filter=blob:none https://github.com/Discngine/fpocket.git /src/fpocket \
     && git -C /src/fpocket checkout --detach "${FPOCKET_COMMIT}" \
     && test "$(git -C /src/fpocket rev-parse HEAD)" = "${FPOCKET_COMMIT}" \
-    && make -C /src/fpocket CXX=g++ -j2
+    && make -C /src/fpocket CXX=g++
 
 FROM ${BASE_IMAGE_REF}
 ARG DEBIAN_SNAPSHOT=20260820T000000Z
