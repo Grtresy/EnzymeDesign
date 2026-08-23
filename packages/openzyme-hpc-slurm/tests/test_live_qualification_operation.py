@@ -22,8 +22,8 @@ class _Remote:
             return 0, "COMPLETED\n", ""
         if script.startswith("job=$(sbatch"):
             return 0, "102\n", ""
-        if script.startswith("squeue -h -n"):
-            return 0, "103\n", ""
+        if script.startswith("timeout 30s sacct"):
+            return 0, "103|COMPLETED\n", ""
         return 0, "", ""
 
 
@@ -166,6 +166,61 @@ def test_slurm_submit_timeout_reconciles_attempt_name_without_redispatch() -> No
     assert restored_state.submit_job_name == state.submit_job_name
     assert restored.reconcile(request).succeeded is True
     assert sum(script.startswith("sbatch --parsable") for script in remote.scripts) == 1
+
+
+@dataclass
+class _ResponseLossTimeoutThenObserveRemote:
+    scripts: list[str] = field(default_factory=list)
+
+    def run_remote(self, script: str):
+        self.scripts.append(script)
+        if script.startswith("sbatch --parsable"):
+            raise subprocess.TimeoutExpired(script, 120)
+        if script.startswith("timeout 30s sacct"):
+            return 0, "601|COMPLETED\n", ""
+        return 0, "", ""
+
+
+def test_slurm_response_loss_timeout_reconciles_attempt_name_without_redispatch() -> None:
+    remote = _ResponseLossTimeoutThenObserveRemote()
+    state = SlurmQualificationState(
+        workspace=".local/state/openzyme-qualification/batch-1-response-loss",
+        partition="3090",
+        command_port=remote,
+    )
+    operation = OpenSshSlurmQualificationOperation(
+        component_id="openzyme.hpc.slurm",
+        route_id="openzyme.hpc.slurm.reconcile@1",
+        subject_digest=DIGEST,
+        state=state,
+    )
+    request = _request("reconcile")
+
+    dispatched = operation.dispatch(request)
+    assert dispatched.terminal is False
+    assert dispatched.effect_certainty == "dispatch_in_doubt"
+    assert operation.reconcile(request).succeeded is True
+    assert state.reconcile_job_name is not None
+    assert state.reconcile_job_name.startswith("openzyme-q-")
+    assert sum(script.startswith("sbatch --parsable") for script in remote.scripts) == 1
+
+    restored_state = SlurmQualificationState(
+        workspace=state.workspace,
+        partition="3090",
+        command_port=remote,
+    )
+    restored = OpenSshSlurmQualificationOperation(
+        component_id="openzyme.hpc.slurm",
+        route_id="openzyme.hpc.slurm.reconcile@1",
+        subject_digest=DIGEST,
+        state=restored_state,
+    )
+    restored.restore_dispatched_attempt(request)
+    assert restored_state.reconcile_job_name == state.reconcile_job_name
+    assert restored.reconcile(request).succeeded is True
+    assert sum(script.startswith("sbatch --parsable") for script in remote.scripts) == 1
+    assert state.cleanup()["command_accepted"] is True
+    assert state.reconcile_job_name in remote.scripts[-1]
 
 
 @dataclass

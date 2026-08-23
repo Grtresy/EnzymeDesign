@@ -76,6 +76,8 @@ class SlurmQualificationState:
             cleanup += f"; scancel -n {self.cancel_job_name} >/dev/null 2>&1 || true"
         if self.submit_job_name is not None:
             cleanup += f"; scancel -n {self.submit_job_name} >/dev/null 2>&1 || true"
+        if self.reconcile_job_name is not None:
+            cleanup += f"; scancel -n {self.reconcile_job_name} >/dev/null 2>&1 || true"
         returncode, _stdout, _stderr = self.command_port.run_remote(cleanup)
         return {"scheduler_cleanup_attempted": True, "command_accepted": returncode == 0}
 
@@ -201,10 +203,17 @@ class OpenSshSlurmQualificationOperation:
                 "Slurm reconcile requires the exact response-loss submit attempt",
             )
         output = self._run(
-            f"squeue -h -n {self.state.reconcile_job_name} -o '%i' | head -n 2"
+            "timeout 30s sacct -n -X -S now-1hour "
+            f"-u \"$USER\" --name {self.state.reconcile_job_name} "
+            "-o JobIDRaw,State -P"
         )
-        job_ids = tuple(line for line in output.splitlines() if line.strip())
-        succeeded = len(job_ids) == 1
+        rows = tuple(line for line in output.splitlines() if line.strip())
+        fields = rows[0].split("|", 1) if len(rows) == 1 else ()
+        succeeded = (
+            len(fields) == 2
+            and re.fullmatch(r"[0-9]+", fields[0]) is not None
+            and bool(fields[1])
+        )
         return self._observation(
             request,
             terminal=True,
@@ -310,10 +319,10 @@ class OpenSshSlurmQualificationOperation:
             {"attempt_id": request.attempt_id}
         ).removeprefix("sha256:")[:16]
         name = f"openzyme-q-{suffix}"
+        self.state.reconcile_job_name = name
         self._run(
             f"sbatch --parsable -p {self.state.partition} -t 00:02:00 -c 1 -J {name} -o {self.state.workspace}/reconcile-%j.out --wrap 'sleep 60' >/dev/null"
         )
-        self.state.reconcile_job_name = name
 
     @staticmethod
     def _observation(
