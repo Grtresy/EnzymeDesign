@@ -48,7 +48,7 @@
 - [x] 6.3c Implement the seven Batch 1 owner actions: dedicated LLM/Tavily locators, local-only Git/LFS, three repository-owned image groups and qualification-only `Diannan/3090` identity observation/config
 - [x] 6.3d Rebind post-preparation readiness units from non-live locator placeholders to exact qualification locators and prove safe results can drive effect-free rediscovery without issuing qualification evidence
 - [x] 6.3e Add an idempotent root/layout-only bootstrap, canonical authorization writer and source-bound Batch 1 executor that preflights all exact locators before mutation, records every result, resumes only exact stored occurrences and emits `prepared_not_qualified` rediscovery evidence
-- [ ] 6.4 Pause before credential resolution or any Provider, Git, container, SSH, Slurm, HPC or scientific-program effect and obtain explicit preparation authorization for an exact plan digest, batch and validity window
+- [ ] 6.4 Pause before credential resolution or any Provider, Git, container, SSH, Slurm, HPC or scientific-program effect and obtain explicit durable one-shot preparation authorization for an exact plan digest, batch and operator, with terminal no-redispatch and explicit revocation
 - [ ] 6.5 After preparation and effect-free rediscovery, obtain a separate exact qualification occurrence authorization; preparation authority MUST NOT substitute
 
 ## 7. Future real qualification after authorization

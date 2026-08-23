@@ -5,6 +5,7 @@ import pytest
 from openzyme_contracts import ExternalIdentityGap
 from openzyme_contracts import BoundExternalQualificationOperationBridge
 from openzyme_contracts import ExternalIdentityPreparationAction
+from openzyme_contracts import ExternalIdentityPreparationAuthorizationRevocation
 from openzyme_contracts import ExternalIdentityPreparationOccurrenceAuthorization
 from openzyme_contracts import ExternalIdentityPreparationPlan
 from openzyme_contracts import ExternalIdentityResolutionCandidate
@@ -25,6 +26,9 @@ from openzyme_contracts import ExternalSubjectIdentityObservation
 from openzyme_contracts import ExternalSubjectIdentityStatus
 from openzyme_contracts import SafeIdentityField
 from openzyme_contracts import verify_external_identity_decision
+from openzyme_contracts import (
+    verify_external_identity_preparation_authorization_not_revoked,
+)
 from openzyme_contracts import (
     verify_external_identity_preparation_occurrence_authorization,
 )
@@ -306,19 +310,34 @@ def test_identity_preparation_requires_separate_exact_occurrence_authorization()
         preparation_plan_digest=plan.preparation_plan_digest,
         batch_id=plan.batch_id,
         operator_id="operator.owner",
-        valid_from="2026-08-22T11:00:00+00:00",
-        valid_until="2026-08-22T13:00:00+00:00",
+        authorized_at="2026-08-22T11:00:00+00:00",
     )
     verify_external_identity_preparation_occurrence_authorization(
         plan,
         authorization,
-        observed_at=OBSERVED_AT,
+        observed_at="2036-08-22T12:00:00+00:00",
     )
     assert (
         ExternalIdentityPreparationOccurrenceAuthorization.from_dict(
             authorization.to_dict()
         )
         == authorization
+    )
+
+    revocation = ExternalIdentityPreparationAuthorizationRevocation.create(
+        revocation_id="revocation.authorization.preparation.batch-1",
+        authorization_digest=authorization.authorization_digest,
+        operator_id=authorization.operator_id,
+        revoked_at="2026-08-23T00:00:00+00:00",
+        reason_code="operator_revoked",
+    )
+    with pytest.raises(ExternalQualificationError) as revoked:
+        verify_external_identity_preparation_authorization_not_revoked(
+            authorization,
+            revocation,
+        )
+    assert revoked.value.error_code == (
+        "qualification_preparation_authorization_revoked"
     )
 
 

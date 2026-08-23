@@ -126,7 +126,9 @@ credential resolution 前返回结构化 blocker。当前人工 workflow 只生�
 operator 选择 identity candidate 后，若 subject 尚需建账号/locator、创建本地隔离 Git/LFS repository、build/pull
 image 或补齐 HPC profile/inventory，必须先生成独立 `ExternalIdentityPreparationPlan`。它绑定当前 gap/decision、
 batch、action、预算、cleanup 与 protected storage，但不会把 observation 标为 `resolved`。首次 preparation effect
-需要 `ExternalIdentityPreparationOccurrenceAuthorization`；完成后重新做 effect-free identity discovery，才能重建
+需要绑定 exact plan/batch/operator、无 wall-clock 截止时间的持久一次性
+`ExternalIdentityPreparationOccurrenceAuthorization`；已完成 action 只能恢复不得重新派发，authority 可由 exact 私有证据显式撤销。
+完成后重新做 effect-free identity discovery，才能重建
 qualification dry plan。Preparation authority 不能替代 qualification occurrence authority。
 
 当前 Git 决策只覆盖本地隔离 repository/LFS endpoint，并显式禁止 GitHub 或其他 hosted sync。本地 receipt 以后也
@@ -164,7 +166,7 @@ image、错误 target/route/subject、raw scientific execution、credential loca
 ## 后续强制暂停点
 
 当前必须在首次 Provider、Git mutation、container、SSH、Slurm、HPC 或科学程序 effect 前，把 exact
-identity-preparation plan digest、batch 和 validity window 交给操作员再次确认；preparation 完成后，真实 probe 还要
+identity-preparation plan digest、batch 和 operator 交给操作员再次确认；preparation 完成后，真实 probe 还要
 对重建的 qualification dry plan 另行确认。真实 qualification 完成后，在创建
 `cut-over-enzymedesign-qualified-runtime` 或执行 adoption 前，还要再次确认部署环境、quiescence、迁移/备份、
 rollback/forward-only 边界、监控、post-cutover smoke 与最终授权人。

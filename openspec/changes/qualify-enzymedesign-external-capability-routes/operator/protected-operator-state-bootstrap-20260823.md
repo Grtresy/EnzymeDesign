@@ -46,7 +46,7 @@ regular file。SSH observer 固定 exact `ssh_port`、`-F /dev/null`、`BatchMod
 
 1. 私有状态根已经由 operator 准备，或明确授权 Codex 只创建 root/layout 骨架；
 2. exact Batch 1 preparation plan digest 与 `batch-1`；
-3. 明确的 `valid_from` / `valid_until` 与 operator identity。
+3. 明确的 operator identity；preparation authority 为 exact、持久、一次性，不设置时间窗口。
 
 凭据 bundle 缺失、字段不全、权限不安全或 locator 不匹配时，执行必须停在 effect 前；不得读取 ambient env、使用
 相邻账号、SSH agent、当前 Git repository、hosted Git 或现有 runner config 作为 fallback。
@@ -65,12 +65,16 @@ uv run python scripts/bootstrap-external-qualification-operator-state.py \
 该命令不创建 `credentials.json`，不解析 locator，也不创建 ledger、Git repository、image 或 HPC 配置。operator 必须通过
 私有通道自行写入 exact `0600` credential bundle，禁止把 token、SSH key 或真实私有路径放入 Git、OpenSpec 工件或对话。
 
-收到 exact plan/batch/window/operator 授权后，先以 `OPENZYME_ALLOW_LIVE=0` 生成 canonical authorization JSON；只有随后
+收到 exact plan/batch/operator 授权后，先以 `OPENZYME_ALLOW_LIVE=0` 生成 canonical authorization JSON；只有随后
 显式设置 `OPENZYME_ALLOW_LIVE=1` 的本地执行命令才可进入 preparation。Batch executor 会重新计算当前 source identity、逐字
-比对 packet 内的 Batch 1 plan、验证 authorization window，然后一次性预检三个 locator；任一 locator 缺失或字段不全时，
+比对 packet 内的 Batch 1 plan、验证持久一次性 authorization 尚未被显式撤销，然后一次性预检三个 locator；任一 locator 缺失或字段不全时，
 必须在 Git/image/HPC mutation 前失败。执行器不实现 retry/fallback；已记录 occurrence 只按 exact plan 与 authorization 恢复，
 未记录但已有 Git/image/HPC residual state 时停止并要求人工 reconcile。成功输出仍是
 `prepared_not_qualified`，只允许下一步 effect-free rediscovery，不构成 qualification authority。
+
+时间流逝不会使 preparation authority 失效；source/plan/batch/operator 漂移会使其失效。若需停止尚未 terminal 的 occurrence，
+operator 使用 revocation 脚本写入 exact、`0600` 的私有撤销证据，执行器必须在解析 locator 前 fail closed。terminal action
+始终从 ledger 恢复，不得重新派发。
 
 Podman build 等已进入 effect 边界的 preparation 失败必须写入 `private-evidence/`：记录稳定
 `diagnostic_id`、return code、bounded stdout/stderr、截断标记、effect certainty、mutation/fallback/retry

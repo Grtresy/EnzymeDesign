@@ -36,8 +36,12 @@ from enzymedesign_distribution import (
 )
 from enzymedesign_distribution import qualification_plan_bundle
 from openzyme_contracts import ExternalIdentityPreparationOccurrenceAuthorization
+from openzyme_contracts import ExternalIdentityPreparationAuthorizationRevocation
 from openzyme_contracts import ExternalQualificationError
 from openzyme_contracts import canonical_sha256_digest
+from openzyme_contracts import (
+    verify_external_identity_preparation_authorization_not_revoked,
+)
 from openzyme_contracts import (
     verify_external_identity_preparation_occurrence_authorization,
 )
@@ -116,6 +120,27 @@ def _write_private_json(path: Path, payload: dict[str, object]) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _load_preparation_revocation(
+    *,
+    layout: QualificationOperatorStateLayout,
+    authorization: ExternalIdentityPreparationOccurrenceAuthorization,
+) -> ExternalIdentityPreparationAuthorizationRevocation | None:
+    suffix = authorization.authorization_digest.removeprefix("sha256:")
+    path = layout.private_evidence_root / f"preparation-revocation-{suffix}.json"
+    if not path.exists() and not path.is_symlink():
+        return None
+    _validate_private_file(path)
+    try:
+        return ExternalIdentityPreparationAuthorizationRevocation.from_dict(
+            _load_object(path)
+        )
+    except (TypeError, ValueError) as exc:
+        raise ExternalQualificationError(
+            "qualification_preparation_revocation_invalid",
+            "preparation authorization revocation evidence is invalid",
+        ) from exc
 
 
 def _record_private_failure_diagnostic(
@@ -264,6 +289,14 @@ def main() -> int:
         observed_at=_now(),
     )
     layout = QualificationOperatorStateLayout.open(Path(raw_root))
+    revocation = _load_preparation_revocation(
+        layout=layout,
+        authorization=authorization,
+    )
+    verify_external_identity_preparation_authorization_not_revoked(
+        authorization,
+        revocation,
+    )
 
     resolver = ProtectedQualificationCredentialBundleResolver(
         layout=layout,

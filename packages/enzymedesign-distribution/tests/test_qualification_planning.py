@@ -354,8 +354,7 @@ def test_preparation_factory_rejects_cross_action_credential_locator() -> None:
         preparation_plan_digest=plan.preparation_plan_digest,
         batch_id=plan.batch_id,
         operator_id="operator.owner",
-        valid_from="2026-08-22T14:00:00+00:00",
-        valid_until="2026-08-22T16:00:00+00:00",
+        authorized_at="2026-08-22T14:00:00+00:00",
     )
     resolver = _CountingResolver()
     builder_calls = 0
@@ -518,7 +517,8 @@ def test_safe_preparation_results_enable_effect_free_batch_1_rediscovery() -> No
                     action.credential_locator_id
                     if field_id == "credential_locator_id"
                     else "sha256:" + f"{index + 1:x}" * 64
-                    if field_id.endswith("digest") or field_id.endswith("fact")
+                    if field_id.endswith("digest")
+                    or field_id.endswith("fact")
                     or field_id.endswith("profile")
                     else f"prepared-{field_id}"
                 ),
@@ -596,7 +596,9 @@ def test_batch_executor_dispatches_each_exact_action_once_and_can_resume() -> No
     from enzymedesign_distribution import build_external_identity_preparation_plan
     from enzymedesign_distribution import build_external_identity_resolution_decisions
     from enzymedesign_distribution import discover_external_subject_identities
-    from enzymedesign_distribution import execute_enzymedesign_identity_preparation_batch
+    from enzymedesign_distribution import (
+        execute_enzymedesign_identity_preparation_batch,
+    )
     from openzyme_contracts import ExternalIdentityPreparationOccurrenceAuthorization
     from openzyme_contracts import create_external_identity_preparation_success
 
@@ -629,8 +631,7 @@ def test_batch_executor_dispatches_each_exact_action_once_and_can_resume() -> No
         preparation_plan_digest=plan.preparation_plan_digest,
         batch_id="batch-1",
         operator_id="operator.owner",
-        valid_from="2026-08-23T00:00:00+00:00",
-        valid_until="2026-08-23T02:00:00+00:00",
+        authorized_at="2026-08-23T00:00:00+00:00",
     )
     calls: list[str] = []
     recorded: list[ExternalIdentityPreparationResult] = []

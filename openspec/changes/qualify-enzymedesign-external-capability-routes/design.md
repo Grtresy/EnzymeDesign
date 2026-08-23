@@ -87,7 +87,7 @@ Batch 1 内 required base 缺项阻塞 batch；optional profile 缺项只阻塞�
 
 operator candidate decision 只选择如何补齐 identity，不授权执行。若所选方案本身需要建账号、写 locator、创建本地 Git/LFS repository、build/pull image、写安全 HPC profile 或通过 SSH 观察 inventory，则先生成 `ExternalIdentityPreparationPlan`。该 plan 精确绑定 source、discovery、gap/decision digest、batch、action、owner component、逐动作 credential locator、secret-safe input fields、canonical input-binding digest、budget、cleanup、protected storage 与 hard constraints，并固定 `live_effect_authorized=false`。计划级 locator 集合必须与逐动作 locator 并集完全相等；input、owner 或 locator 任一漂移都必须在 credential resolution 和 owner builder 之前失败。
 
-首次 preparation effect 需要独立 `ExternalIdentityPreparationOccurrenceAuthorization` 绑定 exact preparation-plan digest、batch、operator 和 validity window。没有该 authorization，preparation backend 必须在 credential resolution、建仓、容器、SSH/Slurm 或其他 effect 前 fail closed。Preparation terminal observation 只能补齐/否决 subject identity，不能生成 `qualified` evidence。
+首次 preparation effect 需要独立、持久、一次性的 `ExternalIdentityPreparationOccurrenceAuthorization` 绑定 exact preparation-plan digest、batch 和 operator，不设置 wall-clock 有效期。该 authority 只允许启动或恢复同一 exact occurrence：已持久化的 terminal action 直接恢复且不得重复派发；source、plan、batch、operator 任一漂移都会失效，也可由绑定 exact authorization 的私有 revocation evidence 显式撤销。没有 authority 或 authority 已撤销时，preparation backend 必须在 credential resolution、建仓、容器、SSH/Slurm 或其他 effect 前 fail closed。Preparation terminal observation 只能补齐/否决 subject identity，不能生成 `qualified` evidence。
 
 每个成功 preparation action 产生 `ExternalIdentityPreparationResult`，绑定 occurrence、preparation plan、authorization、owner、input-binding digest、terminal observation 与 exact safe identity fields。结果写入 protected SQLite ledger；effect-free rediscovery 只消费这些安全字段。重新构造 live qualification dry plan 时，readiness catalog 中的 `nonlive.locator.*` 必须被 exact LLM/Tavily/HPC locator 取代，本地 Git/LFS 的 non-live credential placeholder 必须移除，变化后的 unit digest 才可进入 real-subject plan。
 
@@ -164,7 +164,7 @@ plan-only factory 可以构造 bridge metadata，但不会构造 credential-bear
 2. 实现 repository-local safe observer 与当前 checkout discovery report，禁止 network/credential/process effect。
 3. 生成 Batch 1/Batch 2 identity gap-resolution packet；把 unresolved 项交给 operator 确认。
 4. 将 operator selections 冻结为 exact decisions，生成 Batch 1/Batch 2 identity-preparation plan；未授权时保持零 effect。
-5. 在首次 preparation effect 前暂停；用户批准 exact preparation-plan digest、window 和 batch 后，才创建 preparation occurrence authorization。
+5. 在首次 preparation effect 前暂停；用户批准 exact preparation-plan digest、batch 与 operator 后，才创建持久一次性的 preparation occurrence authorization；后续只能恢复同一 occurrence，或通过 exact revocation 显式撤销。
 6. Preparation 完成后重新观察 subject identity，重建 authorizable qualification dry plan。
 7. 再次取得 exact qualification-plan occurrence authorization，分 unit 执行真实 qualification、settle/reconcile、验证 receipt。任何未闭合 profile 保持 blocked。
 8. 完成真实资格后同步/归档本 change，并进入 cutover 前第二个人工决策门。

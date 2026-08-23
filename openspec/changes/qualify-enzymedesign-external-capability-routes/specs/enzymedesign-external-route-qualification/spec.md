@@ -25,7 +25,7 @@ Every partial, missing, unsafe or drifted identity required by an enabled profil
 ### Requirement: Identity preparation is independently planned and authorized
 An operator decision MUST select a candidate without claiming that the subject now exists. When the selected candidate requires account/locator provisioning, local repository creation, image build/pull, safe target-profile mutation or remote inventory observation, the system MUST create an `ExternalIdentityPreparationPlan` bound to the exact source, discovery report, gap and decision digests, batch, actions, credential locators, generous hard budgets, cleanup and protected storage. The plan MUST set `live_effect_authorized=false` and MUST NOT issue a real-subject identity or qualification evidence.
 
-Every preparation effect MUST require a distinct `ExternalIdentityPreparationOccurrenceAuthorization` binding the exact preparation-plan digest, batch, operator and validity window. It MUST fail before credential resolution or effect when authorization is absent, stale, mismatched or expired. Preparation completion MUST be followed by a new effect-free identity observation and a rebuilt qualification dry plan; preparation authority MUST NOT authorize qualification probes.
+Every preparation effect MUST require a distinct durable one-shot `ExternalIdentityPreparationOccurrenceAuthorization` binding the exact preparation-plan digest, batch and operator. The authorization MUST NOT expire by wall-clock passage; it remains usable only to start or resume that exact occurrence, and a terminal stored result MUST be restored without redispatch. Source, plan, batch or operator drift MUST invalidate it, and an exact explicit revocation MUST block it before credential resolution or effect. Preparation completion MUST be followed by a new effect-free identity observation and a rebuilt qualification dry plan; preparation authority MUST NOT authorize qualification probes.
 
 #### Scenario: Local Git candidate is selected
 - **WHEN** the operator selects a local isolated Git/LFS repository but has not authorized its creation
@@ -34,6 +34,14 @@ Every preparation effect MUST require a distinct `ExternalIdentityPreparationOcc
 #### Scenario: Preparation plan is authorized and completes
 - **WHEN** an exact preparation occurrence produces the required non-secret subject fields
 - **THEN** discovery is rerun and the qualification dry plan is rebuilt without promoting preparation observations to `qualified`
+
+#### Scenario: Durable preparation authority is resumed after wall-clock passage
+- **WHEN** the exact preparation occurrence is resumed with the same source-bound plan, batch, operator and authorization after any elapsed wall-clock time
+- **THEN** completed actions are restored from protected evidence without redispatch and only incomplete exact actions may continue
+
+#### Scenario: Preparation authority is explicitly revoked
+- **WHEN** exact revocation evidence binds the preparation authorization and operator before the occurrence is terminal
+- **THEN** execution fails before credential resolution or external effect and performs no fallback
 
 #### Scenario: Preparation authorization is offered to a qualification backend
 - **WHEN** identity preparation authority exists but no exact qualification occurrence authorization exists

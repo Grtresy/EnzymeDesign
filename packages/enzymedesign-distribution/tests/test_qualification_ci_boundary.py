@@ -120,6 +120,24 @@ def test_local_preparation_entry_refuses_non_live_gate_before_state_access(
     assert not state_root.exists()
 
 
+def test_preparation_entry_checks_revocation_before_credential_resolution() -> None:
+    source = (REPO_ROOT / "scripts/execute-external-identity-preparation.py").read_text(
+        encoding="utf-8"
+    )
+
+    revocation_guard = source.rindex(
+        "verify_external_identity_preparation_authorization_not_revoked("
+    )
+    resolver_construction = source.index(
+        "resolver = ProtectedQualificationCredentialBundleResolver("
+    )
+    credential_preflight = source.index(
+        "preflight_enzymedesign_identity_preparation_credentials("
+    )
+
+    assert revocation_guard < resolver_construction < credential_preflight
+
+
 def test_preparation_failure_diagnostic_is_private_bounded_evidence(
     tmp_path: Path,
 ) -> None:

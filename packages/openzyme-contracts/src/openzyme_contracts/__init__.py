@@ -79,6 +79,9 @@ from .external_route_qualification import BoundExternalQualificationOperationBri
 from .external_route_qualification import ExternalIdentityGap
 from .external_route_qualification import ExternalIdentityPreparationAction
 from .external_route_qualification import (
+    ExternalIdentityPreparationAuthorizationRevocation,
+)
+from .external_route_qualification import (
     ExternalIdentityPreparationOccurrenceAuthorization,
 )
 from .external_route_qualification import ExternalIdentityPreparationPlan
@@ -106,6 +109,9 @@ from .external_route_qualification import ExternalSubjectIdentityStatus
 from .external_route_qualification import SafeIdentityField
 from .external_route_qualification import create_external_identity_preparation_success
 from .external_route_qualification import verify_external_identity_decision
+from .external_route_qualification import (
+    verify_external_identity_preparation_authorization_not_revoked,
+)
 from .external_route_qualification import (
     verify_external_identity_preparation_occurrence_authorization,
 )
@@ -450,6 +456,7 @@ __all__ = [
     "BoundExternalQualificationOperationBridge",
     "ExternalIdentityGap",
     "ExternalIdentityPreparationAction",
+    "ExternalIdentityPreparationAuthorizationRevocation",
     "ExternalIdentityPreparationOccurrenceAuthorization",
     "ExternalIdentityPreparationPlan",
     "ExternalIdentityPreparationResult",
@@ -537,6 +544,7 @@ __all__ = [
     "adopt_qualified_external_capability",
     "verify_external_qualification_readiness",
     "verify_external_identity_decision",
+    "verify_external_identity_preparation_authorization_not_revoked",
     "verify_external_identity_preparation_occurrence_authorization",
     "verify_external_identity_preparation_plan",
     "verify_external_qualification_probe_request_binding",

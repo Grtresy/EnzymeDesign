@@ -260,7 +260,9 @@ canonical Plugin/Kernel surfaces；旧 function handler/repository/writer packag
   和 `Diannan/3090` qualification-only HPC identity 七个 action；SSH subject 显式绑定 host/port（当前端口
   `22222`）且不读取用户 SSH config fallback；成功只形成 protected
   `ExternalIdentityPreparationResult`。effect-free rediscovery 还必须把 `nonlive.locator.*` 重绑为专用
-  LLM/Tavily/HPC locator、移除本地 Git credential placeholder 并重建 unit digest。两级 backend 都必须在各自 exact plan digest/window/batch authorization 缺失时于
+  LLM/Tavily/HPC locator、移除本地 Git credential placeholder 并重建 unit digest。Preparation authorization
+  绑定 exact plan/batch/operator、持久且一次性，terminal action 不得重复派发并支持 exact 私有撤销；qualification
+  authorization 仍独立绑定 exact plan digest/window/batch。两级 backend 都必须在各自 authority 缺失或失配时于
   credential resolution 前失败。真实 receipt 即使完成也只证明 `qualified`，不能更新
   Session binding 或替代另一个 cutover change。正式本地入口拆成 root/layout-only bootstrap、canonical authorization
   writer 与 source-bound Batch 1 executor；executor 必须先预检全部 exact locator，再按稳定 occurrence identity 写 protected

@@ -20,8 +20,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--preparation-plan-digest", required=True)
     parser.add_argument("--batch-id", required=True, choices=("batch-1",))
     parser.add_argument("--operator-id", required=True)
-    parser.add_argument("--valid-from", required=True)
-    parser.add_argument("--valid-until", required=True)
+    parser.add_argument("--authorized-at", required=True)
     return parser
 
 
@@ -37,8 +36,7 @@ def main() -> int:
         preparation_plan_digest=args.preparation_plan_digest,
         batch_id=args.batch_id,
         operator_id=args.operator_id,
-        valid_from=args.valid_from,
-        valid_until=args.valid_until,
+        authorized_at=args.authorized_at,
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(

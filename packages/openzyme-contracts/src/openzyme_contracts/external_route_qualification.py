@@ -38,7 +38,10 @@ EXTERNAL_QUALIFICATION_BRIDGE_BINDING_SCHEMA = "external_qualification_bridge_bi
 EXTERNAL_IDENTITY_PREPARATION_ACTION_SCHEMA = "external_identity_preparation_action@2"
 EXTERNAL_IDENTITY_PREPARATION_PLAN_SCHEMA = "external_identity_preparation_plan@1"
 EXTERNAL_IDENTITY_PREPARATION_OCCURRENCE_AUTHORIZATION_SCHEMA = (
-    "external_identity_preparation_occurrence_authorization@1"
+    "external_identity_preparation_occurrence_authorization@2"
+)
+EXTERNAL_IDENTITY_PREPARATION_AUTHORIZATION_REVOCATION_SCHEMA = (
+    "external_identity_preparation_authorization_revocation@1"
 )
 EXTERNAL_IDENTITY_PREPARATION_RESULT_SCHEMA = "external_identity_preparation_result@1"
 EXTERNAL_QUALIFICATION_DRY_PLAN_SCHEMA = "external_qualification_dry_plan@1"
@@ -677,9 +680,7 @@ class ExternalQualificationOperationObservation:
             receipt_digest=optional_string("receipt_digest"),
             error_code=optional_string("error_code"),
             external_effect_performed=required_bool("external_effect_performed"),
-            credential_material_accessed=required_bool(
-                "credential_material_accessed"
-            ),
+            credential_material_accessed=required_bool("credential_material_accessed"),
             fallback_performed=required_bool("fallback_performed"),
         )
 
@@ -1310,8 +1311,7 @@ class ExternalIdentityPreparationOccurrenceAuthorization:
     preparation_plan_digest: str
     batch_id: str
     operator_id: str
-    valid_from: str
-    valid_until: str
+    authorized_at: str
     authorization_digest: str = ""
 
     SCHEMA_VERSION: ClassVar[str] = (
@@ -1336,10 +1336,7 @@ class ExternalIdentityPreparationOccurrenceAuthorization:
             self.preparation_plan_digest,
             field_name="preparation_plan_digest",
         )
-        start = _timestamp(self.valid_from, field_name="valid_from")
-        end = _timestamp(self.valid_until, field_name="valid_until")
-        if end <= start:
-            raise ValueError("preparation authorization validity must be positive")
+        _timestamp(self.authorized_at, field_name="authorized_at")
         require_digest(self.authorization_digest, field_name="authorization_digest")
         if self.authorization_digest != "sha256:" + "0" * 64:
             expected = canonical_sha256_digest(self.identity_payload)
@@ -1357,8 +1354,8 @@ class ExternalIdentityPreparationOccurrenceAuthorization:
             "preparation_plan_digest": self.preparation_plan_digest,
             "batch_id": self.batch_id,
             "operator_id": self.operator_id,
-            "valid_from": self.valid_from,
-            "valid_until": self.valid_until,
+            "authority_mode": "durable_one_shot",
+            "authorized_at": self.authorized_at,
         }
 
     def to_dict(self) -> dict[str, object]:
@@ -1377,11 +1374,15 @@ class ExternalIdentityPreparationOccurrenceAuthorization:
             "preparation_plan_digest",
             "batch_id",
             "operator_id",
-            "valid_from",
-            "valid_until",
+            "authority_mode",
+            "authorized_at",
             "authorization_digest",
         }
-        if set(payload) != allowed or payload.get("schema_version") != cls.SCHEMA_VERSION:
+        if (
+            set(payload) != allowed
+            or payload.get("schema_version") != cls.SCHEMA_VERSION
+            or payload.get("authority_mode") != "durable_one_shot"
+        ):
             raise ValueError("preparation authorization payload is unsupported")
 
         def required_string(field_name: str) -> str:
@@ -1395,9 +1396,100 @@ class ExternalIdentityPreparationOccurrenceAuthorization:
             preparation_plan_digest=required_string("preparation_plan_digest"),
             batch_id=required_string("batch_id"),
             operator_id=required_string("operator_id"),
-            valid_from=required_string("valid_from"),
-            valid_until=required_string("valid_until"),
+            authorized_at=required_string("authorized_at"),
             authorization_digest=required_string("authorization_digest"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalIdentityPreparationAuthorizationRevocation:
+    revocation_id: str
+    authorization_digest: str
+    operator_id: str
+    revoked_at: str
+    reason_code: str
+    revocation_digest: str = ""
+
+    SCHEMA_VERSION: ClassVar[str] = (
+        EXTERNAL_IDENTITY_PREPARATION_AUTHORIZATION_REVOCATION_SCHEMA
+    )
+
+    @classmethod
+    def create(
+        cls, **values: Any
+    ) -> "ExternalIdentityPreparationAuthorizationRevocation":
+        item = cls(**values, revocation_digest="sha256:" + "0" * 64)
+        return replace(
+            item,
+            revocation_digest=canonical_sha256_digest(item.identity_payload),
+        )
+
+    def __post_init__(self) -> None:
+        require_identifier(self.revocation_id, field_name="revocation_id")
+        require_identifier(self.operator_id, field_name="operator_id")
+        require_identifier(self.reason_code, field_name="reason_code")
+        require_digest(self.authorization_digest, field_name="authorization_digest")
+        _timestamp(self.revoked_at, field_name="revoked_at")
+        require_digest(self.revocation_digest, field_name="revocation_digest")
+        if self.revocation_digest != "sha256:" + "0" * 64:
+            expected = canonical_sha256_digest(self.identity_payload)
+            if self.revocation_digest != expected:
+                raise ExternalQualificationError(
+                    "qualification_preparation_revocation_digest_mismatch",
+                    "identity preparation authorization revocation digest does not match",
+                )
+
+    @property
+    def identity_payload(self) -> dict[str, object]:
+        return {
+            "schema_version": self.SCHEMA_VERSION,
+            "revocation_id": self.revocation_id,
+            "authorization_digest": self.authorization_digest,
+            "operator_id": self.operator_id,
+            "revoked_at": self.revoked_at,
+            "reason_code": self.reason_code,
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            **self.identity_payload,
+            "revocation_digest": self.revocation_digest,
+        }
+
+    @classmethod
+    def from_dict(
+        cls, payload: Mapping[str, object]
+    ) -> "ExternalIdentityPreparationAuthorizationRevocation":
+        allowed = {
+            "schema_version",
+            "revocation_id",
+            "authorization_digest",
+            "operator_id",
+            "revoked_at",
+            "reason_code",
+            "revocation_digest",
+        }
+        if (
+            set(payload) != allowed
+            or payload.get("schema_version") != cls.SCHEMA_VERSION
+        ):
+            raise ValueError(
+                "preparation authorization revocation payload is unsupported"
+            )
+
+        def required_string(field_name: str) -> str:
+            value = payload.get(field_name)
+            if not isinstance(value, str):
+                raise ValueError(f"{field_name} must be a string")
+            return value
+
+        return cls(
+            revocation_id=required_string("revocation_id"),
+            authorization_digest=required_string("authorization_digest"),
+            operator_id=required_string("operator_id"),
+            revoked_at=required_string("revoked_at"),
+            reason_code=required_string("reason_code"),
+            revocation_digest=required_string("revocation_digest"),
         )
 
 
@@ -1420,16 +1512,27 @@ def verify_external_identity_preparation_occurrence_authorization(
             "qualification_preparation_authorization_mismatch",
             "preparation authorization does not bind the exact plan and batch",
         )
-    observed = _timestamp(observed_at, field_name="observed_at")
-    if not (
-        _timestamp(authorization.valid_from, field_name="valid_from")
-        <= observed
-        < _timestamp(authorization.valid_until, field_name="valid_until")
+    _timestamp(observed_at, field_name="observed_at")
+
+
+def verify_external_identity_preparation_authorization_not_revoked(
+    authorization: ExternalIdentityPreparationOccurrenceAuthorization,
+    revocation: ExternalIdentityPreparationAuthorizationRevocation | None,
+) -> None:
+    if revocation is None:
+        return
+    if (
+        revocation.authorization_digest != authorization.authorization_digest
+        or revocation.operator_id != authorization.operator_id
     ):
         raise ExternalQualificationError(
-            "qualification_preparation_authorization_expired",
-            "identity preparation authorization is outside its validity window",
+            "qualification_preparation_revocation_mismatch",
+            "preparation authorization revocation does not bind the exact authority",
         )
+    raise ExternalQualificationError(
+        "qualification_preparation_authorization_revoked",
+        "identity preparation authorization was explicitly revoked",
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1468,7 +1571,9 @@ class ExternalIdentityPreparationResult:
             sorted(self.safe_identity_fields, key=lambda item: item.field_id)
         )
         if not fields or len({item.field_id for item in fields}) != len(fields):
-            raise ValueError("preparation safe identity fields must be non-empty and unique")
+            raise ValueError(
+                "preparation safe identity fields must be non-empty and unique"
+            )
         object.__setattr__(self, "safe_identity_fields", fields)
         safe_output_digest = canonical_sha256_digest(
             {
