@@ -126,6 +126,7 @@ def _restore_terminal_private_evidence(
     *,
     layout: QualificationOperatorStateLayout,
     source_identity: dict[str, object],
+    source_identity_digest: str,
     plan_digest: str,
     authorization: ExternalIdentityPreparationOccurrenceAuthorization,
     result_digests: tuple[str, ...],
@@ -158,7 +159,7 @@ def _restore_terminal_private_evidence(
         != "enzymedesign_post_preparation_operator_packet@1"
         or document.get("claim") != "prepared_not_qualified"
         or document.get("source_identity") != source_identity
-        or document.get("source_identity_digest") != source_identity.get("digest")
+        or document.get("source_identity_digest") != source_identity_digest
         or document.get("preparation_plan_digest") != plan_digest
         or document.get("preparation_authorization_digest")
         != authorization.authorization_digest
@@ -396,6 +397,7 @@ def main() -> int:
     terminal_document = _restore_terminal_private_evidence(
         layout=layout,
         source_identity=source.as_dict(),
+        source_identity_digest=source.digest,
         plan_digest=plan.preparation_plan_digest,
         authorization=authorization,
         result_digests=tuple(item.result_digest for item in existing_results),

@@ -150,13 +150,14 @@ def test_terminal_private_evidence_restores_exact_packet_without_regeneration(
         authorization_id="authorization.preparation.batch-1",
         authorization_digest="sha256:" + "2" * 64,
     )
-    source_identity = {"digest": "sha256:" + "1" * 64, "commit": "abc123"}
+    source_identity = {"commit": "abc123"}
+    source_identity_digest = "sha256:" + "1" * 64
     prepared_snapshot = {"schema_version": "safe_snapshot@1", "observed_at": "then"}
     document = {
         "schema_version": "enzymedesign_post_preparation_operator_packet@1",
         "claim": "prepared_not_qualified",
         "source_identity": source_identity,
-        "source_identity_digest": source_identity["digest"],
+        "source_identity_digest": source_identity_digest,
         "preparation_plan_digest": "sha256:" + "3" * 64,
         "preparation_authorization_digest": authorization.authorization_digest,
         "preparation_result_digests": ["sha256:" + "4" * 64],
@@ -182,6 +183,7 @@ def test_terminal_private_evidence_restores_exact_packet_without_regeneration(
     restored = preparation._restore_terminal_private_evidence(
         layout=layout,
         source_identity=source_identity,
+        source_identity_digest=source_identity_digest,
         plan_digest="sha256:" + "3" * 64,
         authorization=authorization,
         result_digests=("sha256:" + "4" * 64,),
