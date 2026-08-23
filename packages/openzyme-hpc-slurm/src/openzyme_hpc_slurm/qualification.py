@@ -692,7 +692,7 @@ class SlurmAlphaFoldQualificationRoute:
                 "openzyme-af3-"
                 f"{workload.workload_digest.removeprefix('sha256:')[:12]}"
             )
-            self._run(
+            submit_script = (
                 "sbatch --wait --parsable -p 3090 -t 00:30:00 "
                 "--gpus=1 --cpus-per-task=8 --mem=64G "
                 f"-J {shlex.quote(job_name)} --chdir={shlex.quote(cwd)} "
@@ -700,6 +700,23 @@ class SlurmAlphaFoldQualificationRoute:
                 f"-e {shlex.quote(cwd + '/slurm-%j.err')} "
                 f"--wrap {shlex.quote(command)}"
             )
+            returncode, stdout, _stderr = self.command_port.run_remote(submit_script)
+            if returncode != 0:
+                job_id = stdout.strip().split(";", 1)[0]
+                if re.fullmatch(r"[0-9]+", job_id) is not None:
+                    self.command_port.run_remote(
+                        "printf '%s\\n' OPENZYME_AF3_SACCT; "
+                        f"sacct -n -X -j {job_id} "
+                        "-o JobIDRaw,State,ExitCode,Elapsed,NodeList -P; "
+                        "printf '%s\\n' OPENZYME_AF3_STDOUT; "
+                        f"tail -c 32768 {shlex.quote(cwd + '/slurm-' + job_id + '.out')} 2>&1 || true; "
+                        "printf '%s\\n' OPENZYME_AF3_STDERR; "
+                        f"tail -c 32768 {shlex.quote(cwd + '/slurm-' + job_id + '.err')} 2>&1 || true"
+                    )
+                raise ExternalQualificationError(
+                    "qualification_alphafold_job_failed",
+                    "AlphaFold Slurm job failed; protected diagnostics were captured",
+                )
             outputs: list[dict[str, object]] = []
             for output_path in workload.expected_output_paths:
                 remote = f"{cwd}/{output_path}"

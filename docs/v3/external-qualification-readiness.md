@@ -198,6 +198,10 @@ Batch 2 只有一个 terminal `predict` unit，不伪造不存在的 response-lo
 terminal scientific route 无 redispatch，仍同时执行缺失 authority、operation/schema mismatch 与 timeout-before-effect。
 路由级 resource drift、expected output 缺失、GPU mismatch 和 cleanup failure 由 deterministic negative regression
 闭合。只有 Batch 1 含明确 reconcile operation 的 unit 才可声明 same-attempt reconcile，其他 batch 不得借此放宽。
+固定 monomer 采用该 target 已有成功 AlphaFold 3 输入证明一致的单链 schema（`id: "A"`），不以未证明的 homomer
+list 形态替代。`sbatch --wait` 非零时，route 必须在清理前以 job id 读取 bounded `sacct`、Slurm stdout/stderr，
+经受保护 diagnostic writer 持久化后才删除 occurrence workspace；公共 outcome 只暴露稳定 error code。日志抓取失败
+不触发重跑，也不允许为保留日志而跳过既定 cleanup。
 若一次只读观测已终态、但后续本地 rediscovery 因源码缺陷失败，新 source/plan/authority 不得删除或盲目覆盖既有
 私有配置；executor 只允许在重新观测的全部 resource identity 完全相等且旧配置 digest/owner/mode 完整时，原子更新
 plan/authority 绑定并记录 prior config digest。任一稳定资源字段漂移都停止 reconcile，禁止把该路径当作 retry 或 fallback。

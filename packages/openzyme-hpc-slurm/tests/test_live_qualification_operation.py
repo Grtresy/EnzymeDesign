@@ -330,6 +330,7 @@ class _AlphaFoldRemote:
     input_content: bytes
     resource_digest: str
     drift_resources: bool = False
+    fail_job: bool = False
     scripts: list[str] = field(default_factory=list)
 
     def run_remote(self, script: str):
@@ -348,7 +349,11 @@ class _AlphaFoldRemote:
         if script.startswith("cat ") and "gpu-identity.txt" in script:
             return 0, "NVIDIA GeForce RTX 3090, GPU-test, 550.54, 8.6\n", ""
         if script.startswith("sbatch --wait --parsable"):
+            if self.fail_job:
+                return 1, "9001\n", ""
             return 0, "9001\n", ""
+        if "OPENZYME_AF3_SACCT" in script:
+            return 0, "9001|FAILED|1:0|00:00:10|node-test\n", ""
         return 0, "", ""
 
 
@@ -437,3 +442,32 @@ def test_alphafold_route_rejects_resource_drift_before_dispatch() -> None:
     assert outcome.error_code == "qualification_alphafold_resource_identity_drift"
     assert not any(script.startswith("sbatch --wait") for script in remote.scripts)
     assert remote.scripts[-1].startswith("rm -rf --")
+
+
+def test_alphafold_route_captures_bounded_job_diagnostics_before_cleanup() -> None:
+    content = b'{"modelSeeds":[20260824]}\n'
+    remote = _AlphaFoldRemote(
+        input_content=content,
+        resource_digest="0" * 64,
+        fail_job=True,
+    )
+    route = _alphafold_route(remote, content)
+
+    outcome = route.dispatch(_alphafold_workload(content))
+
+    assert outcome.succeeded is False
+    assert outcome.error_code == "qualification_alphafold_job_failed"
+    diagnostic_index = next(
+        index
+        for index, script in enumerate(remote.scripts)
+        if "OPENZYME_AF3_SACCT" in script
+    )
+    cleanup_index = next(
+        index
+        for index, script in enumerate(remote.scripts)
+        if script.startswith("rm -rf --")
+    )
+    assert diagnostic_index < cleanup_index
+    diagnostic_script = remote.scripts[diagnostic_index]
+    assert "tail -c 32768" in diagnostic_script
+    assert "sacct -n -X -j 9001" in diagnostic_script

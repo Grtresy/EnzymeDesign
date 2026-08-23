@@ -162,6 +162,7 @@ def test_alphafold_compiler_freezes_20aa_seeded_inference_contract() -> None:
     )
     assert job["modelSeeds"] == [20260824]
     assert job["sequences"][0]["protein"]["sequence"] == "ACDEFGHIKLMNPQRSTVWY"
+    assert job["sequences"][0]["protein"]["id"] == "A"
     assert workload.expected_output_paths == (
         "results/alphafold3/openzyme_qualification_20aa/"
         "openzyme_qualification_20aa_model.cif",

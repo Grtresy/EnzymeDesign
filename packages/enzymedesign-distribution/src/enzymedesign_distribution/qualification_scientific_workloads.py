@@ -56,7 +56,7 @@ _ALPHAFOLD_JOB = (
             "sequences": [
                 {
                     "protein": {
-                        "id": ["A"],
+                        "id": "A",
                         "pairedMsa": "",
                         "sequence": "ACDEFGHIKLMNPQRSTVWY",
                         "templates": [],
