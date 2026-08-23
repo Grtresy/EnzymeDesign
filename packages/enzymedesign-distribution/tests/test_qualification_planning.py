@@ -154,6 +154,40 @@ def test_batch_1_preparation_has_one_hpc_effect_and_unique_image_effects() -> No
         )
 
 
+def test_batch_without_identity_gaps_omits_noop_preparation_plan() -> None:
+    from enzymedesign_distribution import ExternalQualificationBatch
+    from enzymedesign_distribution import build_external_identity_gaps
+    from enzymedesign_distribution import discover_external_subject_identities
+    from enzymedesign_distribution.qualification_planning import _batch_identity_gaps
+
+    snapshot = load_safe_identity_snapshot(SNAPSHOT)
+    readiness = build_enzymedesign_external_qualification_plan(
+        plan_id="qualification.readiness.current",
+        created_at=snapshot.observed_at,
+        enabled_optional_profiles=OPTIONAL_PROFILES,
+    )
+    gaps = build_external_identity_gaps(
+        discover_external_subject_identities(
+            readiness_plan=readiness,
+            snapshot=snapshot,
+        )
+    )
+    alphafold_gap = tuple(
+        gap for gap in gaps if gap.logical_subject_id == "alphafold.hpc"
+    )
+
+    assert _batch_identity_gaps(
+        readiness_plan=readiness,
+        gaps=alphafold_gap,
+        batch=ExternalQualificationBatch.BATCH_1,
+    ) == ()
+    assert _batch_identity_gaps(
+        readiness_plan=readiness,
+        gaps=alphafold_gap,
+        batch=ExternalQualificationBatch.BATCH_2_ALPHAFOLD,
+    ) == alphafold_gap
+
+
 def test_llm_and_tavily_budgets_are_generous_circuit_breakers() -> None:
     batch_1 = _bundle()["dry_plans"][0]
     budgets = {item["budget_id"]: item for item in batch_1["budgets"]}

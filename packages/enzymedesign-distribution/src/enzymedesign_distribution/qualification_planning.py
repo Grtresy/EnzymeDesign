@@ -1059,15 +1059,12 @@ _PREPARATION_INPUTS: dict[
 }
 
 
-def build_external_identity_preparation_plan(
+def _batch_identity_gaps(
     *,
     readiness_plan: ExternalQualificationPlan,
-    discovery: ExternalSubjectIdentityDiscoveryReport,
     gaps: tuple[ExternalIdentityGap, ...],
-    decisions: tuple[ExternalIdentityResolutionDecision, ...],
-    selection_set: OperatorIdentityResolutionSelectionSet,
     batch: ExternalQualificationBatch,
-) -> ExternalIdentityPreparationPlan:
+) -> tuple[ExternalIdentityGap, ...]:
     profiles = (
         BATCH_1_PROFILES
         if batch is ExternalQualificationBatch.BATCH_1
@@ -1083,10 +1080,26 @@ def build_external_identity_preparation_plan(
         for unit in readiness_plan.units
         if unit_profile[unit.unit_digest] in profiles
     }
-    batch_gaps = tuple(
+    return tuple(
         gap
         for gap in gaps
         if batch_unit_digests.intersection(gap.affected_unit_digests)
+    )
+
+
+def build_external_identity_preparation_plan(
+    *,
+    readiness_plan: ExternalQualificationPlan,
+    discovery: ExternalSubjectIdentityDiscoveryReport,
+    gaps: tuple[ExternalIdentityGap, ...],
+    decisions: tuple[ExternalIdentityResolutionDecision, ...],
+    selection_set: OperatorIdentityResolutionSelectionSet,
+    batch: ExternalQualificationBatch,
+) -> ExternalIdentityPreparationPlan:
+    batch_gaps = _batch_identity_gaps(
+        readiness_plan=readiness_plan,
+        gaps=gaps,
+        batch=batch,
     )
     decision_by_gap = {item.gap_digest: item for item in decisions}
     action_groups: dict[str, _ExternalIdentityPreparationActionGroup] = {}
@@ -1765,7 +1778,13 @@ def qualification_plan_bundle(
                 ExternalQualificationBatch.BATCH_1,
                 ExternalQualificationBatch.BATCH_2_ALPHAFOLD,
             )
+            if _batch_identity_gaps(
+                readiness_plan=readiness_plan,
+                gaps=gaps,
+                batch=batch,
+            )
         )
+    preparation_batches = {item.batch_id for item in preparation_plans}
     return {
         "schema_version": "enzymedesign_external_qualification_operator_packet@1",
         "claim": "plan_only",
@@ -1794,8 +1813,13 @@ def qualification_plan_bundle(
             ),
             "gap_count": len(gaps),
             "decision_count": len(decisions),
-            "batch_1_preparation_authorizable": bool(preparation_plans),
-            "batch_2_preparation_authorizable": bool(preparation_plans),
+            "batch_1_preparation_authorizable": (
+                ExternalQualificationBatch.BATCH_1.value in preparation_batches
+            ),
+            "batch_2_preparation_authorizable": (
+                ExternalQualificationBatch.BATCH_2_ALPHAFOLD.value
+                in preparation_batches
+            ),
             "batch_1_authorizable": plans[0].authorizable,
             "batch_2_authorizable": plans[1].authorizable,
         },

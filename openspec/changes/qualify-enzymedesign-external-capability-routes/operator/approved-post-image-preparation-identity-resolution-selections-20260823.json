@@ -1,0 +1,20 @@
+{
+  "schema_version": "enzymedesign_external_identity_resolution_selections@1",
+  "selection_set_id": "operator-confirmed-post-image-preparation-20260823",
+  "operator_id": "operator.enzymedesign-owner",
+  "decided_at": "2026-08-23T13:37:14+00:00",
+  "snapshot_id": "prepared.batch-1.90d75ac96d2fb144",
+  "constraints": [
+    "alphafold-batch-2-only",
+    "first-effect-requires-new-authorization",
+    "git-local-only-no-hosted-sync",
+    "plan-only-current-authority"
+  ],
+  "storage_selection_id": "use-protected-operator-state-root",
+  "selections": [
+    {
+      "projection_id": "alphafold-hpc",
+      "candidate_id": "complete-executor-workspace-v2-inventory"
+    }
+  ]
+}
