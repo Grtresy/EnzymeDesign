@@ -3,14 +3,24 @@ from dataclasses import field
 import re
 import shlex
 
+import pytest
+
 from openzyme_contracts import ExternalQualificationProbeRequest
 from openzyme_contracts import canonical_sha256_digest
 from openzyme_hpc_ssh import OpenSshQualificationOperation
 from openzyme_hpc_ssh import OpenSshQualificationState
 from openzyme_hpc_ssh import SshWorkspaceRuntimeQualificationIdentity
+from openzyme_hpc_ssh import SubprocessOpenSshQualificationCommandPort
 
 
 DIGEST = "sha256:" + "1" * 64
+
+
+def test_subprocess_ssh_qualification_timeout_is_explicit_and_bounded() -> None:
+    assert SubprocessOpenSshQualificationCommandPort().timeout_seconds == 120
+    assert SubprocessOpenSshQualificationCommandPort(600).timeout_seconds == 600
+    with pytest.raises(ValueError):
+        SubprocessOpenSshQualificationCommandPort(601)
 
 
 @dataclass(frozen=True)

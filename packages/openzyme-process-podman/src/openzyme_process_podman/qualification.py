@@ -253,7 +253,12 @@ class PodmanScientificQualificationRoute:
     ) -> ExternalScientificQualificationRouteOutcome:
         run_root = self.workspace_root / workload.workload_id
         if run_root.exists() or run_root.is_symlink():
-            return self._failure(workload, "qualification_compute_workspace_collision")
+            return self._failure(
+                workload,
+                "qualification_compute_workspace_collision",
+                effect_certainty="no_effect",
+                external_effect_performed=False,
+            )
         run_root.mkdir(mode=0o700)
         try:
             for item in workload.inputs:
@@ -322,6 +327,7 @@ class PodmanScientificQualificationRoute:
             }
             return ExternalScientificQualificationRouteOutcome(
                 workload_digest=workload.workload_digest,
+                effect_certainty="terminal_known",
                 terminal=True,
                 succeeded=True,
                 output_digest=canonical_sha256_digest(payload),
@@ -345,7 +351,12 @@ class PodmanScientificQualificationRoute:
         self,
         workload: ExternalScientificQualificationWorkload,
     ) -> ExternalScientificQualificationRouteOutcome:
-        return self._failure(workload, "qualification_compute_reconcile_without_dispatch")
+        return self._failure(
+            workload,
+            "qualification_compute_reconcile_without_dispatch",
+            effect_certainty="no_effect",
+            external_effect_performed=False,
+        )
 
     def _run_container(
         self,
@@ -384,15 +395,19 @@ class PodmanScientificQualificationRoute:
     def _failure(
         workload: ExternalScientificQualificationWorkload,
         error_code: str,
+        *,
+        effect_certainty: str = "terminal_known",
+        external_effect_performed: bool = True,
     ) -> ExternalScientificQualificationRouteOutcome:
         return ExternalScientificQualificationRouteOutcome(
             workload_digest=workload.workload_digest,
+            effect_certainty=effect_certainty,
             terminal=True,
             succeeded=False,
             output_digest=None,
             receipt_digest=None,
             error_code=error_code,
-            external_effect_performed=True,
+            external_effect_performed=external_effect_performed,
             credential_material_accessed=False,
         )
 

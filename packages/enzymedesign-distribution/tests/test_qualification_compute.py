@@ -51,6 +51,7 @@ class _Route:
         payload = {"workload_digest": workload.workload_digest, "result": "ok"}
         return ExternalScientificQualificationRouteOutcome(
             workload_digest=workload.workload_digest,
+            effect_certainty="terminal_known",
             terminal=True,
             succeeded=True,
             output_digest=canonical_sha256_digest(payload),
@@ -62,6 +63,27 @@ class _Route:
 
     def reconcile(self, workload):
         raise AssertionError("terminal fake route must not reconcile")
+
+
+@dataclass
+class _InDoubtRoute:
+    route_kind: str = "local"
+
+    def dispatch(self, workload):
+        return ExternalScientificQualificationRouteOutcome(
+            workload_digest=workload.workload_digest,
+            effect_certainty="dispatch_in_doubt",
+            terminal=True,
+            succeeded=False,
+            output_digest=None,
+            receipt_digest=None,
+            error_code="qualification_compute_remote_timeout_in_doubt",
+            external_effect_performed=True,
+            credential_material_accessed=False,
+        )
+
+    def reconcile(self, workload):
+        raise AssertionError("terminal in-doubt route must not redispatch")
 
 
 def _request() -> ExternalQualificationProbeRequest:
@@ -122,3 +144,23 @@ def test_formal_compute_operation_rejects_route_drift_before_effect():
     assert outcome.error_code == "qualification_compute_workload_binding_mismatch"
     assert outcome.external_effect_performed is False
     assert route.dispatches == 0
+
+
+def test_formal_compute_preserves_terminal_dispatch_in_doubt_certainty() -> None:
+    operation = FormalComputeScientificQualificationOperation(
+        component_id="enzymedesign.hmmer.local",
+        route_id="enzymedesign.hmmer.local.hmmbuild@1",
+        subject_digest=DIGEST,
+        driver_component_id="enzymedesign.hmmer.local",
+        workload_input_digest=DIGEST,
+        result_schema_digest=OTHER_DIGEST,
+        compiler=_Compiler(),
+        compute_route=_InDoubtRoute(),
+    )
+
+    outcome = operation.dispatch(_request())
+
+    assert outcome.terminal is True
+    assert outcome.succeeded is False
+    assert outcome.effect_certainty == "dispatch_in_doubt"
+    assert outcome.error_code == "qualification_compute_remote_timeout_in_doubt"

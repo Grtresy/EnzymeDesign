@@ -95,6 +95,9 @@ class SelectedLiveQualificationBridgeFactory:
     _ssh_state: OpenSshQualificationState | None = field(
         default=None, init=False, repr=False
     )
+    _scientific_ssh_state: OpenSshQualificationState | None = field(
+        default=None, init=False, repr=False
+    )
     _slurm_state: SlurmQualificationState | None = field(
         default=None, init=False, repr=False
     )
@@ -343,6 +346,23 @@ class SelectedLiveQualificationBridgeFactory:
             )
         return self._slurm_state
 
+    def _ensure_scientific_ssh(
+        self,
+        binding: ExternalQualificationBridgeBinding,
+    ) -> OpenSshQualificationState:
+        adapter_state = self._ensure_ssh(binding)
+        if self._scientific_ssh_state is None:
+            self._scientific_ssh_state = OpenSshQualificationState(
+                credential_material=adapter_state.credential_material,
+                workspace_id=adapter_state.workspace_id,
+                command_port=RecordingSshCommandPort(
+                    SubprocessOpenSshQualificationCommandPort(timeout_seconds=600),
+                    self._diagnostic_context,
+                ),
+                workspace_runtime_identity=self.workspace_runtime_identity,
+            )
+        return self._scientific_ssh_state
+
     def _slurm(self, binding: ExternalQualificationBridgeBinding):
         state = self._ensure_slurm(binding)
         return SlurmQualificationProbeBridge(
@@ -364,7 +384,7 @@ class SelectedLiveQualificationBridgeFactory:
             route_kind=route_kind,
         )
         if route_kind == "hpc-primary":
-            ssh_state = self._ensure_ssh(binding)
+            ssh_state = self._ensure_scientific_ssh(binding)
             if binding.component_id.startswith("enzymedesign.hmmer."):
                 image_group = "hmmer"
             elif binding.component_id.startswith("enzymedesign.vina."):

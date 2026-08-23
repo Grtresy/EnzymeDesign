@@ -398,6 +398,7 @@ class SlurmScientificQualificationRoute:
             }
             outcome = ExternalScientificQualificationRouteOutcome(
                 workload_digest=workload.workload_digest,
+                effect_certainty="terminal_known",
                 terminal=True,
                 succeeded=True,
                 output_digest=canonical_sha256_digest(payload),
@@ -414,6 +415,13 @@ class SlurmScientificQualificationRoute:
             outcome = self._failure(
                 workload,
                 "qualification_compute_remote_timeout_in_doubt",
+                effect_certainty="dispatch_in_doubt",
+            )
+        except OSError:
+            outcome = self._failure(
+                workload,
+                "qualification_compute_remote_transport_in_doubt",
+                effect_certainty="dispatch_in_doubt",
             )
         finally:
             try:
@@ -425,7 +433,15 @@ class SlurmScientificQualificationRoute:
             except subprocess.TimeoutExpired:
                 cleanup_error_code = "qualification_compute_remote_cleanup_timeout"
         if cleanup_error_code is not None:
-            return self._failure(workload, cleanup_error_code)
+            return self._failure(
+                workload,
+                cleanup_error_code,
+                effect_certainty=(
+                    "dispatch_in_doubt"
+                    if cleanup_error_code.endswith("_timeout")
+                    else "terminal_known"
+                ),
+            )
         assert outcome is not None
         return outcome
 
@@ -468,9 +484,12 @@ class SlurmScientificQualificationRoute:
     def _failure(
         workload: ExternalScientificQualificationWorkload,
         error_code: str,
+        *,
+        effect_certainty: str = "terminal_known",
     ) -> ExternalScientificQualificationRouteOutcome:
         return ExternalScientificQualificationRouteOutcome(
             workload_digest=workload.workload_digest,
+            effect_certainty=effect_certainty,
             terminal=True,
             succeeded=False,
             output_digest=None,

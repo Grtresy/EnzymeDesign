@@ -59,6 +59,7 @@ def test_selected_driver_compiler_builds_exact_formal_workload_and_validates_res
         )
     outcome = ExternalScientificQualificationRouteOutcome(
         workload_digest=workload.workload_digest,
+        effect_certainty="terminal_known",
         terminal=True,
         succeeded=True,
         output_digest=DIGEST,

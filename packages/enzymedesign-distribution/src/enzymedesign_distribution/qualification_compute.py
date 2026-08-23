@@ -131,9 +131,7 @@ class FormalComputeScientificQualificationOperation:
             attempt_id=request.attempt_id,
             request_digest=request.request_digest,
             operation=request.operation,
-            effect_certainty=(
-                "terminal_known" if outcome.terminal else "dispatch_in_doubt"
-            ),
+            effect_certainty=outcome.effect_certainty,
             terminal=outcome.terminal,
             succeeded=outcome.succeeded,
             output_digest=outcome.output_digest,

@@ -828,6 +828,7 @@ class ExternalScientificQualificationWorkload:
 @dataclass(frozen=True, slots=True)
 class ExternalScientificQualificationRouteOutcome:
     workload_digest: str
+    effect_certainty: str
     terminal: bool
     succeeded: bool
     output_digest: str | None
@@ -838,6 +839,12 @@ class ExternalScientificQualificationRouteOutcome:
 
     def __post_init__(self) -> None:
         require_digest(self.workload_digest, field_name="workload_digest")
+        if self.effect_certainty not in {
+            "no_effect",
+            "terminal_known",
+            "dispatch_in_doubt",
+        }:
+            raise ValueError("scientific route effect certainty is unsupported")
         for field_name in ("output_digest", "receipt_digest"):
             value = getattr(self, field_name)
             if value is not None:
@@ -846,11 +853,14 @@ class ExternalScientificQualificationRouteOutcome:
             require_identifier(self.error_code, field_name="error_code")
         if self.succeeded and (
             not self.terminal
+            or self.effect_certainty != "terminal_known"
             or self.output_digest is None
             or self.receipt_digest is None
             or self.error_code is not None
         ):
             raise ValueError("successful scientific route outcome requires terminal evidence")
+        if not self.terminal and self.effect_certainty != "dispatch_in_doubt":
+            raise ValueError("non-terminal scientific route must remain dispatch in doubt")
 
 
 class ExternalScientificQualificationRoutePort(Protocol):

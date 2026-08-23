@@ -154,3 +154,4 @@ def test_scientific_cleanup_timeout_is_one_terminal_route_failure() -> None:
 
     assert outcome.succeeded is False
     assert outcome.error_code == "qualification_compute_remote_cleanup_timeout"
+    assert outcome.effect_certainty == "dispatch_in_doubt"

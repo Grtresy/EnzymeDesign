@@ -170,6 +170,12 @@ class OpenSshQualificationCommandPort(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class SubprocessOpenSshQualificationCommandPort:
+    timeout_seconds: int = 120
+
+    def __post_init__(self) -> None:
+        if self.timeout_seconds <= 0 or self.timeout_seconds > 600:
+            raise ValueError("SSH qualification command timeout is out of bounds")
+
     def run(self, argv: tuple[str, ...]) -> tuple[int, str, str]:
         completed = subprocess.run(
             argv,
@@ -177,7 +183,7 @@ class SubprocessOpenSshQualificationCommandPort:
             capture_output=True,
             text=True,
             env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
-            timeout=120,
+            timeout=self.timeout_seconds,
         )
         return completed.returncode, completed.stdout, completed.stderr
 

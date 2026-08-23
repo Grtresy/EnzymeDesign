@@ -223,6 +223,32 @@ def test_live_factory_builds_exact_owner_bridge_without_performing_effect(
     assert bridge.binding.binding_digest == binding.binding_digest
 
 
+def test_hpc_scientific_route_uses_its_approved_600_second_timeout(factory) -> None:
+    ssh_binding = _binding(
+        "openzyme.hpc.ssh",
+        "helper-identity",
+        "openzyme.hpc.ssh.helper-identity@1",
+        "credential.hpc.diannan.qualification",
+    )
+    science_binding = _binding(
+        "enzymedesign.vina.hpc",
+        "dock",
+        "enzymedesign.vina.hpc-primary.dock@1",
+        "credential.hpc.diannan.qualification",
+    )
+
+    factory.builders()["openzyme.hpc.ssh"](ssh_binding)
+    factory.builders()["enzymedesign.vina.hpc"](science_binding)
+
+    adapter_port = factory._ssh_state.command_port.delegate
+    scientific_port = factory._scientific_ssh_state.command_port.delegate
+    assert adapter_port.timeout_seconds == 120
+    assert scientific_port.timeout_seconds == 600
+    assert factory._ssh_state.remote_workspace == (
+        factory._scientific_ssh_state.remote_workspace
+    )
+
+
 @pytest.mark.parametrize(
     ("field_name", "field_value"),
     (
