@@ -291,12 +291,14 @@ def _batch_1_plan(
     snapshot: Any,
     selection_set: Any,
     source_digest: str,
+    credential_locator_ids: dict[str, str | None] | None,
 ) -> tuple[Any, Any]:
     rebound_snapshot = replace(snapshot, source_digest=source_digest)
     readiness = build_enzymedesign_external_qualification_plan(
         plan_id=f"qualification.readiness.{rebound_snapshot.snapshot_id}",
         created_at=rebound_snapshot.observed_at,
         enabled_optional_profiles=OPTIONAL_PROFILES,
+        credential_locator_ids=credential_locator_ids,
     )
     discovery = discover_external_subject_identities(
         readiness_plan=readiness,
@@ -317,6 +319,20 @@ def _batch_1_plan(
         batch=ExternalQualificationBatch.BATCH_1,
     )
     return rebound_snapshot, plan
+
+
+def _packet_credential_locator_ids(
+    packet: dict[str, object],
+) -> dict[str, str | None] | None:
+    mode = packet.get("locator_binding_mode")
+    if mode == "nonlive_initial":
+        return None
+    if mode == "exact_prepared":
+        return dict(EXACT_EXTERNAL_QUALIFICATION_CREDENTIAL_LOCATORS)
+    raise ExternalQualificationError(
+        "qualification_preparation_locator_binding_mode_invalid",
+        "operator packet lacks one explicit supported locator binding mode",
+    )
 
 
 def main() -> int:
@@ -349,6 +365,7 @@ def main() -> int:
             args.decision_selections.resolve()
         ),
         source_digest=source.digest,
+        credential_locator_ids=_packet_credential_locator_ids(packet),
     )
     embedded_plans = packet.get("identity_preparation_plans")
     if not isinstance(embedded_plans, list):

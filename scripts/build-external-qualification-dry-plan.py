@@ -51,6 +51,10 @@ def _readiness_credential_locator_ids(
     return dict(EXACT_EXTERNAL_QUALIFICATION_CREDENTIAL_LOCATORS)
 
 
+def _locator_binding_mode(*, exact_prepared_locators: bool) -> str:
+    return "exact_prepared" if exact_prepared_locators else "nonlive_initial"
+
+
 def main() -> int:
     args = _parser().parse_args()
     if os.environ.get("OPENZYME_ALLOW_LIVE") != "0":
@@ -82,6 +86,9 @@ def main() -> int:
                 args.decision_selections.resolve()
             )
         ),
+    )
+    document["locator_binding_mode"] = _locator_binding_mode(
+        exact_prepared_locators=args.exact_prepared_locators
     )
     document["source_identity"] = source.as_dict()
     document["source_identity_digest"] = source.digest

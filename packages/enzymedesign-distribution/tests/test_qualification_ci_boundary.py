@@ -72,6 +72,33 @@ def test_prepared_dry_plan_mode_uses_exact_locator_mapping() -> None:
     assert exact["research.tavily.primary"] == "credential.tavily.qualification"
     assert exact["hpc.ssh.primary"] == "credential.hpc.diannan.qualification"
     assert exact["hpc.slurm.primary"] == "credential.hpc.diannan.qualification"
+    assert module._locator_binding_mode(exact_prepared_locators=False) == (
+        "nonlive_initial"
+    )
+    assert module._locator_binding_mode(exact_prepared_locators=True) == (
+        "exact_prepared"
+    )
+
+
+def test_preparation_executor_rebuilds_packet_locator_mode_exactly() -> None:
+    module = _preparation_script_module()
+
+    assert module._packet_credential_locator_ids(
+        {"locator_binding_mode": "nonlive_initial"}
+    ) is None
+    exact = module._packet_credential_locator_ids(
+        {"locator_binding_mode": "exact_prepared"}
+    )
+    assert exact["git.primary"] is None
+    assert exact["llm.primary"] == "credential.llm.micuapi.qualification"
+    try:
+        module._packet_credential_locator_ids({})
+    except ExternalQualificationError as exc:
+        assert exc.error_code == (
+            "qualification_preparation_locator_binding_mode_invalid"
+        )
+    else:
+        raise AssertionError("missing locator binding mode was accepted")
 
 
 def test_live_marker_requires_independent_global_and_marker_opt_in(

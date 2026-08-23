@@ -116,7 +116,9 @@ Tavily 或 HPC locator 交叉借用。
 首次 discovery CLI 默认保留 non-live locator，用于尚未执行 preparation 的安全快照。对既有
 `prepared_not_qualified` snapshot 因新 source/recipe/contract 重建 gap 或 dry plan 时，必须显式使用
 `--exact-prepared-locators`；该模式采用资格 locator，并将 local-only Git/LFS locator 精确设为 `None`。两种模式
-不可隐式猜测或互相 fallback，prepared snapshot 若误用 non-live Git locator 必须在构建期 fail closed。
+不可隐式猜测或互相 fallback。operator packet 必须记录 `locator_binding_mode = nonlive_initial | exact_prepared`，
+preparation executor 按同一模式重建 embedded plan；字段缺失、未知或重建 digest 漂移均在 credential resolution 与
+effect 前 fail closed。prepared snapshot 若误用 non-live Git locator 同样必须在构建期失败。
 Identity preparation 同样逐 action 绑定 owner component、input schema、secret-safe fields、canonical
 input-binding digest 和至多一个 credential locator；计划级 locator 集合与 action 并集不相等、调用方 input digest
 漂移或 owner builder 不匹配时，必须在解析 credential 或产生 effect 前失败。
