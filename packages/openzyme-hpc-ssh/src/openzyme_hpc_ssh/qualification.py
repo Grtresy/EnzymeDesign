@@ -449,7 +449,9 @@ class OpenSshQualificationState:
         assert self.control_path is not None
         parent = self.control_path.parent
         if (
-            len(os.fsencode(self.control_path)) > 96
+            # OpenSSH appends a 17-byte temporary suffix while establishing
+            # the master listener, so the persisted base path must leave room.
+            len(os.fsencode(self.control_path)) > 88
             or re.fullmatch(r"[A-Za-z0-9._-]{1,64}", self.control_path.name) is None
             or not parent.is_dir()
             or parent.is_symlink()

@@ -356,9 +356,16 @@ def main() -> int:
         layout=layout,
         allowed_locator_ids=dry_plan.credential_locator_ids,
     )
+    ssh_control_root_value = os.environ.get("XDG_RUNTIME_DIR")
+    if ssh_control_root_value is None:
+        raise ExternalQualificationError(
+            "qualification_hpc_control_root_missing",
+            "XDG_RUNTIME_DIR is required for the exact SSH qualification control socket",
+        )
     factory = SelectedLiveQualificationBridgeFactory(
         credential_resolver=resolver,
         protected_workspace_root=layout.root / "qualification-workspaces",
+        ssh_control_root=Path(ssh_control_root_value),
         private_diagnostic_root=layout.private_evidence_root,
         git_repository=git_repository,
         image_digests=image_digests,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import field
+import os
 from pathlib import Path
 import subprocess
 from typing import Mapping
@@ -80,6 +81,7 @@ class SelectedLiveQualificationBridgeFactory:
         repr=False
     )
     protected_workspace_root: Path = field(repr=False)
+    ssh_control_root: Path = field(repr=False)
     private_diagnostic_root: Path = field(repr=False)
     git_repository: Path = field(repr=False)
     image_digests: Mapping[str, str]
@@ -119,6 +121,15 @@ class SelectedLiveQualificationBridgeFactory:
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         root.chmod(0o700)
         self.protected_workspace_root = root
+        control_root = self.ssh_control_root.absolute()
+        if (
+            not control_root.is_dir()
+            or control_root.is_symlink()
+            or control_root.stat().st_uid != os.geteuid()
+            or control_root.stat().st_mode & 0o077
+        ):
+            raise ValueError("SSH control root must be one existing owner-only directory")
+        self.ssh_control_root = control_root
         self.git_repository = self.git_repository.absolute()
         self._diagnostic_context = QualificationDiagnosticContext(
             ProtectedQualificationDiagnosticWriter(self.private_diagnostic_root)
@@ -321,7 +332,7 @@ class SelectedLiveQualificationBridgeFactory:
                     self._diagnostic_context,
                 ),
                 control_path=(
-                    self.protected_workspace_root.parent / f"ssh-{suffix}.sock"
+                    self.ssh_control_root / f"ozq-{suffix}"
                 ),
                 workspace_runtime_identity=self.workspace_runtime_identity,
             )

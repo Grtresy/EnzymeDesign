@@ -1,4 +1,7 @@
 from dataclasses import dataclass
+from pathlib import Path
+import shutil
+import tempfile
 
 import pytest
 
@@ -118,24 +121,30 @@ def factory(tmp_path):
     )
     repository = tmp_path / "repository.git"
     repository.mkdir(mode=0o700)
-    return SelectedLiveQualificationBridgeFactory(
-        credential_resolver=resolver,  # type: ignore[arg-type]
-        protected_workspace_root=tmp_path / "workspaces",
-        private_diagnostic_root=tmp_path / "private-diagnostics",
-        git_repository=repository,
-        image_digests={
-            "base": "sha256:" + "a" * 64,
-            "hmmer": "sha256:" + "b" * 64,
-            "docking": "sha256:" + "c" * 64,
-        },
-        hpc_image_digests={
-            "hmmer": "sha256:" + "d" * 64,
-            "vina": "sha256:" + "e" * 64,
-            "fpocket": "sha256:" + "f" * 64,
-        },
-        workspace_runtime_identity=_workspace_runtime_identity(),
-        tavily_deadline_at="2026-08-23T18:30:00+08:00",
-    )
+    control_root = Path(tempfile.mkdtemp(prefix="ozq-", dir="/tmp"))
+    control_root.chmod(0o700)
+    try:
+        yield SelectedLiveQualificationBridgeFactory(
+            credential_resolver=resolver,  # type: ignore[arg-type]
+            protected_workspace_root=tmp_path / "workspaces",
+            ssh_control_root=control_root,
+            private_diagnostic_root=tmp_path / "private-diagnostics",
+            git_repository=repository,
+            image_digests={
+                "base": "sha256:" + "a" * 64,
+                "hmmer": "sha256:" + "b" * 64,
+                "docking": "sha256:" + "c" * 64,
+            },
+            hpc_image_digests={
+                "hmmer": "sha256:" + "d" * 64,
+                "vina": "sha256:" + "e" * 64,
+                "fpocket": "sha256:" + "f" * 64,
+            },
+            workspace_runtime_identity=_workspace_runtime_identity(),
+            tavily_deadline_at="2026-08-23T18:30:00+08:00",
+        )
+    finally:
+        shutil.rmtree(control_root)
 
 
 @pytest.mark.parametrize(
