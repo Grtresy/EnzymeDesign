@@ -53,6 +53,7 @@ def test_docking_recipe_matches_pinned_legacy_build_system_and_fpocket_runtime()
     assert "cmake -S /src/vina/build/linux/release" not in containerfile
     assert "libnetcdf-dev" in containerfile
     assert "libnetcdf19" in containerfile
+    assert "make -C /src/fpocket CXX=g++ -j2" in containerfile
     assert (
         "COPY --from=native-builder /src/vina/build/linux/release/vina "
         "/usr/local/bin/vina"
