@@ -204,7 +204,9 @@ list 形态替代。`sbatch --wait` 非零时，route 必须在清理前以 job 
 不触发重跑，也不允许为保留日志而跳过既定 cleanup。
 若一次只读观测已终态、但后续本地 rediscovery 因源码缺陷失败，新 source/plan/authority 不得删除或盲目覆盖既有
 私有配置；executor 只允许在重新观测的全部 resource identity 完全相等且旧配置 digest/owner/mode 完整时，原子更新
-plan/authority 绑定并记录 prior config digest。任一稳定资源字段漂移都停止 reconcile，禁止把该路径当作 retry 或 fallback。
+plan/authority 绑定及由当前 source 重新编译的 `fixed_monomer_input_digest`，并记录 prior config digest。任一稳定
+target/resource 字段漂移都停止 reconcile；workload digest 变化必须来自新 source/plan/authority，禁止把该路径当作
+retry 或 fallback。
 
 首次真实 Batch 1 occurrence 已终态裁决，不得复用 authority。它证明部分真实 route 可用，同时暴露了固定 Git branch、
 不可写 `/data/openzyme` workspace、HMMER/fpocket output path、本地 docking image runtime dependency 与私有诊断投影问题。

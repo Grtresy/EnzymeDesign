@@ -79,8 +79,9 @@ version 固定为受保护 identity；qualification 在 dispatch 前重算 effec
 20 aa monomer、seed `20260824`、一张 3090、30 分钟与 inference-only，输出只接受 exact CIF 和 summary
 confidence；cleanup 失败或资源漂移均阻断，不重试、不换 target、不 fallback。
 若已终态 observation 后只在 effect-free rediscovery 暴露源码缺陷，新 source-bound preparation 必须重新只读观测；
-既有 protected config 只有在 digest、owner/mode 与全部稳定 resource fields 精确相等时，才可 compare-and-replace
-plan/authority 字段并记录 prior digest。不得删除残留配置、跳过新 authority 或将其计为旧 occurrence retry。
+既有 protected config 只有在 digest、owner/mode 与全部稳定 target/resource fields 精确相等时，才可
+compare-and-replace plan/authority 及当前 source 编译的 `fixed_monomer_input_digest`，并记录 prior digest。不得删除
+残留配置、跳过新 authority、改变 target resource 或将其计为旧 occurrence retry。
 AlphaFold Batch 2 的单一 `predict` 是 terminal scientific route，不声明虚假的 response-loss unit；live negative gate
 以 fail-closed/no-redispatch policy 闭合 `response.loss`，并保留 auth、operation、schema、timeout pre-effect 负例。
 resource/GPU/output/cleanup 失败由 route regression 闭合。只有实际声明 reconcile operation 的 Batch 1 unit 才采用

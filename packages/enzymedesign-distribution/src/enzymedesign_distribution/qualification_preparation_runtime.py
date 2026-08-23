@@ -149,19 +149,20 @@ def _persist_exact_alphafold_config(
                 "qualification_alphafold_config_reconcile_failed",
                 "AlphaFold qualification config integrity failed",
             )
-        transient_fields = {
+        plan_bound_fields = {
+            "fixed_monomer_input_digest",
             "preparation_authorization_digest",
             "preparation_plan_digest",
         }
         stable_loaded = {
             key: value
             for key, value in unsigned_loaded.items()
-            if key not in transient_fields
+            if key not in plan_bound_fields
         }
         stable_expected = {
             key: value
             for key, value in unsigned_expected.items()
-            if key not in transient_fields
+            if key not in plan_bound_fields
         }
         if stable_loaded != stable_expected:
             raise ExternalQualificationError(

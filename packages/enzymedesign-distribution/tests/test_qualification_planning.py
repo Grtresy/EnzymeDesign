@@ -254,25 +254,46 @@ def test_alphafold_config_reconciles_only_authority_fields(tmp_path: Path) -> No
     parent.mkdir(mode=0o700)
     path = parent / "config.json"
 
-    def config(plan: str, authority: str, resource: str) -> dict[str, object]:
+    def config(
+        plan: str,
+        authority: str,
+        resource: str,
+        fixed_input: str,
+    ) -> dict[str, object]:
         payload: dict[str, object] = {
             "schema_version": "enzymedesign_alphafold_qualification_config@1",
             "image_digest": resource,
+            "fixed_monomer_input_digest": fixed_input,
             "preparation_plan_digest": plan,
             "preparation_authorization_digest": authority,
         }
         payload["config_digest"] = canonical_sha256_digest(payload)
         return payload
 
-    initial = config("sha256:" + "1" * 64, "sha256:" + "2" * 64, "resource-a")
+    initial = config(
+        "sha256:" + "1" * 64,
+        "sha256:" + "2" * 64,
+        "resource-a",
+        "sha256:" + "7" * 64,
+    )
     assert _persist_exact_alphafold_config(path, initial) is None
     assert path.stat().st_mode & 0o777 == 0o600
 
-    rebound = config("sha256:" + "3" * 64, "sha256:" + "4" * 64, "resource-a")
+    rebound = config(
+        "sha256:" + "3" * 64,
+        "sha256:" + "4" * 64,
+        "resource-a",
+        "sha256:" + "8" * 64,
+    )
     assert _persist_exact_alphafold_config(path, rebound) == initial["config_digest"]
     assert json.loads(path.read_text(encoding="utf-8")) == rebound
 
-    drifted = config("sha256:" + "5" * 64, "sha256:" + "6" * 64, "resource-b")
+    drifted = config(
+        "sha256:" + "5" * 64,
+        "sha256:" + "6" * 64,
+        "resource-b",
+        "sha256:" + "9" * 64,
+    )
     with pytest.raises(ExternalQualificationError) as captured:
         _persist_exact_alphafold_config(path, drifted)
     assert captured.value.error_code == "qualification_alphafold_config_subject_drift"
