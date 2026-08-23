@@ -9,6 +9,7 @@ from openzyme_contracts import ToolSpec
 from openzyme_contracts import canonical_sha256_digest
 from openzyme_runtime_llm import LLM_RUNTIME_ADAPTER_CONTRACT_DIGEST
 from openzyme_runtime_llm import LLM_RUNTIME_ADAPTER_ID
+from openzyme_runtime_llm import LangChainProviderBackend
 from openzyme_runtime_llm import LlmAdapterConfiguration
 from openzyme_runtime_llm import LlmProviderError
 from openzyme_runtime_llm import LlmRuntimeAdapter
@@ -38,6 +39,44 @@ def _configuration(*, max_retries: int = 0) -> LlmAdapterConfiguration:
         default_output_units=2_000,
         provider_options={},
     )
+
+
+def test_openai_compatible_provider_uses_explicit_langchain_implementation_identity(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+    sentinel = object()
+
+    def fake_init_chat_model(*, model, model_provider, **options):
+        captured.update(
+            model=model,
+            model_provider=model_provider,
+            options=options,
+        )
+        return sentinel
+
+    monkeypatch.setattr(
+        "langchain.chat_models.init_chat_model",
+        fake_init_chat_model,
+    )
+    configuration = LlmAdapterConfiguration(
+        provider_id="micuapi",
+        model="gpt-5.5",
+        base_url="https://www.micuapi.ai/v1",
+        credential_slot="credential.llm.micuapi.qualification",
+        timeout_seconds=60,
+        max_retries=0,
+        context_window_units=128_000,
+        default_output_units=256,
+        provider_options={"langchain_model_provider": "openai"},
+    )
+
+    backend = LangChainProviderBackend(configuration=configuration, api_key="secret")
+
+    assert backend._model_instance() is sentinel
+    assert captured["model_provider"] == "openai"
+    assert captured["model"] == "gpt-5.5"
+    assert "langchain_model_provider" not in captured["options"]
 
 
 def _command(

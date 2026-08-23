@@ -9,8 +9,12 @@ from .qualification import GIT_LFS_QUALIFICATION_OPERATIONS
 from .qualification import GitLfsQualificationOperationPort
 from .qualification import GitLfsQualificationProbeBridge
 from .qualification import LocalGitLfsPreparationCommandPort
+from .qualification import LocalGitLfsQualificationCommandPort
+from .qualification import LocalGitLfsQualificationOperation
+from .qualification import LocalGitLfsQualificationState
 from .qualification import LocalIsolatedGitLfsPreparationExecutor
 from .qualification import SubprocessLocalGitLfsPreparationCommandPort
+from .qualification import SubprocessLocalGitLfsQualificationCommandPort
 
 from .agent_workspaces import AGENT_GIT_WORKSPACE_OBSERVATION_SCHEMA_VERSION
 from .agent_workspaces import AGENT_GIT_WORKSPACE_RESTORE_COMPARISON_SCHEMA_VERSION
@@ -244,6 +248,9 @@ __all__ = [
     "GIT_LFS_QUALIFICATION_OPERATIONS",
     "GitLfsQualificationOperationPort",
     "GitLfsQualificationProbeBridge",
+    "LocalGitLfsQualificationCommandPort",
+    "LocalGitLfsQualificationOperation",
+    "LocalGitLfsQualificationState",
     "GitLfsClosureEntry",
     "GitLfsClosureError",
     "GitLfsClosureManifest",
@@ -286,6 +293,7 @@ __all__ = [
     "LocalGitRevisionBackend",
     "LocalGitLfsPreparationCommandPort",
     "LocalIsolatedGitLfsPreparationExecutor",
+    "SubprocessLocalGitLfsQualificationCommandPort",
     "LocalGitlessComputeTreePreparer",
     "LfsObjectMismatchError",
     "LFS_JSON_MEDIA_TYPE",

@@ -14,6 +14,7 @@ from openzyme_contracts import ExternalBoundQualificationOperationPort
 from openzyme_contracts import ExternalQualificationBridgeBinding
 from openzyme_contracts import ExternalQualificationProbeOutcome
 from openzyme_contracts import ExternalQualificationProbeRequest
+from openzyme_contracts import ExternalQualificationOperationObservation
 from openzyme_contracts import ExternalIdentityPreparationAction
 from openzyme_contracts import ExternalIdentityPreparationOccurrenceAuthorization
 from openzyme_contracts import ExternalIdentityPreparationPlan
@@ -195,6 +196,267 @@ class GitLfsQualificationOperationPort(
     hosted_sync_allowed: bool
 
 
+class LocalGitLfsQualificationCommandPort(Protocol):
+    def run(
+        self,
+        argv: tuple[str, ...],
+        *,
+        cwd: Path | None = None,
+    ) -> tuple[int, str, str]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class SubprocessLocalGitLfsQualificationCommandPort:
+    def run(
+        self,
+        argv: tuple[str, ...],
+        *,
+        cwd: Path | None = None,
+    ) -> tuple[int, str, str]:
+        completed = subprocess.run(
+            argv,
+            cwd=cwd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+        )
+        return completed.returncode, completed.stdout, completed.stderr
+
+
+@dataclass(slots=True)
+class LocalGitLfsQualificationState:
+    repository: Path = field(repr=False)
+    workspace: Path = field(repr=False)
+    command_port: LocalGitLfsQualificationCommandPort = field(repr=False)
+    response_loss_commit: str | None = None
+    response_loss_ref: str | None = None
+
+    def __post_init__(self) -> None:
+        repository = self.repository.absolute()
+        workspace = self.workspace.absolute()
+        if (
+            not repository.is_dir()
+            or repository.is_symlink()
+            or workspace.is_symlink()
+            or repository == workspace
+        ):
+            raise ValueError("Git/LFS qualification paths must be direct and isolated")
+        object.__setattr__(self, "repository", repository)
+        object.__setattr__(self, "workspace", workspace)
+
+    def cleanup(self) -> dict[str, object]:
+        removed = False
+        if self.workspace.exists():
+            if self.workspace.is_symlink():
+                raise ExternalQualificationError(
+                    "qualification_git_cleanup_target_invalid",
+                    "Git/LFS qualification workspace cannot be a symlink",
+                )
+            shutil.rmtree(self.workspace)
+            removed = True
+        return {"workspace_removed": removed, "repository_preserved": True}
+
+
+@dataclass(slots=True)
+class LocalGitLfsQualificationOperation:
+    component_id: str
+    route_id: str
+    subject_digest: str
+    state: LocalGitLfsQualificationState = field(repr=False)
+    local_only: bool = True
+    hosted_sync_allowed: bool = False
+
+    def dispatch(
+        self, request: ExternalQualificationProbeRequest
+    ) -> ExternalQualificationOperationObservation:
+        try:
+            if request.operation == "clone":
+                self._clone()
+            elif request.operation == "checkpoint":
+                self._checkpoint()
+            elif request.operation == "publish":
+                self._publish("refs/heads/qualification")
+            elif request.operation == "lfs-fetch":
+                self._lfs_fetch()
+            elif request.operation == "response-loss-reconcile":
+                self._prepare_response_loss(request)
+                return self._observation(
+                    request,
+                    terminal=False,
+                    succeeded=False,
+                    effect_certainty="dispatch_in_doubt",
+                    error_code="qualification_response_lost_after_git_acceptance",
+                )
+            else:
+                raise ExternalQualificationError(
+                    "qualification_git_operation_unsupported",
+                    "Git/LFS qualification operation is unsupported",
+                )
+        except (OSError, subprocess.SubprocessError, ExternalQualificationError) as exc:
+            return self._observation(
+                request,
+                terminal=True,
+                succeeded=False,
+                effect_certainty="terminal_known",
+                error_code=getattr(exc, "error_code", "qualification_git_operation_failed"),
+            )
+        return self._observation(
+            request,
+            terminal=True,
+            succeeded=True,
+            effect_certainty="terminal_known",
+        )
+
+    def reconcile(
+        self, request: ExternalQualificationProbeRequest
+    ) -> ExternalQualificationOperationObservation:
+        if (
+            request.operation != "response-loss-reconcile"
+            or self.state.response_loss_commit is None
+            or self.state.response_loss_ref is None
+        ):
+            raise ExternalQualificationError(
+                "qualification_probe_reconcile_without_dispatch",
+                "Git/LFS reconcile requires the exact response-loss dispatch",
+            )
+        returncode, stdout, _stderr = self.state.command_port.run(
+            (
+                "git",
+                "--git-dir",
+                str(self.state.repository),
+                "rev-parse",
+                self.state.response_loss_ref,
+            )
+        )
+        succeeded = returncode == 0 and stdout.strip() == self.state.response_loss_commit
+        return self._observation(
+            request,
+            terminal=True,
+            succeeded=succeeded,
+            effect_certainty="terminal_known",
+            error_code=None if succeeded else "qualification_git_reconcile_failed",
+        )
+
+    def restore_dispatched_attempt(
+        self,
+        request: ExternalQualificationProbeRequest,
+    ) -> None:
+        if request.operation != "response-loss-reconcile":
+            raise ExternalQualificationError(
+                "qualification_probe_restore_not_reconcilable",
+                "only the Git response-loss operation can be restored",
+            )
+        ref = self._response_loss_ref(request)
+        commit = self._run(
+            "git",
+            "--git-dir",
+            str(self.state.repository),
+            "rev-parse",
+            ref,
+        )
+        self.state.response_loss_ref = ref
+        self.state.response_loss_commit = commit
+
+    def _run(self, *argv: str, cwd: Path | None = None) -> str:
+        returncode, stdout, _stderr = self.state.command_port.run(tuple(argv), cwd=cwd)
+        if returncode != 0:
+            raise ExternalQualificationError(
+                "qualification_git_command_failed",
+                "local Git/LFS qualification command failed",
+            )
+        return stdout.strip()
+
+    def _clone(self) -> None:
+        if self.state.workspace.exists() or self.state.workspace.is_symlink():
+            raise ExternalQualificationError(
+                "qualification_git_workspace_collision",
+                "Git/LFS qualification workspace already exists",
+            )
+        self.state.workspace.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self._run("git", "clone", str(self.state.repository), str(self.state.workspace))
+        self.state.workspace.chmod(0o700)
+        self._run("git", "lfs", "install", "--local", cwd=self.state.workspace)
+
+    def _checkpoint(self) -> None:
+        self._run("git", "config", "user.name", "OpenZyme Qualification", cwd=self.state.workspace)
+        self._run("git", "config", "user.email", "qualification@openzyme.invalid", cwd=self.state.workspace)
+        self._run("git", "lfs", "track", "*.bin", cwd=self.state.workspace)
+        payload = self.state.workspace / "qualification.bin"
+        payload.write_bytes(b"openzyme-git-lfs-qualification-v1\n")
+        self._run("git", "add", ".gitattributes", "qualification.bin", cwd=self.state.workspace)
+        self._run("git", "commit", "-m", "qualification checkpoint", cwd=self.state.workspace)
+
+    def _publish(self, ref: str) -> None:
+        self._run("git", "push", "origin", f"HEAD:{ref}", cwd=self.state.workspace)
+
+    def _lfs_fetch(self) -> None:
+        self._run(
+            "git",
+            "lfs",
+            "fetch",
+            "origin",
+            "refs/remotes/origin/qualification",
+            cwd=self.state.workspace,
+        )
+        self._run("git", "lfs", "checkout", cwd=self.state.workspace)
+        content = (self.state.workspace / "qualification.bin").read_bytes()
+        if content != b"openzyme-git-lfs-qualification-v1\n":
+            raise ExternalQualificationError(
+                "qualification_git_lfs_content_mismatch",
+                "Git LFS checkout returned unexpected content",
+            )
+
+    def _prepare_response_loss(self, request: ExternalQualificationProbeRequest) -> None:
+        marker = self.state.workspace / "response-loss.txt"
+        marker.write_text("same-attempt-response-loss\n", encoding="utf-8")
+        self._run("git", "add", "response-loss.txt", cwd=self.state.workspace)
+        self._run("git", "commit", "-m", "qualification response loss", cwd=self.state.workspace)
+        commit = self._run("git", "rev-parse", "HEAD", cwd=self.state.workspace)
+        ref = self._response_loss_ref(request)
+        self._publish(ref)
+        self.state.response_loss_ref = ref
+        self.state.response_loss_commit = commit
+
+    @staticmethod
+    def _response_loss_ref(request: ExternalQualificationProbeRequest) -> str:
+        suffix = canonical_sha256_digest(
+            {"attempt_id": request.attempt_id}
+        ).removeprefix("sha256:")[:16]
+        return f"refs/heads/qualification-response-loss-{suffix}"
+
+    @staticmethod
+    def _observation(
+        request: ExternalQualificationProbeRequest,
+        *,
+        terminal: bool,
+        succeeded: bool,
+        effect_certainty: str,
+        error_code: str | None = None,
+    ) -> ExternalQualificationOperationObservation:
+        payload = {
+            "attempt_id": request.attempt_id,
+            "operation": request.operation,
+            "terminal": terminal,
+            "succeeded": succeeded,
+        }
+        return ExternalQualificationOperationObservation(
+            attempt_id=request.attempt_id,
+            request_digest=request.request_digest,
+            operation=request.operation,
+            effect_certainty=effect_certainty,
+            terminal=terminal,
+            succeeded=succeeded,
+            output_digest=canonical_sha256_digest(payload) if succeeded else None,
+            receipt_digest=canonical_sha256_digest({**payload, "local_only": True}),
+            error_code=error_code,
+            external_effect_performed=True,
+            credential_material_accessed=False,
+            fallback_performed=False,
+        )
+
+
 @dataclass(slots=True)
 class GitLfsQualificationProbeBridge:
     binding: ExternalQualificationBridgeBinding
@@ -230,12 +492,21 @@ class GitLfsQualificationProbeBridge:
     ) -> ExternalQualificationProbeOutcome:
         return self._bridge.reconcile(request)
 
+    def restore_dispatched_attempt(
+        self, request: ExternalQualificationProbeRequest
+    ) -> None:
+        self._bridge.restore_dispatched_attempt(request)
+
 
 __all__ = [
     "GIT_LFS_QUALIFICATION_OPERATIONS",
     "GitLfsQualificationOperationPort",
     "GitLfsQualificationProbeBridge",
+    "LocalGitLfsQualificationCommandPort",
+    "LocalGitLfsQualificationOperation",
+    "LocalGitLfsQualificationState",
     "LocalGitLfsPreparationCommandPort",
     "LocalIsolatedGitLfsPreparationExecutor",
     "SubprocessLocalGitLfsPreparationCommandPort",
+    "SubprocessLocalGitLfsQualificationCommandPort",
 ]

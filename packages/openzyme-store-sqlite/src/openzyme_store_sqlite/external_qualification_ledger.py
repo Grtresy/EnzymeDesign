@@ -7,6 +7,7 @@ from typing import Protocol
 
 from openzyme_contracts import ExternalQualificationDryPlan
 from openzyme_contracts import ExternalQualificationSafeReceipt
+from openzyme_contracts import ExternalQualificationProbeOutcome
 from openzyme_contracts import ExternalIdentityPreparationResult
 from openzyme_contracts import require_digest
 
@@ -16,8 +17,28 @@ class ProtectedQualificationLedgerPort(Protocol):
 
     def record_safe_receipt(self, receipt: ExternalQualificationSafeReceipt) -> None: ...
 
+    def record_safe_receipts(
+        self, receipts: tuple[ExternalQualificationSafeReceipt, ...]
+    ) -> None: ...
+
+    def restore_safe_receipts(
+        self,
+        *,
+        dry_plan_digest: str,
+        authorization_digest: str,
+    ) -> tuple[ExternalQualificationSafeReceipt, ...]: ...
+
     def record_preparation_result(
         self, result: ExternalIdentityPreparationResult
+    ) -> None: ...
+
+    def record_probe_outcome(
+        self,
+        *,
+        dry_plan_digest: str,
+        authorization_digest: str,
+        unit_digest: str,
+        outcome: ExternalQualificationProbeOutcome,
     ) -> None: ...
 
 
@@ -46,7 +67,91 @@ class SQLiteProtectedQualificationLedger:
                     preparation_plan_digest TEXT NOT NULL,
                     payload_json TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS external_qualification_probe_outcomes (
+                    attempt_id TEXT PRIMARY KEY,
+                    dry_plan_digest TEXT NOT NULL,
+                    authorization_digest TEXT NOT NULL,
+                    unit_digest TEXT NOT NULL,
+                    request_digest TEXT NOT NULL,
+                    disposition TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    UNIQUE (dry_plan_digest, authorization_digest, unit_digest)
+                );
                 """
+            )
+
+    def record_probe_outcome(
+        self,
+        *,
+        dry_plan_digest: str,
+        authorization_digest: str,
+        unit_digest: str,
+        outcome: ExternalQualificationProbeOutcome,
+    ) -> None:
+        for field_name, value in (
+            ("dry_plan_digest", dry_plan_digest),
+            ("authorization_digest", authorization_digest),
+            ("unit_digest", unit_digest),
+        ):
+            require_digest(value, field_name=field_name)
+        payload = json.dumps(outcome.to_dict(), sort_keys=True, separators=(",", ":"))
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT dry_plan_digest, authorization_digest, unit_digest, "
+                "request_digest, disposition, payload_json "
+                "FROM external_qualification_probe_outcomes "
+                "WHERE attempt_id = ? OR "
+                "(dry_plan_digest = ? AND authorization_digest = ? AND unit_digest = ?)",
+                (
+                    outcome.attempt_id,
+                    dry_plan_digest,
+                    authorization_digest,
+                    unit_digest,
+                ),
+            ).fetchone()
+            expected = (
+                dry_plan_digest,
+                authorization_digest,
+                unit_digest,
+                outcome.request_digest,
+            )
+            if existing is not None:
+                identity = tuple(existing[:4])
+                prior_disposition = str(existing[4])
+                prior_payload = str(existing[5])
+                if identity != expected:
+                    raise ValueError(
+                        "qualification occurrence already binds a different probe identity"
+                    )
+                if prior_payload == payload:
+                    return
+                if prior_disposition != "reconcile_required":
+                    raise ValueError(
+                        "terminal qualification outcome cannot be overwritten"
+                    )
+                if outcome.disposition.value == "reconcile_required":
+                    raise ValueError(
+                        "in-doubt qualification outcome cannot be replaced by another"
+                    )
+                connection.execute(
+                    "UPDATE external_qualification_probe_outcomes "
+                    "SET disposition = ?, payload_json = ? WHERE attempt_id = ?",
+                    (outcome.disposition.value, payload, outcome.attempt_id),
+                )
+                return
+            connection.execute(
+                "INSERT OR IGNORE INTO external_qualification_probe_outcomes "
+                "(attempt_id, dry_plan_digest, authorization_digest, unit_digest, "
+                "request_digest, disposition, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    outcome.attempt_id,
+                    dry_plan_digest,
+                    authorization_digest,
+                    unit_digest,
+                    outcome.request_digest,
+                    outcome.disposition.value,
+                    payload,
+                ),
             )
 
     def _connect(self) -> sqlite3.Connection:
@@ -64,13 +169,47 @@ class SQLiteProtectedQualificationLedger:
             )
 
     def record_safe_receipt(self, receipt: ExternalQualificationSafeReceipt) -> None:
-        payload = json.dumps(receipt.to_dict(), sort_keys=True, separators=(",", ":"))
+        self.record_safe_receipts((receipt,))
+
+    def record_safe_receipts(
+        self,
+        receipts: tuple[ExternalQualificationSafeReceipt, ...],
+    ) -> None:
+        if len({item.unit_digest for item in receipts}) != len(receipts):
+            raise ValueError("qualification safe receipt batch units must be unique")
         with self._connect() as connection:
-            connection.execute(
-                "INSERT OR IGNORE INTO external_qualification_safe_receipts "
-                "(receipt_digest, unit_digest, payload_json) VALUES (?, ?, ?)",
-                (receipt.receipt_digest, receipt.unit_digest, payload),
+            for receipt in receipts:
+                payload = json.dumps(
+                    receipt.to_dict(), sort_keys=True, separators=(",", ":")
+                )
+                connection.execute(
+                    "INSERT OR IGNORE INTO external_qualification_safe_receipts "
+                    "(receipt_digest, unit_digest, payload_json) VALUES (?, ?, ?)",
+                    (receipt.receipt_digest, receipt.unit_digest, payload),
+                )
+
+    def restore_safe_receipts(
+        self,
+        *,
+        dry_plan_digest: str,
+        authorization_digest: str,
+    ) -> tuple[ExternalQualificationSafeReceipt, ...]:
+        require_digest(dry_plan_digest, field_name="dry_plan_digest")
+        require_digest(authorization_digest, field_name="authorization_digest")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload_json FROM external_qualification_safe_receipts "
+                "ORDER BY unit_digest"
+            ).fetchall()
+        return tuple(
+            receipt
+            for (payload_json,) in rows
+            for receipt in (
+                ExternalQualificationSafeReceipt.from_dict(json.loads(payload_json)),
             )
+            if receipt.dry_plan_digest == dry_plan_digest
+            and receipt.authorization_digest == authorization_digest
+        )
 
     def record_preparation_result(
         self, result: ExternalIdentityPreparationResult
@@ -129,6 +268,27 @@ class SQLiteProtectedQualificationLedger:
             ExternalIdentityPreparationResult.from_dict(payload)
             for payload in self.read_preparation_results(preparation_plan_digest)
             if payload.get("authorization_digest") == authorization_digest
+        )
+
+    def restore_probe_outcomes(
+        self,
+        *,
+        dry_plan_digest: str,
+        authorization_digest: str,
+    ) -> tuple[tuple[str, ExternalQualificationProbeOutcome], ...]:
+        require_digest(dry_plan_digest, field_name="dry_plan_digest")
+        require_digest(authorization_digest, field_name="authorization_digest")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT unit_digest, payload_json "
+                "FROM external_qualification_probe_outcomes "
+                "WHERE dry_plan_digest = ? AND authorization_digest = ? "
+                "ORDER BY unit_digest",
+                (dry_plan_digest, authorization_digest),
+            ).fetchall()
+        return tuple(
+            (str(unit_digest), ExternalQualificationProbeOutcome.from_dict(json.loads(payload)))
+            for unit_digest, payload in rows
         )
 
 

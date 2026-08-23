@@ -144,11 +144,11 @@ def test_batch_1_preparation_has_one_hpc_effect_and_unique_image_effects() -> No
 def test_llm_and_tavily_budgets_are_generous_circuit_breakers() -> None:
     batch_1 = _bundle()["dry_plans"][0]
     budgets = {item["budget_id"]: item for item in batch_1["budgets"]}
-    assert budgets["budget.llm.cash"]["warning_limit"] == 5
-    assert budgets["budget.llm.cash"]["hard_limit"] == 25
-    assert budgets["budget.tavily.cash"]["warning_limit"] == 2
-    assert budgets["budget.tavily.cash"]["hard_limit"] == 10
-    assert budgets["budget.batch-1.cash"]["hard_limit"] == 100
+    assert budgets["budget.llm.cash"]["warning_limit"] == 50
+    assert budgets["budget.llm.cash"]["hard_limit"] == 100
+    assert budgets["budget.tavily.cash"]["warning_limit"] == 20
+    assert budgets["budget.tavily.cash"]["hard_limit"] == 50
+    assert budgets["budget.batch-1.cash"]["hard_limit"] == 250
     assert batch_1["max_retries"] == 0
 
 
@@ -253,6 +253,7 @@ def test_plan_only_factory_blocks_before_credential_resolution() -> None:
             plan=plan,
             authorization=None,
             observed_at="2026-08-22T12:00:00+00:00",
+            operator_id="operator.owner",
             locator_id="credential.llm.primary",
         )
     assert captured.value.error_code == "blocked_live_authorization"

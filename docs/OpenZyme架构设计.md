@@ -250,8 +250,8 @@ canonical Plugin/Kernel surfaces；旧 function handler/repository/writer packag
   source-bound subject observation；LLM/Tavily/Git/Podman/HPC/科学软件的 partial/missing identity 都产生
   `ExternalIdentityGap` 和待操作员选择的候选方案。Batch 1 固定闭合 `base + research-provider + hpc-primary +
   hmmer + docking`，AlphaFold 是独立 Batch 2。dry plan 固定零 retry、无 fallback、
-  `live_effect_authorized=false`；预算是宽松熔断而非测试压缩目标，LLM/Tavily occurrence 硬上限分别为
-  USD 25/USD 10，batch 硬上限 USD 100。operator candidate 选择与 subject 闭合之间新增独立
+  `live_effect_authorized=false`；预算是宽松熔断而非测试压缩目标，LLM/Tavily occurrence 现金硬上限分别为
+  USD 100/USD 50，LLM request 硬上限 20，batch 现金硬上限 USD 250。operator candidate 选择与 subject 闭合之间新增独立
   `ExternalIdentityPreparationPlan`：本地 Git/LFS 建仓、Provider locator/account、digest-pinned image 与 HPC
   profile/inventory 只能由 exact preparation authorization 执行，且不能产生 `qualified`。当前 Git scope 只允许
   本地隔离 repository/LFS endpoint，禁止 hosted sync。Preparation 完成并重新发现 identity 后才重建
@@ -262,11 +262,13 @@ canonical Plugin/Kernel surfaces；旧 function handler/repository/writer packag
   `ExternalIdentityPreparationResult`。effect-free rediscovery 还必须把 `nonlive.locator.*` 重绑为专用
   LLM/Tavily/HPC locator、移除本地 Git credential placeholder 并重建 unit digest。Preparation authorization
   绑定 exact plan/batch/operator、持久且一次性，terminal action 不得重复派发并支持 exact 私有撤销；qualification
-  authorization 仍独立绑定 exact plan digest/window/batch。两级 backend 都必须在各自 authority 缺失或失配时于
+  authorization 仍独立绑定 exact plan digest/batch/operator，持久一次性、无 wall-clock 过期、支持 exact 私有撤销，且 terminal unit 不得重复派发。两级 backend 都必须在各自 authority 缺失、撤销或失配时于
   credential resolution 前失败。真实 receipt 即使完成也只证明 `qualified`，不能更新
   Session binding 或替代另一个 cutover change。正式本地入口拆成 root/layout-only bootstrap、canonical authorization
   writer 与 source-bound Batch 1 executor；executor 必须先预检全部 exact locator，再按稳定 occurrence identity 写 protected
-  ledger。已有 residual state 而无 terminal result 时停止人工 reconcile，不覆盖、不重发、不 fallback；
+  ledger。已有 residual state 而无 terminal result 时停止人工 reconcile，不覆盖、不重发、不 fallback。当前 live bridge
+  已覆盖 Provider、Git/LFS、Podman、SSH、Slurm 与 HMMER/Vina/fpocket/preprocess 正式 Compute route；Diannan 只消费
+  target 已安装工具，不执行远端安装、升级或重建，本地科学 route 只采用已固定 digest 的 qualification image；
 - `openzyme-workspace-git-lfs` 已成为 `AgentGitWorkspace` identity/observation/restore 与 Git-LFS
   policy/pointer/closure/verification/receipt 机制 DTO 的唯一代码 owner；旧 Domain shim 已删除，仓内生产
   caller 使用 Adapter namespace。private/public ref 与 immutable-byte backend、

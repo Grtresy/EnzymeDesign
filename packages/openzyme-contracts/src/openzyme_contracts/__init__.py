@@ -89,6 +89,7 @@ from .external_route_qualification import ExternalIdentityPreparationResult
 from .external_route_qualification import ExternalIdentityResolutionCandidate
 from .external_route_qualification import ExternalIdentityResolutionDecision
 from .external_route_qualification import ExternalQualificationBridgeBinding
+from .external_route_qualification import ExternalQualificationAuthorizationRevocation
 from .external_route_qualification import ExternalBoundQualificationOperationPort
 from .external_route_qualification import ExternalQualificationBudgetPolicy
 from .external_route_qualification import ExternalQualificationDryPlan
@@ -98,6 +99,10 @@ from .external_route_qualification import ExternalQualificationOccurrenceAuthori
 from .external_route_qualification import ExternalQualificationOperationObservation
 from .external_route_qualification import ExternalQualificationOperationPort
 from .external_route_qualification import ExternalScientificQualificationOperationPort
+from .external_route_qualification import ExternalScientificQualificationInput
+from .external_route_qualification import ExternalScientificQualificationRouteOutcome
+from .external_route_qualification import ExternalScientificQualificationRoutePort
+from .external_route_qualification import ExternalScientificQualificationWorkload
 from .external_route_qualification import ExternalQualificationSafeReceipt
 from .external_route_qualification import ExternalQualificationStoragePolicy
 from .external_route_qualification import ExternalQualificationTtlPolicy
@@ -463,6 +468,7 @@ __all__ = [
     "ExternalIdentityResolutionCandidate",
     "ExternalIdentityResolutionDecision",
     "ExternalQualificationBridgeBinding",
+    "ExternalQualificationAuthorizationRevocation",
     "ExternalBoundQualificationOperationPort",
     "ExternalQualificationBudgetPolicy",
     "ExternalQualificationDryPlan",
@@ -472,6 +478,10 @@ __all__ = [
     "ExternalQualificationOperationObservation",
     "ExternalQualificationOperationPort",
     "ExternalScientificQualificationOperationPort",
+    "ExternalScientificQualificationInput",
+    "ExternalScientificQualificationRouteOutcome",
+    "ExternalScientificQualificationRoutePort",
+    "ExternalScientificQualificationWorkload",
     "ExternalQualificationSafeReceipt",
     "ExternalQualificationStoragePolicy",
     "ExternalQualificationTtlPolicy",

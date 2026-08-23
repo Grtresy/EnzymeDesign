@@ -16,15 +16,19 @@ from openzyme_contracts import ExternalQualificationEffectPolicy
 from openzyme_contracts import ExternalQualificationError
 from openzyme_contracts import ExternalQualificationFaultPolicy
 from openzyme_contracts import ExternalQualificationOccurrenceAuthorization
+from openzyme_contracts import ExternalQualificationAuthorizationRevocation
 from openzyme_contracts import ExternalQualificationOperationObservation
 from openzyme_contracts import ExternalQualificationProbeRequest
+from openzyme_contracts import ExternalQualificationSafeReceipt
 from openzyme_contracts import ExternalQualificationStoragePolicy
 from openzyme_contracts import ExternalQualificationSubjectKind
 from openzyme_contracts import ExternalQualificationTtlPolicy
 from openzyme_contracts import ExternalQualificationUnitSubjectBinding
+from openzyme_contracts import ExternalRealSubjectIdentity
 from openzyme_contracts import ExternalSubjectIdentityObservation
 from openzyme_contracts import ExternalSubjectIdentityStatus
 from openzyme_contracts import SafeIdentityField
+from openzyme_contracts import canonical_sha256_digest
 from openzyme_contracts import verify_external_identity_decision
 from openzyme_contracts import (
     verify_external_identity_preparation_authorization_not_revoked,
@@ -132,6 +136,20 @@ def _blocked_plan() -> ExternalQualificationDryPlan:
         max_retries=0,
         created_at=OBSERVED_AT,
         live_effect_authorized=False,
+    )
+
+
+def _subject() -> ExternalRealSubjectIdentity:
+    return ExternalRealSubjectIdentity.create(
+        identity_id="identity.llm",
+        logical_subject_id="provider.llm.primary",
+        subject_kind=ExternalQualificationSubjectKind.PROVIDER,
+        endpoint_or_runtime_id="https.provider.test/v1",
+        account_or_deployment_digest=DIGEST,
+        api_or_route_variant="chat-completions-v1",
+        environment_or_inventory_digest=DIGEST,
+        policy_digest=DIGEST,
+        source_observation_digest=DIGEST,
     )
 
 
@@ -262,12 +280,14 @@ def test_blocked_dry_plan_verifies_but_cannot_receive_occurrence_authority() -> 
         dry_plan_digest=plan.dry_plan_digest,
         batch_id=plan.batch_id,
         operator_id="operator.owner",
-        valid_from="2026-08-22T11:00:00+00:00",
-        valid_until="2026-08-22T13:00:00+00:00",
+        authorized_at="2026-08-22T11:00:00+00:00",
     )
     with pytest.raises(ExternalQualificationError) as captured:
         verify_external_qualification_occurrence_authorization(
-            plan, authorization, observed_at=OBSERVED_AT
+            plan,
+            authorization,
+            observed_at=OBSERVED_AT,
+            expected_operator_id="operator.owner",
         )
     assert captured.value.error_code == "blocked_identity"
 
@@ -275,9 +295,74 @@ def test_blocked_dry_plan_verifies_but_cannot_receive_occurrence_authority() -> 
 def test_missing_occurrence_authority_fails_with_stable_pre_effect_code() -> None:
     with pytest.raises(ExternalQualificationError) as captured:
         verify_external_qualification_occurrence_authorization(
-            _blocked_plan(), None, observed_at=OBSERVED_AT
+            _blocked_plan(),
+            None,
+            observed_at=OBSERVED_AT,
+            expected_operator_id="operator.owner",
         )
     assert captured.value.error_code == "blocked_live_authorization"
+
+
+def test_qualification_authority_is_durable_one_shot_and_explicitly_revocable() -> None:
+    subject = _subject()
+    plan = replace(
+        _blocked_plan(),
+        unit_bindings=tuple(
+            replace(item, gap_ids=(), subject_digest=subject.subject_digest)
+            for item in _blocked_plan().unit_bindings
+        ),
+        subjects=(subject,),
+        dry_plan_digest="sha256:" + "0" * 64,
+    )
+    plan = replace(plan, dry_plan_digest=canonical_sha256_digest(plan.identity_payload))
+    authorization = ExternalQualificationOccurrenceAuthorization.create(
+        authorization_id="authorization.qualification.batch-1",
+        dry_plan_digest=plan.dry_plan_digest,
+        batch_id=plan.batch_id,
+        operator_id="operator.owner",
+        authorized_at="2026-08-22T11:00:00+00:00",
+    )
+
+    verify_external_qualification_occurrence_authorization(
+        plan,
+        ExternalQualificationOccurrenceAuthorization.from_dict(
+            authorization.to_dict()
+        ),
+        observed_at="2036-08-22T12:00:00+00:00",
+        expected_operator_id="operator.owner",
+    )
+    with pytest.raises(ExternalQualificationError) as operator_drift:
+        verify_external_qualification_occurrence_authorization(
+            plan,
+            authorization,
+            observed_at=OBSERVED_AT,
+            expected_operator_id="operator.someone-else",
+        )
+    assert operator_drift.value.error_code == (
+        "qualification_occurrence_authorization_mismatch"
+    )
+
+    revocation = ExternalQualificationAuthorizationRevocation.create(
+        revocation_id="revocation.authorization.qualification.batch-1",
+        authorization_digest=authorization.authorization_digest,
+        operator_id=authorization.operator_id,
+        revoked_at="2026-08-23T00:00:00+00:00",
+        reason_code="operator_revoked",
+    )
+    assert ExternalQualificationAuthorizationRevocation.from_dict(
+        revocation.to_dict()
+    ) == revocation
+    with pytest.raises(ExternalQualificationError) as revoked:
+        verify_external_qualification_occurrence_authorization(
+            plan,
+            authorization,
+            observed_at=OBSERVED_AT,
+            expected_operator_id="operator.owner",
+            revocation=revocation,
+        )
+    assert revoked.value.error_code == (
+        "qualification_occurrence_authorization_revoked"
+    )
 
 
 def test_identity_preparation_is_exact_but_does_not_promote_qualification() -> None:
@@ -345,6 +430,7 @@ class _ResponseLossOperationPort:
     def __init__(self) -> None:
         self.dispatch_calls = 0
         self.reconcile_calls = 0
+        self.restore_calls = 0
 
     def dispatch(self, request):
         self.dispatch_calls += 1
@@ -377,6 +463,9 @@ class _ResponseLossOperationPort:
             external_effect_performed=True,
             credential_material_accessed=False,
         )
+
+    def restore_dispatched_attempt(self, request):
+        self.restore_calls += 1
 
 
 def test_bound_owner_bridge_reconciles_same_attempt_without_redispatch() -> None:
@@ -416,6 +505,50 @@ def test_bound_owner_bridge_reconciles_same_attempt_without_redispatch() -> None
     assert first.disposition.value == "reconcile_required"
     assert terminal.disposition.value == "succeeded"
     assert port.dispatch_calls == 1
+    assert port.restore_calls == 0
+    assert port.reconcile_calls == 1
+    with pytest.raises(ExternalQualificationError) as captured:
+        bridge.dispatch(request)
+    assert captured.value.error_code == "qualification_probe_redispatch_forbidden"
+
+
+def test_bound_owner_bridge_restores_persisted_attempt_without_dispatch() -> None:
+    from openzyme_contracts import ExternalQualificationBridgeBinding
+
+    binding = ExternalQualificationBridgeBinding.create(
+        component_id="component.owner",
+        operation="publish",
+        route_id="route.publish@1",
+        plan_digest=DIGEST,
+        unit_digest=OTHER_DIGEST,
+        subject_digest=DIGEST,
+        input_digest=OTHER_DIGEST,
+        expected_result_schema_digest=DIGEST,
+        authorization_digest=OTHER_DIGEST,
+    )
+    request = ExternalQualificationProbeRequest.create(
+        attempt_id="attempt.publish.restore",
+        plan_digest=binding.plan_digest,
+        unit_digest=binding.unit_digest,
+        operation=binding.operation,
+        timeout_seconds=30,
+        input_digest=binding.input_digest,
+        expected_result_schema_digest=binding.expected_result_schema_digest,
+        credential_locator_id=None,
+    )
+    port = _ResponseLossOperationPort()
+    bridge = BoundExternalQualificationOperationBridge(
+        binding=binding,
+        operation_port=port,
+        allowed_operations=("publish",),
+    )
+
+    bridge.restore_dispatched_attempt(request)
+    terminal = bridge.reconcile(request)
+
+    assert terminal.disposition.value == "succeeded"
+    assert port.dispatch_calls == 0
+    assert port.restore_calls == 1
     assert port.reconcile_calls == 1
     with pytest.raises(ExternalQualificationError) as captured:
         bridge.dispatch(request)
@@ -456,6 +589,36 @@ def test_bridge_binding_rejects_credential_locator_drift_before_dispatch() -> No
         ).dispatch(request)
 
     assert captured.value.error_code == "qualification_bridge_request_binding_mismatch"
+
+
+def test_real_safe_receipt_binds_terminal_result_budget_cleanup_and_negative_tests() -> None:
+    receipt = ExternalQualificationSafeReceipt.create(
+        receipt_id="receipt.qualification.unit-1",
+        dry_plan_digest=DIGEST,
+        unit_digest=OTHER_DIGEST,
+        subject_digest=DIGEST,
+        authorization_digest=OTHER_DIGEST,
+        attempt_id="attempt.qualification.unit-1",
+        component_id="openzyme.runtime.llm",
+        route_id="openzyme.runtime.llm.turn@1",
+        operation="bounded-turn",
+        backend_receipt_digest=DIGEST,
+        output_digest=OTHER_DIGEST,
+        expected_result_schema_digest=DIGEST,
+        observed_result_schema_digest=DIGEST,
+        negative_test_receipt_digest=OTHER_DIGEST,
+        budget_settlement_digest=DIGEST,
+        cleanup_receipt_digest=OTHER_DIGEST,
+        effect_certainty="terminal_known",
+        fallback_performed=False,
+        diagnostic_id="diagnostic.qualification.unit-1",
+        observed_at="2026-08-23T09:00:00+08:00",
+        valid_until="2026-08-24T09:00:00+08:00",
+    )
+
+    assert ExternalQualificationSafeReceipt.from_dict(receipt.to_dict()) == receipt
+    with pytest.raises(ValueError, match="fallback"):
+        replace(receipt, fallback_performed=True)
 
 
 def test_dry_plan_credential_locators_must_match_exact_unit_bindings() -> None:

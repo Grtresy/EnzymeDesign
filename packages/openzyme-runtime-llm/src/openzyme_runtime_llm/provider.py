@@ -179,6 +179,17 @@ class LangChainProviderBackend:
                 phase="adapter_preflight",
             ) from exc
         options = dict(self.configuration.provider_options)
+        implementation_provider = options.pop(
+            "langchain_model_provider",
+            self.configuration.provider_id,
+        )
+        if not isinstance(implementation_provider, str) or not implementation_provider:
+            raise LlmProviderError(
+                "llm_provider_implementation_identity_invalid",
+                "selected LangChain implementation provider identity is invalid",
+                retryable=False,
+                phase="adapter_preflight",
+            )
         options["max_retries"] = 0
         options["timeout"] = self.configuration.timeout_seconds
         if self.configuration.base_url is not None:
@@ -187,7 +198,7 @@ class LangChainProviderBackend:
         try:
             self._model = init_chat_model(
                 model=self.configuration.model,
-                model_provider=self.configuration.provider_id,
+                model_provider=implementation_provider,
                 **options,
             )
         except Exception as exc:

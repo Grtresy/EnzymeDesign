@@ -39,6 +39,11 @@ class VinaQualificationProbeBridge:
     ) -> ExternalQualificationProbeOutcome:
         return self._bridge.reconcile(request)
 
+    def restore_dispatched_attempt(
+        self, request: ExternalQualificationProbeRequest
+    ) -> None:
+        self._bridge.restore_dispatched_attempt(request)
+
 
 __all__ = ["VinaQualificationProbeBridge"]
 

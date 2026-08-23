@@ -100,8 +100,10 @@ subject closure。`resolved` 只表示非 secret identity 字段闭合；`partia
 
 资格分两批：Batch 1 固定包含 `base + research-provider + hpc-primary + hmmer + docking`，Batch 2 仅含
 AlphaFold。每批独立绑定 source、identity、unit、budget、authorization 与 verdict。预算是防循环/失控的宽松熔断：
-LLM occurrence 为 USD 5 告警/USD 25 硬上限，Tavily 为 USD 2/USD 10，两个 batch 的现金硬上限分别为
-USD 100；告警不缩小 probe 或切换 route，只有 dispatch 前无法 reserve 硬额度才 `blocked_budget`。
+Batch 1 现金为 USD 100 告警/USD 250 硬上限；LLM occurrence 为 USD 50/USD 100 且 request count 为
+10/20，Tavily 为 USD 20/USD 50；Git payload 为 32/64 MiB，Podman 时间为 3000/3600 秒、内存为
+2048/4096 MiB，Slurm CPU-time 为 120/180 分钟。告警不缩小 probe 或切换 route，只有 dispatch 前无法
+reserve 硬额度才 `blocked_budget`。
 
 `ExternalQualificationDryPlan` 固定 `max_retries=0`、`live_effect_authorized=false`，并闭合 effect allowlist、
 same-attempt reconcile、cleanup、TTL 与 protected storage。SQLite 持久化实现由 `openzyme.store.sqlite` Adapter
@@ -119,8 +121,10 @@ input-binding digest 和至多一个 credential locator；计划级 locator 集�
 `credential.hpc.diannan.qualification`，不读取 ambient environment fallback。安全结果只记录 locator/version、
 opaque digest 和 material-accessed 布尔值，不记录 token、key、私有路径或 raw stream。
 `PlanOnlyQualificationBackendFactory` 在 exact
-`ExternalQualificationOccurrenceAuthorization` 缺失、过期、batch/plan digest 不匹配或 identity 未闭合时，必须在
-credential resolution 前返回结构化 blocker。当前人工 workflow 只生成 operator packet，不引用 secrets，也不构造
+`ExternalQualificationOccurrenceAuthorization` 缺失、已撤销、operator/batch/plan digest 不匹配或 identity 未闭合时，必须在
+credential resolution、预算预留和 owner bridge 构造前返回结构化 blocker。qualification authority 不设置 wall-clock
+有效期，只能启动或恢复同一 exact occurrence；protected ledger 中已有的 terminal unit 必须直接恢复，不得 redispatch。
+当前人工 workflow 只生成 operator packet，不引用 secrets，也不构造
 真实 backend。
 
 operator 选择 identity candidate 后，若 subject 尚需建账号/locator、创建本地隔离 Git/LFS repository、build/pull
@@ -150,7 +154,7 @@ result 的 plan、authorization、owner、input 和字段覆盖后才生成新�
 因此 real unit digest 与 non-live readiness unit digest 有意不同。
 
 本地 operator 入口分为三个命令，且不能互相替代：bootstrap 命令只创建 `0700` root 和 `0600 layout.json`；
-authorization writer 只把操作员批准的 exact plan/batch/operator/window 规范化为带摘要的 JSON；Batch 1 executor 才要求
+authorization writer 只把操作员批准的 exact plan/batch/operator 规范化为持久一次性、可显式撤销的带摘要 JSON；Batch 1 executor 才要求
 `OPENZYME_ALLOW_LIVE=1`。executor 会用当前 checkout 重建并逐字比对 packet 内的 preparation plan，在任何 mutation 前
 一次性验证三个 exact locator 的 material kind/version/required fields，然后按稳定 occurrence identity 执行七个 owner
 action。每个 terminal result 立即写入 protected SQLite；重启只恢复相同 plan 与 authorization 下已有的 exact result，
@@ -158,10 +162,12 @@ action。每个 terminal result 立即写入 protected SQLite；重启只恢复�
 `prepared_not_qualified` packet 只含 secret-safe fields，并为下一次独立 qualification authorization 暴露新的 Batch 1
 dry-plan digest。
 
-当前源码已加入 authorization-bound exact-unit router、LLM/Tavily/公共 Bio HTTP typed bridge，以及 Git/LFS、
-Podman、SSH、Slurm 和科学 Driver 的 owner binding guard。非 live 测试证明这些边界拒绝 hosted Git sync、未固定
-image、错误 target/route/subject、raw scientific execution、credential locator 漂移和重复 dispatch。它们没有
-构造真实基础设施 backend，也没有运行 HMMER/Vina/fpocket/preprocess；相应完整 live bridge tasks 仍保持未完成。
+当前源码已加入 authorization-bound exact-unit router、LLM/Tavily/公共 Bio HTTP、Git/LFS、Podman、SSH、Slurm
+的 owner operation bridge，以及 HMMER/Vina/fpocket/preprocess 的固定小型 workload、正式 Compute route 和
+terminal validator。live coordinator 在 protected SQLite 中逐 unit 持久 outcome 与 safe receipt；重启只恢复 terminal
+结果或同一 in-doubt attempt，无法安全恢复的 Provider attempt 稳定阻断，禁止 redispatch。Diannan scientific route
+只使用 target 已安装软件，绝不安装、升级或重建远端工具；本地 route 只采用 preparation 已固定 digest 的 image。
+非 live/fake-command 回归只能证明绑定、请求构造、状态恢复和失败语义，不能表述为真实外部资格已通过。
 
 ## 后续强制暂停点
 

@@ -25,7 +25,6 @@ from openzyme_contracts import verify_external_qualification_probe_request_bindi
 
 
 OBSERVED_AT = "2026-08-22T12:00:00+00:00"
-VALID_UNTIL = "2026-08-23T12:00:00+00:00"
 DIGEST = "sha256:" + "1" * 64
 
 
@@ -98,8 +97,7 @@ def _plans():
         dry_plan_digest=dry_plan.dry_plan_digest,
         batch_id=dry_plan.batch_id,
         operator_id="operator.owner",
-        valid_from=OBSERVED_AT,
-        valid_until=VALID_UNTIL,
+        authorized_at=OBSERVED_AT,
     )
     return readiness, unit, dry_plan, authorization
 
@@ -149,6 +147,7 @@ def test_authorized_router_builds_and_dispatches_only_the_exact_unit() -> None:
         dry_plan=dry_plan,
         readiness_plan=readiness,
         authorization=authorization,
+        operator_id="operator.owner",
         observed_at="2026-08-22T13:00:00+00:00",
         bridge_builders={unit.component_id: builder},
     )
@@ -185,6 +184,7 @@ def test_router_blocks_before_builder_without_exact_occurrence_authority() -> No
             dry_plan=dry_plan,
             readiness_plan=readiness,
             authorization=None,  # type: ignore[arg-type]
+            operator_id="operator.owner",
             observed_at="2026-08-22T13:00:00+00:00",
             bridge_builders={unit.component_id: builder},
         )
@@ -207,8 +207,50 @@ def test_router_rejects_owner_bridge_that_changes_exact_binding() -> None:
             dry_plan=dry_plan,
             readiness_plan=readiness,
             authorization=authorization,
+            operator_id="operator.owner",
             observed_at="2026-08-22T13:00:00+00:00",
             bridge_builders={unit.component_id: builder},
         )
 
     assert captured.value.error_code == "qualification_live_bridge_binding_mismatch"
+
+
+def test_router_blocks_restart_reconcile_when_owner_cannot_restore_attempt() -> None:
+    readiness, unit, dry_plan, authorization = _plans()
+
+    @dataclass
+    class _NonRestorableBridge:
+        binding: ExternalQualificationBridgeBinding
+
+        def dispatch(
+            self, request: ExternalQualificationProbeRequest
+        ) -> ExternalQualificationProbeOutcome:
+            raise AssertionError("restart recovery must not dispatch")
+
+        def reconcile(
+            self, request: ExternalQualificationProbeRequest
+        ) -> ExternalQualificationProbeOutcome:
+            raise AssertionError("unsupported restore must block before reconcile")
+
+    router = SelectedQualificationProbeRouter(
+        dry_plan=dry_plan,
+        readiness_plan=readiness,
+        authorization=authorization,
+        operator_id="operator.owner",
+        observed_at="2026-08-22T13:00:00+00:00",
+        bridge_builders={unit.component_id: _NonRestorableBridge},
+    )
+    request = build_external_qualification_probe_request(
+        dry_plan=dry_plan,
+        readiness_unit=unit,
+        attempt_id="attempt.router.restart-unsupported",
+        timeout_seconds=30,
+    )
+
+    with pytest.raises(ExternalQualificationError) as captured:
+        router.restore_dispatched_attempt(request)
+
+    assert (
+        captured.value.error_code
+        == "qualification_probe_reconcile_restore_unsupported"
+    )

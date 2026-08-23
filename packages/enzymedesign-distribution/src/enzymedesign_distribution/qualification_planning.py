@@ -22,6 +22,7 @@ from openzyme_contracts import ExternalQualificationEffectPolicy
 from openzyme_contracts import ExternalQualificationError
 from openzyme_contracts import ExternalQualificationFaultPolicy
 from openzyme_contracts import ExternalQualificationOccurrenceAuthorization
+from openzyme_contracts import ExternalQualificationAuthorizationRevocation
 from openzyme_contracts import ExternalQualificationPlan
 from openzyme_contracts import ExternalQualificationStoragePolicy
 from openzyme_contracts import ExternalQualificationSubjectKind
@@ -704,57 +705,57 @@ def _batch_budgets(
         )
     return (
         ExternalQualificationBudgetPolicy(
-            "budget.batch-1.cash", "batch-1", "cash", 20.0, 100.0, "usd"
+            "budget.batch-1.cash", "batch-1", "cash", 100.0, 250.0, "usd"
         ),
         ExternalQualificationBudgetPolicy(
-            "budget.llm.cash", "openzyme.runtime.llm", "cash", 5.0, 25.0, "usd"
+            "budget.llm.cash", "openzyme.runtime.llm", "cash", 50.0, 100.0, "usd"
         ),
         ExternalQualificationBudgetPolicy(
             "budget.llm.requests",
             "openzyme.runtime.llm",
             "request-count",
-            2.0,
-            3.0,
+            10.0,
+            20.0,
             "request",
         ),
         ExternalQualificationBudgetPolicy(
             "budget.tavily.cash",
             "openzyme.research.tavily",
             "cash",
-            2.0,
-            10.0,
+            20.0,
+            50.0,
             "usd",
         ),
         ExternalQualificationBudgetPolicy(
             "budget.git.payload",
             "openzyme.workspace.git.lfs",
             "payload-size",
-            8.0,
-            10.0,
+            32.0,
+            64.0,
             "mib",
         ),
         ExternalQualificationBudgetPolicy(
             "budget.podman.time",
             "openzyme.process.podman",
             "container-time",
-            480.0,
-            600.0,
+            3000.0,
+            3600.0,
             "second",
         ),
         ExternalQualificationBudgetPolicy(
             "budget.podman.memory",
             "openzyme.process.podman",
             "memory",
-            1536.0,
             2048.0,
+            4096.0,
             "mib",
         ),
         ExternalQualificationBudgetPolicy(
             "budget.slurm.cpu-time",
             "openzyme.hpc.slurm",
             "cpu-time",
-            10.0,
-            15.0,
+            120.0,
+            180.0,
             "minute",
         ),
     )
@@ -1501,10 +1502,16 @@ class PlanOnlyQualificationBackendFactory:
         plan: ExternalQualificationDryPlan,
         authorization: ExternalQualificationOccurrenceAuthorization | None,
         observed_at: str,
+        operator_id: str,
         locator_id: str,
+        revocation: ExternalQualificationAuthorizationRevocation | None = None,
     ) -> object:
         verify_external_qualification_occurrence_authorization(
-            plan, authorization, observed_at=observed_at
+            plan,
+            authorization,
+            observed_at=observed_at,
+            expected_operator_id=operator_id,
+            revocation=revocation,
         )
         if self._live_builder is None:
             raise ExternalQualificationError(

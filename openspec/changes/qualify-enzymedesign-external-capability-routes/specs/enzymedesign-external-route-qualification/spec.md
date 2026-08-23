@@ -76,7 +76,7 @@ An `ExternalQualificationDryPlan` MUST bind source identity, readiness catalog a
 - **THEN** verification fails instead of inheriting the application runtime default
 
 ### Requirement: Live occurrence authorization is separate and pre-effect
-Real qualification dispatch MUST require an `ExternalQualificationOccurrenceAuthorization` binding the exact dry-plan digest, batch, operator identity and validity window. Without that authorization, the backend factory MUST fail with `blocked_live_authorization` before credential resolution, resource reservation or external effect; a plan approval, environment flag or previous occurrence MUST NOT substitute.
+Real qualification dispatch MUST require a durable one-shot `ExternalQualificationOccurrenceAuthorization` binding the exact dry-plan digest, batch and operator identity. The authorization MUST NOT expire by wall-clock passage; it remains usable only to start or resume that exact occurrence, and every terminal stored unit result MUST be restored without redispatch. Source, plan, batch or operator drift MUST invalidate it, and exact private revocation evidence MUST block it before credential resolution, budget reservation, owner bridge construction or external effect. A plan approval, environment flag, preparation authority or previous occurrence MUST NOT substitute.
 
 #### Scenario: Plan-only workflow reaches the backend factory
 - **WHEN** the dry plan is valid but no occurrence authorization is supplied
@@ -85,6 +85,14 @@ Real qualification dispatch MUST require an `ExternalQualificationOccurrenceAuth
 #### Scenario: Authorization binds another plan revision
 - **WHEN** source, identity, unit, budget or policy changes after authorization
 - **THEN** the authorization is rejected and a new dry plan requires approval
+
+#### Scenario: Durable qualification authority is resumed after wall-clock passage
+- **WHEN** the exact qualification occurrence is resumed with the same source-bound plan, batch, operator and authorization after any elapsed wall-clock time
+- **THEN** completed units are restored from protected evidence without redispatch and only incomplete exact units may continue
+
+#### Scenario: Qualification authority is explicitly revoked
+- **WHEN** exact private revocation evidence binds the qualification authorization and operator before the occurrence is terminal
+- **THEN** execution fails before credential resolution, budget reservation or external effect and performs no fallback
 
 ### Requirement: Budgets are generous circuit breakers at batch and occurrence scope
 Each paid or resource-bearing occurrence MUST declare a warning threshold and a higher hard limit, and each batch MUST declare an aggregate warning threshold and hard limit. Crossing a warning threshold MUST produce a diagnostic without weakening or rerouting the probe. Capacity MUST be reserved before dispatch and settled after terminal observation or reconciliation; only insufficient hard-limit capacity MAY produce `blocked_budget`, and the system MUST NOT reduce the required test or choose a cheaper Provider, target or route as fallback.

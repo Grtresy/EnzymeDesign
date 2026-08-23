@@ -7,6 +7,7 @@ from dataclasses import field
 from typing import Protocol
 
 from openzyme_contracts import ExternalQualificationBridgeBinding
+from openzyme_contracts import ExternalQualificationAuthorizationRevocation
 from openzyme_contracts import ExternalQualificationDryPlan
 from openzyme_contracts import ExternalQualificationError
 from openzyme_contracts import ExternalQualificationOccurrenceAuthorization
@@ -29,6 +30,10 @@ class SelectedQualificationProbeBridge(Protocol):
     def reconcile(
         self, request: ExternalQualificationProbeRequest
     ) -> ExternalQualificationProbeOutcome: ...
+
+    def restore_dispatched_attempt(
+        self, request: ExternalQualificationProbeRequest
+    ) -> None: ...
 
 
 QualificationProbeBridgeBuilder = Callable[
@@ -93,8 +98,10 @@ class SelectedQualificationProbeRouter:
     dry_plan: ExternalQualificationDryPlan
     readiness_plan: ExternalQualificationPlan
     authorization: ExternalQualificationOccurrenceAuthorization
+    operator_id: str
     observed_at: str
     bridge_builders: Mapping[str, QualificationProbeBridgeBuilder]
+    revocation: ExternalQualificationAuthorizationRevocation | None = None
     backend_id: str = "enzymedesign.selected-live-qualification-router@1"
     _bridges: dict[str, SelectedQualificationProbeBridge] = field(
         default_factory=dict,
@@ -112,6 +119,8 @@ class SelectedQualificationProbeRouter:
             self.dry_plan,
             self.authorization,
             observed_at=self.observed_at,
+            expected_operator_id=self.operator_id,
+            revocation=self.revocation,
         )
         if self.dry_plan.readiness_plan_digest != self.readiness_plan.plan_digest:
             raise ExternalQualificationError(
@@ -184,6 +193,27 @@ class SelectedQualificationProbeRouter:
                 "live qualification reconcile requires the exact prior attempt",
             )
         return bridge.reconcile(request)
+
+    def restore_dispatched_attempt(
+        self,
+        request: ExternalQualificationProbeRequest,
+    ) -> None:
+        """Rehydrate an exact persisted in-doubt attempt for reconcile only."""
+        bridge = self._bridge_for_request(request)
+        existing = self._attempt_units.get(request.attempt_id)
+        if existing is not None and existing != request.unit_digest:
+            raise ExternalQualificationError(
+                "qualification_probe_attempt_identity_drift",
+                "persisted qualification attempt binds a different unit",
+            )
+        restore = getattr(bridge, "restore_dispatched_attempt", None)
+        if restore is None:
+            raise ExternalQualificationError(
+                "qualification_probe_reconcile_restore_unsupported",
+                "owner bridge cannot safely restore this persisted in-doubt attempt",
+            )
+        restore(request)
+        self._attempt_units[request.attempt_id] = request.unit_digest
 
     def _bridge_for_request(
         self,

@@ -97,19 +97,19 @@ operator candidate decision 只选择如何补齐 identity，不授权执行。�
 
 credential locator 必须逐 unit 绑定，而不能只出现在 batch 级列表中。batch 级 locator 集合必须与 unit bindings 的 locator 并集完全相等；generic probe request、owner bridge binding 和 authorized router 三者都要逐字匹配该 locator。这样同一 batch 中的 LLM、Tavily 与 HPC locator 不能交叉使用。
 
-identity preparation 完成并重新观察后，首次 qualification probe 仍要使用另一个 `ExternalQualificationOccurrenceAuthorization`，绑定 exact dry-plan digest、operator、validity window 和 batch。Preparation authorization、plan approval、环境变量或旧 occurrence 均不能替代；没有 qualification authorization，live backend factory 只能返回 `blocked_live_authorization`，不得解析 credential。
+identity preparation 完成并重新观察后，首次 qualification probe 仍要使用另一个持久一次性的 `ExternalQualificationOccurrenceAuthorization`，绑定 exact dry-plan digest、operator 和 batch，不设置 wall-clock 有效期。该 authority 只允许启动或恢复同一 exact occurrence：terminal unit 只能从 protected ledger 恢复，不得 redispatch；source、plan、batch、operator 任一漂移都会失效，也可由绑定 exact authority 的私有 revocation evidence 显式撤销。Preparation authorization、plan approval、环境变量或旧 occurrence 均不能替代；没有 qualification authorization 或 authority 已撤销时，live backend factory 只能返回 `blocked_live_authorization`，不得解析 credential、reserve budget 或构造 owner bridge。
 
 ### 6. 预算按 batch 和 occurrence 设置宽松硬上限
 
 预算用于阻止配置错误、循环或失控消费，不作为压缩正常资格测试的目标。每项同时记录告警阈值和高于告警阈值的硬上限；达到告警阈值只产生诊断，不缩小 probe、切换 route 或自动终止，只有达到硬上限才在下一次 dispatch 前以 `blocked_budget` 停止。
 
-- LLM：一个 bounded turn、最多 3 个 provider request；USD 5 告警、USD 25 occurrence 硬上限；qualification occurrence `max_retries=0`。
-- Tavily：一个 bounded query、最多 3 个结果；USD 2 告警、USD 10 occurrence 硬上限。
+- LLM：一个 bounded turn；10 次 request 告警、20 次 request 硬上限；USD 50 告警、USD 100 occurrence 硬上限；qualification occurrence `max_retries=0`。
+- Tavily：一个 bounded query、最多 3 个结果；USD 20 告警、USD 50 occurrence 硬上限。
 - Bio HTTP：每个 Provider 一次只读 smoke。
-- Git/LFS：一个隔离 repository/branch、总 payload 不超过 10 MiB。
-- Podman：每个 smoke 最多一个 container；单 container 10 分钟、2 GiB。
-- Slurm：一个 terminal job + 一个 cancel job；合计不超过 15 CPU-min。
-- 非 AlphaFold Batch 1：USD 20 告警、USD 100 硬上限；各 occurrence 上限仍独立生效。
+- Git/LFS：一个隔离 repository/branch；32 MiB 告警、64 MiB payload 硬上限。
+- Podman：每个 smoke 最多一个 container；3000 秒告警、3600 秒硬上限；2 GiB 内存告警、4 GiB 硬上限。
+- Slurm：一个 terminal job + 一个 cancel job；120 CPU-min 告警、180 CPU-min 硬上限。
+- 非 AlphaFold Batch 1：USD 100 告警、USD 250 硬上限；各 occurrence 上限仍独立生效。
 - AlphaFold Batch 2：一个 GPU、30 分钟、一个固定小型 monomer、一个 seed；USD 25 告警、USD 100 硬上限。
 
 budget ledger 在 dispatch 前按硬上限 reserve、terminal/reconcile 后 settle；告警阈值不阻断，硬预算不足是 `blocked_budget`，不得缩小测试、切换 route 或用低价 Provider fallback。dry plan 必须显示每个 occurrence 与 batch 的告警/硬上限，首次 effect 授权绑定这些精确值。
@@ -140,7 +140,7 @@ plan-only factory 可以构造 bridge metadata，但不会构造 credential-bear
 
 Repository-owned scientific image recipes 从各自官方 Git URL 完整取得固定 commit，并显式固定 Git HTTP/1.1；HMMER Git source 按官方构建闭包另行固定 Easel 0.49 commit，不把 Easel 误当 submodule 或浮动 master。禁止 partial-clone promisor checkout、自动 retry 或镜像源 fallback。这样 checkout 只消费本地完整对象闭包，网络或依赖闭包失败仍以单次 occurrence 的 terminal failure 暴露并由 operator 决定后续处理。
 
-在 preparation authority 之前可实现和非 live 测试 bridge 代码，但不得构造真实 backend。当前已闭合 LLM、Tavily、公共 Bio HTTP 的 typed Adapter bridge，以及 Git/LFS、Podman、SSH、Slurm 和科学 Driver 的 owner/route/subject guard；authorization-bound Distribution router 会在任何 owner builder 前验证 exact dry-plan authority。基础设施的真实 typed operation builder、科学 fixed-smoke workload 与 terminal validator 仍需在 preparation 产生 exact repository/image/target identity 后完成，因此这些 guard 测试不得表述为真实外部资格已通过。
+当前源码已闭合 LLM、Tavily、公共 Bio HTTP、Git/LFS、Podman、SSH、Slurm 的 exact owner operation bridge，以及 HMMER、Vina、fpocket、RDKit、Meeko、Open Babel 的固定小型 workload、正式 Compute route 与 Driver terminal validator。authorization-bound Distribution router 会在任何 credential resolution 和 owner builder 前验证 exact dry-plan authority；live coordinator 以 protected SQLite 恢复 terminal outcome/receipt，in-doubt 只允许同一 attempt reconcile，无法安全恢复的 Provider attempt 稳定阻断而不 redispatch。Diannan route 只探测并执行 target 已安装软件，不安装、升级或重建远端工具；本地科学 route 只采用 preparation 已固定 digest 的 qualification image。上述实现与 fake-command 回归仍不等于真实外部资格通过，只有授权 occurrence 的 terminal receipt 能形成 `qualified`。
 
 ### 11. Receipt 只能由真实终态 evidence 形成
 
@@ -170,7 +170,7 @@ Repository-owned scientific image recipes 从各自官方 Git URL 完整取得�
 4. 将 operator selections 冻结为 exact decisions，生成 Batch 1/Batch 2 identity-preparation plan；未授权时保持零 effect。
 5. 在首次 preparation effect 前暂停；用户批准 exact preparation-plan digest、batch 与 operator 后，才创建持久一次性的 preparation occurrence authorization；后续只能恢复同一 occurrence，或通过 exact revocation 显式撤销。
 6. Preparation 完成后重新观察 subject identity，重建 authorizable qualification dry plan。
-7. 再次取得 exact qualification-plan occurrence authorization，分 unit 执行真实 qualification、settle/reconcile、验证 receipt。任何未闭合 profile 保持 blocked。
+7. 再次取得 exact、持久一次性的 qualification-plan occurrence authorization，分 unit 执行真实 qualification、settle/reconcile、验证 receipt；只能恢复同一 occurrence 的已持久化终态，禁止 redispatch，也允许 exact 私有撤销。任何未闭合 profile 保持 blocked。
 8. 完成真实资格后同步/归档本 change，并进入 cutover 前第二个人工决策门。
 
 回滚当前 plan-only implementation 只需移除新增 contract/wiring/workflow；它不包含数据库 migration 或外部 mutation。真实 occurrence 开始后的回滚只能停止新 dispatch、reconcile 已知 attempt、执行声明的 cleanup，并保留证据。

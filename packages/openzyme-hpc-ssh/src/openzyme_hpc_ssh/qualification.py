@@ -14,6 +14,7 @@ from openzyme_contracts import ExternalQualificationBridgeBinding
 from openzyme_contracts import ExternalQualificationProbeOutcome
 from openzyme_contracts import ExternalQualificationProbeRequest
 from openzyme_contracts import ExternalQualificationError
+from openzyme_contracts import ExternalQualificationOperationObservation
 from openzyme_contracts import canonical_sha256_digest
 
 
@@ -71,6 +72,7 @@ class SubprocessOpenSshQualificationCommandPort:
             capture_output=True,
             text=True,
             env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+            timeout=120,
         )
         return completed.returncode, completed.stdout, completed.stderr
 
@@ -195,6 +197,236 @@ class SshQualificationOperationPort(
 
 
 @dataclass(slots=True)
+class OpenSshQualificationState:
+    credential_material: SshQualificationCredentialMaterial = field(repr=False)
+    workspace_id: str
+    command_port: OpenSshQualificationCommandPort = field(repr=False)
+    response_loss_token: str | None = None
+
+    def __post_init__(self) -> None:
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", self.workspace_id) is None:
+            raise ValueError("SSH qualification workspace identity is invalid")
+        self._connection_argv()
+
+    @property
+    def remote_workspace(self) -> str:
+        return f".local/state/openzyme-qualification/{self.workspace_id}"
+
+    def _connection_argv(self) -> tuple[str, ...]:
+        host = self.credential_material.field_value("ssh_host")
+        user = self.credential_material.field_value("ssh_user")
+        port = self.credential_material.field_value("ssh_port")
+        identity = Path(self.credential_material.field_value("identity_file")).absolute()
+        known_hosts = Path(
+            self.credential_material.field_value("known_hosts_file")
+        ).absolute()
+        if (
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,254}", host) is None
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", user) is None
+            or re.fullmatch(r"[1-9][0-9]{0,4}", port) is None
+            or int(port) > 65535
+            or not identity.is_file()
+            or identity.is_symlink()
+            or identity.stat().st_mode & 0o077
+            or not known_hosts.is_file()
+            or known_hosts.is_symlink()
+        ):
+            raise ExternalQualificationError(
+                "qualification_hpc_credential_identity_invalid",
+                "SSH qualification identity material is incomplete or unsafe",
+            )
+        return (
+            "ssh",
+            "-F",
+            "/dev/null",
+            "-p",
+            port,
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            f"IdentityFile={identity}",
+            "-o",
+            f"UserKnownHostsFile={known_hosts}",
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-o",
+            "ConnectTimeout=15",
+            f"{user}@{host}",
+        )
+
+    def run_remote(self, script: str) -> tuple[int, str, str]:
+        return self.command_port.run((*self._connection_argv(), "sh", "-lc", script))
+
+    def cleanup(self) -> dict[str, object]:
+        workspace = self.remote_workspace
+        script = (
+            f"test -f {workspace}/.openzyme-qualification-owner && "
+            f"test \"$(cat {workspace}/.openzyme-qualification-owner)\" = {self.workspace_id} && "
+            f"rm -rf -- {workspace}"
+        )
+        returncode, _stdout, _stderr = self.run_remote(script)
+        return {"workspace_removed": returncode == 0}
+
+
+@dataclass(slots=True)
+class OpenSshQualificationOperation:
+    component_id: str
+    route_id: str
+    subject_digest: str
+    state: OpenSshQualificationState = field(repr=False)
+    qualification_workspace_only: bool = True
+    same_attempt_reconcile: bool = True
+
+    def dispatch(
+        self, request: ExternalQualificationProbeRequest
+    ) -> ExternalQualificationOperationObservation:
+        try:
+            if request.operation == "response-loss-reconcile":
+                token = canonical_sha256_digest(
+                    {"attempt_id": request.attempt_id}
+                ).removeprefix("sha256:")
+                self._run(
+                    f"printf '%s' {token} > {self.state.remote_workspace}/response-loss"
+                )
+                self.state.response_loss_token = token
+                return self._observation(
+                    request,
+                    terminal=False,
+                    succeeded=False,
+                    effect_certainty="dispatch_in_doubt",
+                    error_code="qualification_response_lost_after_ssh_acceptance",
+                )
+            self._execute(request.operation)
+        except (OSError, subprocess.SubprocessError, ExternalQualificationError) as exc:
+            return self._observation(
+                request,
+                terminal=True,
+                succeeded=False,
+                effect_certainty="terminal_known",
+                error_code=getattr(exc, "error_code", "qualification_ssh_operation_failed"),
+            )
+        return self._observation(
+            request,
+            terminal=True,
+            succeeded=True,
+            effect_certainty="terminal_known",
+        )
+
+    def reconcile(
+        self, request: ExternalQualificationProbeRequest
+    ) -> ExternalQualificationOperationObservation:
+        if request.operation != "response-loss-reconcile" or self.state.response_loss_token is None:
+            raise ExternalQualificationError(
+                "qualification_probe_reconcile_without_dispatch",
+                "SSH reconcile requires the exact response-loss dispatch",
+            )
+        output = self._run(f"cat {self.state.remote_workspace}/response-loss")
+        succeeded = output == self.state.response_loss_token
+        return self._observation(
+            request,
+            terminal=True,
+            succeeded=succeeded,
+            effect_certainty="terminal_known",
+            error_code=None if succeeded else "qualification_ssh_reconcile_failed",
+        )
+
+    def restore_dispatched_attempt(
+        self,
+        request: ExternalQualificationProbeRequest,
+    ) -> None:
+        if request.operation != "response-loss-reconcile":
+            raise ExternalQualificationError(
+                "qualification_probe_restore_not_reconcilable",
+                "only the SSH response-loss operation can be restored",
+            )
+        self.state.response_loss_token = canonical_sha256_digest(
+            {"attempt_id": request.attempt_id}
+        ).removeprefix("sha256:")
+
+    def _run(self, script: str) -> str:
+        returncode, stdout, _stderr = self.state.run_remote(script)
+        if returncode != 0:
+            raise ExternalQualificationError(
+                "qualification_ssh_command_failed",
+                "SSH qualification command failed",
+            )
+        return stdout.strip()
+
+    def _execute(self, operation: str) -> None:
+        workspace = self.state.remote_workspace
+        if operation == "helper-identity":
+            output = self._run("command -v sh; command -v sha256sum")
+            if "sh" not in output or "sha256sum" not in output:
+                raise ExternalQualificationError(
+                    "qualification_ssh_helper_identity_failed",
+                    "SSH helper identity is incomplete",
+                )
+        elif operation == "version":
+            if not self._run("uname -srm"):
+                raise ExternalQualificationError(
+                    "qualification_ssh_version_failed",
+                    "SSH target version observation is empty",
+                )
+        elif operation == "create":
+            self._run(
+                f"mkdir -p -m 700 {workspace}; printf '%s' {self.state.workspace_id} > {workspace}/.openzyme-qualification-owner; chmod 600 {workspace}/.openzyme-qualification-owner; printf create > {workspace}/item"
+            )
+        elif operation == "read":
+            if self._run(f"cat {workspace}/item") != "create":
+                raise ExternalQualificationError(
+                    "qualification_ssh_read_mismatch",
+                    "SSH qualification read returned unexpected content",
+                )
+        elif operation == "update":
+            self._run(f"printf update > {workspace}/item")
+        elif operation == "delete":
+            self._run(f"rm -f {workspace}/item; test ! -e {workspace}/item")
+        elif operation == "exec":
+            if self._run("printf OPENZYME_SSH_OK") != "OPENZYME_SSH_OK":
+                raise ExternalQualificationError(
+                    "qualification_ssh_exec_mismatch",
+                    "SSH qualification exec returned unexpected output",
+                )
+        else:
+            raise ExternalQualificationError(
+                "qualification_ssh_operation_unsupported",
+                "SSH qualification operation is unsupported",
+            )
+
+    @staticmethod
+    def _observation(
+        request: ExternalQualificationProbeRequest,
+        *,
+        terminal: bool,
+        succeeded: bool,
+        effect_certainty: str,
+        error_code: str | None = None,
+    ) -> ExternalQualificationOperationObservation:
+        payload = {
+            "attempt_id": request.attempt_id,
+            "operation": request.operation,
+            "terminal": terminal,
+            "succeeded": succeeded,
+        }
+        return ExternalQualificationOperationObservation(
+            attempt_id=request.attempt_id,
+            request_digest=request.request_digest,
+            operation=request.operation,
+            effect_certainty=effect_certainty,
+            terminal=terminal,
+            succeeded=succeeded,
+            output_digest=canonical_sha256_digest(payload) if succeeded else None,
+            receipt_digest=canonical_sha256_digest({**payload, "target": "Diannan"}),
+            error_code=error_code,
+            external_effect_performed=True,
+            credential_material_accessed=True,
+            fallback_performed=False,
+        )
+
+
+@dataclass(slots=True)
 class SshQualificationProbeBridge:
     binding: ExternalQualificationBridgeBinding
     operation_port: SshQualificationOperationPort
@@ -229,11 +461,18 @@ class SshQualificationProbeBridge:
     ) -> ExternalQualificationProbeOutcome:
         return self._bridge.reconcile(request)
 
+    def restore_dispatched_attempt(
+        self, request: ExternalQualificationProbeRequest
+    ) -> None:
+        self._bridge.restore_dispatched_attempt(request)
+
 
 __all__ = [
     "SSH_QUALIFICATION_OPERATIONS",
     "OpenSshHpcQualificationIdentityObservationPort",
     "OpenSshQualificationCommandPort",
+    "OpenSshQualificationOperation",
+    "OpenSshQualificationState",
     "SshQualificationOperationPort",
     "SshQualificationProbeBridge",
     "SshHpcIdentityObservation",

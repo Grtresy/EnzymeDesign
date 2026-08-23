@@ -46,9 +46,15 @@ EXTERNAL_IDENTITY_PREPARATION_AUTHORIZATION_REVOCATION_SCHEMA = (
 EXTERNAL_IDENTITY_PREPARATION_RESULT_SCHEMA = "external_identity_preparation_result@1"
 EXTERNAL_QUALIFICATION_DRY_PLAN_SCHEMA = "external_qualification_dry_plan@1"
 EXTERNAL_QUALIFICATION_OCCURRENCE_AUTHORIZATION_SCHEMA = (
-    "external_qualification_occurrence_authorization@1"
+    "external_qualification_occurrence_authorization@2"
 )
-EXTERNAL_QUALIFICATION_SAFE_RECEIPT_SCHEMA = "external_qualification_safe_receipt@1"
+EXTERNAL_QUALIFICATION_AUTHORIZATION_REVOCATION_SCHEMA = (
+    "external_qualification_authorization_revocation@1"
+)
+EXTERNAL_QUALIFICATION_SAFE_RECEIPT_SCHEMA = "external_qualification_safe_receipt@2"
+EXTERNAL_SCIENTIFIC_QUALIFICATION_WORKLOAD_SCHEMA = (
+    "external_scientific_qualification_workload@1"
+)
 
 
 def _timestamp(value: str, *, field_name: str) -> datetime:
@@ -714,6 +720,153 @@ class ExternalScientificQualificationOperationPort(
     formal_compute_only: bool
 
 
+@dataclass(frozen=True, slots=True)
+class ExternalScientificQualificationInput:
+    path: str
+    content_digest: str
+    size_bytes: int
+
+    def __post_init__(self) -> None:
+        if (
+            not self.path
+            or self.path.startswith("/")
+            or ".." in self.path.split("/")
+            or self.path != self.path.strip()
+        ):
+            raise ValueError("scientific qualification input path must be root-relative")
+        require_digest(self.content_digest, field_name="content_digest")
+        if not isinstance(self.size_bytes, int) or not 0 <= self.size_bytes <= 10_485_760:
+            raise ValueError("scientific qualification input size is out of bounds")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "path": self.path,
+            "content_digest": self.content_digest,
+            "size_bytes": self.size_bytes,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalScientificQualificationWorkload:
+    workload_id: str
+    driver_component_id: str
+    operation: str
+    route_kind: str
+    argv: tuple[str, ...]
+    cwd: str
+    inputs: tuple[ExternalScientificQualificationInput, ...]
+    expected_output_paths: tuple[str, ...]
+    compiled_workload_digest: str
+    workload_digest: str = ""
+
+    SCHEMA_VERSION: ClassVar[str] = EXTERNAL_SCIENTIFIC_QUALIFICATION_WORKLOAD_SCHEMA
+
+    @classmethod
+    def create(cls, **values: Any) -> "ExternalScientificQualificationWorkload":
+        item = cls(**values, workload_digest="sha256:" + "0" * 64)
+        return replace(
+            item,
+            workload_digest=canonical_sha256_digest(item.identity_payload),
+        )
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "workload_id",
+            "driver_component_id",
+            "operation",
+            "route_kind",
+        ):
+            require_identifier(getattr(self, field_name), field_name=field_name)
+        if not self.argv or any(not value for value in self.argv):
+            raise ValueError("scientific qualification argv must be non-empty")
+        if self.cwd.startswith("/") or ".." in self.cwd.split("/"):
+            raise ValueError("scientific qualification cwd must be root-relative")
+        inputs = tuple(sorted(self.inputs, key=lambda item: item.path))
+        if len({item.path for item in inputs}) != len(inputs):
+            raise ValueError("scientific qualification input paths must be unique")
+        object.__setattr__(self, "inputs", inputs)
+        outputs = canonical_string_tuple(
+            self.expected_output_paths,
+            field_name="expected_output_paths",
+            allow_empty=False,
+        )
+        if any(path.startswith("/") or ".." in path.split("/") for path in outputs):
+            raise ValueError("scientific qualification outputs must be root-relative")
+        object.__setattr__(self, "expected_output_paths", outputs)
+        require_digest(
+            self.compiled_workload_digest,
+            field_name="compiled_workload_digest",
+        )
+        require_digest(self.workload_digest, field_name="workload_digest")
+        if self.workload_digest != "sha256:" + "0" * 64:
+            expected = canonical_sha256_digest(self.identity_payload)
+            if self.workload_digest != expected:
+                raise ExternalQualificationError(
+                    "qualification_scientific_workload_digest_mismatch",
+                    "scientific qualification workload digest does not match",
+                )
+
+    @property
+    def identity_payload(self) -> dict[str, object]:
+        return {
+            "schema_version": self.SCHEMA_VERSION,
+            "workload_id": self.workload_id,
+            "driver_component_id": self.driver_component_id,
+            "operation": self.operation,
+            "route_kind": self.route_kind,
+            "argv": list(self.argv),
+            "cwd": self.cwd,
+            "inputs": [item.to_dict() for item in self.inputs],
+            "expected_output_paths": list(self.expected_output_paths),
+            "compiled_workload_digest": self.compiled_workload_digest,
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        return {**self.identity_payload, "workload_digest": self.workload_digest}
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalScientificQualificationRouteOutcome:
+    workload_digest: str
+    terminal: bool
+    succeeded: bool
+    output_digest: str | None
+    receipt_digest: str | None
+    error_code: str | None
+    external_effect_performed: bool
+    credential_material_accessed: bool
+
+    def __post_init__(self) -> None:
+        require_digest(self.workload_digest, field_name="workload_digest")
+        for field_name in ("output_digest", "receipt_digest"):
+            value = getattr(self, field_name)
+            if value is not None:
+                require_digest(value, field_name=field_name)
+        if self.error_code is not None:
+            require_identifier(self.error_code, field_name="error_code")
+        if self.succeeded and (
+            not self.terminal
+            or self.output_digest is None
+            or self.receipt_digest is None
+            or self.error_code is not None
+        ):
+            raise ValueError("successful scientific route outcome requires terminal evidence")
+
+
+class ExternalScientificQualificationRoutePort(Protocol):
+    route_kind: str
+
+    def dispatch(
+        self,
+        workload: ExternalScientificQualificationWorkload,
+    ) -> ExternalScientificQualificationRouteOutcome: ...
+
+    def reconcile(
+        self,
+        workload: ExternalScientificQualificationWorkload,
+    ) -> ExternalScientificQualificationRouteOutcome: ...
+
+
 @dataclass(slots=True)
 class BoundExternalQualificationOperationBridge:
     binding: ExternalQualificationBridgeBinding
@@ -759,6 +912,19 @@ class BoundExternalQualificationOperationBridge:
                 "owner qualification reconcile requires the same prior attempt",
             )
         return self._convert(request, self.operation_port.reconcile(request))
+
+    def restore_dispatched_attempt(
+        self,
+        request: ExternalQualificationProbeRequest,
+    ) -> None:
+        """Restore one persisted in-doubt attempt without dispatching it again."""
+        verify_external_qualification_probe_request_binding(self.binding, request)
+        if request.attempt_id in self._dispatched_attempts:
+            return
+        restore = getattr(self.operation_port, "restore_dispatched_attempt", None)
+        if restore is not None:
+            restore(request)
+        self._dispatched_attempts.add(request.attempt_id)
 
     @staticmethod
     def _convert(
@@ -1909,8 +2075,7 @@ class ExternalQualificationOccurrenceAuthorization:
     dry_plan_digest: str
     batch_id: str
     operator_id: str
-    valid_from: str
-    valid_until: str
+    authorized_at: str
     authorization_digest: str = ""
 
     SCHEMA_VERSION: ClassVar[str] = (
@@ -1929,10 +2094,7 @@ class ExternalQualificationOccurrenceAuthorization:
         require_identifier(self.batch_id, field_name="batch_id")
         require_identifier(self.operator_id, field_name="operator_id")
         require_digest(self.dry_plan_digest, field_name="dry_plan_digest")
-        start = _timestamp(self.valid_from, field_name="valid_from")
-        end = _timestamp(self.valid_until, field_name="valid_until")
-        if end <= start:
-            raise ValueError("authorization validity must be positive")
+        _timestamp(self.authorized_at, field_name="authorized_at")
         require_digest(self.authorization_digest, field_name="authorization_digest")
         if self.authorization_digest != "sha256:" + "0" * 64:
             expected = canonical_sha256_digest(self.identity_payload)
@@ -1950,8 +2112,8 @@ class ExternalQualificationOccurrenceAuthorization:
             "dry_plan_digest": self.dry_plan_digest,
             "batch_id": self.batch_id,
             "operator_id": self.operator_id,
-            "valid_from": self.valid_from,
-            "valid_until": self.valid_until,
+            "authority_mode": "durable_one_shot",
+            "authorized_at": self.authorized_at,
         }
 
     def to_dict(self) -> dict[str, object]:
@@ -1960,12 +2122,135 @@ class ExternalQualificationOccurrenceAuthorization:
             "authorization_digest": self.authorization_digest,
         }
 
+    @classmethod
+    def from_dict(
+        cls, payload: Mapping[str, object]
+    ) -> "ExternalQualificationOccurrenceAuthorization":
+        allowed = {
+            "schema_version",
+            "authorization_id",
+            "dry_plan_digest",
+            "batch_id",
+            "operator_id",
+            "authority_mode",
+            "authorized_at",
+            "authorization_digest",
+        }
+        if (
+            set(payload) != allowed
+            or payload.get("schema_version") != cls.SCHEMA_VERSION
+            or payload.get("authority_mode") != "durable_one_shot"
+        ):
+            raise ValueError("qualification authorization payload is unsupported")
+
+        def required_string(field_name: str) -> str:
+            value = payload.get(field_name)
+            if not isinstance(value, str):
+                raise ValueError(f"{field_name} must be a string")
+            return value
+
+        return cls(
+            authorization_id=required_string("authorization_id"),
+            dry_plan_digest=required_string("dry_plan_digest"),
+            batch_id=required_string("batch_id"),
+            operator_id=required_string("operator_id"),
+            authorized_at=required_string("authorized_at"),
+            authorization_digest=required_string("authorization_digest"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalQualificationAuthorizationRevocation:
+    revocation_id: str
+    authorization_digest: str
+    operator_id: str
+    revoked_at: str
+    reason_code: str
+    revocation_digest: str = ""
+
+    SCHEMA_VERSION: ClassVar[str] = (
+        EXTERNAL_QUALIFICATION_AUTHORIZATION_REVOCATION_SCHEMA
+    )
+
+    @classmethod
+    def create(cls, **values: Any) -> "ExternalQualificationAuthorizationRevocation":
+        item = cls(**values, revocation_digest="sha256:" + "0" * 64)
+        return replace(
+            item,
+            revocation_digest=canonical_sha256_digest(item.identity_payload),
+        )
+
+    def __post_init__(self) -> None:
+        require_identifier(self.revocation_id, field_name="revocation_id")
+        require_identifier(self.operator_id, field_name="operator_id")
+        require_identifier(self.reason_code, field_name="reason_code")
+        require_digest(self.authorization_digest, field_name="authorization_digest")
+        _timestamp(self.revoked_at, field_name="revoked_at")
+        require_digest(self.revocation_digest, field_name="revocation_digest")
+        if self.revocation_digest != "sha256:" + "0" * 64:
+            expected = canonical_sha256_digest(self.identity_payload)
+            if self.revocation_digest != expected:
+                raise ExternalQualificationError(
+                    "qualification_revocation_digest_mismatch",
+                    "qualification authorization revocation digest does not match",
+                )
+
+    @property
+    def identity_payload(self) -> dict[str, object]:
+        return {
+            "schema_version": self.SCHEMA_VERSION,
+            "revocation_id": self.revocation_id,
+            "authorization_digest": self.authorization_digest,
+            "operator_id": self.operator_id,
+            "revoked_at": self.revoked_at,
+            "reason_code": self.reason_code,
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        return {**self.identity_payload, "revocation_digest": self.revocation_digest}
+
+    @classmethod
+    def from_dict(
+        cls, payload: Mapping[str, object]
+    ) -> "ExternalQualificationAuthorizationRevocation":
+        allowed = {
+            "schema_version",
+            "revocation_id",
+            "authorization_digest",
+            "operator_id",
+            "revoked_at",
+            "reason_code",
+            "revocation_digest",
+        }
+        if (
+            set(payload) != allowed
+            or payload.get("schema_version") != cls.SCHEMA_VERSION
+        ):
+            raise ValueError("qualification authorization revocation is unsupported")
+
+        def required_string(field_name: str) -> str:
+            value = payload.get(field_name)
+            if not isinstance(value, str):
+                raise ValueError(f"{field_name} must be a string")
+            return value
+
+        return cls(
+            revocation_id=required_string("revocation_id"),
+            authorization_digest=required_string("authorization_digest"),
+            operator_id=required_string("operator_id"),
+            revoked_at=required_string("revoked_at"),
+            reason_code=required_string("reason_code"),
+            revocation_digest=required_string("revocation_digest"),
+        )
+
 
 def verify_external_qualification_occurrence_authorization(
     plan: ExternalQualificationDryPlan,
     authorization: ExternalQualificationOccurrenceAuthorization | None,
     *,
     observed_at: str,
+    expected_operator_id: str,
+    revocation: ExternalQualificationAuthorizationRevocation | None = None,
 ) -> None:
     if authorization is None:
         raise ExternalQualificationError(
@@ -1977,24 +2262,31 @@ def verify_external_qualification_occurrence_authorization(
             "blocked_identity",
             "dry plan has unresolved identity gaps and cannot be authorized",
         )
+    require_identifier(expected_operator_id, field_name="expected_operator_id")
     if (
         authorization.dry_plan_digest != plan.dry_plan_digest
         or authorization.batch_id != plan.batch_id
+        or authorization.operator_id != expected_operator_id
     ):
         raise ExternalQualificationError(
             "qualification_occurrence_authorization_mismatch",
             "occurrence authorization does not bind the exact dry plan and batch",
         )
-    observed = _timestamp(observed_at, field_name="observed_at")
-    if not (
-        _timestamp(authorization.valid_from, field_name="valid_from")
-        <= observed
-        < _timestamp(authorization.valid_until, field_name="valid_until")
+    _timestamp(observed_at, field_name="observed_at")
+    if revocation is None:
+        return
+    if (
+        revocation.authorization_digest != authorization.authorization_digest
+        or revocation.operator_id != authorization.operator_id
     ):
         raise ExternalQualificationError(
-            "qualification_occurrence_authorization_expired",
-            "occurrence authorization is outside its validity window",
+            "qualification_revocation_mismatch",
+            "qualification authorization revocation does not bind the exact authority",
         )
+    raise ExternalQualificationError(
+        "qualification_occurrence_authorization_revoked",
+        "qualification occurrence authorization was explicitly revoked",
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2004,6 +2296,19 @@ class ExternalQualificationSafeReceipt:
     unit_digest: str
     subject_digest: str
     authorization_digest: str
+    attempt_id: str
+    component_id: str
+    route_id: str
+    operation: str
+    backend_receipt_digest: str
+    output_digest: str
+    expected_result_schema_digest: str
+    observed_result_schema_digest: str
+    negative_test_receipt_digest: str
+    budget_settlement_digest: str
+    cleanup_receipt_digest: str
+    effect_certainty: str
+    fallback_performed: bool
     diagnostic_id: str
     observed_at: str
     valid_until: str
@@ -2019,16 +2324,34 @@ class ExternalQualificationSafeReceipt:
         )
 
     def __post_init__(self) -> None:
-        require_identifier(self.receipt_id, field_name="receipt_id")
-        require_identifier(self.diagnostic_id, field_name="diagnostic_id")
+        for field_name in (
+            "receipt_id",
+            "attempt_id",
+            "component_id",
+            "route_id",
+            "operation",
+            "diagnostic_id",
+        ):
+            require_identifier(getattr(self, field_name), field_name=field_name)
         for field_name in (
             "dry_plan_digest",
             "unit_digest",
             "subject_digest",
             "authorization_digest",
+            "backend_receipt_digest",
+            "output_digest",
+            "expected_result_schema_digest",
+            "observed_result_schema_digest",
+            "negative_test_receipt_digest",
+            "budget_settlement_digest",
+            "cleanup_receipt_digest",
             "receipt_digest",
         ):
             require_digest(getattr(self, field_name), field_name=field_name)
+        if self.effect_certainty != "terminal_known":
+            raise ValueError("qualified safe receipt requires terminal-known effect")
+        if self.fallback_performed:
+            raise ValueError("qualified safe receipt cannot report fallback")
         if _timestamp(self.valid_until, field_name="valid_until") <= _timestamp(
             self.observed_at, field_name="observed_at"
         ):
@@ -2050,6 +2373,19 @@ class ExternalQualificationSafeReceipt:
             "unit_digest": self.unit_digest,
             "subject_digest": self.subject_digest,
             "authorization_digest": self.authorization_digest,
+            "attempt_id": self.attempt_id,
+            "component_id": self.component_id,
+            "route_id": self.route_id,
+            "operation": self.operation,
+            "backend_receipt_digest": self.backend_receipt_digest,
+            "output_digest": self.output_digest,
+            "expected_result_schema_digest": self.expected_result_schema_digest,
+            "observed_result_schema_digest": self.observed_result_schema_digest,
+            "negative_test_receipt_digest": self.negative_test_receipt_digest,
+            "budget_settlement_digest": self.budget_settlement_digest,
+            "cleanup_receipt_digest": self.cleanup_receipt_digest,
+            "effect_certainty": self.effect_certainty,
+            "fallback_performed": self.fallback_performed,
             "diagnostic_id": self.diagnostic_id,
             "observed_at": self.observed_at,
             "valid_until": self.valid_until,
@@ -2057,6 +2393,76 @@ class ExternalQualificationSafeReceipt:
 
     def to_dict(self) -> dict[str, object]:
         return {**self.identity_payload, "receipt_digest": self.receipt_digest}
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> "ExternalQualificationSafeReceipt":
+        expected = {
+            "schema_version",
+            "receipt_id",
+            "dry_plan_digest",
+            "unit_digest",
+            "subject_digest",
+            "authorization_digest",
+            "attempt_id",
+            "component_id",
+            "route_id",
+            "operation",
+            "backend_receipt_digest",
+            "output_digest",
+            "expected_result_schema_digest",
+            "observed_result_schema_digest",
+            "negative_test_receipt_digest",
+            "budget_settlement_digest",
+            "cleanup_receipt_digest",
+            "effect_certainty",
+            "fallback_performed",
+            "diagnostic_id",
+            "observed_at",
+            "valid_until",
+            "receipt_digest",
+        }
+        if set(payload) != expected or payload.get("schema_version") != cls.SCHEMA_VERSION:
+            raise ValueError("qualification safe receipt payload is unsupported")
+
+        def required_string(field_name: str) -> str:
+            value = payload.get(field_name)
+            if not isinstance(value, str):
+                raise ValueError(f"{field_name} must be a string")
+            return value
+
+        fallback_performed = payload.get("fallback_performed")
+        if not isinstance(fallback_performed, bool):
+            raise ValueError("fallback_performed must be a bool")
+        return cls(
+            receipt_id=required_string("receipt_id"),
+            dry_plan_digest=required_string("dry_plan_digest"),
+            unit_digest=required_string("unit_digest"),
+            subject_digest=required_string("subject_digest"),
+            authorization_digest=required_string("authorization_digest"),
+            attempt_id=required_string("attempt_id"),
+            component_id=required_string("component_id"),
+            route_id=required_string("route_id"),
+            operation=required_string("operation"),
+            backend_receipt_digest=required_string("backend_receipt_digest"),
+            output_digest=required_string("output_digest"),
+            expected_result_schema_digest=required_string(
+                "expected_result_schema_digest"
+            ),
+            observed_result_schema_digest=required_string(
+                "observed_result_schema_digest"
+            ),
+            negative_test_receipt_digest=required_string(
+                "negative_test_receipt_digest"
+            ),
+            budget_settlement_digest=required_string("budget_settlement_digest"),
+            cleanup_receipt_digest=required_string("cleanup_receipt_digest"),
+            effect_certainty=required_string("effect_certainty"),
+            fallback_performed=fallback_performed,
+            diagnostic_id=required_string("diagnostic_id"),
+            observed_at=required_string("observed_at"),
+            valid_until=required_string("valid_until"),
+            receipt_digest=required_string("receipt_digest"),
+        )
 
 
 __all__ = [

@@ -49,6 +49,17 @@ from .qualification_admission import EnzymeDesignExternalQualificationAdmission
 from .qualification_bridges import QualificationProbeBridgeBuilder
 from .qualification_bridges import SelectedQualificationProbeBridge
 from .qualification_bridges import SelectedQualificationProbeRouter
+from .qualification_compute import FormalComputeScientificQualificationOperation
+from .qualification_compute import ScientificQualificationWorkloadCompiler
+from .qualification_scientific_workloads import FixedScientificQualificationInputRegistry
+from .qualification_scientific_workloads import PreprocessScientificQualificationCompiler
+from .qualification_scientific_workloads import SCIENTIFIC_QUALIFICATION_INPUTS
+from .qualification_scientific_workloads import SelectedDriverScientificQualificationCompiler
+from .qualification_scientific_workloads import build_selected_driver_scientific_compiler
+from .qualification_live_bridges import SelectedLiveQualificationBridgeFactory
+from .qualification_live_runtime import ExternalLiveQualificationCoordinator
+from .qualification_live_runtime import LiveQualificationExecutionReport
+from .qualification_live_runtime import exercise_live_qualification_negative_gate
 from .qualification_bridges import build_external_qualification_probe_request
 from .qualification_bridges import external_qualification_live_input_digest
 from .qualification_planning import BATCH_1_PROFILES
@@ -156,6 +167,17 @@ __all__ = [
     "SafeSubjectProjection",
     "SelectedQualificationProbeBridge",
     "SelectedQualificationProbeRouter",
+    "FormalComputeScientificQualificationOperation",
+    "ScientificQualificationWorkloadCompiler",
+    "FixedScientificQualificationInputRegistry",
+    "PreprocessScientificQualificationCompiler",
+    "SCIENTIFIC_QUALIFICATION_INPUTS",
+    "SelectedDriverScientificQualificationCompiler",
+    "build_selected_driver_scientific_compiler",
+    "SelectedLiveQualificationBridgeFactory",
+    "ExternalLiveQualificationCoordinator",
+    "LiveQualificationExecutionReport",
+    "exercise_live_qualification_negative_gate",
     "EnzymeDesignDeploymentStartup",
     "EnzymeDesignTargetInventoryQueryPort",
     "activate_enzymedesign_composition",

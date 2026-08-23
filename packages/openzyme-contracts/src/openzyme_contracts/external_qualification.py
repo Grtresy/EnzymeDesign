@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import replace
 from datetime import datetime
@@ -437,6 +438,52 @@ class ExternalQualificationProbeOutcome:
             "credential_material_accessed": self.credential_material_accessed,
             "fallback_performed": self.fallback_performed,
         }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> "ExternalQualificationProbeOutcome":
+        if payload.get("schema_version") != EXTERNAL_QUALIFICATION_PROBE_OUTCOME_SCHEMA:
+            raise ValueError("qualification probe outcome schema is unsupported")
+
+        def required_string(field_name: str) -> str:
+            value = payload.get(field_name)
+            if not isinstance(value, str):
+                raise ValueError(f"{field_name} must be a string")
+            return value
+
+        def optional_string(field_name: str) -> str | None:
+            value = payload.get(field_name)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"{field_name} must be a string or null")
+            return value
+
+        def required_bool(field_name: str) -> bool:
+            value = payload.get(field_name)
+            if not isinstance(value, bool):
+                raise ValueError(f"{field_name} must be a boolean")
+            return value
+
+        return cls(
+            attempt_id=required_string("attempt_id"),
+            request_digest=required_string("request_digest"),
+            disposition=ExternalQualificationProbeDisposition(
+                required_string("disposition")
+            ),
+            effect_certainty=ExternalEffectCertainty(
+                required_string("effect_certainty")
+            ),
+            observed_operation=optional_string("observed_operation"),
+            output_digest=optional_string("output_digest"),
+            observed_result_schema_digest=optional_string(
+                "observed_result_schema_digest"
+            ),
+            backend_receipt_digest=optional_string("backend_receipt_digest"),
+            error_code=optional_string("error_code"),
+            external_effect_performed=required_bool("external_effect_performed"),
+            credential_material_accessed=required_bool(
+                "credential_material_accessed"
+            ),
+            fallback_performed=required_bool("fallback_performed"),
+        )
 
 
 @dataclass(frozen=True, slots=True)
