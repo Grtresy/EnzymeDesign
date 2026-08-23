@@ -7,12 +7,11 @@ ARG FPOCKET_COMMIT
 RUN printf 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/%s bookworm main\n' "${DEBIAN_SNAPSHOT}" > /etc/apt/sources.list \
     && rm -f /etc/apt/sources.list.d/debian.sources \
     && apt-get -o Acquire::Check-Valid-Until=false update \
-    && apt-get install -y --no-install-recommends build-essential cmake git libboost-all-dev \
+    && apt-get install -y --no-install-recommends build-essential git libboost-all-dev libnetcdf-dev \
     && git clone --filter=blob:none https://github.com/ccsb-scripps/AutoDock-Vina.git /src/vina \
     && git -C /src/vina checkout --detach "${VINA_COMMIT}" \
     && test "$(git -C /src/vina rev-parse HEAD)" = "${VINA_COMMIT}" \
-    && cmake -S /src/vina/build/linux/release -B /build/vina \
-    && cmake --build /build/vina -j2 \
+    && make -C /src/vina/build/linux/release -j2 \
     && git clone --filter=blob:none https://github.com/Discngine/fpocket.git /src/fpocket \
     && git -C /src/fpocket checkout --detach "${FPOCKET_COMMIT}" \
     && test "$(git -C /src/fpocket rev-parse HEAD)" = "${FPOCKET_COMMIT}" \
@@ -23,10 +22,10 @@ ARG DEBIAN_SNAPSHOT=20260820T000000Z
 RUN printf 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/%s bookworm main\n' "${DEBIAN_SNAPSHOT}" > /etc/apt/sources.list \
     && rm -f /etc/apt/sources.list.d/debian.sources \
     && apt-get -o Acquire::Check-Valid-Until=false update \
-    && apt-get install -y --no-install-recommends libboost-filesystem1.74.0 libboost-program-options1.74.0 \
+    && apt-get install -y --no-install-recommends libboost-filesystem1.74.0 libboost-program-options1.74.0 libnetcdf19 \
     && rm -rf /var/lib/apt/lists/* \
     && python -m pip install --no-cache-dir meeko==0.7.1 openbabel-wheel==3.1.1.23 rdkit==2026.3.1
-COPY --from=native-builder /build/vina/vina /usr/local/bin/vina
+COPY --from=native-builder /src/vina/build/linux/release/vina /usr/local/bin/vina
 COPY --from=native-builder /src/fpocket/bin/fpocket /usr/local/bin/fpocket
 LABEL org.openzyme.qualification.image-group="docking" \
       org.openzyme.qualification.vina-version="1.2.7" \

@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
+from importlib.resources import files
 
 import pytest
 
@@ -37,6 +38,25 @@ def test_repository_owned_qualification_images_bind_exact_sources_and_lock() -> 
             "sha256:08ea390c480ef23d2f79282042849a989577ee7ff5de9f996a5ff76b60ae1c45"
         )
         assert recipe.recipe_digest.startswith("sha256:")
+
+
+def test_docking_recipe_matches_pinned_legacy_build_system_and_fpocket_runtime() -> (
+    None
+):
+    containerfile = (
+        files("openzyme_process_podman.qualification_image_assets")
+        .joinpath("Containerfile.docking")
+        .read_text(encoding="utf-8")
+    )
+
+    assert "make -C /src/vina/build/linux/release -j2" in containerfile
+    assert "cmake -S /src/vina/build/linux/release" not in containerfile
+    assert "libnetcdf-dev" in containerfile
+    assert "libnetcdf19" in containerfile
+    assert (
+        "COPY --from=native-builder /src/vina/build/linux/release/vina "
+        "/usr/local/bin/vina"
+    ) in containerfile
 
 
 def test_build_commands_are_exact_and_do_not_pull_mutable_base() -> None:
