@@ -24,6 +24,29 @@ from openzyme_contracts import require_identifier
 
 QUALIFICATION_IMAGE_MANIFEST_SCHEMA = "openzyme_qualification_image_manifest@1"
 QUALIFICATION_IMAGE_GROUPS = ("base", "docking", "hmmer")
+_QUALIFICATION_IMAGE_IDENTITY_FIELDS = {
+    "base": (
+        "approved_qualification_image_digest",
+        "base_image_recipe_digest",
+        "container_policy_digest",
+    ),
+    "docking": (
+        "docking_image_recipe_digest",
+        "fpocket_image_digest",
+        "fpocket_version",
+        "meeko_version",
+        "openbabel_version",
+        "preprocess_image_digest",
+        "rdkit_version",
+        "vina_image_digest",
+        "vina_version",
+    ),
+    "hmmer": (
+        "hmmer_image_digest",
+        "hmmer_image_recipe_digest",
+        "hmmer_version",
+    ),
+}
 _IMAGE_DIGEST_REF = re.compile(r"[^\s]+@sha256:[0-9a-f]{64}")
 _IMAGE_ID = re.compile(r"(?:sha256:)?([0-9a-f]{64})")
 _COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -41,6 +64,16 @@ def _bounded_private_output(value: str) -> tuple[str, bool]:
 def _normalized_image_digest(value: str) -> str | None:
     matched = _IMAGE_ID.fullmatch(value.strip())
     return None if matched is None else f"sha256:{matched.group(1)}"
+
+
+def qualification_image_identity_field_ids(image_group: str) -> tuple[str, ...]:
+    try:
+        return _QUALIFICATION_IMAGE_IDENTITY_FIELDS[image_group]
+    except KeyError as exc:
+        raise ExternalQualificationError(
+            "qualification_image_group_unknown",
+            "image group is outside the exact qualification identity contract",
+        ) from exc
 
 
 class QualificationImageCommandFailure(ExternalQualificationError):
@@ -394,9 +427,16 @@ class PodmanQualificationImagePreparationExecutor:
                 ("vina_image_digest", image_digest),
                 ("vina_version", versions["vina"]),
             )
+        field_values = dict(field_pairs)
+        field_ids = qualification_image_identity_field_ids(image_group)
+        if tuple(sorted(field_values)) != field_ids:
+            raise ExternalQualificationError(
+                "qualification_image_identity_contract_mismatch",
+                "qualification image result differs from its declared identity fields",
+            )
         fields = tuple(
-            SafeIdentityField(field_id, value)
-            for field_id, value in sorted(field_pairs)
+            SafeIdentityField(field_id, field_values[field_id])
+            for field_id in field_ids
         )
         return create_external_identity_preparation_success(
             occurrence_id=occurrence_id,
@@ -578,5 +618,6 @@ __all__ = [
     "QualificationImageRecipe",
     "QualificationImageSource",
     "SubprocessQualificationImageCommandPort",
+    "qualification_image_identity_field_ids",
     "load_qualification_image_manifest",
 ]

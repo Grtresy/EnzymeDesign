@@ -19,6 +19,7 @@ from openzyme_contracts import ExternalIdentityPreparationResult
 from openzyme_contracts import SafeIdentityField
 from openzyme_contracts import canonical_sha256_digest
 from openzyme_process_podman import load_qualification_image_manifest
+from openzyme_process_podman import qualification_image_identity_field_ids
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -142,6 +143,15 @@ def test_batch_1_preparation_has_one_hpc_effect_and_unique_image_effects() -> No
         for item in image_actions
     }
     assert image_groups == {"base", "hmmer", "docking"}
+    for action in image_actions:
+        image_group = next(
+            field["value"]
+            for field in action["safe_input_fields"]
+            if field["field_id"] == "image_group"
+        )
+        assert tuple(action["expected_identity_fields"]) == (
+            qualification_image_identity_field_ids(image_group)
+        )
 
 
 def test_llm_and_tavily_budgets_are_generous_circuit_breakers() -> None:
@@ -632,9 +642,48 @@ def test_safe_preparation_without_target_versions_keeps_batch_1_blocked() -> Non
     from enzymedesign_distribution import build_external_identity_resolution_decisions
     from enzymedesign_distribution import build_external_qualification_dry_plan
     from enzymedesign_distribution import discover_external_subject_identities
+    from enzymedesign_distribution import project_external_identity_discovery_snapshot
     from openzyme_contracts import create_external_identity_preparation_success
 
     snapshot = load_safe_identity_snapshot(SNAPSHOT)
+    generic_fields = next(
+        projection.safe_fields
+        for projection in snapshot.projections
+        if projection.projection_id == "bio-uniprot-public"
+    )
+    existing_docking_fields = {
+        "vina-local": (
+            SafeIdentityField("vina_image_digest", "sha256:" + "1" * 64),
+            SafeIdentityField("vina_version", "1.2.7"),
+        ),
+        "fpocket-local": (
+            SafeIdentityField("fpocket_image_digest", "sha256:" + "1" * 64),
+            SafeIdentityField("fpocket_version", "4.2.3"),
+        ),
+        "preprocess-podman": (
+            SafeIdentityField("meeko_version", "0.7.1"),
+            SafeIdentityField("openbabel_version", "3.1.1.23"),
+            SafeIdentityField("preprocess_image_digest", "sha256:" + "1" * 64),
+            SafeIdentityField("rdkit_version", "2026.3.1"),
+        ),
+    }
+    snapshot = replace(
+        snapshot,
+        projections=tuple(
+            replace(
+                projection,
+                status=ExternalSubjectIdentityStatus.RESOLVED,
+                safe_fields=(
+                    *generic_fields,
+                    *existing_docking_fields[projection.projection_id],
+                ),
+                missing_fields=(),
+            )
+            if projection.projection_id in existing_docking_fields
+            else projection
+            for projection in snapshot.projections
+        ),
+    )
     selection_set = load_operator_identity_resolution_selections(SELECTIONS)
     readiness = build_enzymedesign_external_qualification_plan(
         plan_id="qualification.readiness.current",
@@ -644,6 +693,10 @@ def test_safe_preparation_without_target_versions_keeps_batch_1_blocked() -> Non
     discovery = discover_external_subject_identities(
         readiness_plan=readiness,
         snapshot=snapshot,
+    )
+    execution_snapshot = project_external_identity_discovery_snapshot(
+        snapshot=snapshot,
+        discovery=discovery,
     )
     gaps = build_external_identity_gaps(discovery)
     plan = build_external_identity_preparation_plan(
@@ -692,11 +745,53 @@ def test_safe_preparation_without_target_versions_keeps_batch_1_blocked() -> Non
             )
         )
     prepared_snapshot = apply_external_identity_preparation_results(
-        snapshot=snapshot,
+        snapshot=execution_snapshot,
         preparation_plan=plan,
         results=tuple(results),
         observed_at="2026-08-23T01:00:00+00:00",
     )
+    docking_action = next(
+        action
+        for action in plan.actions
+        if action.action_id == "prepare.batch-1.image-docking"
+    )
+    docking_result = next(
+        result for result in results if result.action_id == docking_action.action_id
+    )
+    prepared_by_projection = {
+        projection.projection_id: {
+            field.field_id: field.value for field in projection.safe_fields
+        }
+        for projection in prepared_snapshot.projections
+    }
+    docking_result_fields = {
+        field.field_id: field.value for field in docking_result.safe_identity_fields
+    }
+    for projection_id, field_ids in {
+        "vina-local": (
+            "docking_image_recipe_digest",
+            "vina_image_digest",
+            "vina_version",
+        ),
+        "fpocket-local": (
+            "docking_image_recipe_digest",
+            "fpocket_image_digest",
+            "fpocket_version",
+        ),
+        "preprocess-podman": (
+            "docking_image_recipe_digest",
+            "meeko_version",
+            "openbabel_version",
+            "preprocess_image_digest",
+            "rdkit_version",
+        ),
+    }.items():
+        assert {
+            field_id: prepared_by_projection[projection_id][field_id]
+            for field_id in field_ids
+        } == {
+            field_id: docking_result_fields[field_id] for field_id in field_ids
+        }
     exact_readiness = build_enzymedesign_external_qualification_plan(
         plan_id="qualification.batch-1.exact-readiness",
         created_at=prepared_snapshot.observed_at,

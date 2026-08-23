@@ -84,6 +84,7 @@ from .qualification_planning import build_plan_only_probe_bridge_metadata
 from .qualification_planning import discover_external_subject_identities
 from .qualification_planning import load_safe_identity_snapshot
 from .qualification_planning import load_operator_identity_resolution_selections
+from .qualification_planning import project_external_identity_discovery_snapshot
 from .qualification_planning import qualification_plan_bundle
 from .qualification_operator_state import (
     ProtectedQualificationCredentialBundleResolver,
@@ -213,6 +214,7 @@ __all__ = [
     "external_qualification_live_input_digest",
     "execute_enzymedesign_identity_preparation_batch",
     "discover_external_subject_identities",
+    "project_external_identity_discovery_snapshot",
     "load_safe_identity_snapshot",
     "load_operator_identity_resolution_selections",
     "qualification_plan_bundle",

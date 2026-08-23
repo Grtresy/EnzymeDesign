@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from collections.abc import Mapping
 from dataclasses import dataclass
+from dataclasses import replace
 from enum import StrEnum
 import json
 import math
@@ -47,6 +48,7 @@ from openzyme_contracts import (
     verify_external_identity_preparation_occurrence_authorization,
 )
 from openzyme_contracts import verify_external_identity_preparation_plan
+from openzyme_process_podman import qualification_image_identity_field_ids
 from openzyme_process_podman import load_qualification_image_manifest
 
 
@@ -344,6 +346,59 @@ def load_operator_identity_resolution_selections(
     return OperatorIdentityResolutionSelectionSet.from_dict(payload)
 
 
+def project_external_identity_discovery_snapshot(
+    *,
+    snapshot: SafeIdentitySnapshot,
+    discovery: ExternalSubjectIdentityDiscoveryReport,
+) -> SafeIdentitySnapshot:
+    """Align the effect-free execution snapshot with source-bound discovery."""
+
+    expected_source_id = f"snapshot.{snapshot.snapshot_id}"
+    observations: dict[str, ExternalSubjectIdentityObservation] = {}
+    for observation in discovery.observations:
+        if (
+            not observation.observation_id.startswith("observation.")
+            or observation.source_id != expected_source_id
+        ):
+            raise ExternalQualificationError(
+                "qualification_preparation_discovery_snapshot_mismatch",
+                "identity discovery does not bind the exact preparation snapshot",
+            )
+        projection_id = observation.observation_id.removeprefix("observation.")
+        if projection_id in observations:
+            raise ExternalQualificationError(
+                "qualification_preparation_discovery_snapshot_mismatch",
+                "identity discovery contains duplicate snapshot projections",
+            )
+        observations[projection_id] = observation
+    projection_ids = {item.projection_id for item in snapshot.projections}
+    if set(observations) != projection_ids:
+        raise ExternalQualificationError(
+            "qualification_preparation_discovery_snapshot_mismatch",
+            "identity discovery does not cover the exact preparation snapshot",
+        )
+    projections = []
+    for projection in snapshot.projections:
+        observation = observations[projection.projection_id]
+        if (
+            observation.logical_subject_id != projection.logical_subject_id
+            or observation.subject_kind is not projection.subject_kind
+        ):
+            raise ExternalQualificationError(
+                "qualification_preparation_discovery_snapshot_mismatch",
+                "identity discovery projection binding differs from the snapshot",
+            )
+        projections.append(
+            replace(
+                projection,
+                status=observation.status,
+                safe_fields=observation.safe_fields,
+                missing_fields=observation.missing_fields,
+            )
+        )
+    return replace(snapshot, projections=tuple(projections))
+
+
 def apply_external_identity_preparation_results(
     *,
     snapshot: SafeIdentitySnapshot,
@@ -416,10 +471,15 @@ def apply_external_identity_preparation_results(
         domain_fields = {
             item.field_id: item.value for item in projection.safe_fields
         }
+        projection_identity_fields = {
+            item.field_id for item in projection.safe_fields
+        }.union(projection.missing_fields)
         domain_fields.update(
             {
                 field_id: prepared_fields[field_id]
-                for field_id in projection.missing_fields
+                for field_id in sorted(
+                    projection_identity_fields.intersection(prepared_fields)
+                )
             }
         )
         if "credential_locator_id" in prepared_fields:
@@ -1101,6 +1161,9 @@ def build_external_identity_preparation_plan(
                 ("platform", "linux-amd64"),
                 ("image_group", image_group),
             )
+            expected_identity_fields.update(
+                qualification_image_identity_field_ids(image_group)
+            )
         group = action_groups.get(group_id)
         safe_input_fields = tuple(
             SafeIdentityField(field_id, value)
@@ -1761,5 +1824,6 @@ __all__ = [
     "discover_external_subject_identities",
     "load_safe_identity_snapshot",
     "load_operator_identity_resolution_selections",
+    "project_external_identity_discovery_snapshot",
     "qualification_plan_bundle",
 ]

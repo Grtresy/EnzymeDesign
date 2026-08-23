@@ -12,6 +12,9 @@ from openzyme_process_podman.qualification_images import (
 from openzyme_process_podman.qualification_images import (
     load_qualification_image_manifest,
 )
+from openzyme_process_podman.qualification_images import (
+    qualification_image_identity_field_ids,
+)
 
 
 def test_repository_owned_qualification_images_bind_exact_sources_and_lock() -> None:
@@ -173,6 +176,9 @@ def test_docking_preparation_builds_once_and_projects_all_image_facts() -> None:
         "vina_image_digest",
         "vina_version",
     }
+    assert tuple(item.field_id for item in result.safe_identity_fields) == (
+        qualification_image_identity_field_ids("docking")
+    )
     assert result.observation.external_effect_performed is True
 
 

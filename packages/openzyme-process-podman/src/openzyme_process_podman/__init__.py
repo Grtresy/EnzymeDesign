@@ -73,6 +73,7 @@ _EXPORT_MODULES = {
     "QualificationImageRecipe": "qualification_images",
     "QualificationImageSource": "qualification_images",
     "SubprocessQualificationImageCommandPort": "qualification_images",
+    "qualification_image_identity_field_ids": "qualification_images",
     "load_qualification_image_manifest": "qualification_images",
     "SandboxImageCompatibility": "state",
     "SandboxImageRecord": "state",

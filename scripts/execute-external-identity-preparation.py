@@ -34,6 +34,7 @@ from enzymedesign_distribution import load_safe_identity_snapshot
 from enzymedesign_distribution import (
     preflight_enzymedesign_identity_preparation_credentials,
 )
+from enzymedesign_distribution import project_external_identity_discovery_snapshot
 from enzymedesign_distribution import qualification_plan_bundle
 from openzyme_contracts import ExternalIdentityPreparationOccurrenceAuthorization
 from openzyme_contracts import ExternalIdentityPreparationAuthorizationRevocation
@@ -318,7 +319,13 @@ def _batch_1_plan(
         selection_set=selection_set,
         batch=ExternalQualificationBatch.BATCH_1,
     )
-    return rebound_snapshot, plan
+    return (
+        project_external_identity_discovery_snapshot(
+            snapshot=rebound_snapshot,
+            discovery=discovery,
+        ),
+        plan,
+    )
 
 
 def _packet_credential_locator_ids(
