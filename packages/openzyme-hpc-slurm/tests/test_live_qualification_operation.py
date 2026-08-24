@@ -433,6 +433,11 @@ def test_alphafold_route_runs_fixed_single_gpu_inference_and_cleans_workspace() 
     assert "--num_diffusion_samples=1" in submit
     assert "--num_recycles=1" in submit
     assert remote.scripts[-1].startswith("rm -rf --")
+    assert route.cleanup_observation() == {
+        "scheduler_cleanup_attempted": True,
+        "command_accepted": True,
+        "workspace_removed": True,
+    }
 
 
 def test_alphafold_route_rejects_resource_drift_before_dispatch() -> None:
@@ -450,6 +455,7 @@ def test_alphafold_route_rejects_resource_drift_before_dispatch() -> None:
     assert outcome.error_code == "qualification_alphafold_resource_identity_drift"
     assert not any(script.startswith("sbatch --parsable") for script in remote.scripts)
     assert remote.scripts[-1].startswith("rm -rf --")
+    assert route.cleanup_observation()["command_accepted"] is True
 
 
 def test_alphafold_route_captures_bounded_job_diagnostics_before_cleanup() -> None:

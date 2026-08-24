@@ -107,6 +107,11 @@ class SelectedLiveQualificationBridgeFactory:
         default=None, init=False, repr=False
     )
     _authorization_digest: str | None = field(default=None, init=False, repr=False)
+    _alphafold_route: SlurmAlphaFoldQualificationRoute | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
     _diagnostic_context: QualificationDiagnosticContext = field(
         init=False,
         repr=False,
@@ -635,6 +640,7 @@ class SelectedAlphaFoldLiveQualificationBridgeFactory:
             database_closure_digest=str(config["database_closure_digest"]),
             gpu_capability_digest=str(config["gpu_capability_digest"]),
         )
+        self._alphafold_route = route
         port = FormalComputeScientificQualificationOperation(
             component_id=binding.component_id,
             route_id=binding.route_id,
@@ -651,21 +657,25 @@ class SelectedAlphaFoldLiveQualificationBridgeFactory:
         )
 
     def cleanup(self) -> Mapping[str, dict[str, object]]:
+        observations: dict[str, dict[str, object]] = {}
+        if self._alphafold_route is not None:
+            observations["openzyme.hpc.slurm"] = (
+                self._alphafold_route.cleanup_observation()
+            )
         if self._ssh_state is None:
-            return {}
+            return observations
         try:
-            return {"openzyme.hpc.ssh": self._ssh_state.cleanup()}
+            observations["openzyme.hpc.ssh"] = self._ssh_state.cleanup()
         except (ExternalQualificationError, OSError, subprocess.TimeoutExpired) as exc:
-            return {
-                "openzyme.hpc.ssh": {
-                    "cleanup_attempted": True,
-                    "cleanup_succeeded": False,
-                    "error_code": getattr(
-                        exc, "error_code", "qualification_cleanup_command_failed"
-                    ),
-                    "exception_type": type(exc).__name__,
-                }
+            observations["openzyme.hpc.ssh"] = {
+                "cleanup_attempted": True,
+                "cleanup_succeeded": False,
+                "error_code": getattr(
+                    exc, "error_code", "qualification_cleanup_command_failed"
+                ),
+                "exception_type": type(exc).__name__,
             }
+        return observations
 
 
 __all__ = [

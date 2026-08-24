@@ -620,6 +620,8 @@ class SlurmAlphaFoldQualificationRoute:
     gpu_capability_digest: str
     partition: str = "3090"
     route_kind: str = "hpc-primary"
+    cleanup_attempted: bool = field(default=False, init=False)
+    cleanup_succeeded: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
         if (
@@ -808,13 +810,16 @@ class SlurmAlphaFoldQualificationRoute:
                 effect_certainty="dispatch_in_doubt",
             )
         finally:
+            self.cleanup_attempted = True
             try:
                 returncode, _stdout, _stderr = self.command_port.run_remote(
                     f"rm -rf -- {shlex.quote(run_root)}"
                 )
+                self.cleanup_succeeded = returncode == 0
                 if returncode != 0:
                     cleanup_error = "qualification_alphafold_cleanup_failed"
             except subprocess.TimeoutExpired:
+                self.cleanup_succeeded = False
                 cleanup_error = "qualification_alphafold_cleanup_timeout"
         if cleanup_error is not None:
             return self._failure(
@@ -828,6 +833,15 @@ class SlurmAlphaFoldQualificationRoute:
             )
         assert outcome is not None
         return outcome
+
+    def cleanup_observation(self) -> dict[str, object]:
+        """Project the cleanup already performed by the exact route occurrence."""
+
+        return {
+            "scheduler_cleanup_attempted": self.cleanup_attempted,
+            "command_accepted": self.cleanup_succeeded,
+            "workspace_removed": self.cleanup_succeeded,
+        }
 
     def reconcile(
         self,

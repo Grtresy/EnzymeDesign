@@ -283,6 +283,20 @@ def test_alphafold_negative_gate_uses_terminal_no_redispatch_policy() -> None:
         ("budget.alphafold.gpu-time", 30.0),
     )
     assert _unit_timeout_seconds(unit) == 1_800
+    assert _unit_cleanup_ok(
+        unit,
+        {
+            "openzyme.hpc.ssh": {
+                "workspace_removed": True,
+                "control_master_closed": True,
+            },
+            "openzyme.hpc.slurm": {
+                "scheduler_cleanup_attempted": True,
+                "command_accepted": True,
+                "workspace_removed": True,
+            },
+        },
+    )
 
 
 @dataclass

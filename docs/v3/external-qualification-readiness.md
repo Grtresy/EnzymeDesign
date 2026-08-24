@@ -203,6 +203,9 @@ list 形态替代。route 使用一次 `sbatch --parsable` 获取 opaque job id�
 可能悬挂的 `sbatch --wait` session。失败状态必须在清理前由同一非零 observation 命令带回 bounded Slurm
 stdout/stderr，使受保护 diagnostic writer 必然持久化后才删除 occurrence workspace；公共 outcome 只暴露稳定 error
 code。轮询、日志抓取或 SSH timeout 都不触发 redispatch，也不允许为保留日志而跳过既定 cleanup。
+AlphaFold route 在 `finally` 中执行的 exact run-root 删除必须投影为独立 `openzyme.hpc.slurm` cleanup resource；
+factory 另行导出 SSH workspace/control-master cleanup。只有两份 resource 都满足 admission，成功的 terminal Driver
+outcome 才能生成资格 receipt；不得因 route 内已删除目录就省略 Slurm cleanup 证据。
 若一次只读观测已终态、但后续本地 rediscovery 因源码缺陷失败，新 source/plan/authority 不得删除或盲目覆盖既有
 私有配置；executor 只允许在重新观测的全部 resource identity 完全相等且旧配置 digest/owner/mode 完整时，原子更新
 plan/authority 绑定及由当前 source 重新编译的 `fixed_monomer_input_digest`，并记录 prior config digest。任一稳定

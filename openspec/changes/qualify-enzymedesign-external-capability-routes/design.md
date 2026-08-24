@@ -90,6 +90,9 @@ same-attempt reconcile。
 `sbatch --parsable` 提交并按 exact job id 有界轮询 `sacct`，不使用可能悬挂的 `sbatch --wait`。失败 observation
 在 workspace cleanup 前以同一非零命令携带 bounded stdout/stderr 到 protected diagnostic，随后仍执行 cleanup；
 公共 receipt 不暴露 raw log，轮询或诊断也不能触发 redispatch、换 route 或保留残留 workspace。
+route `finally` 的 run-root 删除必须投影为 `openzyme.hpc.slurm` cleanup resource，factory 同时导出 SSH
+workspace/control-master cleanup；两份 resource 都通过后 terminal Driver outcome 才可形成 receipt，禁止把内部删除
+动作当作无需持久 cleanup 证据。
 
 ### 3. Subject identity 是类型化闭包，不是显示名称或 probe 结果
 
