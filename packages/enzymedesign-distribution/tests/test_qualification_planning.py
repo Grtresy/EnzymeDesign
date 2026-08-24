@@ -23,14 +23,17 @@ from openzyme_process_podman import qualification_image_identity_field_ids
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SNAPSHOT = (
+ARCHIVED_QUALIFICATION_OPERATOR_ROOT = (
     REPO_ROOT
-    / "openspec/changes/qualify-enzymedesign-external-capability-routes/operator"
+    / "openspec/changes/archive/"
+    "2026-08-24-qualify-enzymedesign-external-capability-routes/operator"
+)
+SNAPSHOT = (
+    ARCHIVED_QUALIFICATION_OPERATOR_ROOT
     / "safe-identity-snapshot-20260822.json"
 )
 SELECTIONS = (
-    REPO_ROOT
-    / "openspec/changes/qualify-enzymedesign-external-capability-routes/operator"
+    ARCHIVED_QUALIFICATION_OPERATOR_ROOT
     / "approved-identity-resolution-selections-20260822.json"
 )
 

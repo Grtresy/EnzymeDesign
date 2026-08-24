@@ -276,7 +276,8 @@ def test_credential_preflight_covers_every_exact_locator_before_mutation(
     repo_root = Path(__file__).resolve().parents[3]
     operator_root = (
         repo_root
-        / "openspec/changes/qualify-enzymedesign-external-capability-routes/operator"
+        / "openspec/changes/archive/"
+        "2026-08-24-qualify-enzymedesign-external-capability-routes/operator"
     )
     snapshot = load_safe_identity_snapshot(
         operator_root / "safe-identity-snapshot-20260822.json"
