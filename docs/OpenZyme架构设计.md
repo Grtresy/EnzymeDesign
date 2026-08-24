@@ -300,6 +300,18 @@ canonical Plugin/Kernel surfaces；旧 function handler/repository/writer packag
   时间为零且没有 qualification receipt。该 profile 因此保持
   `deferred_optional_profile_capacity_unavailable`，本次 cutover 只采用 exact-source Batch 1 receipts，不发布或
   fallback AlphaFold；未来启用必须重新资格并单独 adoption；
+- EnzymeDesign Batch 1 的正式切换由 Distribution owner 的
+  `qualified_runtime_cutover.py` 与 `scripts/cut-over-enzymedesign-qualified-runtime.py` 控制。它同时绑定资格源码与
+  部署源码，要求被资格 owner closure 完全相同，只允许文档、OpenSpec、cutover governance、显式 runtime adoption
+  wiring 和测试路径变化。受保护 root 固定为
+  `/home/grtresy/.local/state/openzyme/deployments/enzymedesign-qualified-runtime`，逐层要求当前 uid、目录 `0700`、文件
+  `0600`、拒绝 symlink，并以 create-once/compare-and-replace 保存 plan、authority、六类 backup、44-fact adoption、
+  activation、startup、monitoring、rollback 和 cutover receipt；
+- `build_enzymedesign_application_runtime()` 只通过显式
+  `EnzymeDesignExternalQualificationAdmission` 接受部署 adoption。缺失、过期、身份漂移或未采用 route 一律返回
+  `blocked_qualification`，不猜测替代 Provider、target 或 Driver。cutover receipt 本身不授权 live；首条 live 使用另一个
+  plan/authority/occurrence，固定 `max_retries=0`、无 fallback。首条 effect 前可按 exact prior digest 恢复，effect 已接受或
+  response-loss 后边界只向前推进并保留证据；
 - `openzyme-workspace-git-lfs` 已成为 `AgentGitWorkspace` identity/observation/restore 与 Git-LFS
   policy/pointer/closure/verification/receipt 机制 DTO 的唯一代码 owner；旧 Domain shim 已删除，仓内生产
   caller 使用 Adapter namespace。private/public ref 与 immutable-byte backend、

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace
 from typing import Any
 from typing import Protocol
 
@@ -441,6 +442,9 @@ class EnzymeDesignApplicationRuntime:
     coordination: EnzymeDesignKernelCoordinationRouteApplication
     gateway: EnzymeDesignHostKernelCommandGateway
     application_binding_ids: tuple[str, ...] = ()
+    external_qualification_admission: (
+        EnzymeDesignExternalQualificationAdmission | None
+    ) = None
 
     @property
     def proof_digest(self) -> str:
@@ -453,6 +457,11 @@ class EnzymeDesignApplicationRuntime:
                 "adapter_runtime_digest": self.adapter_runtimes.runtime_digest,
                 "extension_registry_digest": self.extension_registry.registry_digest,
                 "application_binding_ids": list(self.application_binding_ids),
+                "external_qualification_admission_digest": (
+                    None
+                    if self.external_qualification_admission is None
+                    else self.external_qualification_admission.admission_digest
+                ),
                 "plugin_runtime_mounted": True,
                 "writer_enabled": True,
                 "fallback_performed": False,
@@ -470,6 +479,9 @@ def build_enzymedesign_application_runtime(
     clock: ClockPort,
     ids: IdGeneratorPort,
     bootstrap_authority: EnzymeDesignSessionBootstrapAuthorityPort,
+    external_qualification_admission: (
+        EnzymeDesignExternalQualificationAdmission | None
+    ) = None,
     application_bindings: tuple[EnzymeDesignPostMountApplicationBinding, ...] = (),
 ) -> EnzymeDesignApplicationRuntime:
     """Build the writer graph only after proof, Adapter and Plugin closure pass."""
@@ -497,6 +509,10 @@ def build_enzymedesign_application_runtime(
         )
     adapter_runtimes.validate(composition)
     operational_selection = adapter_runtimes.derive_operational_selection()
+    operational_selection = replace(
+        operational_selection,
+        external_qualification_admission=external_qualification_admission,
+    )
     mounted = mount_enzymedesign_extension_surfaces(
         startup=startup,
         composition=composition,
@@ -783,6 +799,7 @@ def build_enzymedesign_application_runtime(
         coordination=coordination,
         gateway=gateway,
         application_binding_ids=binding_ids,
+        external_qualification_admission=external_qualification_admission,
     )
 
 

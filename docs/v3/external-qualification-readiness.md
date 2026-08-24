@@ -245,3 +245,20 @@ qualification receipt；该 profile 保持 `deferred_optional_profile_capacity_u
 这一后续决定只覆盖原 P0–P16 决策包的 AlphaFold 顺序与 receipt policy：当前 cutover 仅消费未过期且 exact-source 的
 Batch 1 receipt。未来 AlphaFold 必须使用新的 source-bound plan、authority、真实 qualification 与独立 adoption 决策。
 最终 authorizer 固定为 `operator.enzymedesign-owner`，只创建本地 seal commit，不 push。
+
+## Batch 1 receipt adoption 与部署顺序
+
+资格 receipt 不能直接成为运行时开关。cutover plan 先独立重验 exact execution report、receipt-set canonical digest、
+private occurrence ledger、44/44 cardinality 和当前 TTL；再对每个 unit 形成绑定 capability、operation、route、subject、
+source、build、configuration、validator 与 receipt 的 `QualifiedExternalCapabilityFact`。adoption ledger 同时绑定 plan、
+cutover authority、qualification/deployment source compatibility proof，且显式拒绝 AlphaFold fact。
+
+受保护部署 root 保存六类切换前状态：SQLite、composition configuration、target identity packet、`uv.lock`、qualification
+receipt set 与既有 adoption ledger。writer quiescence 需要 Host、Plugin worker、agent runtime、process/runner、UI、SQLite
+和 Git writer 全部为 stopped/isolated/not-installed，unknown 与 unsettled effect 均为零。activation 使用同父目录临时文件、
+`fsync` 和 atomic replace；startup readback 必须重新加载 exact Distribution 并得到 44 个无 blocker 的 admission，之后才可
+签发 `cutover=true, live_occurrence=false` receipt。
+
+post-cutover smoke 必须另建 authority。第一条 live receipt 之前，rollback 只可在 current activation digest 与期望一致时
+恢复；出现未知 drift 时拒绝覆盖。第一条 effect 已接受或 dispatch certainty 未知后，边界改为
+`forward_only_preserve_evidence`。任何阶段都不使用凭据、target、route、版本或 binary fallback。

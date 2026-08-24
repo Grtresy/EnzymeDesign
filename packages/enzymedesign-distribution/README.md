@@ -91,6 +91,21 @@ AlphaFold 3.0.1 wrapper、SIF、模型参数、数据库 metadata closure、GPU 
 confidence、实际 GPU identity 与 cleanup。该路径不执行 license acceptance；任何资源缺失/漂移只阻断 Batch 2，
 也不会被 Batch 1 receipt、另一 target 或 image fallback 替代。
 
+Batch 1 qualified runtime 的 operator 入口是：
+
+```bash
+.venv/bin/python scripts/cut-over-enzymedesign-qualified-runtime.py plan
+.venv/bin/python scripts/cut-over-enzymedesign-qualified-runtime.py authorize
+.venv/bin/python scripts/cut-over-enzymedesign-qualified-runtime.py apply
+.venv/bin/python scripts/cut-over-enzymedesign-qualified-runtime.py status
+```
+
+该入口不读取 ambient `.env`。它固定 owner-local `0700` root，创建 `0600` 的 plan/authority/backup/adoption/activation/
+startup/monitoring/cutover evidence，并在 effect 前重验资格 source、部署 source、qualified-owner closure 与 44 个 receipt
+TTL。`apply` 只完成部署采用，不授权 live occurrence。独立的 `smoke-plan`、`smoke-authorize`、`smoke-apply` 使用已采用的
+公共 UniProt 只读 route 建立 first-live boundary，零 retry、无 fallback；`rollback` 只允许在 first-live 前且 activation
+digest 精确匹配时执行。AlphaFold 不进入本轮 adoption 或广告。
+
 `build_enzymedesign_scientific_contributions()` 是 Product composition factory：它构造 AOX
 workflow registry、scientific finalization handler 与 exact executor receipt validator，再通过
 通用 Science application ports 注入 Host。Host 不直接 import AOX 或 executor。

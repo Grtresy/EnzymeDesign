@@ -119,6 +119,28 @@ from .qualification_workspace_runtime import (
 from .qualification_workspace_runtime import validate_hpc_live_bridge_snapshot
 from .qualification_workspace_runtime import workspace_runtime_safe_identity_fields
 from .session_composition_reader import EnzymeDesignSessionCompositionReader
+from .qualified_runtime_cutover import EXACT_BACKUP_SCOPES
+from .qualified_runtime_cutover import QUALIFIED_RUNTIME_ROOT
+from .qualified_runtime_cutover import CutoverQuiescenceSeal
+from .qualified_runtime_cutover import CutoverMonitoringSnapshot
+from .qualified_runtime_cutover import CutoverRollbackReceipt
+from .qualified_runtime_cutover import CutoverStartupProof
+from .qualified_runtime_cutover import FirstLiveBoundaryReceipt
+from .qualified_runtime_cutover import PostCutoverSmokeAuthority
+from .qualified_runtime_cutover import PostCutoverSmokePlan
+from .qualified_runtime_cutover import PostCutoverSmokeReceipt
+from .qualified_runtime_cutover import ProtectedQualifiedRuntimeState
+from .qualified_runtime_cutover import QualificationSourceCompatibilityProof
+from .qualified_runtime_cutover import QualifiedRuntimeAdoptionLedger
+from .qualified_runtime_cutover import QualifiedRuntimeCutoverAuthority
+from .qualified_runtime_cutover import QualifiedRuntimeCutoverError
+from .qualified_runtime_cutover import QualifiedRuntimeCutoverPlan
+from .qualified_runtime_cutover import QualifiedRuntimeCutoverReceipt
+from .qualified_runtime_cutover import backup_manifest_payload
+from .qualified_runtime_cutover import build_adoption_ledger
+from .qualified_runtime_cutover import load_adoption_ledger
+from .qualified_runtime_cutover import reconstruct_batch_1_plans
+from .qualified_runtime_cutover import verify_batch_1_adoption_evidence
 
 __all__ = [
     "EnzymeDesignAdapterRuntimeBinding",
@@ -228,4 +250,26 @@ __all__ = [
     "qualification_plan_bundle",
     "preflight_enzymedesign_identity_preparation_credentials",
     "workspace_runtime_safe_identity_fields",
+    "EXACT_BACKUP_SCOPES",
+    "QUALIFIED_RUNTIME_ROOT",
+    "CutoverQuiescenceSeal",
+    "CutoverMonitoringSnapshot",
+    "CutoverRollbackReceipt",
+    "CutoverStartupProof",
+    "FirstLiveBoundaryReceipt",
+    "PostCutoverSmokeAuthority",
+    "PostCutoverSmokePlan",
+    "PostCutoverSmokeReceipt",
+    "ProtectedQualifiedRuntimeState",
+    "QualificationSourceCompatibilityProof",
+    "QualifiedRuntimeAdoptionLedger",
+    "QualifiedRuntimeCutoverAuthority",
+    "QualifiedRuntimeCutoverError",
+    "QualifiedRuntimeCutoverPlan",
+    "QualifiedRuntimeCutoverReceipt",
+    "backup_manifest_payload",
+    "build_adoption_ledger",
+    "load_adoption_ledger",
+    "reconstruct_batch_1_plans",
+    "verify_batch_1_adoption_evidence",
 ]

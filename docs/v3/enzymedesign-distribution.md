@@ -139,6 +139,23 @@ Adapter 调用，基础设施与科学 owner 已有防 identity 漂移、hosted 
 scientific execution 和重复 dispatch 的 guard。真实 Git/Podman/SSH/Slurm typed operation builder 与科学 fixed-smoke
 workload 尚未执行或裁决，只有 preparation 后形成 exact subject 才能继续实现并在独立 qualification authority 下运行。
 
+## Qualified runtime cutover
+
+Batch 1 cutover 由 Distribution owner 管理，不能由 Plugin、Agent、Host route 或 ambient `.env` 触发。operator CLI
+依次执行 `plan`、`authorize`、`apply`，并把 qualification source、deployment source、qualified-owner tree closure、
+Distribution/wheel/configuration inventory、44 个未过期 receipt、quiescence 与六类 backup source 绑定为一个不可覆盖
+plan。authority 持久且一次性；apply 在任何 mutation 前重新验证全部 receipt 和当前 source，随后按 backup → adoption →
+atomic activation → isolated startup readback → cutover receipt 的顺序闭合。
+
+运行时 composition 只消费 adoption ledger 派生的 `EnzymeDesignExternalQualificationAdmission`。该 ledger 精确包含 44 个
+operation-scoped fact；AlphaFold 保持 mounted/deferred，但不进入 qualified affordance。缺失、过期、route/subject drift
+统一为 `blocked_qualification`，禁止自动换 route、target、版本或 Provider。
+
+上线后 smoke 是另一个 plan/authority/occurrence，当前最小路径使用已采用的公共 UniProt 只读 Adapter route，不读取
+ambient credential，也不占用 HPC。dispatch 在 effect 前持久化；零 retry、无 fallback。首次 effect 接受后写
+`first-live` 单向边界，之后禁止恢复旧 deployment，只能隔离后前向修复。`status` 只输出 schema、digest、状态和脱敏事实；
+私有路径、credential、raw traceback/stdout/stderr 不进入公开状态。
+
 ## 产品能力
 
 Distribution 精确选择以下垂直 owner：

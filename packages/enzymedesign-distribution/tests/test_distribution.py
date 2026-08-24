@@ -1263,6 +1263,7 @@ def test_application_runtime_mounts_exact_product_before_enabling_writer() -> No
     assert len(runtime.mounted_surfaces.tools) == 32
     assert len(runtime.mounted_tools.tools) == 37
     assert runtime.proof_digest.startswith("sha256:")
+    assert runtime.external_qualification_admission is None
     assert bootstrap_receipt.mutation_applied is True
     assert stored_session is not None
     assert len(root_leases) == 1
