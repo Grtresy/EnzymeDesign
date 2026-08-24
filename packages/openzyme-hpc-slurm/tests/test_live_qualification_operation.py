@@ -351,9 +351,9 @@ class _AlphaFoldRemote:
             return 0, "NVIDIA GeForce RTX 3090, GPU-test, 550.54, 8.6\n", ""
         if script.startswith("sbatch --parsable"):
             return 0, "9001\n", ""
-        if script.startswith("for i in $(seq 1 120)"):
+        if script.startswith("state=$(sacct"):
             if self.timeout_job:
-                return 3, "", ""
+                return 4, "PENDING\n", ""
             if self.fail_job:
                 return (
                     2,
@@ -416,6 +416,7 @@ def _alphafold_route(
         model_parameters_digest=resource_digest,
         database_closure_digest=resource_digest,
         gpu_capability_digest=resource_digest,
+        queue_observation_timeout_seconds=0 if remote.timeout_job else 86_400,
     )
 
 
@@ -506,7 +507,7 @@ def test_alphafold_route_cancels_job_before_cleanup_after_observation_timeout() 
     assert outcome.succeeded is False
     assert (
         outcome.error_code
-        == "qualification_alphafold_job_observation_timeout_cancelled"
+        == "qualification_alphafold_queue_observation_timeout_cancelled"
     )
     cancel_index = next(
         index

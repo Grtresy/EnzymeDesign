@@ -7,6 +7,7 @@ import hashlib
 import re
 import shlex
 import subprocess
+import time
 from typing import Protocol
 
 from openzyme_contracts import BoundExternalQualificationOperationBridge
@@ -620,6 +621,8 @@ class SlurmAlphaFoldQualificationRoute:
     gpu_capability_digest: str
     partition: str = "3090"
     route_kind: str = "hpc-primary"
+    queue_observation_timeout_seconds: int = 86_400
+    poll_interval_seconds: int = 60
     cleanup_attempted: bool = field(default=False, init=False)
     cleanup_succeeded: bool = field(default=False, init=False)
 
@@ -631,6 +634,8 @@ class SlurmAlphaFoldQualificationRoute:
             )
             is None
             or self.partition != "3090"
+            or not 0 <= self.queue_observation_timeout_seconds <= 86_400
+            or not 1 <= self.poll_interval_seconds <= 60
         ):
             raise ValueError("AlphaFold Slurm qualification scope is invalid")
         for value in (
@@ -650,6 +655,8 @@ class SlurmAlphaFoldQualificationRoute:
         run_root = f"{self.workspace_root}/alphafold/{workload.workload_id}"
         outcome: ExternalScientificQualificationRouteOutcome | None = None
         cleanup_error: str | None = None
+        job_id: str | None = None
+        job_terminal = False
         try:
             self._ensure_workspace_scope()
             self._verify_resources()
@@ -708,8 +715,7 @@ class SlurmAlphaFoldQualificationRoute:
                     "qualification_alphafold_job_id_invalid",
                     "AlphaFold Slurm submit returned an invalid job identity",
                 )
-            poll_script = (
-                "for i in $(seq 1 120); do "
+            observation_script = (
                 f"state=$(sacct -n -X -j {job_id} -o State -P | head -n 1 | cut -d'|' -f1); "
                 "case \"$state\" in "
                 "COMPLETED*) printf '%s\\n' \"$state\"; exit 0;; "
@@ -721,34 +727,38 @@ class SlurmAlphaFoldQualificationRoute:
                 f"tail -c 32768 {shlex.quote(cwd + '/slurm-' + job_id + '.out')} 2>&1 || true; "
                 "printf '%s\\n' OPENZYME_AF3_STDERR; "
                 f"tail -c 32768 {shlex.quote(cwd + '/slurm-' + job_id + '.err')} 2>&1 || true; "
-                "exit 2;; esac; sleep 15; done; exit 3"
+                "exit 2;; "
+                "''|PENDING*|RUNNING*|CONFIGURING*|COMPLETING*|SUSPENDED*) "
+                "printf '%s\\n' \"$state\"; exit 4;; "
+                "*) printf '%s\\n' \"$state\"; exit 5;; esac"
             )
-            poll_returncode, poll_stdout, _poll_stderr = (
-                self.command_port.run_remote(poll_script)
+            observation_deadline = (
+                time.monotonic() + self.queue_observation_timeout_seconds
             )
-            if poll_returncode == 3:
-                cancel_script = (
-                    f"scancel {job_id}; "
-                    "for i in $(seq 1 40); do "
-                    f"state=$(sacct -n -X -j {job_id} -o State -P | head -n 1 | cut -d'|' -f1); "
-                    "case \"$state\" in "
-                    "COMPLETED*|FAILED*|CANCELLED*|TIMEOUT*|OUT_OF_MEMORY*) "
-                    f"sacct -n -X -j {job_id} "
-                    "-o JobIDRaw,State,ExitCode,Elapsed,NodeList -P; "
-                    "exit 0;; esac; sleep 3; done; exit 3"
+            while True:
+                poll_returncode, poll_stdout, _poll_stderr = (
+                    self.command_port.run_remote(observation_script)
                 )
-                cancel_returncode, _cancel_stdout, _cancel_stderr = (
-                    self.command_port.run_remote(cancel_script)
-                )
-                if cancel_returncode != 0:
+                if poll_returncode in {0, 2}:
+                    job_terminal = True
+                    break
+                if poll_returncode != 4:
                     raise ExternalQualificationError(
-                        "qualification_alphafold_job_cancel_in_doubt",
-                        "AlphaFold Slurm job cancellation did not reach a terminal state",
+                        "qualification_alphafold_job_observation_failed",
+                        "AlphaFold Slurm job state could not be classified",
                     )
-                raise ExternalQualificationError(
-                    "qualification_alphafold_job_observation_timeout_cancelled",
-                    "AlphaFold Slurm job exceeded the 30 minute observation budget and was cancelled",
-                )
+                if time.monotonic() >= observation_deadline:
+                    job_terminal = self._cancel_and_observe_terminal(job_id)
+                    if not job_terminal:
+                        raise ExternalQualificationError(
+                            "qualification_alphafold_job_cancel_in_doubt",
+                            "AlphaFold Slurm job cancellation did not reach a terminal state",
+                        )
+                    raise ExternalQualificationError(
+                        "qualification_alphafold_queue_observation_timeout_cancelled",
+                        "AlphaFold Slurm job exceeded the bounded queue observation period and was cancelled",
+                    )
+                time.sleep(self.poll_interval_seconds)
             if poll_returncode != 0:
                 raise ExternalQualificationError(
                     "qualification_alphafold_job_failed",
@@ -829,28 +839,50 @@ class SlurmAlphaFoldQualificationRoute:
             )
         finally:
             self.cleanup_attempted = True
-            try:
-                returncode, _stdout, _stderr = self.command_port.run_remote(
-                    f"rm -rf -- {shlex.quote(run_root)}"
-                )
-                self.cleanup_succeeded = returncode == 0
-                if returncode != 0:
-                    cleanup_error = "qualification_alphafold_cleanup_failed"
-            except subprocess.TimeoutExpired:
-                self.cleanup_succeeded = False
-                cleanup_error = "qualification_alphafold_cleanup_timeout"
+            if job_id is not None and not job_terminal:
+                try:
+                    job_terminal = self._cancel_and_observe_terminal(job_id)
+                except (OSError, subprocess.TimeoutExpired):
+                    job_terminal = False
+                if not job_terminal:
+                    cleanup_error = "qualification_alphafold_job_cancel_in_doubt"
+            if job_id is None or job_terminal:
+                try:
+                    returncode, _stdout, _stderr = self.command_port.run_remote(
+                        f"rm -rf -- {shlex.quote(run_root)}"
+                    )
+                    self.cleanup_succeeded = returncode == 0
+                    if returncode != 0:
+                        cleanup_error = "qualification_alphafold_cleanup_failed"
+                except subprocess.TimeoutExpired:
+                    self.cleanup_succeeded = False
+                    cleanup_error = "qualification_alphafold_cleanup_timeout"
         if cleanup_error is not None:
             return self._failure(
                 workload,
                 cleanup_error,
                 effect_certainty=(
                     "dispatch_in_doubt"
-                    if cleanup_error.endswith("_timeout")
+                    if cleanup_error.endswith(("_timeout", "_in_doubt"))
                     else "terminal_known"
                 ),
             )
         assert outcome is not None
         return outcome
+
+    def _cancel_and_observe_terminal(self, job_id: str) -> bool:
+        cancel_script = (
+            f"scancel {job_id}; "
+            "for i in $(seq 1 40); do "
+            f"state=$(sacct -n -X -j {job_id} -o State -P | head -n 1 | cut -d'|' -f1); "
+            "case \"$state\" in "
+            "COMPLETED*|FAILED*|CANCELLED*|TIMEOUT*|OUT_OF_MEMORY*) "
+            f"sacct -n -X -j {job_id} "
+            "-o JobIDRaw,State,ExitCode,Elapsed,NodeList -P; "
+            "exit 0;; esac; sleep 3; done; exit 3"
+        )
+        returncode, _stdout, _stderr = self.command_port.run_remote(cancel_script)
+        return returncode == 0
 
     def cleanup_observation(self) -> dict[str, object]:
         """Project the cleanup already performed by the exact route occurrence."""
