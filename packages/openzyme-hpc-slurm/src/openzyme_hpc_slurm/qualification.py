@@ -727,9 +727,27 @@ class SlurmAlphaFoldQualificationRoute:
                 self.command_port.run_remote(poll_script)
             )
             if poll_returncode == 3:
+                cancel_script = (
+                    f"scancel {job_id}; "
+                    "for i in $(seq 1 40); do "
+                    f"state=$(sacct -n -X -j {job_id} -o State -P | head -n 1 | cut -d'|' -f1); "
+                    "case \"$state\" in "
+                    "COMPLETED*|FAILED*|CANCELLED*|TIMEOUT*|OUT_OF_MEMORY*) "
+                    f"sacct -n -X -j {job_id} "
+                    "-o JobIDRaw,State,ExitCode,Elapsed,NodeList -P; "
+                    "exit 0;; esac; sleep 3; done; exit 3"
+                )
+                cancel_returncode, _cancel_stdout, _cancel_stderr = (
+                    self.command_port.run_remote(cancel_script)
+                )
+                if cancel_returncode != 0:
+                    raise ExternalQualificationError(
+                        "qualification_alphafold_job_cancel_in_doubt",
+                        "AlphaFold Slurm job cancellation did not reach a terminal state",
+                    )
                 raise ExternalQualificationError(
-                    "qualification_alphafold_job_observation_timeout_in_doubt",
-                    "AlphaFold Slurm job did not reach terminal state in 30 minutes",
+                    "qualification_alphafold_job_observation_timeout_cancelled",
+                    "AlphaFold Slurm job exceeded the 30 minute observation budget and was cancelled",
                 )
             if poll_returncode != 0:
                 raise ExternalQualificationError(

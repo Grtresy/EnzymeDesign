@@ -331,6 +331,7 @@ class _AlphaFoldRemote:
     resource_digest: str
     drift_resources: bool = False
     fail_job: bool = False
+    timeout_job: bool = False
     scripts: list[str] = field(default_factory=list)
 
     def run_remote(self, script: str):
@@ -351,6 +352,8 @@ class _AlphaFoldRemote:
         if script.startswith("sbatch --parsable"):
             return 0, "9001\n", ""
         if script.startswith("for i in $(seq 1 120)"):
+            if self.timeout_job:
+                return 3, "", ""
             if self.fail_job:
                 return (
                     2,
@@ -361,6 +364,8 @@ class _AlphaFoldRemote:
                     "",
                 )
             return 0, "COMPLETED\n", ""
+        if script.startswith("scancel 9001;"):
+            return 0, "9001|CANCELLED|0:0|00:00:00|node-test\n", ""
         return 0, "", ""
 
 
@@ -485,3 +490,33 @@ def test_alphafold_route_captures_bounded_job_diagnostics_before_cleanup() -> No
     diagnostic_script = remote.scripts[diagnostic_index]
     assert "tail -c 32768" in diagnostic_script
     assert "sacct -n -X -j 9001" in diagnostic_script
+
+
+def test_alphafold_route_cancels_job_before_cleanup_after_observation_timeout() -> None:
+    content = b'{"modelSeeds":[20260824]}\n'
+    remote = _AlphaFoldRemote(
+        input_content=content,
+        resource_digest="0" * 64,
+        timeout_job=True,
+    )
+    route = _alphafold_route(remote, content)
+
+    outcome = route.dispatch(_alphafold_workload(content))
+
+    assert outcome.succeeded is False
+    assert (
+        outcome.error_code
+        == "qualification_alphafold_job_observation_timeout_cancelled"
+    )
+    cancel_index = next(
+        index
+        for index, script in enumerate(remote.scripts)
+        if script.startswith("scancel 9001;")
+    )
+    cleanup_index = next(
+        index
+        for index, script in enumerate(remote.scripts)
+        if script.startswith("rm -rf --")
+    )
+    assert cancel_index < cleanup_index
+    assert "sacct -n -X -j 9001" in remote.scripts[cancel_index]
