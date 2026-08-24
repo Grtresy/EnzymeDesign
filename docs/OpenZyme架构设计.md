@@ -295,7 +295,11 @@ canonical Plugin/Kernel surfaces；旧 function handler/repository/writer packag
   route 只允许一张 3090 GPU、30 分钟、`max_retries=0`、无 fallback 的 inference-only job，显式关闭 data
   pipeline，并验证 model CIF、summary confidence、实际 GPU identity 与 workspace cleanup。既有模型参数只作为已安装
   operator resource 使用，流程不执行新的许可接受；缺失或漂移只产生 `blocked_qualification`。该 Batch 的 receipt
-  TTL 为 7 天，成功也仍是 `qualified != cutover`；
+  TTL 为 7 天，成功也仍是 `qualified != cutover`。2026-08-24 的 exact job `233284` 因该分区没有可调度 GPU 容量
+  持续 `PENDING (Resources)`；operator 要求跳过后，系统取消作业并完成 Slurm、SSH 和工作区清理，实际 GPU 运行
+  时间为零且没有 qualification receipt。该 profile 因此保持
+  `deferred_optional_profile_capacity_unavailable`，本次 cutover 只采用 exact-source Batch 1 receipts，不发布或
+  fallback AlphaFold；未来启用必须重新资格并单独 adoption；
 - `openzyme-workspace-git-lfs` 已成为 `AgentGitWorkspace` identity/observation/restore 与 Git-LFS
   policy/pointer/closure/verification/receipt 机制 DTO 的唯一代码 owner；旧 Domain shim 已删除，仓内生产
   caller 使用 Adapter namespace。private/public ref 与 immutable-byte backend、

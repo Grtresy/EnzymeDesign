@@ -63,10 +63,10 @@
 - [x] 7.2 Implement and verify Adapter-owned live probe bridges for LLM, Tavily, Bio HTTP, Git/LFS, Podman, SSH and Slurm without fallback
 - [x] 7.3a Add Driver-owned formal-Compute-only binding guards for HMMER, Vina, fpocket and preprocessing; reject raw or binding-drifted operation Ports under deterministic fake execution
 - [x] 7.3b Implement route-specific Vina profiles: Diannan `==1.1.2` legacy `--log`, local `>=1.2,<2` modern poses-remark results, exact Kernel admission and no route/profile fallback
-- [ ] 7.3 Implement and verify Driver-owned real smoke bridges for HMMER, Vina, fpocket and preprocessing through the selected Compute route
+- [x] 7.3 Implement and verify Driver-owned real smoke bridges for HMMER, Vina, fpocket and preprocessing through the selected Compute route
 - [x] 7.4 Execute authorized Batch 1 occurrences, same-attempt reconciliation, required negative tests, cleanup and budget settlement
 - [x] 7.4a Persist an exact pre-effect unit subset for bounded failed-unit follow-up occurrences, forbid subset drift under one authority and independently verify the cross-occurrence current receipt set without redispatching successful units
-- [ ] 7.5 Execute separately authorized AlphaFold Batch 2 minimal GPU inference and closure checks
+- [x] 7.5 Execute the separately authorized AlphaFold Batch 2 attempt or, when the selected target has no schedulable GPU capacity, terminally cancel, clean up and record an operator-approved deferred/non-qualified adjudication without fallback
 - [x] 7.6 Persist and independently verify exact real-subject receipts, leaving unresolved or failed units blocked and performing no adoption or cutover
 - [ ] 7.7 Complete implementation evidence, sync specs and archive this change only after all authorized qualification scope is adjudicated
 

@@ -238,6 +238,10 @@ authorization、occurrence scope、negative gate、budget settlement、cleanup�
 operator 已批准 P0–P16 决策包，并允许对其范围内的后续硬门机械通过而不再暂停。实现仍必须为每个 exact source、
 plan digest、batch、operator 与 occurrence 创建相互独立、持久、一次性的 authority；批准范围不允许复用旧 authority、
 放宽 `max_retries=0`、启用 fallback、自动接受 license、改变 target/route 或把 qualification 扩大成 cutover。
-cutover 采用 owner-local protected runtime root、仅消费未过期且 exact-source 的 Batch 1/2 receipt、先 quiescence 和
-backup，再执行 startup readback；第一条 live occurrence 前仍保持可比较恢复，之后只允许 forward-only repair 并保留
-全部证据。最终 authorizer 固定为 `operator.enzymedesign-owner`，只创建本地 seal commit，不 push。
+cutover 采用 owner-local protected runtime root、先 quiescence 和 backup，再执行 startup readback；第一条 live
+occurrence 前仍保持可比较恢复，之后只允许 forward-only repair 并保留全部证据。2026-08-24 的 AlphaFold exact
+job 因 `Diannan/3090` 没有可调度 GPU 容量而由 operator 要求取消，实际 GPU 运行时间为零，清理完成但没有产生
+qualification receipt；该 profile 保持 `deferred_optional_profile_capacity_unavailable`，不得发布、采用或 fallback。
+这一后续决定只覆盖原 P0–P16 决策包的 AlphaFold 顺序与 receipt policy：当前 cutover 仅消费未过期且 exact-source 的
+Batch 1 receipt。未来 AlphaFold 必须使用新的 source-bound plan、authority、真实 qualification 与独立 adoption 决策。
+最终 authorizer 固定为 `operator.enzymedesign-owner`，只创建本地 seal commit，不 push。

@@ -1,0 +1,56 @@
+{
+  "schema_version": "enzymedesign_alphafold_capacity_deferral_decision@1",
+  "decision_id": "operator-approved-alphafold-capacity-deferral-20260824",
+  "operator_id": "operator.enzymedesign-owner",
+  "decided_at": "2026-08-24T10:39:26+08:00",
+  "source": {
+    "commit": "bb6af997c369dd03d4d637ca27c284d9006447fd",
+    "identity_digest": "sha256:3ceccf46d690cb913d245b71368d055e393da9aefe51a53ee403388687d0502c"
+  },
+  "supersedes": {
+    "decision_set_id": "operator-approved-p0-p16-20260824",
+    "fields": [
+      "sequence[1]",
+      "deployment.receipt_policy"
+    ],
+    "all_other_decisions_remain_in_force": true
+  },
+  "attempt": {
+    "batch": "batch-2-alphafold",
+    "target": "Diannan/3090",
+    "slurm_job_id": "233284",
+    "dry_plan_digest": "sha256:f7a224c1988cf9d638eba9c08201bb0f6658cab8ac6cf4675e71794055d90d1a",
+    "authorization_digest": "sha256:8de25ac38bff66e10439800af3315507f761367b43bf61f4bb14ae1bc617dbed",
+    "terminal_state": "CANCELLED",
+    "elapsed_gpu_runtime_seconds": 0,
+    "max_retries": 0,
+    "fallback_performed": false
+  },
+  "capacity_observation": {
+    "pending_reason": "Resources",
+    "partition": "3090",
+    "requested_gpus": 1,
+    "healthy_gpu_capacity_available": false,
+    "scheduled_start_was_not_treated_as_capacity": true,
+    "operator_requested_skip_when_capacity_unavailable": true
+  },
+  "qualification_evidence": {
+    "report_path": "/home/grtresy/.local/state/openzyme/qualification-enzymedesign/private-evidence/qualification-report-authorization.qualification.batch-2-alphafold.sealed-bb6af99-20260824T090200+0800.json",
+    "report_digest": "sha256:7cdfb4237e7ab026dd157c6bb1204fbd2c6d4509d047de4a25013d9843a4b63f",
+    "receipt_set_path": "/home/grtresy/.local/state/openzyme/qualification-enzymedesign/private-evidence/qualification-receipt-set-authorization.qualification.batch-2-alphafold.sealed-bb6af99-20260824T090200+0800.json",
+    "receipt_set_report_digest": "sha256:419f100920f94a74666c496efa5ab30367ceb51f4f037f888ec95bfba9b9290b",
+    "receipt_count": 0,
+    "qualified": false,
+    "cutover": false,
+    "cleanup_complete": true
+  },
+  "disposition": {
+    "state": "deferred_optional_profile_capacity_unavailable",
+    "alphafold_advertised": false,
+    "alphafold_adopted": false,
+    "alphafold_cutover": false,
+    "current_cutover_receipt_policy": "unexpired-exact-source-batch-1-only",
+    "future_requirement": "new-source-bound-plan-authority-qualification-and-separate-adoption",
+    "fallback_allowed": false
+  }
+}
