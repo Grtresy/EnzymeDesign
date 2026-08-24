@@ -516,7 +516,7 @@ def command_apply(state: ProtectedQualifiedRuntimeState) -> None:
     authority = _authority_from(state.read("authority"))
     _validate_current_source(plan)
     readiness, _, verified = _verify_evidence(_now())
-    if tuple(item.receipt_digest for item in verified.selected_receipts) != (
+    if tuple(sorted(item.receipt_digest for item in verified.selected_receipts)) != (
         plan.receipt_digests
     ):
         raise QualifiedRuntimeCutoverError(
@@ -783,6 +783,72 @@ def command_rollback(state: ProtectedQualifiedRuntimeState) -> None:
     print(json.dumps(receipt.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
 
 
+def command_supersede_no_effect(state: ProtectedQualifiedRuntimeState) -> None:
+    """Preserve a source-stale plan only when no deployment effect exists."""
+
+    plan = _plan_from(state.read("plan"))
+    authority = _authority_from(state.read("authority"))
+    effect_names = (
+        "backup-manifest",
+        "adoption-ledger",
+        "activation",
+        "startup-proof",
+        "cutover-receipt",
+        "smoke-dispatch",
+        "smoke-receipt",
+        "first-live",
+        "rollback-receipt",
+    )
+    residual = tuple(
+        name for name in effect_names if (state.root / f"{name}.json").exists()
+    )
+    if residual:
+        raise QualifiedRuntimeCutoverError(
+            "cutover_supersession_after_effect_forbidden",
+            "cannot supersede a plan after deployment effect: " + ", ".join(residual),
+        )
+    attempts = state.root / "attempts"
+    if attempts.exists() or attempts.is_symlink():
+        metadata = attempts.lstat()
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o700
+        ):
+            raise QualifiedRuntimeCutoverError(
+                "cutover_supersession_root_unsafe", "attempt archive is unsafe"
+            )
+    else:
+        attempts.mkdir(mode=0o700, parents=False)
+    generation = attempts / plan.plan_digest.removeprefix("sha256:")
+    if generation.exists() or generation.is_symlink():
+        raise QualifiedRuntimeCutoverError(
+            "cutover_supersession_residual_state",
+            "attempt generation already exists",
+        )
+    generation.mkdir(mode=0o700, parents=False)
+    os.replace(state.root / "plan.json", generation / "plan.json")
+    os.replace(state.root / "authority.json", generation / "authority.json")
+    receipt = {
+        "schema_version": "enzymedesign_cutover_no_effect_supersession@1",
+        "plan_digest": plan.plan_digest,
+        "authority_digest": authority.authority_digest,
+        "reason_code": "pre_effect_receipt_order_comparison_defect",
+        "deployment_effect_performed": False,
+        "superseded_at": _now(),
+        "fallback_performed": False,
+    }
+    receipt["receipt_digest"] = canonical_sha256_digest(receipt)
+    _write_backup_file(
+        generation / "supersession-receipt.json",
+        (json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(
+            "utf-8"
+        ),
+    )
+    print(json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True))
+
+
 def command_status(state: ProtectedQualifiedRuntimeState) -> None:
     state.bootstrap()
     names = (
@@ -855,6 +921,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "smoke-plan",
             "smoke-authorize",
             "smoke-apply",
+            "supersede-no-effect",
         ),
     )
     args = parser.parse_args(argv)
@@ -868,6 +935,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "smoke-plan": command_smoke_plan,
         "smoke-authorize": command_smoke_authorize,
         "smoke-apply": command_smoke_apply,
+        "supersede-no-effect": command_supersede_no_effect,
     }
     try:
         commands[args.command](state)
@@ -887,7 +955,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                         and not (state.root / "smoke-receipt.json").exists()
                         else "no_effect"
                     ),
-                    "mutation_applied": args.command in {"apply", "rollback", "smoke-apply"},
+                    "mutation_applied": any(
+                        (state.root / f"{name}.json").exists()
+                        for name in (
+                            "backup-manifest",
+                            "adoption-ledger",
+                            "activation",
+                            "startup-proof",
+                            "cutover-receipt",
+                            "smoke-dispatch",
+                            "smoke-receipt",
+                            "first-live",
+                            "rollback-receipt",
+                        )
+                    ),
                     "fallback_performed": False,
                     "retry_performed": False,
                     "message": str(exc),
