@@ -69,11 +69,19 @@ def test_wheel_profiles_have_closed_independent_installation_sets() -> None:
     assert external_closures["enzymedesign_component_set"] == {
         "biopython",
         "fastapi",
+        "langchain",
+        "langchain-openai",
         "numpy",
         "packaging",
         "pydantic",
+        "tavily-python",
     }
-    assert external_closures["standard_only"] == {"fastapi", "pydantic"}
+    assert external_closures["standard_only"] == {
+        "fastapi",
+        "langchain",
+        "langchain-openai",
+        "pydantic",
+    }
 
     standard = next(
         profile

@@ -26,6 +26,8 @@ ALLOWED_PROFILE_EXTERNAL_DISTRIBUTIONS = frozenset(
         # not OpenZyme components and therefore do not participate in the
         # manifest activation graph.
         "fastapi",
+        "langchain",
+        "langchain-openai",
         "pydantic",
         # Product-only scientific dependencies.  Profile-specific forbidden
         # distribution checks below prove that Standard never acquires them.
@@ -34,6 +36,7 @@ ALLOWED_PROFILE_EXTERNAL_DISTRIBUTIONS = frozenset(
         # Product Distribution uses PEP 440 specifiers to bind observed
         # software versions to exact qualification units and route profiles.
         "packaging",
+        "tavily-python",
     }
 )
 
