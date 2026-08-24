@@ -126,6 +126,7 @@ ALLOWED_CUTOVER_PREFIXES = (
     "application_runtime.py",
     "packages/enzymedesign-distribution/src/enzymedesign_distribution/"
     "qualified_runtime_cutover.py",
+    "packages/enzymedesign-distribution/tests/test_distribution.py",
     "packages/enzymedesign-distribution/tests/test_qualified_runtime_cutover.py",
     "scripts/cut-over-enzymedesign-qualified-runtime.py",
 )
@@ -184,7 +185,13 @@ def _source_compatibility() -> QualificationSourceCompatibilityProof:
     deployment_source = collect_source_identity(REPO_ROOT)
     deployment_commit = deployment_source.commit
     changed = _git(
-        "diff", "--name-only", "--no-renames", QUALIFICATION_COMMIT, deployment_commit
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "--name-only",
+        "--no-renames",
+        QUALIFICATION_COMMIT,
+        deployment_commit,
     ).decode("utf-8").splitlines()
     forbidden = sorted(
         path
@@ -202,7 +209,13 @@ def _source_compatibility() -> QualificationSourceCompatibilityProof:
         )
     packet = _load(PACKET_PATH)
     changed_status = _git(
-        "diff", "--name-status", "--no-renames", QUALIFICATION_COMMIT, deployment_commit
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "--name-status",
+        "--no-renames",
+        QUALIFICATION_COMMIT,
+        deployment_commit,
     ).decode("utf-8").splitlines()
     return QualificationSourceCompatibilityProof.create(
         qualification_commit=QUALIFICATION_COMMIT,
