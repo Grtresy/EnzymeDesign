@@ -73,7 +73,7 @@ uv --project apps/mcp-hpc-runner run mcp-hpc-runner serve --config apps/mcp-hpc-
 OpenZyme now uses a shared runtime settings layer for mainline app configuration.
 
 - Copy [`.env.example`](/home/grtresy/VSCodeRepo/EnzymeDesign/.env.example) to `.env` for normal local development and local eval runs.
-- Copy [`.env.test.example`](/home/grtresy/VSCodeRepo/EnzymeDesign/.env.test.example) to `.env.test` for pytest-specific overrides.
+- Create an optional `.env.test` file for pytest-specific overrides when needed.
 
 Load order:
 
