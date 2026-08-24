@@ -1,10 +1,12 @@
 from dataclasses import dataclass
+from dataclasses import fields
 from pathlib import Path
 import shutil
 import tempfile
 
 import pytest
 
+from enzymedesign_distribution import SelectedAlphaFoldLiveQualificationBridgeFactory
 from enzymedesign_distribution import SelectedLiveQualificationBridgeFactory
 from openzyme_contracts import ExternalQualificationBridgeBinding
 from openzyme_contracts import ExternalQualificationError
@@ -14,6 +16,15 @@ from openzyme_hpc_ssh import SshWorkspaceRuntimeQualificationIdentity
 
 DIGEST = "sha256:" + "1" * 64
 OTHER_DIGEST = "sha256:" + "2" * 64
+
+
+def test_alphafold_route_cleanup_state_is_owned_by_batch_2_factory() -> None:
+    assert "_alphafold_route" in {
+        item.name for item in fields(SelectedAlphaFoldLiveQualificationBridgeFactory)
+    }
+    assert "_alphafold_route" not in {
+        item.name for item in fields(SelectedLiveQualificationBridgeFactory)
+    }
 
 
 @dataclass(frozen=True)

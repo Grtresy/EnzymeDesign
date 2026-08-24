@@ -107,11 +107,6 @@ class SelectedLiveQualificationBridgeFactory:
         default=None, init=False, repr=False
     )
     _authorization_digest: str | None = field(default=None, init=False, repr=False)
-    _alphafold_route: SlurmAlphaFoldQualificationRoute | None = field(
-        default=None,
-        init=False,
-        repr=False,
-    )
     _diagnostic_context: QualificationDiagnosticContext = field(
         init=False,
         repr=False,
@@ -503,6 +498,11 @@ class SelectedAlphaFoldLiveQualificationBridgeFactory:
         default=None, init=False, repr=False
     )
     _authorization_digest: str | None = field(default=None, init=False, repr=False)
+    _alphafold_route: SlurmAlphaFoldQualificationRoute | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
     _diagnostic_context: QualificationDiagnosticContext = field(
         init=False, repr=False
     )
