@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,6 +24,7 @@ from enzymedesign_distribution import QualifiedRuntimeCutoverPlan
 from enzymedesign_distribution import QualifiedRuntimeCutoverReceipt
 from enzymedesign_distribution import backup_manifest_payload
 from enzymedesign_distribution import load_adoption_ledger
+from enzymedesign_distribution import validate_cutover_startup_admission
 from openzyme_contracts import ExternalQualificationSubjectKind
 from openzyme_contracts import QualifiedExternalCapabilityFact
 from openzyme_contracts import canonical_sha256_digest
@@ -315,6 +317,41 @@ def test_monitoring_requires_healthy_complete_adoption() -> None:
             status="degraded",
             diagnostic_ids=("diagnostic.cutover.test",),
             observed_at=_NOW,
+        )
+
+
+def test_startup_accepts_only_one_explicitly_blocked_alphafold_unit() -> None:
+    alpha_digest = canonical_sha256_digest({"unit": "alphafold"})
+    readiness = SimpleNamespace(
+        units=(
+            SimpleNamespace(
+                unit_digest=alpha_digest,
+                component_id="enzymedesign.alphafold.hpc",
+            ),
+        )
+    )
+    admission = SimpleNamespace(
+        qualified_facts=tuple(object() for _ in range(44)),
+        blockers=(
+            SimpleNamespace(
+                unit_digest=alpha_digest,
+                error_code="blocked_qualification_missing",
+            ),
+        ),
+    )
+
+    validate_cutover_startup_admission(
+        readiness_plan=readiness,
+        admission=admission,
+    )
+
+    with pytest.raises(QualifiedRuntimeCutoverError, match="44 admitted"):
+        validate_cutover_startup_admission(
+            readiness_plan=readiness,
+            admission=SimpleNamespace(
+                qualified_facts=admission.qualified_facts,
+                blockers=(),
+            ),
         )
 
 

@@ -1131,6 +1131,31 @@ def load_adoption_ledger(
     return ledger
 
 
+def validate_cutover_startup_admission(
+    *,
+    readiness_plan,
+    admission: EnzymeDesignExternalQualificationAdmission,
+) -> None:
+    units_by_digest = {item.unit_digest: item for item in readiness_plan.units}
+    alpha_blockers = tuple(
+        blocker
+        for blocker in admission.blockers
+        if blocker.error_code == "blocked_qualification_missing"
+        and blocker.unit_digest in units_by_digest
+        and units_by_digest[blocker.unit_digest].component_id
+        == "enzymedesign.alphafold.hpc"
+    )
+    if (
+        len(admission.qualified_facts) != 44
+        or len(admission.blockers) != 1
+        or len(alpha_blockers) != 1
+    ):
+        raise QualifiedRuntimeCutoverError(
+            "cutover_startup_admission_blocked",
+            "startup requires 44 admitted Batch 1 facts and one blocked AlphaFold unit",
+        )
+
+
 def backup_manifest_payload(
     sources: Sequence[tuple[str, Path]],
 ) -> dict[str, object]:
@@ -1187,6 +1212,7 @@ __all__ = [
     "backup_manifest_payload",
     "build_adoption_ledger",
     "load_adoption_ledger",
+    "validate_cutover_startup_admission",
     "reconstruct_batch_1_plans",
     "verify_batch_1_adoption_evidence",
 ]

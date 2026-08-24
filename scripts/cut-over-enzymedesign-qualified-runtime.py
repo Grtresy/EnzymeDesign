@@ -40,6 +40,7 @@ from enzymedesign_distribution import activate_enzymedesign_composition
 from enzymedesign_distribution import backup_manifest_payload
 from enzymedesign_distribution import build_adoption_ledger
 from enzymedesign_distribution import load_adoption_ledger
+from enzymedesign_distribution import validate_cutover_startup_admission
 from enzymedesign_distribution import verify_batch_1_adoption_evidence
 from openzyme_contracts import canonical_sha256_digest
 from test_gate.source import collect_source_identity
@@ -551,11 +552,10 @@ def command_apply(state: ProtectedQualifiedRuntimeState) -> None:
     }
     state.replace_exact("activation", activation, expected_prior_digest=None)
     admission = ledger.admission(readiness_plan=readiness, as_of=_now())
-    if admission.blockers or len(admission.qualified_facts) != 44:
-        raise QualifiedRuntimeCutoverError(
-            "cutover_startup_admission_blocked",
-            "isolated startup could not admit all 44 exact qualified facts",
-        )
+    validate_cutover_startup_admission(
+        readiness_plan=readiness,
+        admission=admission,
+    )
     composition = activate_enzymedesign_composition()
     if composition.distribution_manifest_digest != dict(plan.deployment_inventory)[
         "distribution"
@@ -849,6 +849,74 @@ def command_supersede_no_effect(state: ProtectedQualifiedRuntimeState) -> None:
     print(json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True))
 
 
+def command_supersede_rolled_back(state: ProtectedQualifiedRuntimeState) -> None:
+    """Archive one fully rolled-back generation before building a new source plan."""
+
+    plan = _plan_from(state.read("plan"))
+    authority = _authority_from(state.read("authority"))
+    activation = state.read("activation")
+    rollback = state.read("rollback-receipt")
+    if (
+        activation.get("status") != "inactive_restored"
+        or rollback.get("plan_digest") != plan.plan_digest
+        or rollback.get("authority_digest") != authority.authority_digest
+        or (state.root / "first-live.json").exists()
+        or (state.root / "cutover-receipt.json").exists()
+    ):
+        raise QualifiedRuntimeCutoverError(
+            "cutover_rolled_back_supersession_forbidden",
+            "generation is not one exact pre-first-live rolled-back occurrence",
+        )
+    attempts = state.root / "attempts"
+    metadata = attempts.lstat()
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_uid != os.getuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+    ):
+        raise QualifiedRuntimeCutoverError(
+            "cutover_supersession_root_unsafe", "attempt archive is unsafe"
+        )
+    generation = attempts / plan.plan_digest.removeprefix("sha256:")
+    if generation.exists() or generation.is_symlink():
+        raise QualifiedRuntimeCutoverError(
+            "cutover_supersession_residual_state",
+            "attempt generation already exists",
+        )
+    generation.mkdir(mode=0o700, parents=False)
+    names = (
+        "plan",
+        "authority",
+        "backup-manifest",
+        "adoption-ledger",
+        "activation",
+        "rollback-receipt",
+    )
+    for name in names:
+        os.replace(state.root / f"{name}.json", generation / f"{name}.json")
+    os.replace(state.root / "backups", generation / "backups")
+    receipt = {
+        "schema_version": "enzymedesign_cutover_rolled_back_supersession@1",
+        "plan_digest": plan.plan_digest,
+        "authority_digest": authority.authority_digest,
+        "rollback_receipt_digest": rollback["receipt_digest"],
+        "reason_code": "startup_alphafold_blocker_assertion_defect",
+        "deployment_effect_restored": True,
+        "first_live_performed": False,
+        "superseded_at": _now(),
+        "fallback_performed": False,
+    }
+    receipt["receipt_digest"] = canonical_sha256_digest(receipt)
+    _write_backup_file(
+        generation / "supersession-receipt.json",
+        (json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(
+            "utf-8"
+        ),
+    )
+    print(json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True))
+
+
 def command_status(state: ProtectedQualifiedRuntimeState) -> None:
     state.bootstrap()
     names = (
@@ -875,7 +943,7 @@ def command_status(state: ProtectedQualifiedRuntimeState) -> None:
             payload = state.read(name)
             records[name] = {
                 "schema_version": payload.get("schema_version"),
-                "digest": next(
+                "identity_digest": next(
                     (
                         payload[key]
                         for key in (
@@ -891,6 +959,7 @@ def command_status(state: ProtectedQualifiedRuntimeState) -> None:
                     ),
                     canonical_sha256_digest(payload),
                 ),
+                "record_digest": canonical_sha256_digest(payload),
                 "status": payload.get("status"),
             }
     print(
@@ -922,6 +991,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "smoke-authorize",
             "smoke-apply",
             "supersede-no-effect",
+            "supersede-rolled-back",
         ),
     )
     args = parser.parse_args(argv)
@@ -936,6 +1006,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "smoke-authorize": command_smoke_authorize,
         "smoke-apply": command_smoke_apply,
         "supersede-no-effect": command_supersede_no_effect,
+        "supersede-rolled-back": command_supersede_rolled_back,
     }
     try:
         commands[args.command](state)

@@ -139,6 +139,7 @@ from .qualified_runtime_cutover import QualifiedRuntimeCutoverReceipt
 from .qualified_runtime_cutover import backup_manifest_payload
 from .qualified_runtime_cutover import build_adoption_ledger
 from .qualified_runtime_cutover import load_adoption_ledger
+from .qualified_runtime_cutover import validate_cutover_startup_admission
 from .qualified_runtime_cutover import reconstruct_batch_1_plans
 from .qualified_runtime_cutover import verify_batch_1_adoption_evidence
 
@@ -270,6 +271,7 @@ __all__ = [
     "backup_manifest_payload",
     "build_adoption_ledger",
     "load_adoption_ledger",
+    "validate_cutover_startup_admission",
     "reconstruct_batch_1_plans",
     "verify_batch_1_adoption_evidence",
 ]
