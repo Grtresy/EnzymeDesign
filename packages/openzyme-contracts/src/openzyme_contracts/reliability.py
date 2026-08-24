@@ -312,11 +312,28 @@ class RuntimeCommandRecord:
     lease_token: str | None = None
     lease_expires_at: str | None = None
     bounded_outcome_summary: dict[str, Any] | None = None
+    failure_id: str | None = None
+    diagnostic_id: str | None = None
     error_code: str | None = None
     safe_error_summary: str | None = None
     safe_retry_hint: str | None = None
     started_at: str | None = None
     completed_at: str | None = None
+
+    def __post_init__(self) -> None:
+        if (self.failure_id is None) != (self.diagnostic_id is None):
+            raise ValueError(
+                "runtime command failure and diagnostic identities must be paired"
+            )
+        if self.status is RuntimeCommandStatus.FAILED:
+            if self.failure_id is None:
+                raise ValueError(
+                    "failed runtime command requires a durable failure identity"
+                )
+        elif self.failure_id is not None:
+            raise ValueError(
+                "only failed runtime commands may carry failure identities"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize_record(self, schema_version=self.SCHEMA_VERSION)
@@ -481,6 +498,7 @@ class QuiescenceSnapshot:
 
     def to_private_dict(self) -> dict[str, Any]:
         return _serialize_record(self, schema_version=self.SCHEMA_VERSION)
+
 
 __all__ = [
     "CONTROLLED_OPERATION_DISPATCH_REQUEST_SCHEMA_VERSION",

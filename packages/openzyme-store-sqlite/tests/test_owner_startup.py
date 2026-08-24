@@ -27,10 +27,10 @@ def test_owner_partitioned_startup_proof_is_read_only_and_plugin_free() -> None:
 
     proof = verify_owner_partitioned_schema_read_only(connection)
 
-    assert proof.table_count == 150
+    assert proof.table_count == 159
     assert proof.index_count == 134
-    assert proof.trigger_count == 679
-    assert proof.foreign_key_count == 422
+    assert proof.trigger_count == 706
+    assert proof.foreign_key_count == 462
     assert proof.mutation_applied is False
     assert proof.plugin_import_performed is False
     assert proof.writer_enabled is False
@@ -79,17 +79,17 @@ def test_fresh_standard_and_enzymedesign_profiles_install_only_selected_owners()
         composite_user_version=STORE_SCHEMA_USER_VERSION,
     )
 
-    assert standard_proof.table_count == 98
+    assert standard_proof.table_count == 107
     assert standard_proof.index_count == 104
-    assert standard_proof.trigger_count == 449
-    assert standard_proof.foreign_key_count == 300
+    assert standard_proof.trigger_count == 476
+    assert standard_proof.foreign_key_count == 340
     assert standard_proof.schema_profile_digest == (
         OPENZYME_STANDARD_OWNER_SCHEMA_PROFILE.profile_digest
     )
-    assert enzymedesign_proof.table_count == 147
+    assert enzymedesign_proof.table_count == 156
     assert enzymedesign_proof.index_count == 134
-    assert enzymedesign_proof.trigger_count == 679
-    assert enzymedesign_proof.foreign_key_count == 421
+    assert enzymedesign_proof.trigger_count == 706
+    assert enzymedesign_proof.foreign_key_count == 461
     assert enzymedesign_proof.schema_profile_digest == (
         ENZYMEDESIGN_OWNER_SCHEMA_PROFILE.profile_digest
     )

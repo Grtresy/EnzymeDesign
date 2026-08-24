@@ -1,12 +1,12 @@
 {
   "schema_id": "openzyme_catalog_owner_inventory@1",
-  "catalog_digest": "sha256:1c0935eedae1a66e7d741778bb10855277d07488766a7f3d0010e7f6997cb4e2",
+  "catalog_digest": "sha256:a210dce2bd04ab5b794411d219a97f87eb7f25e532055fc9a0ec6eed8bbc1aea",
   "expected_counts": {
     "adapter_slot": 12,
     "driver": 8,
-    "event": 20,
+    "event": 33,
     "finish_validator": 4,
-    "http_route": 8,
+    "http_route": 11,
     "manifest_http_route": 2,
     "migration": 5,
     "projection": 5,
@@ -15,7 +15,7 @@
     "qualification_spec": 8,
     "route": 13,
     "schema": 7,
-    "tool": 38,
+    "tool": 47,
     "ui_renderer": 4,
     "worker": 5
   },
@@ -80,6 +80,42 @@
         "docs/v3/architecture-qualification/invariant-registry.json"
       ],
       "target_owner": "openzyme.host.api"
+    },
+    {
+      "canonical_id": "workspace.provisioning.ready",
+      "current_owner": "openzyme.kernel",
+      "kind": "event",
+      "source_refs": [
+        "packages/openzyme-kernel/src/openzyme_kernel/workspace_provisioning_application.py"
+      ],
+      "target_owner": "openzyme.kernel"
+    },
+    {
+      "canonical_id": "workspace.provisioning.blocked",
+      "current_owner": "openzyme.kernel",
+      "kind": "event",
+      "source_refs": [
+        "packages/openzyme-kernel/src/openzyme_kernel/workspace_provisioning_application.py"
+      ],
+      "target_owner": "openzyme.kernel"
+    },
+    {
+      "canonical_id": "workspace.provisioning.reconciliation.ready",
+      "current_owner": "openzyme.kernel",
+      "kind": "event",
+      "source_refs": [
+        "packages/openzyme-kernel/src/openzyme_kernel/workspace_provisioning_application.py"
+      ],
+      "target_owner": "openzyme.kernel"
+    },
+    {
+      "canonical_id": "workspace.provisioning.reconciliation.blocked",
+      "current_owner": "openzyme.kernel",
+      "kind": "event",
+      "source_refs": [
+        "packages/openzyme-kernel/src/openzyme_kernel/workspace_provisioning_application.py"
+      ],
+      "target_owner": "openzyme.kernel"
     }
   ]
 }

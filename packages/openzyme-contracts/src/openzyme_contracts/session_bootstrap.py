@@ -13,7 +13,7 @@ from .identity import require_identifier
 
 
 SESSION_BOOTSTRAP_AUTHORIZATION_SCHEMA_VERSION = (
-    "session_bootstrap_authorization@1"
+    "session_bootstrap_authorization@2"
 )
 SESSION_BOOTSTRAP_AUTHORIZATION_OPERATION = "session.bootstrap"
 
@@ -30,6 +30,10 @@ class SessionBootstrapAuthorization:
     session_composition_pin_digest: str
     extension_bundle_digest: str
     capability_binding_digest: str
+    repository_pin_digest: str
+    workspace_generation: int
+    workspace_provisioning_intent_id: str
+    workspace_provisioning_intent_digest: str
     generation: int
     fence: int
     issued_at: str
@@ -43,17 +47,22 @@ class SessionBootstrapAuthorization:
             "operator_actor_id",
             "project_id",
             "session_id",
+            "workspace_provisioning_intent_id",
         ):
             require_identifier(getattr(self, field_name), field_name=field_name)
         if self.operation != SESSION_BOOTSTRAP_AUTHORIZATION_OPERATION:
             raise ValueError("bootstrap authorization operation is invalid")
-        if self.generation < 1 or self.fence < 1:
-            raise ValueError("bootstrap authority generation and fence must be positive")
+        if self.generation < 1 or self.fence < 1 or self.workspace_generation < 1:
+            raise ValueError(
+                "bootstrap authority, fence and workspace generation must be positive"
+            )
         for field_name in (
             "root_authority_lease_digest",
             "session_composition_pin_digest",
             "extension_bundle_digest",
             "capability_binding_digest",
+            "repository_pin_digest",
+            "workspace_provisioning_intent_digest",
             "authorization_digest",
         ):
             require_digest(getattr(self, field_name), field_name=field_name)
@@ -72,6 +81,10 @@ class SessionBootstrapAuthorization:
         session_composition_pin_digest: str,
         extension_bundle_digest: str,
         capability_binding_digest: str,
+        repository_pin_digest: str,
+        workspace_generation: int,
+        workspace_provisioning_intent_id: str,
+        workspace_provisioning_intent_digest: str,
         generation: int,
         fence: int,
         issued_at: str,
@@ -88,6 +101,10 @@ class SessionBootstrapAuthorization:
             "session_composition_pin_digest": session_composition_pin_digest,
             "extension_bundle_digest": extension_bundle_digest,
             "capability_binding_digest": capability_binding_digest,
+            "repository_pin_digest": repository_pin_digest,
+            "workspace_generation": workspace_generation,
+            "workspace_provisioning_intent_id": workspace_provisioning_intent_id,
+            "workspace_provisioning_intent_digest": workspace_provisioning_intent_digest,
             "generation": generation,
             "fence": fence,
             "issued_at": issued_at,
@@ -102,6 +119,10 @@ class SessionBootstrapAuthorization:
             session_composition_pin_digest=session_composition_pin_digest,
             extension_bundle_digest=extension_bundle_digest,
             capability_binding_digest=capability_binding_digest,
+            repository_pin_digest=repository_pin_digest,
+            workspace_generation=workspace_generation,
+            workspace_provisioning_intent_id=workspace_provisioning_intent_id,
+            workspace_provisioning_intent_digest=workspace_provisioning_intent_digest,
             generation=generation,
             fence=fence,
             issued_at=issued_at,
@@ -121,6 +142,10 @@ class SessionBootstrapAuthorization:
             "session_composition_pin_digest": self.session_composition_pin_digest,
             "extension_bundle_digest": self.extension_bundle_digest,
             "capability_binding_digest": self.capability_binding_digest,
+            "repository_pin_digest": self.repository_pin_digest,
+            "workspace_generation": self.workspace_generation,
+            "workspace_provisioning_intent_id": self.workspace_provisioning_intent_id,
+            "workspace_provisioning_intent_digest": self.workspace_provisioning_intent_digest,
             "generation": self.generation,
             "fence": self.fence,
             "issued_at": self.issued_at,
@@ -146,6 +171,10 @@ class SessionBootstrapAuthorization:
             "session_composition_pin_digest",
             "extension_bundle_digest",
             "capability_binding_digest",
+            "repository_pin_digest",
+            "workspace_generation",
+            "workspace_provisioning_intent_id",
+            "workspace_provisioning_intent_digest",
             "generation",
             "fence",
             "issued_at",
@@ -170,6 +199,14 @@ class SessionBootstrapAuthorization:
             ),
             extension_bundle_digest=str(payload["extension_bundle_digest"]),
             capability_binding_digest=str(payload["capability_binding_digest"]),
+            repository_pin_digest=str(payload["repository_pin_digest"]),
+            workspace_generation=int(payload["workspace_generation"]),
+            workspace_provisioning_intent_id=str(
+                payload["workspace_provisioning_intent_id"]
+            ),
+            workspace_provisioning_intent_digest=str(
+                payload["workspace_provisioning_intent_digest"]
+            ),
             generation=int(payload["generation"]),
             fence=int(payload["fence"]),
             issued_at=str(payload["issued_at"]),

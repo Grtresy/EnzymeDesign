@@ -72,7 +72,7 @@
     },
     {
       "migration_id": "10_kernel_tables",
-      "object_count": 70,
+      "object_count": 79,
       "object_identities": [
         "agent_capability_lease_lifecycle_events",
         "agent_capability_lease_records",
@@ -121,6 +121,15 @@
         "repository_binding_mapping_receipts",
         "revision_path_refs",
         "runtime_command_records",
+        "workspace_provisioning_intent_records",
+        "workspace_provisioning_receipt_records",
+        "workspace_provisioning_reconciliation_records",
+        "workflow_authority_binding_records",
+        "runtime_signal_authority_link_records",
+        "runtime_turn_context_records",
+        "tool_exposure_snapshot_records",
+        "command_tool_expansion_records",
+        "runtime_turn_outcome_records",
         "runtime_turn_command_records",
         "runtime_continuation_intent_records",
         "runtime_settlement_intent_records",
@@ -147,7 +156,7 @@
       ],
       "phase": "tables",
       "resource": "migrations/owners/10_kernel_tables.sql",
-      "resource_digest": "sha256:b72d727f753c019ee949db51e6b818a2c8e683719a7b31af65bff0f36e74c938",
+      "resource_digest": "sha256:6d8a4aafda5b648b08d130c2524836c3d7bd08c79545c72e95ec519bd8eb6749",
       "semantic_owner": "openzyme.kernel"
     },
     {
@@ -606,7 +615,7 @@
     },
     {
       "migration_id": "30_kernel_triggers",
-      "object_count": 332,
+      "object_count": 359,
       "object_identities": [
         "agent_capability_lease_activated_event_requires_activation_authority",
         "agent_capability_lease_activation_requires_activation_authority",
@@ -939,11 +948,38 @@
         "workspace_publication_remote_receipts_immutable_update",
         "workspace_publication_remote_receipts_no_delete",
         "workspace_publication_supersedes_immutable_update",
-        "workspace_publication_supersedes_no_delete"
+        "workspace_publication_supersedes_no_delete",
+        "mutation_guard_workspace_provisioning_intent_records_insert",
+        "mutation_guard_workspace_provisioning_intent_records_update",
+        "mutation_guard_workspace_provisioning_intent_records_delete",
+        "mutation_guard_workspace_provisioning_receipt_records_insert",
+        "mutation_guard_workspace_provisioning_receipt_records_update",
+        "mutation_guard_workspace_provisioning_receipt_records_delete",
+        "mutation_guard_workspace_provisioning_reconciliation_records_insert",
+        "mutation_guard_workspace_provisioning_reconciliation_records_update",
+        "mutation_guard_workspace_provisioning_reconciliation_records_delete",
+        "mutation_guard_workflow_authority_binding_records_insert",
+        "mutation_guard_workflow_authority_binding_records_update",
+        "mutation_guard_workflow_authority_binding_records_delete",
+        "mutation_guard_runtime_signal_authority_link_records_insert",
+        "mutation_guard_runtime_signal_authority_link_records_update",
+        "mutation_guard_runtime_signal_authority_link_records_delete",
+        "mutation_guard_runtime_turn_context_records_insert",
+        "mutation_guard_runtime_turn_context_records_update",
+        "mutation_guard_runtime_turn_context_records_delete",
+        "mutation_guard_tool_exposure_snapshot_records_insert",
+        "mutation_guard_tool_exposure_snapshot_records_update",
+        "mutation_guard_tool_exposure_snapshot_records_delete",
+        "mutation_guard_command_tool_expansion_records_insert",
+        "mutation_guard_command_tool_expansion_records_update",
+        "mutation_guard_command_tool_expansion_records_delete",
+        "mutation_guard_runtime_turn_outcome_records_insert",
+        "mutation_guard_runtime_turn_outcome_records_update",
+        "mutation_guard_runtime_turn_outcome_records_delete"
       ],
       "phase": "triggers",
       "resource": "migrations/owners/30_kernel_triggers.sql",
-      "resource_digest": "sha256:ad836677b32d4a8681eff35d18cba83782e2aa729e3085a1c791925371255c16",
+      "resource_digest": "sha256:356602063a87c8fe8050bf920e17c0efc3419b20bb1a04a78bfbfbe537dfb8fb",
       "semantic_owner": "openzyme.kernel"
     },
     {
@@ -1239,23 +1275,23 @@
       ],
       "phase": "finalize",
       "resource": "migrations/owners/40_store_finalize.sql",
-      "resource_digest": "sha256:4c352ce8b876722f5db351d5452aa899c1ee7d5a8204fc2e0a0f2b37ee886637",
+      "resource_digest": "sha256:54ca2f0441c11b6ab8ba383243571180951187abb0d512ea9f741271243ac22d",
       "semantic_owner": "openzyme.store.sqlite"
     }
   ],
-  "catalog_digest": "sha256:76a99d310918b3dbaad5d71538def94a6a2e66b0c93e59ce34ad4a6f164875d9",
+  "catalog_digest": "sha256:3e9ffb60dc7690de4d901664f57d3b8f9570142e7ba9e41db7b25d6c694e8b5b",
   "expected_object_counts": {
-    "foreign_keys": 422,
+    "foreign_keys": 462,
     "indexes": 134,
-    "tables": 150,
-    "triggers": 679
+    "tables": 159,
+    "triggers": 706
   },
   "physical_store_owner": "openzyme.store.sqlite",
   "physical_table_rename_policy": "retain_names_in_this_change",
   "schema_id": "openzyme_owner_partitioned_migration_catalog@1",
   "source_migration": "packages/openzyme-store-sqlite/src/openzyme_store_sqlite/migrations/001_file_workspace_final.sql",
-  "source_migration_digest": "sha256:2fe848692d5cef97ac7d1a49c38f0d63b87fe38a2c0318507df9872ce56ebf1a",
-  "source_schema_manifest_digest": "sha256:b1800db95c80c1734d477f0060c8092e1824aa1eddbf5f3fc6d2bf553a66cfe6",
+  "source_migration_digest": "sha256:efc2f59c7f8e53e56e4918a1a41a09c51e3fa61eabf222985cf222ac448915bf",
+  "source_schema_manifest_digest": "sha256:b3adc6b765ca91d48a983effe2aa0e4c516c5b8e2cbfaa1978e476ea284df60c",
   "source_user_version": 2,
-  "table_owner_manifest_digest": "sha256:7fb0d7f66afe1b0350d34d6ba494c2f2dd03b6efe70e6ca6ba71fccaf60c0638"
+  "table_owner_manifest_digest": "sha256:62609728c50b0d6fe7b07e274a27c65e7da076007141260dab3a10a9865d19dc"
 }

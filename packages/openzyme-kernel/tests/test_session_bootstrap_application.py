@@ -8,11 +8,21 @@ from openzyme_contracts import AgentAuthorityLease
 from openzyme_contracts import AgentAuthorityLeaseState
 from openzyme_contracts import AuthorityGrant
 from openzyme_contracts import DeploymentActivationEpoch
+from openzyme_contracts import GitObjectFormat
+from openzyme_contracts import KernelRecordSnapshot
 from openzyme_contracts import LayeredReleaseIdentity
+from openzyme_contracts import ProjectRepositoryBinding
+from openzyme_contracts import RepositoryRefNamespacePolicy
 from openzyme_contracts import SessionBootstrapAuthorization
 from openzyme_contracts import SessionBootstrapAuthorityDecision
 from openzyme_contracts import SessionCapabilityBindingRevision
 from openzyme_contracts import SessionCompositionPin
+from openzyme_contracts import SessionRepositoryBindingPin
+from openzyme_contracts import WorkspaceGeneration
+from openzyme_contracts import WorkspaceGenerationStatus
+from openzyme_contracts import WorkspaceKind
+from openzyme_contracts import WorkspaceProvisioningIntent
+from openzyme_contracts import WorkspaceProvisioningStatus
 from openzyme_contracts import canonical_sha256_digest
 from openzyme_kernel import KernelContractError
 from openzyme_kernel import SessionBootstrapCommand
@@ -46,11 +56,11 @@ def _lease() -> AgentAuthorityLease:
         grants=(grant,),
         generation=1,
         fence=1,
-        state=AgentAuthorityLeaseState.ACTIVE,
+        state=AgentAuthorityLeaseState.PENDING,
         issued_at="2026-08-20T10:00:00+00:00",
         expires_at=None,
         agent_id="master-1",
-        workspace_generation=None,
+        workspace_generation=1,
         parent_lease_id=None,
         policy_digest=_digest("root-policy"),
         idempotency_key="bootstrap-session-1",
@@ -116,6 +126,9 @@ def _authorization(
     lease: AgentAuthorityLease,
     pin: SessionCompositionPin,
     binding: SessionCapabilityBindingRevision,
+    repository_pin: SessionRepositoryBindingPin,
+    workspace: WorkspaceGeneration,
+    intent: WorkspaceProvisioningIntent,
 ) -> SessionBootstrapAuthorization:
     return SessionBootstrapAuthorization.create(
         authorization_id="operator-authorization-1",
@@ -126,6 +139,10 @@ def _authorization(
         session_composition_pin_digest=pin.pin_digest,
         extension_bundle_digest=binding.extension_bundle_digest,
         capability_binding_digest=binding.binding_digest,
+        repository_pin_digest=canonical_sha256_digest(repository_pin.to_dict()),
+        workspace_generation=workspace.generation,
+        workspace_provisioning_intent_id=intent.intent_id,
+        workspace_provisioning_intent_digest=intent.intent_digest,
         generation=1,
         fence=1,
         issued_at="2026-08-20T09:59:00+00:00",
@@ -152,14 +169,99 @@ class _Verifier:
         )
 
 
+def _repository_binding() -> ProjectRepositoryBinding:
+    return ProjectRepositoryBinding.create(
+        binding_id="repository-binding-1",
+        project_id="project-1",
+        binding_version=1,
+        repository_id="repository-1",
+        internal_git_service_id="git-service-1",
+        internal_git_endpoint="https://git.internal.test",
+        lfs_service_id="lfs-service-1",
+        lfs_endpoint="https://lfs.internal.test",
+        upstream_identity="upstream-1",
+        upstream_url="https://example.test/repository.git",
+        object_format=GitObjectFormat.SHA1,
+        default_base_ref="refs/heads/main",
+        default_base_commit="a" * 40,
+        ref_namespace_policy=RepositoryRefNamespacePolicy(
+            private_prefix="refs/openzyme/private",
+            publication_prefix="refs/openzyme/publication",
+            historical_prefix="refs/openzyme/historical",
+        ),
+        repository_policy_version="policy-v1",
+        repository_policy_digest=_digest("repository-policy"),
+        created_at="2026-08-20T09:58:00+00:00",
+        created_by="operator-1",
+    )
+
+
+def _workspace_graph() -> tuple[
+    SessionRepositoryBindingPin,
+    WorkspaceGeneration,
+    WorkspaceProvisioningIntent,
+]:
+    repository = _repository_binding()
+    pin = SessionRepositoryBindingPin(
+        session_id="session-1",
+        project_id="project-1",
+        binding_id=repository.binding_id,
+        binding_version=repository.binding_version,
+        repository_id=repository.repository_id,
+        resolved_base_commit=repository.default_base_commit,
+        binding_canonical_digest=repository.canonical_digest,
+        pinned_at="2026-08-20T10:00:00+00:00",
+    )
+    workspace = WorkspaceGeneration(
+        workspace_id="workspace-master-1",
+        workspace_kind=WorkspaceKind.AGENT_LOCAL,
+        session_id="session-1",
+        owner_member_id="master-1",
+        generation=1,
+        state_version=1,
+        status=WorkspaceGenerationStatus.RESERVED,
+        provider_id="openzyme.workspace.git.lfs",
+        target_id="local-primary",
+        created_at="2026-08-20T10:00:00+00:00",
+        updated_at="2026-08-20T10:00:00+00:00",
+        controlled_operation_id="workspace-provision-1",
+    )
+    intent = WorkspaceProvisioningIntent(
+        intent_id="workspace-intent-1",
+        session_id="session-1",
+        agent_member_id="master-1",
+        workspace_id=workspace.workspace_id,
+        generation=1,
+        repository_pin_digest=canonical_sha256_digest(pin.to_dict()),
+        provider_id=workspace.provider_id,
+        target_id=workspace.target_id,
+        adapter_binding_digest=_digest("selected-workspace-adapter"),
+        controlled_operation_id="workspace-provision-1",
+        status=WorkspaceProvisioningStatus.PENDING,
+        state_version=1,
+        claim_epoch=0,
+        created_at="2026-08-20T10:00:00+00:00",
+        updated_at="2026-08-20T10:00:00+00:00",
+    )
+    return pin, workspace, intent
+
+
 def _command() -> SessionBootstrapCommand:
     lease = _lease()
     binding, pin = _composition()
+    repository_pin, workspace, intent = _workspace_graph()
     return SessionBootstrapCommand(
         command_id="command-bootstrap-session-1",
         idempotency_key="bootstrap-session-1",
         correlation_id="correlation-bootstrap-session-1",
-        authorization=_authorization(lease, pin, binding),
+        authorization=_authorization(
+            lease,
+            pin,
+            binding,
+            repository_pin,
+            workspace,
+            intent,
+        ),
         session_id="session-1",
         project_id="project-1",
         title="Kernel qualification",
@@ -169,6 +271,36 @@ def _command() -> SessionBootstrapCommand:
         root_authority_lease=lease,
         initial_capability_binding=binding,
         session_composition_pin=pin,
+        project_repository_binding=_repository_binding(),
+        repository_pin=repository_pin,
+        workspace_generation=workspace,
+        workspace_provisioning_intent=intent,
+    )
+
+
+def _seed_repository_binding(store: _Store) -> None:
+    binding = _repository_binding()
+    store.records[("project_repository_binding", binding.binding_id)] = (
+        KernelRecordSnapshot.create(
+            entity_type="project_repository_binding",
+            entity_id=binding.binding_id,
+            state_version=1,
+            payload=binding.to_dict(),
+        )
+    )
+    store.records[("project_repository_binding_head", binding.project_id)] = (
+        KernelRecordSnapshot.create(
+            entity_type="project_repository_binding_head",
+            entity_id=binding.project_id,
+            state_version=1,
+            payload={
+                "project_id": binding.project_id,
+                "binding_id": binding.binding_id,
+                "binding_version": binding.binding_version,
+                "binding_canonical_digest": binding.canonical_digest,
+                "updated_at": "2026-08-20T09:58:00+00:00",
+            },
+        )
     )
 
 
@@ -191,27 +323,44 @@ def test_bootstrap_atomically_creates_session_master_and_root_authority() -> Non
         entity_type="session_capability_binding_revision", entity_id="binding-1"
     )
     pin = store.read(entity_type="session_composition_pin", entity_id="pin-1")
+    repository_binding = store.read(
+        entity_type="project_repository_binding", entity_id="repository-binding-1"
+    )
+    repository_head = store.read(
+        entity_type="project_repository_binding_head", entity_id="project-1"
+    )
     assert session is not None and session.state_version == 1
     assert master is not None and master.payload["active_authority_lease_id"] == (
         "root-lease-1"
     )
-    assert lease is not None and lease.payload["state"] == "active"
+    assert lease is not None and lease.payload["state"] == "pending"
     assert binding is not None and binding.payload["revision"] == 1
     assert pin is not None and pin.payload["initial_capability_binding_id"] == (
         "binding-1"
     )
+    assert repository_binding is not None
+    assert repository_head is not None
+    assert repository_head.payload["binding_id"] == "repository-binding-1"
     assert receipt.result == {
         "session_id": "session-1",
         "master_member_id": "master-1",
         "root_authority_lease_id": "root-lease-1",
         "session_composition_pin_id": "pin-1",
         "capability_binding_id": "binding-1",
+        "repository_binding_id": "repository-binding-1",
+        "repository_binding_registered": True,
+        "workspace_id": "workspace-master-1",
+        "workspace_generation": 1,
+        "workspace_provisioning_intent_id": "workspace-intent-1",
+        "workspace_readiness": "provisioning",
         "runtime_executed": False,
         "workspace_created": False,
         "task_transition_performed": False,
     }
-    assert len(store.events) == 1
-    assert store.events[0].event_type == "session.bootstrapped"
+    assert tuple(event.event_type for event in store.events) == (
+        "repository.binding.registered",
+        "session.bootstrapped",
+    )
 
 
 def test_bootstrap_denial_performs_no_store_mutation() -> None:
@@ -241,10 +390,11 @@ def test_bootstrap_rejects_authorization_bound_to_another_root_lease() -> None:
         grants=command.root_authority_lease.grants,
         generation=1,
         fence=1,
-        state=AgentAuthorityLeaseState.ACTIVE,
+        state=AgentAuthorityLeaseState.PENDING,
         issued_at=command.root_authority_lease.issued_at,
         expires_at=None,
         agent_id=command.master_member_id,
+        workspace_generation=1,
         policy_digest=_digest("different-root-policy"),
         idempotency_key=command.idempotency_key,
         updated_at=command.root_authority_lease.updated_at,
@@ -263,6 +413,10 @@ def test_bootstrap_rejects_authorization_bound_to_another_root_lease() -> None:
         root_authority_lease=different,
         initial_capability_binding=command.initial_capability_binding,
         session_composition_pin=command.session_composition_pin,
+        project_repository_binding=command.project_repository_binding,
+        repository_pin=command.repository_pin,
+        workspace_generation=command.workspace_generation,
+        workspace_provisioning_intent=command.workspace_provisioning_intent,
     )
     store = _Store()
     store.records.clear()
@@ -277,3 +431,24 @@ def test_bootstrap_rejects_authorization_bound_to_another_root_lease() -> None:
 
     assert rejected.value.code == "session_bootstrap_authority_binding_mismatch"
     assert store.records == {}
+
+
+def test_bootstrap_reuses_only_the_exact_current_project_repository_binding() -> None:
+    store = _Store()
+    store.records.clear()
+    _seed_repository_binding(store)
+
+    receipt = SessionBootstrapKernelApplicationService(
+        store=store,
+        clock=_Clock(),
+        ids=_Ids(),
+        authority_verifier=_Verifier(),
+    ).bootstrap(_command())
+
+    assert receipt.result["repository_binding_registered"] is False
+    assert tuple(event.event_type for event in store.events) == (
+        "session.bootstrapped",
+    )
+    assert store.read(
+        entity_type="project_repository_binding_head", entity_id="project-1"
+    ).state_version == 1

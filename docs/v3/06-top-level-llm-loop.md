@@ -3,36 +3,52 @@
 ## 一次 turn
 
 ```text
-claim signal -> acquire session lease -> build truthful projection
--> invoke model -> validate/dispatch tool calls -> persist outcomes
--> enqueue explicit follow-up facts -> release/heartbeat lease
+claim signal + exact workflow link -> acquire session lease
+-> build RuntimeTurnContext + affordance/exposure snapshots
+-> invoke model -> validate/dispatch Direct or explicitly expanded tool calls
+-> atomically settle assistant/tool/failure transcript + signal outcome
+-> enqueue explicit causally-linked follow-up facts -> release/heartbeat lease
 ```
 
 loop 是 bounded coordinator，不是 workflow truth owner。它读取 typed repositories，通过 canonical
 tool router mutation，并将每个 outcome 显式记录。
 
-新 Kernel 的 coordinator 从 exact claimed signal、SessionRuntimeLease、Distribution/Adapter/Extension/catalog
-identities、SessionCapabilityBindingRevision 与本 turn ToolAffordanceSnapshot 构造 immutable
-`RuntimeTurnCommand`。Runtime Adapter 只返回 closed proposal；Kernel 在原子 once-only consume 时重验全部
-identity/budget，并分别写 continuation 与 settlement outbox。重复 outcome 不重跑 Adapter，runtime settlement
-也没有 `Task` 终态写权限。目标 LLM Adapter 已实现 exact provider/backend、bounded context/step/time/usage、
+新 Kernel 的 coordinator 从 exact claimed signal、`RuntimeSignalAuthorityLink@1`、其指向的未撤销
+`WorkflowAuthorityBinding@1`、SessionRuntimeLease、Distribution/Adapter/Extension/catalog identities、
+SessionCapabilityBindingRevision、`RuntimeTurnContext@1`、ToolAffordanceSnapshot 与
+`ToolExposureSnapshot@1` 构造 immutable `RuntimeTurnCommand`。Runtime Adapter 只返回 closed proposal；
+Kernel 在原子 once-only consume 时重验全部 identity/budget，并写 ordered assistant/tool/failure transcript、
+continuation 与 settlement outbox。重复 outcome 不重跑 Adapter，runtime settlement也没有 `Task` 终态写权限。
+目标 LLM Adapter 已实现 exact provider/backend、bounded context/step/time/usage、
 同 provider 有限 retry 和 no-switch failure；LangChain factory/invoker、token/model limits、debug 与
 connectivity mechanism 也由该包唯一拥有并由 Standard factory 构造。旧 production loop 在显式 composition
 cutover 前仍保留，不能把目标实现存在当成已激活。
 
 ## Projection
 
-model context 包含：objective、task/lane、assignment、inbox、approval、workspace status、private/published
-revision facts、reports、scientific state、external job/result、failures 和 docs references。credential、
-private locator、raw backend handle 和未授权 owner view 不进入 prompt。
+model context 由 Kernel 的同一个结构化 builder 生成，包含：Session/member/role、objective、task board、current
+task/lane、assignment、inbox/protocol、approval/continuation、exact workflow authority、workspace
+provisioning/generation/revision、reports、scientific state、external job/result、capability/exposure、ordered
+transcript、safe failures 和 docs references。credential、private locator、raw backend handle、Hidden capability
+的名称/描述/参数和未授权 owner view 不进入 prompt；只保留不含名称的aggregate hidden count与完整snapshot
+identity digest。Standard 也必须使用同一 projection；“没有领域 workflow”由显式空 root
+binding 表达，不允许回退到 conversation-only runtime admission。
 
 world observation 必须区分 observed、unknown、stale、not-authorized 和 absent。projection missing 不等于
 业务不存在。
 
 ## Tool loop
 
-provider-visible schema 来自 exact `ToolSpec` catalog。response tool name 先恢复 canonical name，再进入
-router。每次调用绑定 session、agent、task/lane、lease/fence、call id 和 catalog digest。
+provider-visible schema 不是 declared catalog 的全量副本。每个 provider step 都从 current
+`ToolExposureSnapshot@1` 重新列出 Direct tools：稳定 collaboration verbs 与 role essentials 常驻；Deferred
+long-tail 只在模型先 inspection、再显式 command-scoped expansion 后进入后续 step；Hidden 名称/描述/参数永不
+列出或泄漏，aggregate count/digest不能用于选择或调用工具。
+expansion 只改变可见性，不扩大 workflow、authority、approval、workspace、qualification、health 或 route。
+
+response tool name 先恢复 canonical name，再进入 router。每次调用绑定 session、agent、task/lane、
+workflow binding/epoch、exposure/expansion、lease/fence、workspace generation、call id、catalog/snapshot digest 和
+exact route；effect 前重新读取 current facts。任一漂移 fail closed，不用 latest binding、不换 route、不把
+Deferred 当 Direct。
 
 tool 参数错误以安全结构返回给 model；不得自动修正或重新调用。pending approval/continuation 会暂停
 当前 exact operation，后续 delivery 使用 durable continuation fence，不由 model 自行 polling。

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Mapping
 from typing import Any
 
 from openzyme_contracts import ClockPort
@@ -20,11 +21,21 @@ from openzyme_kernel import MountedRuntimeCapabilityGateway
 from openzyme_kernel import ProtocolKernelApplicationService
 from openzyme_kernel import PublicationKernelApplicationService
 from openzyme_kernel import RuntimeCoordinationKernelApplicationService
+from openzyme_kernel import RuntimeContinuationDeliveryKernelApplicationService
+from openzyme_kernel import RuntimeContinuationDeliveryWorker
 from openzyme_kernel import RuntimeTurnCoordinator
 from openzyme_kernel import SessionBootstrapKernelApplicationService
 from openzyme_kernel import TaskKernelApplicationService
+from openzyme_kernel import WorkspaceProvisioningKernelApplicationService
+from openzyme_kernel import WorkspaceProvisioningWorker
 from openzyme_kernel import build_kernel_workspace_tool_runtimes
+from openzyme_kernel.collaboration_tools import CollaborationToolApplications
+from openzyme_kernel.runtime_command_application import (
+    RuntimeCommandKernelApplicationService,
+)
+from openzyme_kernel.tool_exposure import ControlStoreCommandToolExpansionStore
 from openzyme_process_podman import PodmanWorkspaceMountResolver
+from openzyme_extension_spi import WorkspaceProvisionerPort
 from openzyme_runtime_spi import AgentRuntimeAdapter
 from openzyme_runtime_spi import ProcessIsolationPort
 from openzyme_store_sqlite import SQLiteControlStore
@@ -39,6 +50,7 @@ from .coordination_routes import StandardKernelCoordinationRouteApplication
 from .coordination_routes import build_standard_coordination_route_applications
 from .host_gateway import StandardHostKernelCommandGateway
 from .host_gateway import StandardSessionBootstrapAuthorityPort
+from .host_gateway import StandardWorkspaceBootstrapDefaults
 from .operational_routes import StandardKernelOperationalRouteApplication
 from .operational_routes import StandardRuntimeDrainApplication
 from .operational_routes import build_standard_operational_route_applications
@@ -46,7 +58,12 @@ from .factories import StandardLocalWorkspaceRuntimeAdapters
 from .factories import StandardLocalWorkspaceRuntimeFactory
 from .runtime_admission import StandardKernelRuntimeAdmissionSource
 from .runtime_drain import StandardBoundedRuntimeDrainApplication
+from .runtime_command_worker import StandardRuntimeCommandContextFactory
+from .runtime_command_worker import StandardRuntimeCommandExecutor
+from .runtime_command_worker import StandardRuntimeCommandWorker
+from .workflow_registry import StandardExplicitEmptyWorkflowRegistry
 from .workspace_context import StandardLocalWorkspaceToolContextResolver
+from .workspace_provisioning_worker import StandardWorkspaceProvisioningWorker
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +73,8 @@ class StandardKernelApplicationRuntime:
     store: SQLiteControlStore
     bootstrap: SessionBootstrapKernelApplicationService
     coordination: StandardKernelCoordinationRouteApplication
+    provisioning_worker: StandardWorkspaceProvisioningWorker
+    runtime_worker: StandardRuntimeCommandWorker
     gateway: StandardHostKernelCommandGateway
 
 
@@ -64,6 +83,8 @@ class StandardOperationalRuntimePorts:
     """Exact selected Adapter applications needed by effectful Standard routes."""
 
     runtime_drain: StandardRuntimeDrainApplication
+    runtime_worker: StandardRuntimeCommandWorker
+    provisioning_worker: StandardWorkspaceProvisioningWorker
     workspace: StandardLocalWorkspaceRuntimeAdapters
     workspace_context: LocalWorkspaceToolContextResolver
     revision_backend: WorkspaceRevisionBackendPort
@@ -77,6 +98,7 @@ class StandardOperationalAdapterSelection:
     workspace_mounts: PodmanWorkspaceMountResolver
     process_isolation: ProcessIsolationPort
     revision_backend: WorkspaceRevisionBackendPort
+    workspace_provisioner: WorkspaceProvisionerPort
     workspace_provider_id: str = "openzyme.workspace.git-lfs"
     podman_binary: str = "/usr/bin/podman"
 
@@ -118,15 +140,11 @@ def build_standard_operational_runtime_ports(
         podman_binary=selection.podman_binary,
     ).build()
     workspace_context = StandardLocalWorkspaceToolContextResolver(store)
-    mounted = mount_standard_kernel_workspace_tool_set(
-        startup=startup,
-        coordinator=workspace.coordinator,
-        context_resolver=workspace_context,
-    )
     extension_registry = ExtensionBundleRegistry.create(
         composition.plugins,
         activation_epoch=active.sequence,
     )
+    workflow_registry = StandardExplicitEmptyWorkflowRegistry(clock=clock)
     admissions = StandardKernelRuntimeAdmissionSource(
         records=store,
         startup=startup,
@@ -136,6 +154,7 @@ def build_standard_operational_runtime_ports(
             extension_registry=extension_registry,
             route_catalog=composition.route_catalog,
         ),
+        workflow_registry_snapshot_digest=(workflow_registry.registry_snapshot_digest),
         runtime_adapter_id=selection.runtime_adapter.adapter_id,
         runtime_adapter_contract_digest=(
             selection.runtime_adapter.adapter_contract_digest
@@ -147,29 +166,125 @@ def build_standard_operational_runtime_ports(
         clock=clock,
         ids=ids,
     )
-    runtime_drain = StandardBoundedRuntimeDrainApplication(
-        coordination=RuntimeCoordinationKernelApplicationService(
+    collaboration = CollaborationKernelApplicationService(
+        store=store,
+        clock=clock,
+        ids=ids,
+    )
+    tasks = TaskKernelApplicationService(
+        store=store,
+        reader=store,
+        clock=clock,
+        ids=ids,
+        finish_validators=FinishValidatorRegistry.from_mounted(
+            startup.mounted_surfaces.finish_validators
+        ),
+    )
+    protocols = ProtocolKernelApplicationService(
+        store=store,
+        clock=clock,
+        ids=ids,
+    )
+    approvals = ApprovalKernelApplicationService(
+        store=store,
+        clock=clock,
+        ids=ids,
+    )
+    mounted = mount_standard_kernel_workspace_tool_set(
+        startup=startup,
+        coordinator=workspace.coordinator,
+        context_resolver=workspace_context,
+        collaboration_applications=CollaborationToolApplications(
+            world=admissions,
+            collaboration=collaboration,
+            tasks=tasks,
+            protocol=protocols,
+            approvals=approvals,
+        ),
+        collaboration_context_resolver=admissions,
+    )
+    capability_gateway = MountedRuntimeCapabilityGateway(
+        scopes=admissions,
+        runtimes=mounted.tools,
+        expansions=ControlStoreCommandToolExpansionStore(
             store=store,
             reader=store,
             clock=clock,
             ids=ids,
         ),
-        turns=RuntimeTurnCoordinator(
-            adapter=selection.runtime_adapter,
-            outcomes=outcomes,
-        ),
-        outcomes=outcomes,
-        records=store,
-        admissions=admissions,
-        capability_gateway=MountedRuntimeCapabilityGateway(
-            scopes=admissions,
-            runtimes=mounted.tools,
-        ),
         clock=clock,
+    )
+    commands = RuntimeCommandKernelApplicationService(
+        store=store,
+        reader=store,
+        clock=clock,
+        ids=ids,
+    )
+    contexts = StandardRuntimeCommandContextFactory(records=store, ids=ids)
+    runtime_worker = StandardRuntimeCommandWorker(
+        application=commands,
+        records=store,
+        executor=StandardRuntimeCommandExecutor(
+            coordination=RuntimeCoordinationKernelApplicationService(
+                store=store,
+                reader=store,
+                clock=clock,
+                ids=ids,
+            ),
+            continuations=RuntimeContinuationDeliveryWorker(
+                application=(
+                    RuntimeContinuationDeliveryKernelApplicationService(
+                        store=store,
+                        clock=clock,
+                        ids=ids,
+                    )
+                ),
+                records=store,
+                ids=ids,
+            ),
+            turns=RuntimeTurnCoordinator(
+                adapter=selection.runtime_adapter,
+                outcomes=outcomes,
+            ),
+            outcomes=outcomes,
+            records=store,
+            admissions=admissions,
+            capability_gateway=capability_gateway,
+            contexts=contexts,
+            clock=clock,
+            ids=ids,
+        ),
+        contexts=contexts,
+        clock=clock,
+    )
+    runtime_drain = StandardBoundedRuntimeDrainApplication(
+        commands=commands,
         ids=ids,
     )
     return StandardOperationalRuntimePorts(
         runtime_drain=runtime_drain,
+        runtime_worker=runtime_worker,
+        provisioning_worker=StandardWorkspaceProvisioningWorker(
+            worker=WorkspaceProvisioningWorker(
+                application=WorkspaceProvisioningKernelApplicationService(
+                    store=store,
+                    reader=store,
+                    clock=clock,
+                    ids=ids,
+                ),
+                reader=store,
+                ports={
+                    selection.workspace_provisioner.adapter_binding_digest: (
+                        selection.workspace_provisioner
+                    )
+                },
+                clock=clock,
+                ids=ids,
+            ),
+            records=store,
+            clock=clock,
+            ids=ids,
+        ),
         workspace=workspace,
         workspace_context=workspace_context,
         revision_backend=selection.revision_backend,
@@ -183,6 +298,10 @@ def build_standard_kernel_application_runtime(
     clock: ClockPort,
     ids: IdGeneratorPort,
     bootstrap_authority: StandardSessionBootstrapAuthorityPort,
+    bootstrap_defaults_by_project: Mapping[
+        str,
+        StandardWorkspaceBootstrapDefaults,
+    ],
     operational_ports: StandardOperationalRuntimePorts | None = None,
     operational_selection: StandardOperationalAdapterSelection | None = None,
 ) -> StandardKernelApplicationRuntime:
@@ -245,8 +364,10 @@ def build_standard_kernel_application_runtime(
         ),
         message_ingress=MessageIngressKernelApplicationService(
             store=store,
+            reader=store,
             clock=clock,
             ids=ids,
+            workflow_registry=StandardExplicitEmptyWorkflowRegistry(clock=clock),
         ),
         ids=ids,
     )
@@ -278,8 +399,7 @@ def build_standard_kernel_application_runtime(
     overlap = set(route_applications).intersection(operational_routes)
     if overlap:
         raise RuntimeError(
-            "Standard Kernel route applications collided: "
-            f"{sorted(overlap)!r}"
+            f"Standard Kernel route applications collided: {sorted(overlap)!r}"
         )
     route_applications.update(operational_routes)
     gateway = StandardHostKernelCommandGateway(
@@ -289,11 +409,15 @@ def build_standard_kernel_application_runtime(
         clock=clock,
         ids=ids,
         route_applications=route_applications,
+        bootstrap_defaults_by_project=bootstrap_defaults_by_project,
+        workspace_provisioning=operational_ports.provisioning_worker,
     )
     return StandardKernelApplicationRuntime(
         store=store,
         bootstrap=bootstrap,
         coordination=coordination,
+        provisioning_worker=operational_ports.provisioning_worker,
+        runtime_worker=operational_ports.runtime_worker,
         gateway=gateway,
     )
 

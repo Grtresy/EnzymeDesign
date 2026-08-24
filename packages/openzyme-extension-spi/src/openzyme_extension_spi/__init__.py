@@ -78,6 +78,12 @@ from .transactions import ExtensionStateApplicationService
 from .transactions import ExtensionTransactionBudget
 from .transactions import ExtensionTransactionCoordinatorPort
 from .transactions import ExtensionTransactionParticipant
+from .workflow_registry import WorkflowRegistryResolutionError
+from .workflow_registry import WorkflowRegistryResolverPort
+from .workflow_registry import validate_workflow_registry_resolver_identity
+from .workspace_provisioning import WorkspaceProvisionerPort
+from .workspace_provisioning import WorkspaceProvisionerPortError
+from .workspace_provisioning import validate_workspace_provisioner_identity
 
 
 __all__ = [
@@ -188,12 +194,18 @@ __all__ = [
     "WorkerClaim",
     "WorkerClaimRequest",
     "WorkerContributor",
+    "WorkflowRegistryResolutionError",
+    "WorkflowRegistryResolverPort",
+    "WorkspaceProvisionerPort",
+    "WorkspaceProvisionerPortError",
     "discover_extension_manifest_locators",
     "normalize_http_route_path",
     "parse_component_manifest_json",
     "parse_distribution_composition_toml",
     "read_located_component_manifest",
     "verify_located_component_manifest",
+    "validate_workflow_registry_resolver_identity",
+    "validate_workspace_provisioner_identity",
     "ContinuationApplicationCommand",
     "ContinuationApplicationService",
     "ContinuationCommandKind",

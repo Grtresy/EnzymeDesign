@@ -14,6 +14,17 @@ session runtime lease、agent process epoch、controlled-operation execution fen
 fence、executor workspace generation、scheduler occurrence credential 和 mutation writer fence 相互独立。
 任何跨层借权均拒绝。
 
+resident teammate turn 还增加三类不可借用的 identity：当前 signal 的 workflow authority link/epoch、Kernel
+生成的 structured context digest、model tool exposure/expansion identity。runtime drain 不能提交或扩大它们；
+provider call、每次 Direct/expanded tool dispatch 与 outcome settlement 都重新验证 current facts。workspace
+仍在 provisioning、binding 已 revoke、exposure stale 或 route/qualification 漂移时，turn 在 effect 前失败，
+不能换 provider/route、把 Deferred 当 Direct、扫描 latest workflow 或临时 seed ready workspace。
+
+assistant/tool/provider-failure outcome 与 signal settlement在同一个 Store fence 下原子持久化。duplicate exact
+outcome 幂等，collision 或 stale epoch 零部分写入；runtime idle、drain timeout、进程退出和 tool success 均不
+构成 Task、publication、Science attempt 或 HPC occurrence terminal。fresh non-live Distribution E2E 只验证这
+些内部联系和 restart recovery，不表示真实 Provider/SSH/Slurm/HPC 已 qualified、cutover 或 live。
+
 ## Executor workspace
 
 `ExecutorHpcWorkspace` 绑定 project/session/executor member、target qualification、generation 和 root identity。

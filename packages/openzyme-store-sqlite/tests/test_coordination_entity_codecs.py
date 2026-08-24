@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 
+import pytest
+
 from openzyme_contracts import DurableEventRecord
 from openzyme_contracts import ExternalEffectCertainty
 from openzyme_contracts import FailureActorKind
@@ -13,15 +15,24 @@ from openzyme_contracts import KernelRecordSnapshot
 from openzyme_contracts import KernelStateMutation
 from openzyme_contracts import OutboxRecord
 from openzyme_contracts import RetryEligibility
+from openzyme_contracts import StructuredFailureContext
 from openzyme_contracts import UnitOfWorkRequest
+from openzyme_contracts import WorkflowAuthorityBinding
+from openzyme_contracts import WorkflowAuthorityDerivationKind
+from openzyme_contracts import WorkflowAuthorityStatus
 from openzyme_contracts import canonical_sha256_digest
+from openzyme_contracts import observe_structured_failure
+from openzyme_contracts import parse_failure_observation
 from openzyme_store_sqlite import ApprovalRequestSQLiteKernelEntityCodec
 from openzyme_store_sqlite import AgentMemberSQLiteKernelEntityCodec
 from openzyme_store_sqlite import ContinuationSQLiteKernelEntityCodec
 from openzyme_store_sqlite import FailureObservationSQLiteKernelEntityCodec
+from openzyme_store_sqlite import PrivateDiagnosticSQLiteKernelEntityCodec
 from openzyme_store_sqlite import SessionRuntimeLeaseSQLiteKernelEntityCodec
 from openzyme_store_sqlite import SessionSQLiteKernelEntityCodec
 from openzyme_store_sqlite import SQLiteControlStore
+from openzyme_store_sqlite import SQLiteControlStoreError
+from openzyme_store_sqlite import WorkflowAuthorityBindingSQLiteKernelEntityCodec
 from openzyme_store_sqlite import install_owner_partitioned_schema_for_offline_migration
 from openzyme_store_sqlite import install_store_schema_for_offline_migration
 
@@ -29,21 +40,27 @@ from openzyme_store_sqlite import install_store_schema_for_offline_migration
 NOW = "2026-08-21T00:00:00+00:00"
 
 
-def _store() -> tuple[sqlite3.Connection, SQLiteControlStore]:
-    connection = sqlite3.connect(":memory:")
+def _coordination_codecs():
+    return (
+        AgentMemberSQLiteKernelEntityCodec(),
+        ApprovalRequestSQLiteKernelEntityCodec(),
+        ContinuationSQLiteKernelEntityCodec(),
+        FailureObservationSQLiteKernelEntityCodec(),
+        PrivateDiagnosticSQLiteKernelEntityCodec(),
+        SessionRuntimeLeaseSQLiteKernelEntityCodec(),
+        SessionSQLiteKernelEntityCodec(),
+        WorkflowAuthorityBindingSQLiteKernelEntityCodec(),
+    )
+
+
+def _store(database: str = ":memory:") -> tuple[sqlite3.Connection, SQLiteControlStore]:
+    connection = sqlite3.connect(database)
     connection.execute("PRAGMA foreign_keys = ON")
     install_owner_partitioned_schema_for_offline_migration(connection)
     install_store_schema_for_offline_migration(connection)
     store = SQLiteControlStore(
         connection,
-        codecs=(
-            AgentMemberSQLiteKernelEntityCodec(),
-            ApprovalRequestSQLiteKernelEntityCodec(),
-            ContinuationSQLiteKernelEntityCodec(),
-            FailureObservationSQLiteKernelEntityCodec(),
-            SessionRuntimeLeaseSQLiteKernelEntityCodec(),
-            SessionSQLiteKernelEntityCodec(),
-        ),
+        codecs=_coordination_codecs(),
     )
     _commit(
         store,
@@ -85,6 +102,39 @@ def _store() -> tuple[sqlite3.Connection, SQLiteControlStore]:
             "created_at": NOW,
             "updated_at": NOW,
         },
+    )
+    registry_digest = canonical_sha256_digest({"registry": "coordination-test"})
+    selection_digest = canonical_sha256_digest(
+        {
+            "schema_version": "workflow_selection_binding@1",
+            "registry_snapshot_digest": registry_digest,
+            "selected_workflow_refs": [],
+        }
+    )
+    workflow = WorkflowAuthorityBinding(
+        authority_id="workflow-authority-1",
+        session_id="session-1",
+        project_id="project-1",
+        request_lineage_id="request-lineage-1",
+        source_message_id="message-1",
+        source_principal_id="user-1",
+        authorized_actor_id="agent-1",
+        selected_workflow_refs=(),
+        selection_digest=selection_digest,
+        registry_snapshot_digest=registry_digest,
+        derivation_kind=WorkflowAuthorityDerivationKind.ROOT_MESSAGE,
+        status=WorkflowAuthorityStatus.ACTIVE,
+        epoch=1,
+        state_version=1,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    _commit(
+        store,
+        command="workflow-authority-create",
+        entity_type="workflow_authority_binding",
+        entity_id=workflow.authority_id,
+        payload=workflow.to_dict(),
     )
     return connection, store
 
@@ -151,11 +201,19 @@ def _commit(
 
 def test_approval_request_codec_uses_target_columns_and_cas() -> None:
     connection, store = _store()
+    workflow = store.read(
+        entity_type="workflow_authority_binding",
+        entity_id="workflow-authority-1",
+    )
+    assert workflow is not None
     pending = {
         "approval_id": "approval-1",
         "session_id": "session-1",
         "requester_actor_id": "agent-1",
         "intent_digest": canonical_sha256_digest({"intent": "run"}),
+        "workflow_authority_id": workflow.entity_id,
+        "workflow_authority_epoch": workflow.payload["epoch"],
+        "workflow_authority_digest": workflow.payload["binding_digest"],
         "requested_action": "external operation",
         "scope_id": "scope-1",
         "task_id": None,
@@ -215,9 +273,10 @@ def test_approval_request_codec_uses_target_columns_and_cas() -> None:
         kind=KernelMutationKind.REPLACE,
         expected_state_version=1,
     )
-    assert store.read(
-        entity_type="approval_request", entity_id="approval-1"
-    ).state_version == 2
+    assert (
+        store.read(entity_type="approval_request", entity_id="approval-1").state_version
+        == 2
+    )
 
 
 def test_session_runtime_lease_codec_reuses_one_target_owner_row() -> None:
@@ -391,3 +450,140 @@ def test_failure_observation_codec_round_trips_structured_public_facts() -> None
         FROM failure_observation_records WHERE failure_id = 'failure-1'
         """
     ).fetchone() == ('{"provider":"fake"}', 0, 0, "diagnostic-1")
+
+
+def test_private_diagnostic_pair_round_trips_across_restart_and_is_immutable(
+    tmp_path,
+) -> None:
+    database = str(tmp_path / "failure-pair.db")
+    connection, store = _store(database)
+    records = observe_structured_failure(
+        RuntimeError("operator-only-sqlite-token=top-secret"),
+        context=StructuredFailureContext(
+            failure_id="failure-private-1",
+            diagnostic_id="diagnostic-private-1",
+            session_id="session-1",
+            component="openzyme.runtime.llm",
+            operation="run_turn",
+            phase="provider_invoke",
+            source_kind="agent_runtime_adapter",
+            source_ref="command-runtime-1",
+            source_version=canonical_sha256_digest({"command": "runtime-1"}),
+            created_at=NOW,
+            agent_id="agent-1",
+            correlation_id="correlation-1",
+        ),
+        failure_class=FailureClass.PROVIDER,
+        recoverability=FailureRecoverability.TERMINAL,
+        effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+        retry_eligibility=RetryEligibility.TERMINAL,
+        actor_kind=FailureActorKind.SYSTEM,
+        error_code="provider_failed",
+        safe_summary="The selected provider failed before an external effect.",
+        safe_hint="Inspect the operator diagnostic.",
+        next_action="inspect_diagnostic",
+        mutation_applied=False,
+        private_context={"credential": "operator-only-sqlite-token=top-secret"},
+    )
+    request = UnitOfWorkRequest(
+        unit_of_work_id="uow-failure-private-pair",
+        command_id="command-failure-private-pair",
+        session_id="session-1",
+        actor_id="operator-1",
+        authority_lease_id="authority-1",
+        authority_generation=1,
+        authority_fence=1,
+        expected_session_version=1,
+        idempotency_key="idempotency-failure-private-pair",
+        command_digest=canonical_sha256_digest({"pair": "failure-private-1"}),
+    )
+    unit = store.begin(request)
+    unit.stage(
+        KernelStateMutation.create(
+            mutation_id="mutation-failure-private-public",
+            kind=KernelMutationKind.CREATE,
+            entity_type="failure_observation",
+            entity_id=records.public.failure_id,
+            expected_state_version=None,
+            payload=records.public.to_internal_dict(),
+        )
+    )
+    unit.stage(
+        KernelStateMutation.create(
+            mutation_id="mutation-failure-private-sidecar",
+            kind=KernelMutationKind.CREATE,
+            entity_type="private_diagnostic",
+            entity_id=records.private.diagnostic_id,
+            expected_state_version=None,
+            payload=records.private.to_dict(),
+        )
+    )
+    event = DurableEventRecord.create(
+        event_id="event-failure-private-pair",
+        session_id="session-1",
+        event_type="failure.recorded",
+        source_entity_type="failure_observation",
+        source_entity_id=records.public.failure_id,
+        source_state_version=1,
+        command_id=request.command_id,
+        payload={"failure_id": records.public.failure_id},
+    )
+    unit.append_event(event)
+    outbox_payload = {"event_id": event.event_id}
+    unit.append_outbox(
+        OutboxRecord(
+            outbox_id="outbox-failure-private-pair",
+            session_id="session-1",
+            topic="openzyme.kernel.failure-events",
+            occurrence_id=event.event_id,
+            payload=outbox_payload,
+            payload_digest=canonical_sha256_digest(outbox_payload),
+            created_at=NOW,
+        )
+    )
+    assert unit.commit().committed is True
+    connection.close()
+
+    restarted_connection = sqlite3.connect(database)
+    restarted_connection.execute("PRAGMA foreign_keys = ON")
+    restarted = SQLiteControlStore(
+        restarted_connection,
+        codecs=_coordination_codecs(),
+    )
+    public = restarted.read(
+        entity_type="failure_observation",
+        entity_id=records.public.failure_id,
+    )
+    private = restarted.read(
+        entity_type="private_diagnostic",
+        entity_id=records.private.diagnostic_id,
+    )
+    assert public == KernelRecordSnapshot.create(
+        entity_type="failure_observation",
+        entity_id=records.public.failure_id,
+        state_version=1,
+        payload=records.public.to_internal_dict(),
+    )
+    assert private == KernelRecordSnapshot.create(
+        entity_type="private_diagnostic",
+        entity_id=records.private.diagnostic_id,
+        state_version=1,
+        payload=records.private.to_dict(),
+    )
+    parsed_public = parse_failure_observation(public.payload)
+    assert isinstance(parsed_public, FailureObservation)
+    assert "private_diagnostic_digest" not in parsed_public.to_dict()
+    assert "top-secret" not in str(parsed_public.to_dict())
+    assert "top-secret" in private.payload["exception_message"]
+
+    with pytest.raises(SQLiteControlStoreError) as immutable:
+        _commit(
+            restarted,
+            command="private-diagnostic-replace",
+            entity_type="private_diagnostic",
+            entity_id=records.private.diagnostic_id,
+            payload=records.private.to_dict(),
+            kind=KernelMutationKind.REPLACE,
+            expected_state_version=1,
+        )
+    assert immutable.value.code == "sqlite_private_diagnostic_immutable"

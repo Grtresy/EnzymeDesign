@@ -14,7 +14,10 @@ from openzyme_contracts import KernelRecordSnapshot
 from openzyme_contracts import KernelStateMutation
 from openzyme_contracts import OutboxRecord
 from openzyme_contracts import UnitOfWorkRequest
+from openzyme_contracts import WorkflowAuthoritySignalSourceKind
 from openzyme_contracts import canonical_sha256_digest
+from openzyme_contracts import require_digest
+from openzyme_contracts import require_identifier
 from openzyme_contracts.identity import JsonValue
 from openzyme_contracts.identity import json_compatible
 from openzyme_extension_spi import ApprovalApplicationCommand
@@ -25,6 +28,8 @@ from openzyme_extension_spi import KernelMutationReceipt
 from .authority_application import evaluate_authority_payload
 from .errors import KernelContractError
 from .runtime_coordination_application import build_runtime_signal_payload
+from .workflow_authority_application import ExistingWorkflowAuthoritySignalRequest
+from .workflow_authority_application import WorkflowAuthorityUnitOfWorkOwner
 
 
 def _instant(value: str) -> datetime:
@@ -52,15 +57,35 @@ class ApprovalKernelApplicationService:
         self._store = store
         self._clock = clock
         self._ids = ids
+        self._workflow_authority = WorkflowAuthorityUnitOfWorkOwner(
+            clock=clock,
+            ids=ids,
+        )
 
     def execute(self, command: ApprovalApplicationCommand) -> KernelMutationReceipt:
         allowed = (
-            {"requested_action", "scope_id", "task_id", "expires_at", "reason"}
+            {
+                "requested_action",
+                "scope_id",
+                "task_id",
+                "expires_at",
+                "reason",
+                "workflow_authority_id",
+                "workflow_authority_epoch",
+                "workflow_authority_digest",
+            }
             if command.operation is ApprovalCommandKind.REQUEST
             else {"decision", "resolution_ref", "reason"}
         )
         required = (
-            {"requested_action", "scope_id", "expires_at"}
+            {
+                "requested_action",
+                "scope_id",
+                "expires_at",
+                "workflow_authority_id",
+                "workflow_authority_epoch",
+                "workflow_authority_digest",
+            }
             if command.operation is ApprovalCommandKind.REQUEST
             else {"decision", "resolution_ref"}
         )
@@ -113,7 +138,9 @@ class ApprovalKernelApplicationService:
                 entity_type="approval_request", entity_id=command.approval_id
             )
             now = self._clock.now_iso()
-            extra_mutations: list[KernelStateMutation] = []
+            signal_mutation: KernelStateMutation | None = None
+            signal_id: str | None = None
+            signal_link = None
             if command.operation is ApprovalCommandKind.REQUEST:
                 if current is not None:
                     raise KernelContractError(
@@ -125,6 +152,21 @@ class ApprovalKernelApplicationService:
                     raise KernelContractError(
                         "approval_expiry_invalid",
                         "ApprovalRequest must expire in the future",
+                    )
+                authority_id, authority_epoch, authority_digest = (
+                    self._authority_identity(command.payload)
+                )
+                workflow_binding = self._workflow_authority.require_current(
+                    unit,
+                    authority_id=authority_id,
+                    expected_epoch=authority_epoch,
+                    expected_binding_digest=authority_digest,
+                    expected_actor_id=command.context.actor_id,
+                )
+                if workflow_binding.session_id != command.context.session_id:
+                    raise KernelContractError(
+                        "workflow_authority_session_mismatch",
+                        "Approval workflow authority belongs to another Session",
                     )
                 approval_payload: dict[str, JsonValue] = {
                     "approval_id": command.approval_id,
@@ -142,6 +184,9 @@ class ApprovalKernelApplicationService:
                     "resolver_actor_id": None,
                     "resolution_ref": None,
                     "operation_dispatched": False,
+                    "workflow_authority_id": authority_id,
+                    "workflow_authority_epoch": authority_epoch,
+                    "workflow_authority_digest": authority_digest,
                 }
                 mutation_kind = KernelMutationKind.CREATE
                 expected_version = None
@@ -253,8 +298,7 @@ class ApprovalKernelApplicationService:
                         "signal_id": signal_id,
                     }
                 )
-                extra_mutations.append(
-                    KernelStateMutation.create(
+                signal_mutation = KernelStateMutation.create(
                         mutation_id=self._ids.new_id(namespace="mutation"),
                         kind=KernelMutationKind.CREATE,
                         entity_type="agent_runtime_signal",
@@ -288,6 +332,23 @@ class ApprovalKernelApplicationService:
                             enqueue_command_digest=signal_command_digest,
                         ),
                     )
+                authority_id, authority_epoch, authority_digest = (
+                    self._authority_identity(current.payload)
+                )
+                signal_link = self._workflow_authority.link_existing(
+                    unit,
+                    ExistingWorkflowAuthoritySignalRequest(
+                        session_id=command.context.session_id,
+                        authority_id=authority_id,
+                        authority_epoch=authority_epoch,
+                        authority_binding_digest=authority_digest,
+                        authorized_actor_id=requester_id,
+                        signal_id=signal_id,
+                        causation_ref=command.approval_id,
+                        source_kind=(
+                            WorkflowAuthoritySignalSourceKind.APPROVAL_RESOLUTION
+                        ),
+                    ),
                 )
             mutation = KernelStateMutation.create(
                 mutation_id=self._ids.new_id(namespace="mutation"),
@@ -307,8 +368,15 @@ class ApprovalKernelApplicationService:
                 expected_state_version=session.state_version,
                 payload=session_payload,
             )
-            for item in (mutation, *extra_mutations, session_mutation):
-                unit.stage(item)
+            unit.stage(mutation)
+            if signal_mutation is not None:
+                assert signal_link is not None
+                self._workflow_authority.stage_runtime_signal_with_link(
+                    unit,
+                    signal_mutation=signal_mutation,
+                    link=signal_link,
+                )
+            unit.stage(session_mutation)
             event = DurableEventRecord.create(
                 event_id=self._ids.new_id(namespace="event"),
                 session_id=command.context.session_id,
@@ -321,6 +389,13 @@ class ApprovalKernelApplicationService:
                     "approval_id": command.approval_id,
                     "intent_digest": command.intent_digest,
                     "status": approval_payload["status"],
+                    "workflow_authority_id": authority_id,
+                    "workflow_authority_epoch": authority_epoch,
+                    "workflow_authority_digest": authority_digest,
+                    "runtime_signal_id": signal_id,
+                    "runtime_signal_authority_link_digest": (
+                        signal_link.link_digest if signal_link is not None else None
+                    ),
                     "operation_dispatched": False,
                 },
             )
@@ -330,6 +405,7 @@ class ApprovalKernelApplicationService:
                 "event_digest": event.event_digest,
                 "approval_id": command.approval_id,
                 "status": approval_payload["status"],
+                "workflow_authority_id": authority_id,
             }
             unit.append_outbox(
                 OutboxRecord(
@@ -352,27 +428,78 @@ class ApprovalKernelApplicationService:
             state_version=next_version,
             payload=approval_payload,
         )
+        entity_refs = [
+            KernelEntityRef(
+                entity_kind="approval_request",
+                entity_id=command.approval_id,
+                state_version=next_version,
+                entity_digest=snapshot.record_digest,
+            )
+        ]
+        if signal_link is not None:
+            link_snapshot = KernelRecordSnapshot.create(
+                entity_type="runtime_signal_authority_link",
+                entity_id=signal_link.signal_id,
+                state_version=1,
+                payload=signal_link.to_dict(),
+            )
+            entity_refs.append(
+                KernelEntityRef(
+                    entity_kind=link_snapshot.entity_type,
+                    entity_id=link_snapshot.entity_id,
+                    state_version=link_snapshot.state_version,
+                    entity_digest=link_snapshot.record_digest,
+                )
+            )
         return KernelMutationReceipt.create(
             command_id=command.context.command_id,
             service_id=self.service_id,
             operation=command.operation.value,
             mutation_applied=committed.committed,
             effect_certainty=ExternalEffectCertainty.NO_EFFECT,
-            entity_refs=(
-                KernelEntityRef(
-                    entity_kind="approval_request",
-                    entity_id=command.approval_id,
-                    state_version=next_version,
-                    entity_digest=snapshot.record_digest,
-                ),
-            ),
+            entity_refs=tuple(entity_refs),
             event_refs=(event.event_id,),
             result={
                 "approval_id": command.approval_id,
                 "status": approval_payload["status"],
+                "workflow_authority_id": authority_id,
+                "workflow_authority_epoch": authority_epoch,
+                "workflow_authority_digest": authority_digest,
+                "runtime_signal_id": signal_id,
+                "runtime_signal_authority_link_digest": (
+                    signal_link.link_digest if signal_link is not None else None
+                ),
                 "operation_dispatched": False,
             },
         )
+
+    @staticmethod
+    def _authority_identity(payload: Mapping[str, object]) -> tuple[str, int, str]:
+        authority_id = payload.get("workflow_authority_id")
+        authority_epoch = payload.get("workflow_authority_epoch")
+        authority_digest = payload.get("workflow_authority_digest")
+        try:
+            if not isinstance(authority_id, str):
+                raise ValueError("workflow authority ID must be a string")
+            require_identifier(authority_id, field_name="workflow_authority_id")
+            if (
+                not isinstance(authority_epoch, int)
+                or isinstance(authority_epoch, bool)
+                or authority_epoch < 1
+            ):
+                raise ValueError("workflow authority epoch must be positive")
+            if not isinstance(authority_digest, str):
+                raise ValueError("workflow authority digest must be a string")
+            require_digest(
+                authority_digest,
+                field_name="workflow_authority_digest",
+            )
+        except ValueError as exc:
+            raise KernelContractError(
+                "workflow_authority_identity_invalid",
+                "Approval lacks an exact workflow authority identity",
+            ) from exc
+        return authority_id, authority_epoch, authority_digest
 
     def _authorize(self, command, unit) -> None:  # noqa: ANN001
         lease = unit.read(

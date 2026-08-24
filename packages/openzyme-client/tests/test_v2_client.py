@@ -61,6 +61,7 @@ def _response(release: LayeredReleaseIdentity) -> ClientHttpResponse:
         for field in FILE_WORKSPACE_CORE_SECTION_FIELDS
     }
     core["capability_binding"] = {"binding_digest": _digest("binding")}
+    core["failures"] = {"observations": []}
     core["tool_reflection"] = {
         "declared_tool_catalog_digest": release.declared_tool_catalog_digest,
         "capability_binding_digest": _digest("binding"),

@@ -1,9 +1,11 @@
 # OpenZyme V3 架构设计
 
-> 当前状态：`separate-openzyme-kernel-from-capability-extensions` 正在分阶段实施。当前源码的普通
-> Host/Client/CLI/UI 公共合同已经收敛到 exact `file_workspace_public@2`；旧 `@1` 只允许由显式离线历史
-> reader 解释。源码切换不等于真实部署切换：只有 Distribution manifest、migration、deployment
-> proof/epoch 和 qualification 对同一 identity 闭合后，目标 owner 才能视为生产 authority。
+> 当前状态：`separate-openzyme-kernel-from-capability-extensions` 的分层结果已经进入主线；
+> `complete-openzyme-resident-teammate-product-loop` 已在这个基础上闭合 fresh Session 到常驻队友回复的产品链。
+> Host/Client/CLI/UI 公共 envelope 保持 exact `file_workspace_public@2`，新增事实在既有 Core object section
+> 内使用各自 closed schema/digest；旧 `@1` 只允许由显式离线历史 reader 解释。源码实现与 non-live
+> 验收都不等于真实部署切换：只有 Distribution manifest、migration、deployment proof/epoch、qualification
+> 和独立 operator adoption 对同一 identity 闭合后，目标 owner 才能视为生产 authority。
 
 Git-shaped publication 的具体机制已由 `openzyme-workspace-git-lfs` 目标 Adapter 实现：显式 repository
 locator、private ref/commit/tree/whole-tree manifest observation、LFS actual-byte verification、create-only
@@ -44,6 +46,22 @@ wakeup signal 就属于前者，HMMER Plugin 通过 capability route 调用 HPC 
 OpenZyme 的稳定产品内核是：
 
 `session + task board + lane/workspace + approval + resident teammate + explicit runtime/drain`
+
+这组名词对应一条不可折叠的产品状态链：
+
+```text
+Session bootstrap
+  -> workspace provisioning (provisioning | ready | blocked)
+  -> user message + request-lineage workflow authority + wakeup signal
+  -> explicit runtime drain command
+  -> bounded turn + Direct/Deferred/Hidden tool presentation
+  -> fenced outcome settlement + canonical assistant/tool/failure transcript
+```
+
+Session 创建不等待 Git clone、volume 或 provider；workspace 未 `ready` 时消息/runtime admission 明确拒绝，
+不会由测试、CLI、UI 或 prompt 补造 runtime binding。消息成功也只表示 durable request 已排队，只有显式
+`/runtime/drain` 才允许 scheduler 推进 bounded turn。turn 结束、tool 成功和 assistant prose 均不替代
+`task.finish`。
 
 文件内容由项目 Git 仓库、私有工作区修订、不可变发布修订和 Git LFS 对象承载。SQLite
 保存身份、权限、租约、意图、回执、状态机和投影索引，不保存第二套通用文件目录真相。
@@ -213,14 +231,14 @@ canonical Plugin/Kernel surfaces；旧 function handler/repository/writer packag
   证明包装/依赖边界，不把不可激活的 Distribution 或 Plugin 提升为 production authority；
 - `enzymedesign` 已成为独立、版本化 Distribution wheel：它直接选择 Kernel、Standard-compatible
   Adapters、通用/产品 Plugins 与 Drivers，不依赖 `openzyme-standard` 作为语义层。repository 与 packaged
-  composition exact 相等，30 个 manifest locator、8 Adapter、14 Plugin、8 Driver、32 个 Plugin tool 加 5 个
-  Kernel workspace base tool（合计 37 个）的 catalog 全部
+  composition exact 相等，30 个 manifest locator、8 Adapter、14 Plugin、8 Driver、32 个 Plugin tool 加 13 个
+  Kernel resident/workspace base tool（合计 45 个）的 catalog 全部
   闭合，并能生成 EnzymeDesign fresh seed；typed runtime surface set 还能在 read-only startup gate 后通过
   Kernel exact mount 闭合 32 Plugin tools、13 capability routes、2 HTTP routes、5 projections、5 workers、
   2 finish validators 和 3 transaction participants，缺失或多余 surface 会在 mount 前失败。产品
   `build_enzymedesign_application_runtime()` 还会精确核对 8 个 selected Adapter runtime binding 的
   slot/target/component/manifest/contract/build identity；LLM、Git、Podman 与 Slurm 的 effectful operational
-  object 只能从这组 binding 派生，composition root 不再接受第二套独立 operational selection。闭合 5 个
+  object 只能从这组 binding 派生，composition root 不再接受第二套独立 operational selection。闭合 13 个
   Kernel 与 32 个 Plugin tool runtime 后才构造 SQLite writer、Kernel command/runtime gateway 与公共投影；
   通用 Host 入口已从该 graph 完成真实 Session bootstrap，且不依赖 `openzyme-standard`。这证明
   `runtime_mounted`；Distribution 另以 `ToolDispatchBinding` 将 Kernel 重验后的 authority fence、workspace
@@ -390,17 +408,23 @@ canonical Plugin/Kernel surfaces；旧 function handler/repository/writer packag
 - 新 Kernel 已实现唯一的 pre-Session `SessionBootstrapKernelApplicationService`：delivery security 通过
   Contracts verifier Port 验证短时 operator authorization，authorization 绑定 exact project/Session、root
   lease、revision-1 capability binding 和 immutable composition pin；Kernel 随后在一个 UoW 中 create-only
-  写 Session/master/root authority/binding/pin/event。普通 collaboration create 不再接受不可能合法预置的
-  Session lease，失败不产生 partial Session，bootstrap 也不创建 workspace/Task 或运行 runtime；
+  写 Session/master、exact repository pin、generation-1 `WorkspaceGeneration(RESERVED)`、绑定该 generation 的
+  pending root authority lease、`WorkspaceProvisioningIntent`、binding/pin/event/outbox。失败不产生 partial
+  Session；bootstrap 不等待 Adapter、不创建 Task，也不运行 runtime；
 - 新 Kernel 已实现 `WorkspaceIdentityKernelApplicationService`：Project repository binding 保留不可变历史并
   单调推进 head，Session repository pin 一次性冻结；WorkspaceGeneration 使用 closed lifecycle 和双重
-  generation/state-version，只有经 exact settled ControlledOperation receipt 证明的 ready generation 才产生
-  runtime binding，进入 retiring 即失去执行 affordance。Git/LFS/provision/cleanup 机制不进入 Kernel；
+  generation/state-version。Distribution-owned bounded provisioning worker 只调用选定 Adapter，Kernel settlement
+  按 intent/claim/generation/receipt fence 原子创建 runtime binding、激活 root lease并公开 ready；blocked 或
+  uncertain effect不自动重试。`dispatch_in_doubt` 恢复由独立 durable `WorkspaceProvisioningReconciliation`
+  持有原intent/request/dispatch receipt/attempt/claim与settlement，READY只激活原reservation而不改写历史；
+  terminal diagnosis后只有显式successor可创建下一generation/intent。Git/LFS/provision/cleanup 机制不进入 Kernel；
 - Standard 已将目标 runtime/local-workspace operational graph 接到同一个 target `SQLiteControlStore` writer：
   exact Adapter selection 先构造 Kernel authority/ControlledOperation owners、Podman workspace Ports、declared
   tool runtime mount 与 capability gateway，再构造 canonical signal lease/claim、bounded turn 和 once-only outcome
-  consumption。fresh non-live Host 测试已证明 ready workspace + authority successor + message → signal → drain →
-  released lease；构造和测试均未调用真实 Provider、Podman、Git、网络或 HPC，真实 offline cutover 仍未执行；
+  consumption。fresh non-live Distribution E2E 从空 file-backed roots 证明 bootstrap reservation → bounded
+  provisioning tick → ready → message queued-before-drain → explicit drain → assistant/tool transcript → 同根
+  restart recovery；构造和测试均使用 deterministic fake/recording external Ports，未调用真实 Provider、Podman、
+  Git transport、网络或 HPC，真实 offline cutover 仍未执行；
 - `openzyme-runtime-llm` 已成为 LLM mechanism 唯一 owner：除 exact-provider `AgentRuntimeAdapter` 的 closed
   配置、credential-slot、有界 context/step/time/usage、同 provider retry 和 no-switch failure 外，旧
   LangChain model factory/invoker、prompt tokenizer、token ledger、debug recorder 与 connectivity mechanism
@@ -516,6 +540,10 @@ component，避免 Kernel contract 反向依赖垂直类型。
 | external job/result | revision-bound execution owner、runner ledger 与 opaque handle | request、dispatch intent、handle、observation、cancel receipt、terminal result 和 deadline 持久化 | timeout、lease expiry、SSH 断开、文件存在或新 submit 不能冒充 settlement |
 | scientific deliverable | scientific attempt/selection authority 与 finalization transaction | adopted producer effect、published path、actual-byte validation、bundle 和 receipt 原子持久化 | 文件存在、digest 相同、历史 import、job success 或 report claim不能自动 adopt/close |
 | task terminal | task owner 通过显式 `task.finish` | terminal decision 与 closed typed evidence 在同一事务写入 | runtime idle、protocol delivery、publication、job/scientific terminal 不能机械完成 task |
+| workspace provisioning occurrence | Kernel `WorkspaceProvisioningIntent` + immutable receipt + `WorkspaceProvisioningReconciliation` + `WorkspaceGeneration`；选定 Workspace Adapter 只拥有机制 | reservation、claim lease、原request/dispatch receipt、独立reconciliation attempt/settlement、readiness、failure 与 runtime binding 持久化 | HTTP 等待、原地重开intent、直接 seed、另一个 Adapter、目录存在或 clone stdout 不能补造 ready |
+| request-lineage workflow authority | Kernel `WorkflowAuthorityBinding` 与 `RuntimeSignalAuthorityLink` | root/derived selection、registry snapshot、scope、parent/causation、status、epoch/digest 持久化 | raw `skill_keys`、memory、task/protocol prose、latest/all scan 或隐式 union 不能授予 authority |
+| runtime world/context 与 tool exposure | Kernel 投影 canonical facts；Distribution 拥有 exact role exposure policy | `RuntimeTurnContext`、affordance 与 `ToolExposureSnapshot` 绑定 command/turn identity；command 内 expansion 是临时 presentation | prompt、LLM 记忆、全部 mounted tools 或 Deferred expansion 不能扩大 authority、解除 blocker 或换 route |
+| runtime outcome 与 conversation | Kernel fenced outcome settlement | full outcome receipt、assistant/tool message、failure、signal/continuation/event 在一个短事务闭合 | provider response、进程 stdout、UI local state 或 settlement ID 不能替代 canonical transcript/failure |
 
 这些对象可以互相引用，但任何一个对象的成功、失败、过期或不可见都不能替另一个 owner
 做生命周期决策。projection、prompt、UI state、runner response 和离线 receipt 都只是各自权限内的
@@ -523,9 +551,37 @@ component，避免 Kernel contract 反向依赖垂直类型。
 
 ## 4. Runtime 与协作语义
 
+fresh Session bootstrap 在同一 Unit of Work 中固定 repository pin、master generation 1、pending
+exact-generation `AgentAuthorityLease`、`WorkspaceGeneration(RESERVED)` 和 durable provisioning intent。
+Distribution-owned bounded worker 只调用 manifest 选择的 workspace Adapter；它先取得 CAS claim，再在
+SQLite 写事务外执行 mechanism，最后以 exact controlled-operation receipt 回到 Kernel settlement。
+成功时 generation/runtime binding/member/lease/intent/event 原子进入 ready；`no_effect`、
+`dispatch_in_doubt` 或 terminal failure 都进入带 `FailureObservation` 的 blocked，不自动重试、切换
+Adapter 或创建 successor generation。`dispatch_in_doubt` 的显式 reconcile 创建独立 durable occurrence，只观察
+原request/receipt；即使它使原reservation ready，原blocked intent/failure也保持历史字节。terminal diagnosis
+之后显式successor才创建下一monotonic generation、新pending lease和新intent。
+
 `POST /v3/sessions/{session_id}/messages` 只写入用户消息并排队 durable signal，不隐式
 执行 teammate runtime drain。`POST /v3/sessions/{session_id}/runtime/drain` 只创建有界
 runtime command，并返回 `202`；独立 worker 认领后推进 bounded turn。
+
+每次 message admission 都把 workflow 选择当成请求而非 authority：Distribution resolver 在 exact registry
+snapshot 下解析 versioned refs，Kernel 原子写 root `WorkflowAuthorityBinding` 与 signal link；空选择同样有
+显式 active binding。delegation 只能派生 parent selection/scope 子集，protocol、approval、continuation 的
+downstream wakeup 必须携带 exact authority/epoch/causation。provider 前、每个 tool/delegation dispatch 前都
+重验 link；缺失、revoke、epoch/registry drift fail closed，不从 raw keys、prose 或“最新”记录恢复。
+
+runtime admission 由 Kernel 构造 bounded `RuntimeTurnContext`：objective、Agent/Task/lane、workspace、
+inbox/protocol、approval/continuation、failure、workflow authority、capability/affordance/exposure 和 canonical
+conversation 都是结构化事实。超界 collection 用稳定 cursor/truncation fact 表达；Adapter 只能压缩历史
+transcript，不能丢 current constraint identity，也不能把事实变成策略指令。
+
+model-facing catalog 再按 Distribution role policy分为 `Direct`、`Deferred`、`Hidden`。稳定协作动词与角色
+必需工具 Direct；long-tail Plugin tools 只能经 `capabilities.inspect` 查到并以 exact name 在当前 command 内
+扩展；Hidden 的名称/描述/参数对 provider/inspection 都不可见，context只保留不含名称的aggregate count和
+完整snapshot identity digest。exposure 与 affordance 正交，任何 expansion 都不创造 authority、
+不解除 approval/qualification/workspace blocker、不改变 exact route。Adapter 在每个 provider step 前重取
+当前 function list，gateway 在每次 dispatch 前重验 canonical facts。
 
 `task.delegate` 的真实写路径是 `ProtocolService.delegate()`。`protocol.send` 只投递 inbox
 并排队 wakeup，不同步运行 recipient。`auto_enqueue_ready_tasks` 默认关闭。
@@ -533,6 +589,18 @@ runtime command，并返回 `202`；独立 worker 认领后推进 bounded turn�
 task 业务终态只能由 agent 显式 `task.finish` 或已文档化的机械迁移写入。runtime idle、
 max steps、tool result、protocol message、job terminal、report publication 或 scientific
 closure 都不自动等于 task completed。
+
+Adapter 返回的 `RuntimeTurnOutcome` 是提案。Kernel 只有在 command、signal claim、Session lease、process
+epoch、workflow epoch、affordance/exposure 和 message/failure identities 全部 current 时，才在一个 Unit of
+Work 中写 immutable outcome、ordered assistant/tool conversation、canonical `FailureObservation`、signal
+terminal、settlement、可选 continuation、event/outbox。exact duplicate 幂等返回；同 command 的另一 outcome、
+message/failure collision 或 stale fence 在任何部分 mutation 前拒绝。下一 turn、CLI 与 UI 都读取同一 transcript。
+
+这里的 failure 必须与私有 diagnostic 一一配对并由同一生命周期 owner 原子持久化：workspace provisioning
+blocked、runtime command failed 与 accepted outcome failure 都把公开 pair identity 写回各自 owner；workflow
+resolver 在 message admission 前失败时只允许独立诊断事务，原 message/binding/inbox/signal/link 仍为零真值。
+continuation settlement 也只创建 pending intent；独立 delivery worker 原子创建新的 pending signal/link，最早由
+下一次显式 drain 执行，当前 turn 或 `protocol.send` 都没有同步运行 authority。
 
 在目标 Kernel 实现中，mounted Plugin finish validators 先进入 collision-safe closed registry；Task 固定适用
 validator ID，调用方不能临时删减或换用另一个 validator。只有 canonical Task owner 的显式 `task.finish`
@@ -575,13 +643,14 @@ Adapter 的 typed `no_effect`、known receipt 或 `dispatch_in_doubt` 都写回�
 异常先登记 reconcile，再以 `raise ... from ...` 保留 cause chain。当前 production Host 尚未切换到该
 coordinator，因此这不表示 local/HPC Adapter 已 cut over。
 
-所有失败必须同时形成同一 `diagnostic_id` 关联的两层证据：公开
-`failure_observation@2` 只包含稳定 `error_code`、component、operation、phase、typed identities、
-effect certainty、retry/reconcile policy、`mutation_applied`、`fallback_performed`、安全 cause chain
-和 next action；Host 私有 immutable diagnostic 保留完整 traceback、异常 `__cause__`/`__context__`、
-errno/return code、bounded stdout/stderr、私有路径/handle 和相关 source identity。跨边界包装必须
-使用 `raise ... from exc`。公开层按 allowlist 脱敏，但不得把未知原因改写为 not-found、corruption
-或 retryable，也不得吞掉 cleanup、reconcile 或 diagnostic persistence failure。
+所有失败必须同时形成同一 `diagnostic_id` 关联的两层证据：非空公开 failure 只接受 exact closed
+`failure_observation@2`，包含稳定 `error_code`、component、operation、phase、allowlisted typed
+identities/facts、effect certainty、retry/reconcile policy、`mutation_applied`、`fallback_performed`、安全 cause
+chain 和 next action；旧 schema、未知字段、private diagnostic 或不安全值均 fail closed，不得投影 traceback、
+stdout/stderr、private context 或 tool request。Host 私有 immutable diagnostic 保留完整 traceback、异常
+`__cause__`/`__context__`、errno/return code、bounded stdout/stderr、私有路径/handle 和相关 source identity。
+跨边界包装必须使用 `raise ... from exc`。公开层按 allowlist 脱敏，但不得把未知原因改写为 not-found、
+corruption 或 retryable，也不得吞掉 cleanup、reconcile 或 diagnostic persistence failure。
 
 ## 6. Revision-bound HPC
 
@@ -759,18 +828,46 @@ Standard 已补齐该 surface 的真实 Core provider：SQLite target CAS ledger
 index 只找 canonical identity，payload 仍由 32/32 owner-table codec 重建和验 digest；Kernel 据此解析唯一
 subject/root Agent、authority、latest binding、workspace readiness 和完整 affordance 分类。Distribution 再把
 provider 与 verified empty Plugin mount 注入 Host，依赖方向是 Standard → Host，不允许 Host 反向选择 Standard。
-未 provision workspace 只在 affordance snapshot 中表示为 generation `0`/blocked，不补造 workspace 真值。
+fresh Session 的未 provision workspace 由 exact generation reservation 与 provisioning intent 表示；公开
+readiness 为 `provisioning` 或 `blocked`，不会再用 generation `0` 代替缺失的产品生命周期，也不补造 ready 真值。
 Standard 现已用 `build_standard_kernel_application_runtime()` 将 Session bootstrap、Task/Lane/Agent、Protocol、
 Approval、AgentAuthorityLease 与 message ingress 接到同一 target SQLite Store，并由
 `build_standard_v2_host_app()` 形成真实 HTTP 组合。用户 principal 是消息 source，root Agent 仅以自己的 lease
 执行 admission；一个事务写入 conversation、user-kind inbox 和 pending signal，明确不 drain、不推断 Task 终态。
-尚未接入的 runtime/workspace/publication route 会 fail closed，不能回退旧 mixed Host。
+runtime/workspace/publication route 只有在 Distribution exact composition、role/workflow policy 与 selected
+Adapter runtime 都挂载后才可用；缺口 fail closed，不能回退旧 mixed Host。
+
+`file_workspace_public@2` 的 root/core section 集合保持不变；`session`、`agents`、`conversation`、`runtime`、
+`workspace`、`failures` 与 `tool_reflection` 内投影版本化 provisioning、workflow authority、tool exposure、
+outcome 和 ordered transcript facts。旧 Session 缺少 current resident identity 时返回
+`resident_teammate_state_incompatible`，Client/CLI/UI 不 seed、不选默认 workflow/route，也不把本地请求成功
+当成 runtime/Task 成功。
+
+公开 runtime DTO 与 Store 内部恢复合同严格分离。内部 `runtime_turn_command@2` / `runtime_turn_outcome@1` 保留
+完整 context、messages、tool requests 和 source receipt 供 restart/fencing；公开面只使用
+`runtime_command_public@1`、`runtime_turn_command_public@1`、`runtime_turn_outcome_public@1`、
+`runtime_turn_outcome_receipt_public@1`、`runtime_command_outcome_summary_public@1` 和
+`runtime_outcome_consumption_public@1`，删除 command/signal/session lease token、raw context/messages、tool
+name/arguments、嵌套 internal receipt 与私有 failure payload，仅保留 safe identity、non-secret fence、count、
+aggregate/source digest、summary、effect facts和continuation/settlement reference。Hidden/unknown 工具拒绝不会回显
+guessed name，tool transcript 也只投影 allowlisted settlement 摘要。
+
+provisioning inner fact 当前是 `workspace_provisioning_public@2`，公开exact intent digest/state-version和nullable
+safe reconciliation；reconciliation READY只改变effective readiness，不改写原blocked intent。operator-only
+`POST .../workspace/provisioning/reconcile`与`POST .../workspace/provisioning/successor`均返回`202`，由Host对exact
+release/project/projection/intent/reconciliation前置条件做fail-closed校验，再进入Distribution专用gateway；
+不得经generic mutation route、drain、Task或Adapter fallback实现。两个result都是exact closed admission-only合同，
+显式证明adapter、external effect、runtime、Task和fallback未发生；reconciliation result只公开occurrence/source
+lineage与enqueue事实，排除worker `claim_*`、terminal receipt、failure/diagnostic和private/tool payload。Host在返回
+`202`前、CLI在二次inspect前均fail closed验证；CLI只提交当前投影身份并重新inspect真值。
 
 Web UI 侧已实现独立的 `file_workspace_v2_state`、Core shell 与 manifest-declared extension renderer loader：
 Core state 只消费 closed `@2.core`，extension payload 只进入 exact section renderer；renderer catalog、section
 contract 或 renderer identity 缺失/漂移会禁用 mutation，且 Plugin-free Standard 不需要任何空的领域面板。
 Core shell 同时重验完整 layered release 和 condensed ToolAffordance reflection；inactive/degraded Plugin 通过
 blocked state 暴露原因，但对应工具不进入 dispatch 面，也不得自动改用其他 Plugin、route 或本地执行。
+controller 对 exact Host workspace projection 做有界轮询，仅在 canonical projection digest 变化时记录
+UI-local verified change observation；这不是 Host outbox/canonical event stream，不会补造 Kernel event。
 这些模块和负例测试已进入前端 build，当前 `main/controller/view/client` 已只接受 exact `@2`；但真实部署尚未
 执行 offline activation，前端构建通过也不等于 production cutover。
 
@@ -794,6 +891,12 @@ ledger、以及 manifest drift 都在 mutation 前拒绝，并报告 expected/ob
 SQLite connection 是 thread-affine 的。request、worker 和 bounded turn 在实际线程内创建
 并关闭自己的 connection；短 canonical mutation 使用 `BEGIN IMMEDIATE`，任何 LLM、provider、
 Git、runner 或进程等待都不能跨 SQLite 写事务。
+
+当前 resident-teammate 写路径还要求 Store 对 provisioning intent、workflow authority binding、signal link、
+runtime turn context/command/outcome、assistant/tool conversation 和 failure observation 提供 closed codec、
+owner manifest 与 CAS version ledger。workspace Adapter 私有 volume/Git rows、runtime provider response 和
+Plugin 私有表只能作为 mechanism/namespace truth；公共 projection 必须从 Kernel owner rows和验证后的 Adapter
+receipt 重建。owner codec 缺失、重复、unknown field 或 digest drift 均在 mutation/runtime admission 前拒绝。
 
 历史升级分两阶段，且都只允许由 `openspec/changes/.../operator/` 下的离线程序执行：
 
@@ -850,14 +953,27 @@ manifests、catalogs、inventory、schemas、文档实际字节、selection 与�
 的有界闭包，但不能冒充完整 qualification、部署 cutover 或 live 证明。
 
 其中 Standard 的 schema/composition/restart suite 已证明只读 activation、SQLite schema、Git/LFS、Client、
-空 Plugin mount，以及 `STANDARD_KERNEL_ENTITY_TYPES` 的 31/31 显式 SQLite codec closure；通过 exact
-deployment gate 后可以构造 Kernel application writer。它仍未经过完整通用 Host caller + Plugin-free
-collaboration qualification，因此不得把 Store writer admission 误记为完整产品路径。codec 缺失、重复或目录
-漂移仍以 `standard_kernel_store_codec_incomplete` 在 mutation 前 fail closed。
+空 Plugin mount，以及 `STANDARD_KERNEL_ENTITY_TYPES` 的完整显式 SQLite codec closure；通过 exact
+deployment gate 后可以构造 Kernel application writer。fresh file-backed resident E2E 还经过真实通用 Host
+caller + Plugin-free collaboration non-live qualification，因此可声明该 bounded 本地产品路径闭合；不得由此
+推断真实 Provider、外部 target、部署 cutover 或 live effect 已完成。codec 缺失、重复或目录漂移仍以
+`standard_kernel_store_codec_incomplete` 在 mutation 前 fail closed。
 
 拆分期间还必须运行 `uv run python scripts/check-openzyme-architecture.py`。该 gate 从实际
 `pyproject.toml`、Python AST、Distribution 配置和 in-memory SQLite schema 重算 component/import/table
 owner closure，并校验 source-to-document traceability；它是迁移门禁，不等于最终 cutover proof。
+
+两个官方 Distribution 的 executable launcher 还要在开放 Host 前执行只读 product preflight：实际 SQLite
+`database_list`、Store/runtime 类型、active release/bundle/catalog、完整 Adapter runtime set、实际 workflow resolver、
+runtime admission/全角色 policy 与 workspace binding 必须和 closed 配置及 activation 完全一致。receipt 只能报告
+观测所得的 file-backed identity，不能硬编码成功；漂移时先关闭 launcher，且不得改用 in-memory、相邻 Distribution
+或 live route。
+
+Standard 与 EnzymeDesign 还分别运行 fresh file-backed resident product E2E：从空 roots 完成 create、bounded
+provisioning tick、ready、message queued-before-drain、explicit drain、assistant/tool transcript、collaboration
+projection和同根 restart recovery。EnzymeDesign 额外覆盖 exact workflow binding 与 Direct/Deferred/Hidden
+role policy。两者使用 deterministic fake/recording Adapter 和 network/provider/HPC/SSH/browser deny guard；
+这类证据只证明 mounted non-live composition，不证明真实外部 readiness、部署 cutover 或科学报告已经产品完成。
 
 focused gate 通过不等于主线验收；mainline 失败时不得生成 acceptance receipt。live LLM、
 provider、HPC 和 seeded smoke 同时需要 marker/profile opt-in 与独立 `OPENZYME_ALLOW_LIVE=1` operator gate，
@@ -868,6 +984,10 @@ manual workflow 在本阶段仍为 plan-only，不读取 secrets、不调用真�
 ## 12. 不变量
 
 - harness 忠实、结构化、低摩擦地呈现世界约束，同时保留 agent 策略自由。
+- Session bootstrap、workspace provisioning、message admission、runtime drain 和 outcome settlement 是五个独立 owner/occurrence，不互相冒充。
+- workflow authority 只来自 exact request-lineage binding/link；空选择显式、派生只收窄、撤销按 epoch/fence 生效。
+- Direct/Deferred/Hidden 只控制模型呈现，永远不能替代 capability、authority、approval、qualification、workspace 或 route truth。
+- assistant/tool/failure 必须经 Kernel outcome settlement 成为 canonical transcript；provider response和UI state不是真值。
 - authority、effect certainty、scientific truth、publication 和 task terminal 不互相推断。
 - shared truth 只来自 typed repository 与 immutable revision，不来自 prompt、浏览器状态或临时目录。
 - 没有隐藏 fallback、自动重试、silent schema translation、ambient path 或 manual override。

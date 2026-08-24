@@ -30,6 +30,8 @@ from openzyme_kernel import MessageIngressKernelApplicationService
 from openzyme_kernel import ProtocolKernelApplicationService
 from openzyme_kernel import TaskKernelApplicationService
 
+from .role_policies import ENZYMEDESIGN_RESIDENT_ROLES
+
 
 STANDARD_COORDINATION_ROUTE_IDS = (
     "openzyme.kernel.message.send@2",
@@ -66,16 +68,38 @@ class EnzymeDesignKernelCoordinationRouteApplication:
         if route == "openzyme.kernel.message.send@2":
             context = _message_ingress_context(invocation, ids=self.ids)
             message_id = _pop_identifier(payload, "message_id", self.ids, "message")
-            content = _pop_text(payload, "content")
+            content = _pop_text(payload, "message")
+            request_lineage_id = _pop_identifier(
+                payload,
+                "request_lineage_id",
+                self.ids,
+                "request-lineage",
+            )
             task_id = _pop_optional_text(payload, "task_id")
             lane_id = _pop_optional_text(payload, "lane_id")
-            raw_skill_keys = payload.pop("skill_keys", [])
-            if payload or not isinstance(raw_skill_keys, tuple | list) or any(
-                not isinstance(item, str) or not item for item in raw_skill_keys
+            workflow_refs_present = "workflow_refs" in payload
+            skill_keys_present = "skill_keys" in payload
+            if workflow_refs_present == skill_keys_present:
+                raise _payload_error(route)
+            raw_workflow_refs = payload.pop("workflow_refs", ())
+            raw_skill_keys = payload.pop("skill_keys", ())
+            if (
+                payload
+                or not isinstance(raw_workflow_refs, tuple | list)
+                or not isinstance(raw_skill_keys, tuple | list)
+                or any(
+                    not isinstance(item, str) or not item
+                    for item in (*raw_workflow_refs, *raw_skill_keys)
+                )
             ):
                 raise _payload_error(route)
+            workflow_refs = tuple(raw_workflow_refs)
             skill_keys = tuple(raw_skill_keys)
-            if skill_keys != tuple(sorted(set(skill_keys))):
+            if (
+                workflow_refs != tuple(sorted(set(workflow_refs)))
+                or skill_keys != tuple(sorted(set(skill_keys)))
+                or (workflow_refs and skill_keys)
+            ):
                 raise _payload_error(route)
             return self.message_ingress.execute(
                 MessageIngressCommand(
@@ -83,8 +107,11 @@ class EnzymeDesignKernelCoordinationRouteApplication:
                     message_id=message_id,
                     source_actor_id=invocation.actor_id,
                     content=content,
+                    distribution_id="enzymedesign",
+                    request_lineage_id=request_lineage_id,
                     task_id=task_id,
                     lane_id=lane_id,
+                    workflow_refs=workflow_refs,
                     skill_keys=skill_keys,
                 )
             )
@@ -144,6 +171,19 @@ class EnzymeDesignKernelCoordinationRouteApplication:
                 self.ids,
                 "agent-member",
             )
+            role = payload.get("role")
+            if role not in ENZYMEDESIGN_RESIDENT_ROLES:
+                raise HostV2CommandError(
+                    "enzymedesign_resident_role_unsupported",
+                    "Agent registration requires one adopted EnzymeDesign resident role",
+                    status_code=422,
+                    mutation_applied=False,
+                    effect_certainty="no_effect",
+                    details={
+                        "adopted_roles": list(ENZYMEDESIGN_RESIDENT_ROLES),
+                        "fallback_performed": False,
+                    },
+                )
             return self.collaboration.execute(
                 CollaborationApplicationCommand(
                     context=context,

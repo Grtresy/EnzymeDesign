@@ -6,13 +6,16 @@ from openzyme_contracts import ClockPort
 from openzyme_contracts import ControlStorePort
 from openzyme_contracts import DurableEventRecord
 from openzyme_contracts import ExternalEffectCertainty
+from openzyme_contracts import FailureObservation
 from openzyme_contracts import IdGeneratorPort
 from openzyme_contracts import KernelMutationKind
 from openzyme_contracts import KernelRecordSnapshot
 from openzyme_contracts import KernelStateMutation
 from openzyme_contracts import OutboxRecord
+from openzyme_contracts import PrivateDiagnosticRecord
 from openzyme_contracts import UnitOfWorkRequest
 from openzyme_contracts import canonical_sha256_digest
+from openzyme_contracts import validate_failure_diagnostic_pair
 from openzyme_contracts.identity import JsonValue
 from openzyme_contracts.identity import json_compatible
 from openzyme_extension_spi import ContinuationApplicationCommand
@@ -78,7 +81,9 @@ def _require_session(unit, context):  # noqa: ANN001
 class ContinuationKernelApplicationService:
     service_id = "openzyme.kernel.continuation-application"
 
-    def __init__(self, *, store: ControlStorePort, clock: ClockPort, ids: IdGeneratorPort) -> None:
+    def __init__(
+        self, *, store: ControlStorePort, clock: ClockPort, ids: IdGeneratorPort
+    ) -> None:
         self._store = store
         self._clock = clock
         self._ids = ids
@@ -154,8 +159,7 @@ class ContinuationKernelApplicationService:
                 )
                 if (
                     recipient is None
-                    or recipient.payload.get("session_id")
-                    != command.context.session_id
+                    or recipient.payload.get("session_id") != command.context.session_id
                     or recipient.payload.get("status") != "active"
                 ):
                     raise KernelContractError(
@@ -215,7 +219,10 @@ class ContinuationKernelApplicationService:
                         "continuation_already_terminal",
                         "Terminal Continuation cannot be delivered again",
                     )
-                if current.payload.get("process_epoch") != command.payload["process_epoch"]:
+                if (
+                    current.payload.get("process_epoch")
+                    != command.payload["process_epoch"]
+                ):
                     raise KernelContractError(
                         "continuation_process_epoch_stale",
                         "Continuation process epoch is stale",
@@ -323,17 +330,56 @@ class ContinuationKernelApplicationService:
 class FailureKernelApplicationService:
     service_id = "openzyme.kernel.failure-application"
 
-    def __init__(self, *, store: ControlStorePort, clock: ClockPort, ids: IdGeneratorPort) -> None:
+    def __init__(
+        self, *, store: ControlStorePort, clock: ClockPort, ids: IdGeneratorPort
+    ) -> None:
         self._store = store
         self._clock = clock
         self._ids = ids
 
-    def record(self, command: FailureRecordCommand) -> KernelMutationReceipt:
+    def record(
+        self,
+        command: FailureRecordCommand,
+        *,
+        private_diagnostic: PrivateDiagnosticRecord | None = None,
+        authorization_operation: str = "failure.record",
+    ) -> KernelMutationReceipt:
         observation = command.observation
+        if not authorization_operation or any(
+            character.isspace() for character in authorization_operation
+        ):
+            raise ValueError(
+                "authorization_operation must be non-empty and whitespace-free"
+            )
         if observation.session_id != command.context.session_id:
             raise KernelContractError(
                 "failure_session_mismatch",
                 "FailureObservation belongs to another Session",
+            )
+        if private_diagnostic is not None:
+            try:
+                validate_failure_diagnostic_pair(observation, private_diagnostic)
+            except ValueError as exc:
+                raise KernelContractError(
+                    "failure_private_diagnostic_identity_mismatch",
+                    "FailureObservation and private diagnostic differ",
+                    details={
+                        "failure_id": observation.failure_id,
+                        "diagnostic_id": observation.diagnostic_id,
+                        "mutation_applied": False,
+                        "fallback_performed": False,
+                    },
+                ) from exc
+        elif observation.private_diagnostic_digest is not None:
+            raise KernelContractError(
+                "failure_private_diagnostic_missing",
+                "FailureObservation private diagnostic sidecar is missing",
+                details={
+                    "failure_id": observation.failure_id,
+                    "diagnostic_id": observation.diagnostic_id,
+                    "mutation_applied": False,
+                    "fallback_performed": False,
+                },
             )
         request = UnitOfWorkRequest(
             unit_of_work_id=self._ids.new_id(namespace="uow"),
@@ -349,7 +395,8 @@ class FailureKernelApplicationService:
                 {
                     "service_id": self.service_id,
                     "context": command.context.to_dict(),
-                    "observation": observation.to_dict(),
+                    "observation": observation.to_internal_dict(),
+                    "authorization_operation": authorization_operation,
                 }
             ),
         )
@@ -360,15 +407,61 @@ class FailureKernelApplicationService:
                 unit=unit,
                 context=command.context,
                 clock=self._clock,
-                operation="failure.record",
+                operation=authorization_operation,
                 scope_id=command.context.session_id,
             )
-            if unit.read(
+            existing_failure = unit.read(
                 entity_type="failure_observation", entity_id=observation.failure_id
-            ) is not None:
+            )
+            existing_private = unit.read(
+                entity_type="private_diagnostic",
+                entity_id=observation.diagnostic_id,
+            )
+            if existing_failure is not None:
+                public_matches = (
+                    json_compatible(existing_failure.payload)
+                    == observation.to_internal_dict()
+                )
+                private_matches = (
+                    private_diagnostic is None
+                    and existing_private is None
+                    or private_diagnostic is not None
+                    and existing_private is not None
+                    and json_compatible(existing_private.payload)
+                    == private_diagnostic.to_dict()
+                )
+                if public_matches and private_matches:
+                    unit.rollback()
+                    return self._receipt(
+                        command=command,
+                        observation=observation,
+                        private_diagnostic=private_diagnostic,
+                        mutation_applied=False,
+                        event_refs=(),
+                        duplicate=True,
+                    )
                 raise KernelContractError(
                     "failure_identity_conflict",
-                    "FailureObservation identity already exists",
+                    "FailureObservation identity already names another public/private pair",
+                    details={
+                        "failure_id": observation.failure_id,
+                        "diagnostic_id": observation.diagnostic_id,
+                        "public_matches": public_matches,
+                        "private_matches": private_matches,
+                        "mutation_applied": False,
+                        "fallback_performed": False,
+                    },
+                )
+            if existing_private is not None:
+                raise KernelContractError(
+                    "failure_private_diagnostic_identity_conflict",
+                    "Private diagnostic identity exists without the matching failure",
+                    details={
+                        "failure_id": observation.failure_id,
+                        "diagnostic_id": observation.diagnostic_id,
+                        "mutation_applied": False,
+                        "fallback_performed": False,
+                    },
                 )
             mutation = KernelStateMutation.create(
                 mutation_id=self._ids.new_id(namespace="mutation"),
@@ -376,9 +469,20 @@ class FailureKernelApplicationService:
                 entity_type="failure_observation",
                 entity_id=observation.failure_id,
                 expected_state_version=None,
-                payload=observation.to_dict(),
+                payload=observation.to_internal_dict(),
             )
             unit.stage(mutation)
+            if private_diagnostic is not None:
+                unit.stage(
+                    KernelStateMutation.create(
+                        mutation_id=self._ids.new_id(namespace="mutation"),
+                        kind=KernelMutationKind.CREATE,
+                        entity_type="private_diagnostic",
+                        entity_id=private_diagnostic.diagnostic_id,
+                        expected_state_version=None,
+                        payload=private_diagnostic.to_dict(),
+                    )
+                )
             event = DurableEventRecord.create(
                 event_id=self._ids.new_id(namespace="event"),
                 session_id=command.context.session_id,
@@ -417,30 +521,66 @@ class FailureKernelApplicationService:
         except Exception:
             unit.rollback()
             raise
+        return self._receipt(
+            command=command,
+            observation=observation,
+            private_diagnostic=private_diagnostic,
+            mutation_applied=committed.committed,
+            event_refs=(event.event_id,),
+            duplicate=False,
+        )
+
+    def _receipt(
+        self,
+        *,
+        command: FailureRecordCommand,
+        observation: FailureObservation,
+        private_diagnostic: PrivateDiagnosticRecord | None,
+        mutation_applied: bool,
+        event_refs: tuple[str, ...],
+        duplicate: bool,
+    ) -> KernelMutationReceipt:
         snapshot = KernelRecordSnapshot.create(
             entity_type="failure_observation",
             entity_id=observation.failure_id,
             state_version=1,
-            payload=observation.to_dict(),
+            payload=observation.to_internal_dict(),
         )
+        entity_refs = [
+            KernelEntityRef(
+                entity_kind="failure_observation",
+                entity_id=observation.failure_id,
+                state_version=1,
+                entity_digest=snapshot.record_digest,
+            )
+        ]
+        if private_diagnostic is not None:
+            private_snapshot = KernelRecordSnapshot.create(
+                entity_type="private_diagnostic",
+                entity_id=private_diagnostic.diagnostic_id,
+                state_version=1,
+                payload=private_diagnostic.to_dict(),
+            )
+            entity_refs.append(
+                KernelEntityRef(
+                    entity_kind="private_diagnostic",
+                    entity_id=private_diagnostic.diagnostic_id,
+                    state_version=1,
+                    entity_digest=private_snapshot.record_digest,
+                )
+            )
         return KernelMutationReceipt.create(
             command_id=command.context.command_id,
             service_id=self.service_id,
             operation="record",
-            mutation_applied=committed.committed,
+            mutation_applied=mutation_applied,
             effect_certainty=observation.effect_certainty,
-            entity_refs=(
-                KernelEntityRef(
-                    entity_kind="failure_observation",
-                    entity_id=observation.failure_id,
-                    state_version=1,
-                    entity_digest=snapshot.record_digest,
-                ),
-            ),
-            event_refs=(event.event_id,),
+            entity_refs=tuple(entity_refs),
+            event_refs=event_refs,
             result={
                 "failure_id": observation.failure_id,
                 "diagnostic_id": observation.diagnostic_id,
+                "duplicate": duplicate,
                 "task_transition_performed": False,
             },
         )

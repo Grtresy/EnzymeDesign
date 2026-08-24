@@ -5,6 +5,10 @@ from dataclasses import replace
 import pytest
 
 from openzyme_contracts import KernelRecordSnapshot
+from openzyme_contracts import WorkflowAuthorityBinding
+from openzyme_contracts import WorkflowAuthorityDerivationKind
+from openzyme_contracts import WorkflowAuthorityStatus
+from openzyme_contracts import canonical_sha256_digest
 from openzyme_extension_spi import KernelCommandContext
 from openzyme_extension_spi import ProtocolApplicationCommand
 from openzyme_extension_spi import ProtocolCommandKind
@@ -19,7 +23,40 @@ from test_controlled_operation_application import _digest
 
 def _store() -> _Store:
     store = _Store()
+    workflow = WorkflowAuthorityBinding(
+        authority_id="workflow-authority-parent-1",
+        session_id="session-1",
+        project_id="project-1",
+        request_lineage_id="request-lineage-1",
+        source_message_id="root-message-1",
+        source_principal_id="user-1",
+        authorized_actor_id="agent-1",
+        selected_workflow_refs=("workflow.code-review", "workflow.inspect"),
+        selection_digest=canonical_sha256_digest(
+            {
+                "schema_version": "workflow_selection_binding@1",
+                "registry_snapshot_digest": _digest("workflow-registry"),
+                "selected_workflow_refs": [
+                    "workflow.code-review",
+                    "workflow.inspect",
+                ],
+            }
+        ),
+        registry_snapshot_digest=_digest("workflow-registry"),
+        derivation_kind=WorkflowAuthorityDerivationKind.ROOT_MESSAGE,
+        status=WorkflowAuthorityStatus.ACTIVE,
+        epoch=1,
+        state_version=1,
+        created_at="2026-08-20T10:00:00+00:00",
+        updated_at="2026-08-20T10:00:00+00:00",
+    )
     records = (
+        KernelRecordSnapshot.create(
+            entity_type="workflow_authority_binding",
+            entity_id=workflow.authority_id,
+            state_version=1,
+            payload=workflow.to_dict(),
+        ),
         KernelRecordSnapshot.create(
             entity_type="agent_member",
             entity_id="agent-2",
@@ -109,6 +146,21 @@ def _service(store: _Store) -> ProtocolKernelApplicationService:
     return ProtocolKernelApplicationService(store=store, clock=_Clock(), ids=_Ids())
 
 
+def _workflow_payload(*, delegate: bool = False) -> dict[str, object]:
+    binding = _store().read(
+        entity_type="workflow_authority_binding",
+        entity_id="workflow-authority-parent-1",
+    )
+    payload: dict[str, object] = {
+        "workflow_authority_id": "workflow-authority-parent-1",
+        "workflow_authority_epoch": 1,
+        "workflow_authority_digest": binding.payload["binding_digest"],
+    }
+    if delegate:
+        payload["workflow_refs"] = ["workflow.inspect"]
+    return payload
+
+
 def test_delegate_atomically_creates_protocol_inbox_signal_and_no_runtime_or_finish() -> None:
     store = _store()
     receipt = _service(store).execute(
@@ -121,6 +173,7 @@ def test_delegate_atomically_creates_protocol_inbox_signal_and_no_runtime_or_fin
                 "recipient_actor_id": "agent-2",
                 "instruction": "inspect published files",
                 "parent_agent_id": "agent-1",
+                **_workflow_payload(delegate=True),
             },
         )
     )
@@ -137,6 +190,17 @@ def test_delegate_atomically_creates_protocol_inbox_signal_and_no_runtime_or_fin
     assert signal.payload["capability_lease_id"] == "lease-2"
     assert signal.payload["workspace_generation"] == 5
     assert signal.payload["process_epoch"] == 3
+    link = store.read(
+        entity_type="runtime_signal_authority_link",
+        entity_id=signal_id,
+    )
+    child = store.read(
+        entity_type="workflow_authority_binding",
+        entity_id=receipt.result["workflow_authority_id"],
+    )
+    assert link is not None and child is not None
+    assert child.payload["parent_authority_id"] == "workflow-authority-parent-1"
+    assert child.payload["selected_workflow_refs"] == ("workflow.inspect",)
     assert task.payload["status"] == "in_progress"
     assert receipt.result["recipient_runtime_executed"] is False
     assert receipt.result["task_transition_performed"] is False
@@ -153,6 +217,7 @@ def test_protocol_send_only_delivers_and_enqueues_wakeup() -> None:
                 "recipient_actor_id": "agent-2",
                 "message_type": "status_request",
                 "content": "Please inspect the current revision.",
+                **_workflow_payload(),
             },
         )
     )
@@ -178,6 +243,7 @@ def test_handoff_requires_verified_revision_path_and_active_task_owner() -> None
                 "content_digest": _digest("output"),
                 "verified": False,
             },
+            **_workflow_payload(),
         },
     )
     with pytest.raises(KernelContractError, match="unverified") as rejected:
@@ -216,11 +282,34 @@ def test_retired_recipient_and_nonowner_delegation_fail_before_any_write() -> No
             "task_id": "task-1",
             "recipient_actor_id": "agent-2",
             "instruction": "work",
+            **_workflow_payload(delegate=True),
         },
     )
     with pytest.raises(KernelContractError, match="retired"):
         _service(store).execute(command)
     assert store.events == []
+
+
+def test_delegation_cannot_widen_parent_workflow_selection() -> None:
+    store = _store()
+    command = ProtocolApplicationCommand(
+        context=_context(command="delegate-wide"),
+        operation=ProtocolCommandKind.DELEGATE,
+        protocol_ref="delegation-wide-1",
+        payload={
+            "task_id": "task-1",
+            "recipient_actor_id": "agent-2",
+            "instruction": "use an unauthorized workflow",
+            **_workflow_payload(delegate=True),
+            "workflow_refs": ["workflow.not-authorized"],
+        },
+    )
+
+    with pytest.raises(KernelContractError) as rejected:
+        _service(store).delegate(command)
+
+    assert rejected.value.code == "workflow_authority_subset_violation"
+    assert store.read(entity_type="protocol_record", entity_id="delegation-wide-1") is None
 
     store = _store()
     task = store.read(entity_type="task", entity_id="task-1")

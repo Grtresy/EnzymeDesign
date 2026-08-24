@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 
+import pytest
+
 from openzyme_contracts import DurableEventRecord
 from openzyme_contracts import KernelMutationKind
 from openzyme_contracts import KernelStateMutation
@@ -22,11 +24,16 @@ def _database() -> sqlite3.Connection:
     return connection
 
 
-def _request(command: str, expected: int) -> UnitOfWorkRequest:
+def _request(
+    command: str,
+    expected: int,
+    *,
+    session_id: str = "session-1",
+) -> UnitOfWorkRequest:
     return UnitOfWorkRequest(
         unit_of_work_id=f"uow-{command}",
         command_id=f"command-{command}",
-        session_id="session-1",
+        session_id=session_id,
         actor_id="operator-1",
         authority_lease_id="bootstrap-authority",
         authority_generation=1,
@@ -37,21 +44,26 @@ def _request(command: str, expected: int) -> UnitOfWorkRequest:
     )
 
 
-def _event(command: str, version: int) -> tuple[DurableEventRecord, OutboxRecord]:
+def _event(
+    command: str,
+    version: int,
+    *,
+    session_id: str = "session-1",
+) -> tuple[DurableEventRecord, OutboxRecord]:
     event = DurableEventRecord.create(
         event_id=f"event-{command}",
-        session_id="session-1",
+        session_id=session_id,
         event_type=f"session.{command}",
         source_entity_type="session",
-        source_entity_id="session-1",
+        source_entity_id=session_id,
         source_state_version=version,
         command_id=f"command-{command}",
-        payload={"session_id": "session-1"},
+        payload={"session_id": session_id},
     )
     payload = {"event_id": event.event_id}
     return event, OutboxRecord(
         outbox_id=f"outbox-{command}",
-        session_id="session-1",
+        session_id=session_id,
         topic="openzyme.kernel.session-events",
         occurrence_id=event.event_id,
         payload=payload,
@@ -132,3 +144,49 @@ def test_existing_sessions_table_codec_uses_non_payload_cas_ledger() -> None:
     second = store.read(entity_type="session", entity_id="session-1")
     assert second is not None and second.state_version == 2
     assert second.payload["updated_at"] == "2026-08-20T00:01:00+00:00"
+
+
+def test_session_discovery_is_bounded_lexical_and_codec_verified() -> None:
+    connection = _database()
+    store = SQLiteControlStore(
+        connection,
+        codecs=(SessionSQLiteKernelEntityCodec(),),
+    )
+    for session_id in ("session-c", "session-a", "session-b"):
+        payload = {
+            "session_id": session_id,
+            "project_id": "project-1",
+            "title": session_id,
+            "objective": "bounded scheduler discovery",
+            "status": "active",
+            "created_at": "2026-08-20T00:00:00+00:00",
+            "updated_at": "2026-08-20T00:00:00+00:00",
+        }
+        unit = store.begin(
+            _request(session_id, 1, session_id=session_id)
+        )
+        unit.stage(
+            KernelStateMutation.create(
+                mutation_id=f"mutation-{session_id}",
+                kind=KernelMutationKind.CREATE,
+                entity_type="session",
+                entity_id=session_id,
+                expected_state_version=None,
+                payload=payload,
+            )
+        )
+        event, outbox = _event(session_id, 1, session_id=session_id)
+        unit.append_event(event)
+        unit.append_outbox(outbox)
+        unit.commit()
+
+    assert store.list_session_ids(after_session_id=None, max_items=2) == (
+        "session-a",
+        "session-b",
+    )
+    assert store.list_session_ids(
+        after_session_id="session-b",
+        max_items=2,
+    ) == ("session-c",)
+    with pytest.raises(ValueError, match="between 1 and 1024"):
+        store.list_session_ids(after_session_id=None, max_items=0)

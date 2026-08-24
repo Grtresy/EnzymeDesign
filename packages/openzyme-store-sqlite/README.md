@@ -45,8 +45,8 @@ Kernel control store 的 SQLite Adapter。
 `SQLiteKernelEntityCodec`，声明 owner 与既有 table closure，并把 snapshot/mutation 映射到该 owner 的现有
 业务表；未映射 entity 直接失败。Unit of Work 在 `BEGIN IMMEDIATE` 内重验 Session version 和每条 mutation
 的 state version，任一 CAS、event occurrence 或 outbox identity 错误回滚全部业务写、event 和 outbox，且不
-重试、不调用外部 I/O。Plugin-free Kernel 声明的 32 种 canonical entity 均已有 production codec；
-`openzyme-standard` 只有在 exact deployment activation 通过且 32/32 codec closure 一致时才构造 writer。
+重试、不调用外部 I/O。Plugin-free Kernel 声明的 40 种 canonical entity 均已有 production codec；
+`openzyme-standard` 只有在 exact deployment activation 通过且 40/40 codec closure 一致时才构造 writer。
 这证明 Store Adapter 的目标映射闭合，不等于通用 Host 已完成 caller cutover，也不授权 live 或 offline
 deployment cutover。
 
@@ -121,8 +121,8 @@ identity；该模块不在 normal startup、Kernel 或 Agent tool surface 中。
 现行单体 SQL 同时保留为 compatibility bootstrap，并由
 `scripts/partition-openzyme-sqlite-schema.py` 确定性生成 25 个 owner/phase bundles。生成顺序固定为所有 owner
 tables → indexes → triggers → Store finalize；`migration-catalog.json` 绑定每个资源、owner、object closure 与
-digest。`--check` 会在内存中分别重放单体与分区 assets，要求 `sqlite_master`、`user_version`、150 tables、
-134 indexes、679 triggers 和 422 foreign keys 完全相同。分区没有重命名 DDL，也不是 production cutover。
+digest。`--check` 会在内存中分别重放单体与分区 assets，要求 `sqlite_master`、`user_version`、159 tables、
+134 indexes、706 triggers 和 462 foreign keys 完全相同。分区没有重命名 DDL，也不是 production cutover。
 
 ## Connection 与 migration 边界
 
@@ -157,8 +157,8 @@ Plugin；缺失、多余、跨 epoch 或 payload drift 均零 mutation fail clos
 `install_store_schema_for_offline_migration()` 是显式离线入口。它们不会被
 preflight、locator、import 或 normal startup 调用；现有路径一律 fail closed，也不会删除失败 occurrence
 留下的文件。无参数调用只服务 legacy-full fixture；目标 Distribution 必须传入 closed profile：Standard
-创建 98 tables/104 indexes/449 triggers/300 foreign keys，且没有 Research/Reporting/Science/Compute/HPC
-或 legacy-removal tables；EnzymeDesign 创建 147 tables/134 indexes/679 triggers/421 foreign keys，并包含
+创建 107 tables/104 indexes/476 triggers/340 foreign keys，且没有 Research/Reporting/Science/Compute/HPC
+或 legacy-removal tables；EnzymeDesign 创建 156 tables/134 indexes/706 triggers/461 foreign keys，并包含
 所选通用 Plugin owner。两者 proof 的
 profile/schema digest 必须不同，拿错 profile 以 unexpected-object 失败。
 
@@ -197,6 +197,6 @@ tuple、target 排序、lifecycle、immutable fingerprint 与 canonical digest�
 
 映射规则的机器可检验来源是
 [`authority-store-mapping.json`](../../docs/v3/architecture/authority-store-mapping.json)。连接/UoW/provider、
-Kernel repository implementation、32/32 production codecs 与 150-table owner schema 均由 Store 拥有；
+Kernel repository implementation、production codecs 与 159-table owner schema 均由 Store 拥有；
 Standard 的 `@2` composition 使用该唯一 writer。历史数据库 adoption 与真实 deployment cutover 仍只允许由
 离线 operator 流程在明确授权后执行。

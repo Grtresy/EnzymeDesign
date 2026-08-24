@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 import json
 import sqlite3
+from threading import RLock
 from time import monotonic
 from typing import Protocol
 
@@ -21,6 +22,7 @@ from openzyme_contracts import UnitOfWorkReceipt
 from openzyme_contracts import UnitOfWorkRequest
 from openzyme_contracts import canonical_sha256_digest
 from openzyme_contracts import json_compatible
+from openzyme_contracts import require_identifier
 
 
 class SQLiteControlStoreError(RuntimeError):
@@ -82,6 +84,11 @@ class SQLiteControlStore:
         self.connection = connection
         self.codecs = {codec.entity_type: codec for codec in codecs}
         self.max_duration_ms = max_duration_ms
+        # One verified writer is shared by request and bounded worker threads.
+        # Hold this lock for the complete Unit-of-Work lifetime so no reader can
+        # observe uncommitted state and no second writer can enter the same
+        # sqlite3.Connection transaction.
+        self._connection_lock = RLock()
         self._active_write_session_id: str | None = None
         self._active_write_channels: frozenset[str] = frozenset()
         self.connection.create_function(
@@ -111,7 +118,11 @@ class SQLiteControlStore:
     def read(
         self, *, entity_type: str, entity_id: str
     ) -> KernelRecordSnapshot | None:
-        return self._codec(entity_type).read(self.connection, entity_id=entity_id)
+        with self._connection_lock:
+            return self._codec(entity_type).read(
+                self.connection,
+                entity_id=entity_id,
+            )
 
     def list_for_session(
         self,
@@ -127,50 +138,176 @@ class SQLiteControlStore:
         legacy rows without target CAS ownership never enter this read model.
         """
 
-        codec = self._codec(entity_type)
-        if not session_id:
-            raise ValueError("session_id must be non-empty")
+        with self._connection_lock:
+            codec = self._codec(entity_type)
+            if not session_id:
+                raise ValueError("session_id must be non-empty")
+            if not 1 <= max_items <= 1_000:
+                raise ValueError("max_items must be between 1 and 1000")
+            rows = self.connection.execute(
+                """
+                SELECT entity_id
+                FROM openzyme_store_kernel_entity_versions
+                WHERE entity_type = ? AND owner_component_id = ? AND session_id = ?
+                ORDER BY entity_id
+                LIMIT ?
+                """,
+                (entity_type, codec.owner_id, session_id, max_items + 1),
+            ).fetchall()
+            if len(rows) > max_items:
+                raise SQLiteControlStoreError(
+                    "sqlite_kernel_session_query_budget_exceeded",
+                    "Kernel Session query exceeded its explicit item budget",
+                    phase="entity_query",
+                )
+            snapshots: list[KernelRecordSnapshot] = []
+            for row in rows:
+                entity_id = str(row[0])
+                snapshot = codec.read(self.connection, entity_id=entity_id)
+                if snapshot is None:
+                    raise SQLiteControlStoreError(
+                        "sqlite_kernel_entity_index_drift",
+                        "Kernel version ledger references a missing owner row",
+                        phase="entity_query",
+                    )
+                session_indexer = getattr(codec, "session_id_for_ledger", None)
+                if session_indexer is not None:
+                    observed_session_id = session_indexer(snapshot.payload)
+                else:
+                    observed_session_id = (
+                        entity_id
+                        if entity_type == "session"
+                        else snapshot.payload.get("session_id")
+                    )
+                if observed_session_id != session_id:
+                    raise SQLiteControlStoreError(
+                        "sqlite_kernel_entity_session_index_drift",
+                        "Kernel Session index differs from the canonical owner payload",
+                        phase="entity_query",
+                    )
+                snapshots.append(snapshot)
+            return tuple(snapshots)
+
+    def list_session_ids(
+        self,
+        *,
+        after_session_id: str | None,
+        max_items: int,
+    ) -> tuple[str, ...]:
+        """Discover one bounded lexical page through the canonical Session owner.
+
+        The version ledger is only the identity index.  Every returned identity
+        is re-read through the closed Session codec so a stale or foreign index
+        row fails closed before a scheduler can act on it.
+        """
+
+        if after_session_id is not None:
+            require_identifier(after_session_id, field_name="after_session_id")
+        if (
+            not isinstance(max_items, int)
+            or isinstance(max_items, bool)
+            or not 1 <= max_items <= 1_024
+        ):
+            raise ValueError("max_items must be between 1 and 1024")
+        with self._connection_lock:
+            codec = self._codec("session")
+            if after_session_id is None:
+                rows = self.connection.execute(
+                    """
+                    SELECT entity_id
+                    FROM openzyme_store_kernel_entity_versions
+                    WHERE entity_type = 'session' AND owner_component_id = ?
+                    ORDER BY entity_id
+                    LIMIT ?
+                    """,
+                    (codec.owner_id, max_items),
+                ).fetchall()
+            else:
+                rows = self.connection.execute(
+                    """
+                    SELECT entity_id
+                    FROM openzyme_store_kernel_entity_versions
+                    WHERE entity_type = 'session' AND owner_component_id = ?
+                      AND entity_id > ?
+                    ORDER BY entity_id
+                    LIMIT ?
+                    """,
+                    (codec.owner_id, after_session_id, max_items),
+                ).fetchall()
+            session_ids: list[str] = []
+            for row in rows:
+                session_id = str(row[0])
+                snapshot = codec.read(self.connection, entity_id=session_id)
+                if snapshot is None:
+                    raise SQLiteControlStoreError(
+                        "sqlite_kernel_session_index_drift",
+                        "Kernel Session index references a missing owner row",
+                        phase="session_discovery",
+                    )
+                payload_session_id = snapshot.payload.get("session_id")
+                if (
+                    snapshot.entity_id != session_id
+                    or payload_session_id not in {None, session_id}
+                ):
+                    raise SQLiteControlStoreError(
+                        "sqlite_kernel_session_index_drift",
+                        "Kernel Session identity index differs from its owner payload",
+                        phase="session_discovery",
+                    )
+                session_ids.append(session_id)
+            return tuple(session_ids)
+
+    def list_command_tool_expansions(
+        self,
+        *,
+        session_id: str,
+        command_id: str,
+        max_items: int,
+    ) -> tuple[KernelRecordSnapshot, ...]:
+        """Read one exact command's bounded expansion history via its owner index."""
+
+        if not session_id or not command_id:
+            raise ValueError("session_id and command_id must be non-empty")
         if not 1 <= max_items <= 1_000:
             raise ValueError("max_items must be between 1 and 1000")
-        rows = self.connection.execute(
-            """
-            SELECT entity_id
-            FROM openzyme_store_kernel_entity_versions
-            WHERE entity_type = ? AND owner_component_id = ? AND session_id = ?
-            ORDER BY entity_id
-            LIMIT ?
-            """,
-            (entity_type, codec.owner_id, session_id, max_items + 1),
-        ).fetchall()
-        if len(rows) > max_items:
-            raise SQLiteControlStoreError(
-                "sqlite_kernel_session_query_budget_exceeded",
-                "Kernel Session query exceeded its explicit item budget",
-                phase="entity_query",
-            )
-        snapshots: list[KernelRecordSnapshot] = []
-        for row in rows:
-            entity_id = str(row[0])
-            snapshot = codec.read(self.connection, entity_id=entity_id)
-            if snapshot is None:
+        with self._connection_lock:
+            codec = self._codec("command_tool_expansion")
+            rows = self.connection.execute(
+                """
+                SELECT expansion_id
+                FROM command_tool_expansion_records
+                WHERE session_id = ? AND command_id = ?
+                ORDER BY expansion_revision, expansion_id
+                LIMIT ?
+                """,
+                (session_id, command_id, max_items + 1),
+            ).fetchall()
+            if len(rows) > max_items:
                 raise SQLiteControlStoreError(
-                    "sqlite_kernel_entity_index_drift",
-                    "Kernel version ledger references a missing owner row",
+                    "sqlite_command_tool_expansion_query_budget_exceeded",
+                    "Command tool expansion history exceeded its explicit item budget",
                     phase="entity_query",
                 )
-            observed_session_id = (
-                entity_id
-                if entity_type == "session"
-                else snapshot.payload.get("session_id")
-            )
-            if observed_session_id != session_id:
-                raise SQLiteControlStoreError(
-                    "sqlite_kernel_entity_session_index_drift",
-                    "Kernel Session index differs from the canonical owner payload",
-                    phase="entity_query",
-                )
-            snapshots.append(snapshot)
-        return tuple(snapshots)
+            snapshots: list[KernelRecordSnapshot] = []
+            for row in rows:
+                snapshot = codec.read(self.connection, entity_id=str(row[0]))
+                if snapshot is None:
+                    raise SQLiteControlStoreError(
+                        "sqlite_command_tool_expansion_index_drift",
+                        "Command expansion index references a missing canonical record",
+                        phase="entity_query",
+                    )
+                if (
+                    snapshot.payload.get("session_id") != session_id
+                    or snapshot.payload.get("command_id") != command_id
+                ):
+                    raise SQLiteControlStoreError(
+                        "sqlite_command_tool_expansion_scope_drift",
+                        "Command expansion owner index differs from canonical payload",
+                        phase="entity_query",
+                    )
+                snapshots.append(snapshot)
+            return tuple(snapshots)
 
     def begin(self, request: UnitOfWorkRequest) -> "SQLiteKernelUnitOfWork":
         return SQLiteKernelUnitOfWork(store=self, request=request)
@@ -224,21 +361,28 @@ class SQLiteControlStore:
 
 class SQLiteKernelUnitOfWork:
     def __init__(self, *, store: SQLiteControlStore, request: UnitOfWorkRequest) -> None:
-        if store.connection.in_transaction:
-            raise SQLiteControlStoreError(
-                "sqlite_kernel_uow_nested",
-                "Kernel Unit of Work cannot nest",
-                phase="begin",
-            )
         self.store = store
         self.request = request
         self._mutations: list[KernelStateMutation] = []
         self._events: list[DurableEventRecord] = []
         self._outbox: list[OutboxRecord] = []
         self._closed = False
+        self._lock_held = False
+        store._connection_lock.acquire()
+        self._lock_held = True
         try:
+            if store.connection.in_transaction:
+                raise SQLiteControlStoreError(
+                    "sqlite_kernel_uow_nested",
+                    "Kernel Unit of Work cannot nest",
+                    phase="begin",
+                )
             store.connection.execute("BEGIN IMMEDIATE")
+        except SQLiteControlStoreError:
+            self._release_store_lock()
+            raise
         except sqlite3.Error as exc:
+            self._release_store_lock()
             raise SQLiteControlStoreError(
                 "sqlite_kernel_uow_begin_failed",
                 "Failed to acquire SQLite writer",
@@ -274,6 +418,12 @@ class SQLiteKernelUnitOfWork:
 
     def commit(self) -> UnitOfWorkReceipt:
         self._require_open()
+        try:
+            return self._commit_locked()
+        finally:
+            self._release_store_lock()
+
+    def _commit_locked(self) -> UnitOfWorkReceipt:
         try:
             self._check_budget()
             session = self.read(entity_type="session", entity_id=self.request.session_id)
@@ -422,9 +572,18 @@ class SQLiteKernelUnitOfWork:
         )
 
     def rollback(self) -> None:
-        if not self._closed and self.store.connection.in_transaction:
-            self.store.connection.rollback()
-        self._closed = True
+        try:
+            if not self._closed and self.store.connection.in_transaction:
+                self.store.connection.rollback()
+            self._closed = True
+            self.store._clear_mutation_gate()
+        finally:
+            self._release_store_lock()
+
+    def _release_store_lock(self) -> None:
+        if self._lock_held:
+            self._lock_held = False
+            self.store._connection_lock.release()
 
     def _check_budget(self) -> None:
         if (monotonic() - self._started) * 1_000 > self.store.max_duration_ms:
@@ -485,11 +644,15 @@ class SQLiteKernelUnitOfWork:
             state_version=next_state_version,
             payload=mutation.payload,
         )
-        session_id = (
-            mutation.entity_id
-            if mutation.entity_type == "session"
-            else mutation.payload.get("session_id")
-        )
+        session_indexer = getattr(codec, "session_id_for_ledger", None)
+        if session_indexer is not None:
+            session_id = session_indexer(mutation.payload)
+        else:
+            session_id = (
+                mutation.entity_id
+                if mutation.entity_type == "session"
+                else mutation.payload.get("session_id")
+            )
         if session_id is not None and not isinstance(session_id, str):
             raise SQLiteControlStoreError(
                 "sqlite_kernel_entity_session_invalid",

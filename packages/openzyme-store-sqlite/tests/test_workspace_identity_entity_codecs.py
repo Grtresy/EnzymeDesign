@@ -93,13 +93,14 @@ def _generation(
     status: WorkspaceGenerationStatus,
     state_version: int,
     ready_identity: bool,
+    generation: int = 1,
 ) -> WorkspaceGeneration:
     return WorkspaceGeneration(
         workspace_id="workspace-1",
         workspace_kind=WorkspaceKind.AGENT_LOCAL,
         session_id="session-1",
         owner_member_id="member-1",
-        generation=1,
+        generation=generation,
         state_version=state_version,
         status=status,
         provider_id="openzyme.workspace.git.lfs",
@@ -304,6 +305,44 @@ def test_workspace_generation_and_runtime_binding_share_exact_generation_identit
     assert store.read(
         entity_type="workspace_runtime_binding", entity_id="workspace-1"
     ) is None
+
+    successor = _generation(
+        generation=2,
+        status=WorkspaceGenerationStatus.RESERVED,
+        state_version=5,
+        ready_identity=False,
+    )
+    _commit(
+        store,
+        command="workspace-successor",
+        mutations=(
+            KernelStateMutation.create(
+                mutation_id="mutation-workspace-successor",
+                kind=KernelMutationKind.REPLACE,
+                entity_type="workspace_generation",
+                entity_id="workspace-1",
+                expected_state_version=4,
+                payload=successor.to_dict(),
+            ),
+        ),
+    )
+    current = store.read(
+        entity_type="workspace_generation",
+        entity_id="workspace-1",
+    )
+    assert current == KernelRecordSnapshot.create(
+        entity_type="workspace_generation",
+        entity_id="workspace-1",
+        state_version=5,
+        payload=successor.to_dict(),
+    )
+    assert connection.execute(
+        "SELECT generation, workspace_state_version, status "
+        "FROM workspace_generation_records WHERE workspace_id = ? "
+        "ORDER BY generation",
+        ("workspace-1",),
+    ).fetchall() == [(1, 4, "retiring"), (2, 5, "reserved")]
+    assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
     with pytest.raises(sqlite3.IntegrityError, match="mutation write authority rejected"):
         connection.execute(

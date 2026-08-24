@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from datetime import datetime
 import json
 import sqlite3
+from typing import Any
 
 from openzyme_contracts import KernelMutationKind
 from openzyme_contracts import KernelRecordSnapshot
@@ -16,12 +17,25 @@ from openzyme_contracts import EvidenceKind
 from openzyme_contracts import EvidenceRef
 from openzyme_contracts import FailureObservation
 from openzyme_contracts import PublishedRevision
+from openzyme_contracts import PrivateDiagnosticRecord
 from openzyme_contracts import ProjectRepositoryBinding
 from openzyme_contracts import REVISION_PATH_VERIFICATION_RECEIPT_SCHEMA_VERSION
 from openzyme_contracts import RevisionPathVerificationReceipt
 from openzyme_contracts import SessionCapabilityBindingRevision
 from openzyme_contracts import SessionCompositionPin
 from openzyme_contracts import SessionRepositoryBindingPin
+from openzyme_contracts import CommandToolExpansion
+from openzyme_contracts import RuntimeSignalAuthorityLink
+from openzyme_contracts import RuntimeTurnContext
+from openzyme_contracts import ToolExposureSnapshot
+from openzyme_contracts import WorkflowAuthorityBinding
+from openzyme_contracts import WorkflowAuthorityStatus
+from openzyme_contracts import WorkspaceProvisioningIntent
+from openzyme_contracts import WorkspaceProvisioningReconciliation
+from openzyme_contracts import WorkspaceProvisioningReconciliationStatus
+from openzyme_contracts import WorkspaceProvisioningReceipt
+from openzyme_contracts import WorkspaceProvisioningRequest
+from openzyme_contracts import WorkspaceProvisioningStatus
 from openzyme_contracts import WorkspaceGeneration
 from openzyme_contracts import VerifiedWorkspaceCheckpoint
 from openzyme_contracts import WorkspacePublicationIntent
@@ -796,6 +810,388 @@ class AgentRuntimeSignalSQLiteKernelEntityCodec:
             )
 
 
+class RuntimeCommandSQLiteKernelEntityCodec:
+    """Persists the durable bounded scheduler command independently of turns."""
+
+    entity_type = "runtime_command"
+    owner_id = "openzyme.kernel"
+    table_names = ("runtime_command_records", "openzyme_store_kernel_entity_versions")
+    uses_store_version_ledger = True
+    mutation_channels = ("canonical_sqlite",)
+    _FIELDS = (
+        "schema_version",
+        "command_id",
+        "session_id",
+        "command_type",
+        "request_digest",
+        "idempotency_key",
+        "status",
+        "max_signals",
+        "max_steps_per_agent",
+        "auto_enqueue_ready_tasks",
+        "state_version",
+        "fencing_token",
+        "accepted_at",
+        "claim_owner",
+        "lease_token",
+        "lease_expires_at",
+        "bounded_outcome_summary",
+        "failure_id",
+        "diagnostic_id",
+        "error_code",
+        "safe_error_summary",
+        "safe_retry_hint",
+        "started_at",
+        "completed_at",
+    )
+
+    def read(
+        self, connection: sqlite3.Connection, *, entity_id: str
+    ) -> KernelRecordSnapshot | None:
+        row = connection.execute(
+            """
+            SELECT r.schema_version, r.command_id, r.session_id, r.command_type,
+                   r.request_digest, r.idempotency_key, r.status, r.max_signals,
+                   r.max_steps_per_agent, r.auto_enqueue_ready_tasks,
+                   r.state_version, r.fencing_token, r.accepted_at,
+                   r.claim_owner, r.lease_token, r.lease_expires_at,
+                   r.bounded_outcome_summary_json, r.failure_id,
+                   r.diagnostic_id, r.error_code, r.safe_error_summary,
+                   r.safe_retry_hint, r.started_at, r.completed_at,
+                   v.state_version, v.record_digest,
+                   v.owner_component_id
+            FROM runtime_command_records AS r
+            LEFT JOIN openzyme_store_kernel_entity_versions AS v
+              ON v.entity_type = 'runtime_command'
+             AND v.entity_id = r.command_id
+            WHERE r.command_id = ?
+            """,
+            (entity_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row[24] is None or row[26] != self.owner_id or row[24] != row[10]:
+            raise SQLiteControlStoreError(
+                "sqlite_kernel_entity_unadopted",
+                "RuntimeCommand row lacks matching target CAS metadata",
+                phase="entity_decode",
+            )
+        summary = (
+            None
+            if row[16] is None
+            else _decode_json(
+                row[16],
+                code="sqlite_runtime_command_json_invalid",
+                subject="RuntimeCommand outcome summary",
+            )
+        )
+        payload: dict[str, JsonValue] = {
+            field: row[index] for index, field in enumerate(self._FIELDS)
+        }
+        payload["auto_enqueue_ready_tasks"] = bool(row[9])
+        payload["bounded_outcome_summary"] = summary
+        self._validate_payload(payload, entity_id=entity_id)
+        snapshot = KernelRecordSnapshot.create(
+            entity_type=self.entity_type,
+            entity_id=entity_id,
+            state_version=int(row[24]),
+            payload=payload,
+        )
+        if snapshot.record_digest != row[25]:
+            raise SQLiteControlStoreError(
+                "sqlite_kernel_entity_digest_mismatch",
+                "RuntimeCommand differs from its target CAS digest",
+                phase="entity_decode",
+            )
+        return snapshot
+
+    def apply(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        mutation: KernelStateMutation,
+        next_state_version: int | None,
+    ) -> None:
+        if mutation.kind is KernelMutationKind.DELETE:
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_command_immutable",
+                "RuntimeCommand records cannot be deleted",
+                phase="entity_apply",
+            )
+        assert mutation.payload is not None
+        payload = mutation.payload
+        self._validate_payload(payload, entity_id=mutation.entity_id)
+        if payload["state_version"] != next_state_version:
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_command_state_version_mismatch",
+                "RuntimeCommand payload version differs from its CAS transition",
+                phase="entity_encode",
+            )
+        summary_json = (
+            None
+            if payload["bounded_outcome_summary"] is None
+            else _canonical_json(payload["bounded_outcome_summary"])
+        )
+        values = (
+            payload["command_id"],
+            payload["session_id"],
+            payload["schema_version"],
+            payload["command_type"],
+            payload["request_digest"],
+            payload["idempotency_key"],
+            payload["status"],
+            payload["max_signals"],
+            payload["max_steps_per_agent"],
+            int(payload["auto_enqueue_ready_tasks"] is True),
+            payload["claim_owner"],
+            payload["lease_token"],
+            payload["lease_expires_at"],
+            payload["fencing_token"],
+            payload["state_version"],
+            summary_json,
+            payload["failure_id"],
+            payload["diagnostic_id"],
+            payload["error_code"],
+            payload["safe_error_summary"],
+            payload["safe_retry_hint"],
+            payload["accepted_at"],
+            payload["started_at"],
+            payload["completed_at"],
+        )
+        if mutation.kind is KernelMutationKind.CREATE:
+            if payload["status"] != "accepted" or payload["state_version"] != 1:
+                raise SQLiteControlStoreError(
+                    "sqlite_runtime_command_lifecycle_invalid",
+                    "RuntimeCommand must be created in accepted version 1",
+                    phase="entity_encode",
+                )
+            connection.execute(
+                """
+                INSERT INTO runtime_command_records
+                (command_id, session_id, schema_version, command_type,
+                 request_digest, idempotency_key, status, max_signals,
+                 max_steps_per_agent, auto_enqueue_ready_tasks, claim_owner,
+                 lease_token, lease_expires_at, fencing_token, state_version,
+                 bounded_outcome_summary_json, failure_id, diagnostic_id,
+                 error_code, safe_error_summary, safe_retry_hint, accepted_at,
+                 started_at, completed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                values,
+            )
+            return
+        previous = connection.execute(
+            """
+            SELECT session_id, command_type, request_digest, idempotency_key,
+                   max_signals, max_steps_per_agent, auto_enqueue_ready_tasks,
+                   status, state_version, fencing_token, accepted_at
+            FROM runtime_command_records WHERE command_id = ?
+            """,
+            (mutation.entity_id,),
+        ).fetchone()
+        if previous is None:
+            raise SQLiteControlStoreError(
+                "sqlite_kernel_owner_row_missing",
+                "RuntimeCommand target row disappeared before replacement",
+                phase="entity_apply",
+            )
+        immutable = (
+            payload["session_id"],
+            payload["command_type"],
+            payload["request_digest"],
+            payload["idempotency_key"],
+            payload["max_signals"],
+            payload["max_steps_per_agent"],
+            int(payload["auto_enqueue_ready_tasks"] is True),
+        )
+        if immutable != previous[:7] or payload["accepted_at"] != previous[10]:
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_command_identity_drift",
+                "RuntimeCommand immutable request identity changed",
+                phase="entity_encode",
+            )
+        allowed = {
+            "accepted": {"claimed", "cancelled", "locked"},
+            "claimed": {"claimed", "completed", "failed", "locked", "cancelled"},
+        }
+        if payload["status"] not in allowed.get(str(previous[7]), set()):
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_command_lifecycle_invalid",
+                "RuntimeCommand lifecycle transition is invalid",
+                phase="entity_encode",
+            )
+        if payload["state_version"] != int(previous[8]) + 1:
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_command_state_version_mismatch",
+                "RuntimeCommand state version must advance exactly once",
+                phase="entity_encode",
+            )
+        if payload["fencing_token"] < int(previous[9]):
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_command_fence_stale",
+                "RuntimeCommand fencing token cannot move backwards",
+                phase="entity_encode",
+            )
+        if payload["status"] == "failed":
+            pair = connection.execute(
+                """
+                SELECT f.failure_id, f.diagnostic_id, f.session_id,
+                       d.diagnostic_id, d.failure_id, d.session_id
+                FROM failure_observation_records AS f
+                JOIN private_diagnostic_records AS d
+                  ON d.diagnostic_id = f.diagnostic_id
+                 AND d.failure_id = f.failure_id
+                WHERE f.failure_id = ? AND d.diagnostic_id = ?
+                """,
+                (payload["failure_id"], payload["diagnostic_id"]),
+            ).fetchone()
+            if pair != (
+                payload["failure_id"],
+                payload["diagnostic_id"],
+                payload["session_id"],
+                payload["diagnostic_id"],
+                payload["failure_id"],
+                payload["session_id"],
+            ):
+                raise SQLiteControlStoreError(
+                    "sqlite_runtime_command_failure_pair_invalid",
+                    "Failed RuntimeCommand does not resolve its exact diagnostic pair",
+                    phase="entity_encode",
+                )
+        connection.execute(
+            """
+            UPDATE runtime_command_records
+            SET status = ?, claim_owner = ?, lease_token = ?,
+                lease_expires_at = ?, fencing_token = ?, state_version = ?,
+                bounded_outcome_summary_json = ?, error_code = ?,
+                failure_id = ?, diagnostic_id = ?, safe_error_summary = ?,
+                safe_retry_hint = ?, started_at = ?, completed_at = ?
+            WHERE command_id = ?
+            """,
+            (
+                payload["status"],
+                payload["claim_owner"],
+                payload["lease_token"],
+                payload["lease_expires_at"],
+                payload["fencing_token"],
+                payload["state_version"],
+                summary_json,
+                payload["error_code"],
+                payload["failure_id"],
+                payload["diagnostic_id"],
+                payload["safe_error_summary"],
+                payload["safe_retry_hint"],
+                payload["started_at"],
+                payload["completed_at"],
+                mutation.entity_id,
+            ),
+        )
+
+    @classmethod
+    def _validate_payload(
+        cls, payload: Mapping[str, JsonValue], *, entity_id: str
+    ) -> None:
+        if set(payload) != set(cls._FIELDS) or payload.get("command_id") != entity_id:
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_command_payload_invalid",
+                "RuntimeCommand differs from its closed contract or identity",
+                phase="entity_encode",
+            )
+        if (
+            payload["schema_version"] != "runtime_command@1"
+            or payload["command_type"] != "runtime.drain"
+            or payload["status"]
+            not in {"accepted", "claimed", "completed", "failed", "locked", "cancelled"}
+        ):
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_command_payload_invalid",
+                "RuntimeCommand schema, type, or status is invalid",
+                phase="entity_encode",
+            )
+        for field_name in (
+            "command_id",
+            "session_id",
+            "idempotency_key",
+            "accepted_at",
+        ):
+            _require_runtime_identifier(payload[field_name], field_name=field_name)
+        _require_runtime_digest(payload["request_digest"], field_name="request_digest")
+        for field_name in ("max_signals", "max_steps_per_agent", "state_version"):
+            _require_positive_runtime_integer(
+                payload[field_name], field_name=field_name
+            )
+        fence = payload["fencing_token"]
+        if not isinstance(fence, int) or isinstance(fence, bool) or fence < 0:
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_command_payload_invalid",
+                "RuntimeCommand fencing_token must be non-negative",
+                phase="entity_encode",
+            )
+        if not isinstance(payload["auto_enqueue_ready_tasks"], bool):
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_command_payload_invalid",
+                "RuntimeCommand auto-enqueue fact must be boolean",
+                phase="entity_encode",
+            )
+        for field_name in (
+            "claim_owner",
+            "lease_token",
+            "lease_expires_at",
+            "failure_id",
+            "diagnostic_id",
+            "error_code",
+            "started_at",
+            "completed_at",
+        ):
+            if payload[field_name] is not None:
+                _require_runtime_identifier(payload[field_name], field_name=field_name)
+        if payload["bounded_outcome_summary"] is not None and not isinstance(
+            payload["bounded_outcome_summary"], Mapping
+        ):
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_command_payload_invalid",
+                "RuntimeCommand outcome summary must be an object or null",
+                phase="entity_encode",
+            )
+        if payload["status"] == "claimed" and any(
+            payload[field] is None
+            for field in (
+                "claim_owner",
+                "lease_token",
+                "lease_expires_at",
+                "started_at",
+            )
+        ):
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_command_claim_invalid",
+                "Claimed RuntimeCommand lacks its exact claim identity",
+                phase="entity_encode",
+            )
+        if (
+            payload["status"] in {"completed", "failed", "locked", "cancelled"}
+            and payload["completed_at"] is None
+        ):
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_command_terminal_invalid",
+                "Terminal RuntimeCommand lacks completed_at",
+                phase="entity_encode",
+            )
+        failure_pair = (payload["failure_id"], payload["diagnostic_id"])
+        if payload["status"] == "failed":
+            if any(value is None for value in failure_pair):
+                raise SQLiteControlStoreError(
+                    "sqlite_runtime_command_failure_pair_invalid",
+                    "Failed RuntimeCommand requires failure and diagnostic identities",
+                    phase="entity_encode",
+                )
+        elif any(value is not None for value in failure_pair):
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_command_failure_pair_invalid",
+                "Only failed RuntimeCommand may carry failure identities",
+                phase="entity_encode",
+            )
+
+
 class ApprovalRequestSQLiteKernelEntityCodec:
     """Maps target ApprovalRequest state onto the retained approval table."""
 
@@ -809,6 +1205,9 @@ class ApprovalRequestSQLiteKernelEntityCodec:
         "session_id",
         "requester_actor_id",
         "intent_digest",
+        "workflow_authority_id",
+        "workflow_authority_epoch",
+        "workflow_authority_digest",
         "requested_action",
         "scope_id",
         "task_id",
@@ -828,9 +1227,11 @@ class ApprovalRequestSQLiteKernelEntityCodec:
         row = connection.execute(
             """
             SELECT a.approval_id, a.session_id, a.requester_actor_id,
-                   a.intent_digest, a.requested_action, a.scope_id, a.task_id,
-                   a.reason, a.status, a.created_at, a.expires_at,
-                   a.resolved_at, a.resolver_actor_id, a.resolution_ref,
+                   a.intent_digest, a.workflow_authority_id,
+                   a.workflow_authority_epoch, a.workflow_authority_digest,
+                   a.requested_action, a.scope_id, a.task_id, a.reason,
+                   a.status, a.created_at, a.expires_at, a.resolved_at,
+                   a.resolver_actor_id, a.resolution_ref,
                    a.operation_dispatched, a.record_kind,
                    v.state_version, v.record_digest, v.owner_component_id
             FROM approval_requests AS a
@@ -843,13 +1244,13 @@ class ApprovalRequestSQLiteKernelEntityCodec:
         ).fetchone()
         if row is None:
             return None
-        if row[15] != "kernel_approval_request":
+        if row[18] != "kernel_approval_request":
             raise SQLiteControlStoreError(
                 "sqlite_approval_request_not_adopted",
                 "Legacy approval row has not been adopted as target Kernel authority",
                 phase="entity_decode",
             )
-        if row[16] is None or row[18] != self.owner_id:
+        if row[19] is None or row[21] != self.owner_id:
             raise SQLiteControlStoreError(
                 "sqlite_kernel_entity_unadopted",
                 "ApprovalRequest row lacks exact target CAS metadata",
@@ -858,15 +1259,15 @@ class ApprovalRequestSQLiteKernelEntityCodec:
         payload: dict[str, JsonValue] = {
             field: row[index] for index, field in enumerate(self._FIELDS)
         }
-        payload["operation_dispatched"] = bool(row[14])
+        payload["operation_dispatched"] = bool(row[17])
         self._validate_payload(payload, entity_id=entity_id)
         snapshot = KernelRecordSnapshot.create(
             entity_type=self.entity_type,
             entity_id=entity_id,
-            state_version=int(row[16]),
+            state_version=int(row[19]),
             payload=payload,
         )
-        if snapshot.record_digest != row[17]:
+        if snapshot.record_digest != row[20]:
             raise SQLiteControlStoreError(
                 "sqlite_kernel_entity_digest_mismatch",
                 "ApprovalRequest owner row differs from its target CAS digest",
@@ -890,6 +1291,21 @@ class ApprovalRequestSQLiteKernelEntityCodec:
         assert mutation.payload is not None
         payload = dict(mutation.payload)
         self._validate_payload(payload, entity_id=mutation.entity_id)
+        authority_row = connection.execute(
+            "SELECT status, epoch, binding_digest "
+            "FROM workflow_authority_binding_records WHERE authority_id = ?",
+            (payload["workflow_authority_id"],),
+        ).fetchone()
+        if authority_row != (
+            WorkflowAuthorityStatus.ACTIVE.value,
+            payload["workflow_authority_epoch"],
+            payload["workflow_authority_digest"],
+        ):
+            raise SQLiteControlStoreError(
+                "sqlite_workflow_authority_epoch_stale",
+                "ApprovalRequest does not bind a current workflow authority",
+                phase="entity_encode",
+            )
         values = (
             payload["approval_id"],
             payload["session_id"],
@@ -903,6 +1319,9 @@ class ApprovalRequestSQLiteKernelEntityCodec:
             "kernel_approval_request",
             payload["requester_actor_id"],
             payload["intent_digest"],
+            payload["workflow_authority_id"],
+            payload["workflow_authority_epoch"],
+            payload["workflow_authority_digest"],
             payload["scope_id"],
             payload["reason"],
             payload["expires_at"],
@@ -915,9 +1334,11 @@ class ApprovalRequestSQLiteKernelEntityCodec:
                 INSERT INTO approval_requests
                 (approval_id, session_id, task_id, kind, requested_action,
                  status, resolution_ref, created_at, resolved_at, record_kind,
-                 requester_actor_id, intent_digest, scope_id, reason,
-                 expires_at, resolver_actor_id, operation_dispatched)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 requester_actor_id, intent_digest, workflow_authority_id,
+                 workflow_authority_epoch, workflow_authority_digest,
+                 scope_id, reason, expires_at, resolver_actor_id,
+                 operation_dispatched)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 values,
             )
@@ -928,8 +1349,10 @@ class ApprovalRequestSQLiteKernelEntityCodec:
             SET session_id = ?, task_id = ?, kind = 'kernel_authority',
                 requested_action = ?, status = ?, request_ref = NULL,
                 resolution_ref = ?, created_at = ?, resolved_at = ?,
-                requester_actor_id = ?, intent_digest = ?, scope_id = ?,
-                reason = ?, expires_at = ?, resolver_actor_id = ?,
+                requester_actor_id = ?, intent_digest = ?,
+                workflow_authority_id = ?, workflow_authority_epoch = ?,
+                workflow_authority_digest = ?, scope_id = ?, reason = ?,
+                expires_at = ?, resolver_actor_id = ?,
                 operation_dispatched = ?
             WHERE approval_id = ? AND record_kind = 'kernel_approval_request'
             """,
@@ -943,6 +1366,9 @@ class ApprovalRequestSQLiteKernelEntityCodec:
                 payload["resolved_at"],
                 payload["requester_actor_id"],
                 payload["intent_digest"],
+                payload["workflow_authority_id"],
+                payload["workflow_authority_epoch"],
+                payload["workflow_authority_digest"],
                 payload["scope_id"],
                 payload["reason"],
                 payload["expires_at"],
@@ -974,14 +1400,26 @@ class ApprovalRequestSQLiteKernelEntityCodec:
                 "ApprovalRequest payload identity differs from its mutation",
                 phase="entity_encode",
             )
-        if payload["status"] not in {"pending", "approved", "rejected"} or not isinstance(
-            payload["operation_dispatched"], bool
-        ):
+        if payload["status"] not in {
+            "pending",
+            "approved",
+            "rejected",
+        } or not isinstance(payload["operation_dispatched"], bool):
             raise SQLiteControlStoreError(
                 "sqlite_approval_request_payload_invalid",
                 "ApprovalRequest status or dispatch fact is invalid",
                 phase="entity_encode",
             )
+        for field_name in ("workflow_authority_id",):
+            _require_runtime_identifier(payload[field_name], field_name=field_name)
+        _require_positive_runtime_integer(
+            payload["workflow_authority_epoch"],
+            field_name="workflow_authority_epoch",
+        )
+        _require_runtime_digest(
+            payload["workflow_authority_digest"],
+            field_name="workflow_authority_digest",
+        )
 
 
 class ContinuationSQLiteKernelEntityCodec:
@@ -989,7 +1427,10 @@ class ContinuationSQLiteKernelEntityCodec:
 
     entity_type = "continuation"
     owner_id = "openzyme.kernel"
-    table_names = ("continuation_state_records", "openzyme_store_kernel_entity_versions")
+    table_names = (
+        "continuation_state_records",
+        "openzyme_store_kernel_entity_versions",
+    )
     uses_store_version_ledger = True
     mutation_channels = ("canonical_sqlite",)
     _FIELDS = (
@@ -1103,14 +1544,22 @@ class ContinuationSQLiteKernelEntityCodec:
                         ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    payload["continuation_id"], payload["session_id"],
-                    payload["owner_actor_id"], payload["source_version"],
-                    payload["source_ref"], payload["source_digest"],
-                    payload["recipient_actor_id"], payload["resume_strategy"],
-                    payload["process_epoch"], payload["state"],
-                    payload["delivery_attempt"], payload["delivery_receipt_digest"],
-                    payload["failure_id"], payload["error_code"],
-                    payload["created_at"], payload["updated_at"],
+                    payload["continuation_id"],
+                    payload["session_id"],
+                    payload["owner_actor_id"],
+                    payload["source_version"],
+                    payload["source_ref"],
+                    payload["source_digest"],
+                    payload["recipient_actor_id"],
+                    payload["resume_strategy"],
+                    payload["process_epoch"],
+                    payload["state"],
+                    payload["delivery_attempt"],
+                    payload["delivery_receipt_digest"],
+                    payload["failure_id"],
+                    payload["error_code"],
+                    payload["created_at"],
+                    payload["updated_at"],
                     int(payload["task_transition_performed"] is True),
                 ),
             )
@@ -1127,13 +1576,20 @@ class ContinuationSQLiteKernelEntityCodec:
             WHERE continuation_id = ? AND record_kind = 'kernel_continuation'
             """,
             (
-                payload["session_id"], payload["owner_actor_id"],
-                payload["source_version"], payload["source_ref"],
-                payload["source_digest"], payload["recipient_actor_id"],
-                payload["resume_strategy"], payload["process_epoch"],
-                payload["state"], payload["delivery_attempt"],
-                payload["delivery_receipt_digest"], payload["failure_id"],
-                payload["error_code"], payload["created_at"],
+                payload["session_id"],
+                payload["owner_actor_id"],
+                payload["source_version"],
+                payload["source_ref"],
+                payload["source_digest"],
+                payload["recipient_actor_id"],
+                payload["resume_strategy"],
+                payload["process_epoch"],
+                payload["state"],
+                payload["delivery_attempt"],
+                payload["delivery_receipt_digest"],
+                payload["failure_id"],
+                payload["error_code"],
+                payload["created_at"],
                 payload["updated_at"],
                 int(payload["task_transition_performed"] is True),
                 mutation.entity_id,
@@ -1150,7 +1606,10 @@ class ContinuationSQLiteKernelEntityCodec:
     def _validate_payload(
         cls, payload: Mapping[str, JsonValue], *, entity_id: str
     ) -> None:
-        if set(payload) != set(cls._FIELDS) or payload.get("continuation_id") != entity_id:
+        if (
+            set(payload) != set(cls._FIELDS)
+            or payload.get("continuation_id") != entity_id
+        ):
             raise SQLiteControlStoreError(
                 "sqlite_continuation_payload_invalid",
                 "Continuation payload differs from its target closed contract",
@@ -1167,8 +1626,7 @@ class ContinuationSQLiteKernelEntityCodec:
             not isinstance(payload["source_version"], int)
             or isinstance(payload["source_version"], bool)
             or payload["source_version"] < 1
-            or
-            not isinstance(attempt, int)
+            or not isinstance(attempt, int)
             or isinstance(attempt, bool)
             or attempt < 0
             or payload["task_transition_performed"] is not False
@@ -1185,7 +1643,10 @@ class ControlledOperationSQLiteKernelEntityCodec:
 
     entity_type = "controlled_operation"
     owner_id = "openzyme.kernel"
-    table_names = ("controlled_operation_records", "openzyme_store_kernel_entity_versions")
+    table_names = (
+        "controlled_operation_records",
+        "openzyme_store_kernel_entity_versions",
+    )
     uses_store_version_ledger = True
     mutation_channels = ("canonical_sqlite",)
     _FIELDS = (
@@ -1261,9 +1722,7 @@ class ControlledOperationSQLiteKernelEntityCodec:
             payload: dict[str, JsonValue] = {
                 field: row[index] for index, field in enumerate(self._FIELDS)
             }
-            payload["mutation_applied"] = (
-                None if row[14] is None else bool(row[14])
-            )
+            payload["mutation_applied"] = None if row[14] is None else bool(row[14])
             payload["approval_required"] = bool(row[16])
             payload["safe_intent"] = json.loads(str(row[26]))
             payload["fallback_performed"] = bool(row[27])
@@ -1361,10 +1820,17 @@ class ControlledOperationSQLiteKernelEntityCodec:
                 phase="entity_encode",
             )
         if payload["state"] not in {
-            "admitted", "active", "reconcile_required", "settled",
-            "cancel_requested", "cancelled",
+            "admitted",
+            "active",
+            "reconcile_required",
+            "settled",
+            "cancel_requested",
+            "cancelled",
         } or payload["effect_certainty"] not in {
-            "no_effect", "dispatch_in_doubt", "effect_known", "terminal_known",
+            "no_effect",
+            "dispatch_in_doubt",
+            "effect_known",
+            "terminal_known",
         }:
             raise SQLiteControlStoreError(
                 "sqlite_controlled_operation_payload_invalid",
@@ -1372,7 +1838,9 @@ class ControlledOperationSQLiteKernelEntityCodec:
                 phase="entity_encode",
             )
         for field_name in (
-            "authority_generation", "authority_fence", "dispatch_generation"
+            "authority_generation",
+            "authority_fence",
+            "dispatch_generation",
         ):
             value = payload[field_name]
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
@@ -1381,9 +1849,10 @@ class ControlledOperationSQLiteKernelEntityCodec:
                     f"ControlledOperation {field_name} must be positive",
                     phase="entity_encode",
                 )
-        if not isinstance(payload["approval_required"], bool) or payload[
-            "fallback_performed"
-        ] is not False:
+        if (
+            not isinstance(payload["approval_required"], bool)
+            or payload["fallback_performed"] is not False
+        ):
             raise SQLiteControlStoreError(
                 "sqlite_controlled_operation_payload_invalid",
                 "ControlledOperation governance facts are invalid",
@@ -1408,24 +1877,40 @@ class ControlledOperationSQLiteKernelEntityCodec:
     @staticmethod
     def _values(payload: Mapping[str, JsonValue]) -> tuple[object, ...]:
         return (
-            payload["session_id"], payload["actor_id"],
-            payload["owner_plugin_id"], payload["operation_id"],
-            payload["intent_digest"], payload["route_id"],
-            payload["authority_lease_id"], payload["authority_generation"],
-            payload["authority_fence"], payload["authority_operation"],
-            payload["scope_id"], payload["dispatch_generation"],
-            payload["state"], payload["effect_certainty"],
-            None if payload["mutation_applied"] is None else int(
-                payload["mutation_applied"] is True
-            ),
-            payload["deadline"], int(payload["approval_required"] is True),
-            payload["approval_id"], payload["cancel_intent_digest"],
-            payload["result_handle"], payload["terminal_receipt_digest"],
-            payload["last_observation_digest"], payload["error_code"],
-            payload["diagnostic_id"], payload["created_at"],
-            payload["updated_at"], json.dumps(
-                json_compatible(payload["safe_intent"]), allow_nan=False,
-                ensure_ascii=True, separators=(",", ":"), sort_keys=True,
+            payload["session_id"],
+            payload["actor_id"],
+            payload["owner_plugin_id"],
+            payload["operation_id"],
+            payload["intent_digest"],
+            payload["route_id"],
+            payload["authority_lease_id"],
+            payload["authority_generation"],
+            payload["authority_fence"],
+            payload["authority_operation"],
+            payload["scope_id"],
+            payload["dispatch_generation"],
+            payload["state"],
+            payload["effect_certainty"],
+            None
+            if payload["mutation_applied"] is None
+            else int(payload["mutation_applied"] is True),
+            payload["deadline"],
+            int(payload["approval_required"] is True),
+            payload["approval_id"],
+            payload["cancel_intent_digest"],
+            payload["result_handle"],
+            payload["terminal_receipt_digest"],
+            payload["last_observation_digest"],
+            payload["error_code"],
+            payload["diagnostic_id"],
+            payload["created_at"],
+            payload["updated_at"],
+            json.dumps(
+                json_compatible(payload["safe_intent"]),
+                allow_nan=False,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
             ),
             int(payload["fallback_performed"] is True),
         )
@@ -1579,7 +2064,10 @@ class FailureObservationSQLiteKernelEntityCodec:
 
     entity_type = "failure_observation"
     owner_id = "openzyme.kernel"
-    table_names = ("failure_observation_records", "openzyme_store_kernel_entity_versions")
+    table_names = (
+        "failure_observation_records",
+        "openzyme_store_kernel_entity_versions",
+    )
     uses_store_version_ledger = True
     mutation_channels = ("canonical_sqlite",)
 
@@ -1593,10 +2081,11 @@ class FailureObservationSQLiteKernelEntityCodec:
                    f.recoverability, f.effect_certainty, f.retry_eligibility,
                    f.actor_kind, f.error_code, f.safe_summary, f.facts_json,
                    f.likely_causes_json, f.evidence_refs_json, f.created_at,
-                   f.task_id, f.lane_id, f.agent_id, f.safe_hint, f.component,
-                   f.operation, f.identities_json, f.mutation_applied,
-                   f.fallback_performed, f.cause_chain_json, f.diagnostic_id,
-                   f.next_action, v.state_version, v.record_digest,
+                   f.task_id, f.lane_id, f.agent_id, f.safe_hint,
+                   f.private_diagnostic_digest, f.component, f.operation,
+                   f.identities_json, f.mutation_applied, f.fallback_performed,
+                   f.cause_chain_json, f.diagnostic_id, f.next_action,
+                   v.state_version, v.record_digest,
                    v.owner_component_id
             FROM failure_observation_records AS f
             LEFT JOIN openzyme_store_kernel_entity_versions AS v
@@ -1608,7 +2097,7 @@ class FailureObservationSQLiteKernelEntityCodec:
         ).fetchone()
         if row is None:
             return None
-        if row[30] is None or row[32] != self.owner_id:
+        if row[31] is None or row[33] != self.owner_id:
             raise SQLiteControlStoreError(
                 "sqlite_kernel_entity_unadopted",
                 "FailureObservation row lacks exact target CAS metadata",
@@ -1638,19 +2127,21 @@ class FailureObservationSQLiteKernelEntityCodec:
                 "lane_id": row[19],
                 "agent_id": row[20],
                 "safe_hint": row[21],
-                "component": row[22],
-                "operation": row[23],
-                "identities": json.loads(str(row[24])),
-                "mutation_applied": bool(row[25]),
-                "fallback_performed": bool(row[26]),
-                "cause_chain": json.loads(str(row[27])),
-                "diagnostic_id": row[28],
-                "next_action": row[29],
+                "component": row[23],
+                "operation": row[24],
+                "identities": json.loads(str(row[25])),
+                "mutation_applied": (None if row[26] is None else bool(row[26])),
+                "fallback_performed": bool(row[27]),
+                "cause_chain": json.loads(str(row[28])),
+                "diagnostic_id": row[29],
+                "next_action": row[30],
             }
+            if row[22] is not None:
+                payload["private_diagnostic_digest"] = row[22]
             parsed = parse_failure_observation(payload)
             if not isinstance(parsed, FailureObservation):
                 raise ValueError("historical failure is not target canonical state")
-            payload = parsed.to_dict()
+            payload = parsed.to_internal_dict()
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise SQLiteControlStoreError(
                 "sqlite_failure_observation_invalid",
@@ -1660,10 +2151,10 @@ class FailureObservationSQLiteKernelEntityCodec:
         snapshot = KernelRecordSnapshot.create(
             entity_type=self.entity_type,
             entity_id=entity_id,
-            state_version=int(row[30]),
+            state_version=int(row[31]),
             payload=payload,
         )
-        if snapshot.record_digest != row[31]:
+        if snapshot.record_digest != row[32]:
             raise SQLiteControlStoreError(
                 "sqlite_kernel_entity_digest_mismatch",
                 "FailureObservation owner row differs from its target CAS digest",
@@ -1696,13 +2187,16 @@ class FailureObservationSQLiteKernelEntityCodec:
                 "FailureObservation mutation violates its public-safe contract",
                 phase="entity_encode",
             ) from exc
-        if not isinstance(parsed, FailureObservation) or parsed.failure_id != mutation.entity_id:
+        if (
+            not isinstance(parsed, FailureObservation)
+            or parsed.failure_id != mutation.entity_id
+        ):
             raise SQLiteControlStoreError(
                 "sqlite_failure_observation_identity_mismatch",
                 "FailureObservation payload identity differs from its mutation",
                 phase="entity_encode",
             )
-        payload = parsed.to_dict()
+        payload = parsed.to_internal_dict()
         connection.execute(
             """
             INSERT INTO failure_observation_records
@@ -1715,24 +2209,44 @@ class FailureObservationSQLiteKernelEntityCodec:
              fallback_performed, cause_chain_json, diagnostic_id, next_action,
              created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                payload["failure_id"], payload["schema_version"],
-                payload["session_id"], payload["task_id"], payload["lane_id"],
-                payload["agent_id"], payload["source_kind"], payload["source_ref"],
-                payload["source_version"], payload["phase"],
-                payload["failure_class"], payload["recoverability"],
-                payload["effect_certainty"], payload["retry_eligibility"],
-                payload["actor_kind"], payload["error_code"],
-                payload["safe_summary"], payload["safe_hint"],
-                self._json(payload["facts"]), self._json(payload["likely_causes"]),
-                self._json(payload["evidence_refs"]), payload["component"],
-                payload["operation"], self._json(payload["identities"]),
-                int(payload["mutation_applied"] is True),
+                payload["failure_id"],
+                payload["schema_version"],
+                payload["session_id"],
+                payload["task_id"],
+                payload["lane_id"],
+                payload["agent_id"],
+                payload["source_kind"],
+                payload["source_ref"],
+                payload["source_version"],
+                payload["phase"],
+                payload["failure_class"],
+                payload["recoverability"],
+                payload["effect_certainty"],
+                payload["retry_eligibility"],
+                payload["actor_kind"],
+                payload["error_code"],
+                payload["safe_summary"],
+                payload["safe_hint"],
+                self._json(payload["facts"]),
+                self._json(payload["likely_causes"]),
+                self._json(payload["evidence_refs"]),
+                payload.get("private_diagnostic_digest"),
+                payload["component"],
+                payload["operation"],
+                self._json(payload["identities"]),
+                (
+                    None
+                    if payload["mutation_applied"] is None
+                    else int(payload["mutation_applied"] is True)
+                ),
                 int(payload["fallback_performed"] is True),
-                self._json(payload["cause_chain"]), payload["diagnostic_id"],
-                payload["next_action"], payload["created_at"],
+                self._json(payload["cause_chain"]),
+                payload["diagnostic_id"],
+                payload["next_action"],
+                payload["created_at"],
             ),
         )
 
@@ -1745,6 +2259,1243 @@ class FailureObservationSQLiteKernelEntityCodec:
             separators=(",", ":"),
             sort_keys=True,
         )
+
+
+class PrivateDiagnosticSQLiteKernelEntityCodec:
+    """Maps operator-only diagnostic sidecars to their append-only owner table."""
+
+    entity_type = "private_diagnostic"
+    owner_id = "openzyme.kernel"
+    table_names = (
+        "private_diagnostic_records",
+        "openzyme_store_kernel_entity_versions",
+    )
+    uses_store_version_ledger = True
+    mutation_channels = ("canonical_sqlite",)
+
+    def read(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        entity_id: str,
+    ) -> KernelRecordSnapshot | None:
+        row = connection.execute(
+            """
+            SELECT d.diagnostic_id, d.schema_version, d.failure_id, d.session_id,
+                   d.component, d.operation, d.phase, d.exception_type,
+                   d.exception_message, d.traceback_text, d.cause_chain_json,
+                   d.errno, d.return_code, d.bounded_stdout, d.bounded_stderr,
+                   d.private_context_json, d.source_kind, d.source_ref,
+                   d.source_version, d.correlation_id, d.created_at,
+                   d.record_digest, v.state_version, v.record_digest,
+                   v.owner_component_id
+            FROM private_diagnostic_records AS d
+            LEFT JOIN openzyme_store_kernel_entity_versions AS v
+              ON v.entity_type = 'private_diagnostic'
+             AND v.entity_id = d.diagnostic_id
+            WHERE d.diagnostic_id = ?
+            """,
+            (entity_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row[22] is None or row[24] != self.owner_id:
+            raise SQLiteControlStoreError(
+                "sqlite_kernel_entity_unadopted",
+                "PrivateDiagnostic row lacks exact target CAS metadata",
+                phase="entity_decode",
+            )
+        try:
+            payload: dict[str, Any] = {
+                "diagnostic_id": row[0],
+                "schema_version": row[1],
+                "failure_id": row[2],
+                "session_id": row[3],
+                "component": row[4],
+                "operation": row[5],
+                "phase": row[6],
+                "exception_type": row[7],
+                "exception_message": row[8],
+                "traceback_text": row[9],
+                "cause_chain": json.loads(str(row[10])),
+                "errno": row[11],
+                "return_code": row[12],
+                "bounded_stdout": row[13],
+                "bounded_stderr": row[14],
+                "private_context": json.loads(str(row[15])),
+                "source_kind": row[16],
+                "source_ref": row[17],
+                "source_version": row[18],
+                "correlation_id": row[19],
+                "created_at": row[20],
+                "record_digest": row[21],
+            }
+            diagnostic = PrivateDiagnosticRecord.from_dict(payload)
+            payload = diagnostic.to_dict()
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise SQLiteControlStoreError(
+                "sqlite_private_diagnostic_invalid",
+                "PrivateDiagnostic owner row violates its closed contract",
+                phase="entity_decode",
+            ) from exc
+        snapshot = KernelRecordSnapshot.create(
+            entity_type=self.entity_type,
+            entity_id=entity_id,
+            state_version=int(row[22]),
+            payload=payload,
+        )
+        if snapshot.record_digest != row[23]:
+            raise SQLiteControlStoreError(
+                "sqlite_kernel_entity_digest_mismatch",
+                "PrivateDiagnostic owner row differs from its target CAS digest",
+                phase="entity_decode",
+            )
+        return snapshot
+
+    def apply(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        mutation: KernelStateMutation,
+        next_state_version: int | None,
+    ) -> None:
+        if mutation.kind is not KernelMutationKind.CREATE:
+            raise SQLiteControlStoreError(
+                "sqlite_private_diagnostic_immutable",
+                "PrivateDiagnostic is append-only",
+                phase="entity_apply",
+            )
+        assert mutation.payload is not None
+        try:
+            thawed = json_compatible(mutation.payload)
+            if not isinstance(thawed, Mapping):
+                raise ValueError("private diagnostic must be an object")
+            diagnostic = PrivateDiagnosticRecord.from_dict(thawed)
+        except (TypeError, ValueError) as exc:
+            raise SQLiteControlStoreError(
+                "sqlite_private_diagnostic_invalid",
+                "PrivateDiagnostic mutation violates its closed contract",
+                phase="entity_encode",
+            ) from exc
+        if diagnostic.diagnostic_id != mutation.entity_id:
+            raise SQLiteControlStoreError(
+                "sqlite_private_diagnostic_identity_mismatch",
+                "PrivateDiagnostic payload identity differs from its mutation",
+                phase="entity_encode",
+            )
+        failure = connection.execute(
+            """
+            SELECT private_diagnostic_digest, diagnostic_id, session_id,
+                   component, operation, phase, source_kind, source_ref,
+                   source_version
+            FROM failure_observation_records
+            WHERE failure_id = ?
+            """,
+            (diagnostic.failure_id,),
+        ).fetchone()
+        if failure != (
+            diagnostic.record_digest,
+            diagnostic.diagnostic_id,
+            diagnostic.session_id,
+            diagnostic.component,
+            diagnostic.operation,
+            diagnostic.phase,
+            diagnostic.source_kind,
+            diagnostic.source_ref,
+            diagnostic.source_version,
+        ):
+            raise SQLiteControlStoreError(
+                "sqlite_private_diagnostic_failure_mismatch",
+                "PrivateDiagnostic does not match its exact public failure",
+                phase="entity_encode",
+            )
+        connection.execute(
+            """
+            INSERT INTO private_diagnostic_records
+            (diagnostic_id, schema_version, failure_id, session_id, component,
+             operation, phase, exception_type, exception_message,
+             traceback_text, cause_chain_json, errno, return_code,
+             bounded_stdout, bounded_stderr, private_context_json, source_kind,
+             source_ref, source_version, correlation_id, created_at,
+             record_digest)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?)
+            """,
+            (
+                diagnostic.diagnostic_id,
+                diagnostic.schema_version,
+                diagnostic.failure_id,
+                diagnostic.session_id,
+                diagnostic.component,
+                diagnostic.operation,
+                diagnostic.phase,
+                diagnostic.exception_type,
+                diagnostic.exception_message,
+                diagnostic.traceback_text,
+                _canonical_json(list(diagnostic.cause_chain)),
+                diagnostic.errno,
+                diagnostic.return_code,
+                diagnostic.bounded_stdout,
+                diagnostic.bounded_stderr,
+                _canonical_json(diagnostic.private_context),
+                diagnostic.source_kind,
+                diagnostic.source_ref,
+                diagnostic.source_version,
+                diagnostic.correlation_id,
+                diagnostic.created_at,
+                diagnostic.record_digest,
+            ),
+        )
+
+
+class _ClosedResidentJSONSQLiteKernelEntityCodec:
+    """Typed mapper for one explicit resident-teammate owner table.
+
+    Every subclass binds one closed contract parser and one physical table.  The
+    payload JSON is not a generic state escape hatch: indexed identities are
+    duplicated and checked against the parsed contract, and only the selected
+    Kernel entity codec can open the table mutation gate.
+    """
+
+    owner_id = "openzyme.kernel"
+    uses_store_version_ledger = True
+    mutation_channels = ("canonical_sqlite",)
+    create_only = True
+    entity_type: str
+    table_names: tuple[str, ...]
+    _table_name: str
+    _identity_column: str
+    _identity_field: str
+    _schema_version: str
+    _digest_field: str
+    _indexed_fields: tuple[tuple[str, str], ...]
+    _state_version_field: str | None = None
+
+    @classmethod
+    def _payload_index_value(
+        cls,
+        payload: Mapping[str, JsonValue],
+        field_path: str,
+    ) -> JsonValue:
+        value: JsonValue = payload
+        for part in field_path.split("."):
+            if value is None:
+                return None
+            if not isinstance(value, Mapping) or part not in value:
+                raise SQLiteControlStoreError(
+                    "sqlite_resident_contract_index_path_invalid",
+                    f"{cls.entity_type} indexed field path is absent",
+                    phase="entity_encode",
+                )
+            value = value[part]
+        return value
+
+    @classmethod
+    def _normalize_payload(
+        cls,
+        payload: Mapping[str, JsonValue],
+    ) -> dict[str, JsonValue]:
+        raise NotImplementedError
+
+    @classmethod
+    def _validate_transition(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        normalized: Mapping[str, JsonValue],
+        mutation: KernelStateMutation,
+        next_state_version: int | None,
+    ) -> None:
+        if cls._state_version_field is not None:
+            if normalized[cls._state_version_field] != next_state_version:
+                raise SQLiteControlStoreError(
+                    "sqlite_resident_contract_state_version_mismatch",
+                    f"{cls.entity_type} state version differs from target CAS",
+                    phase="entity_encode",
+                )
+
+    def read(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        entity_id: str,
+    ) -> KernelRecordSnapshot | None:
+        indexed_columns = tuple(column for column, _ in self._indexed_fields)
+        selected = ", ".join(f"r.{column}" for column in indexed_columns)
+        row = connection.execute(
+            f"""
+            SELECT {selected}, r.payload_json, r.{self._digest_field},
+                   r.schema_version, v.state_version, v.record_digest,
+                   v.owner_component_id
+            FROM {self._table_name} AS r
+            LEFT JOIN openzyme_store_kernel_entity_versions AS v
+              ON v.entity_type = ? AND v.entity_id = r.{self._identity_column}
+            WHERE r.{self._identity_column} = ?
+            """,
+            (self.entity_type, entity_id),
+        ).fetchone()
+        if row is None:
+            return None
+        offset = len(indexed_columns)
+        if row[offset + 3] is None or row[offset + 5] != self.owner_id:
+            raise SQLiteControlStoreError(
+                "sqlite_kernel_entity_unadopted",
+                f"{self.entity_type} row lacks exact target CAS metadata",
+                phase="entity_decode",
+            )
+        decoded = _decode_json(
+            row[offset],
+            code="sqlite_resident_contract_json_invalid",
+            subject=self.entity_type,
+        )
+        if not isinstance(decoded, Mapping):
+            raise SQLiteControlStoreError(
+                "sqlite_resident_contract_payload_invalid",
+                f"{self.entity_type} payload must be a closed JSON object",
+                phase="entity_decode",
+            )
+        normalized = self._normalize_payload(decoded)
+        for index, (_, payload_field) in enumerate(self._indexed_fields):
+            if self._payload_index_value(normalized, payload_field) != row[index]:
+                raise SQLiteControlStoreError(
+                    "sqlite_resident_contract_index_mismatch",
+                    f"{self.entity_type} indexed owner fields differ from payload",
+                    phase="entity_decode",
+                )
+        if (
+            normalized[self._digest_field] != row[offset + 1]
+            or normalized["schema_version"] != row[offset + 2]
+            or row[offset + 2] != self._schema_version
+        ):
+            raise SQLiteControlStoreError(
+                "sqlite_resident_contract_digest_mismatch",
+                f"{self.entity_type} owner digest/schema differs from payload",
+                phase="entity_decode",
+            )
+        snapshot = KernelRecordSnapshot.create(
+            entity_type=self.entity_type,
+            entity_id=entity_id,
+            state_version=int(row[offset + 3]),
+            payload=normalized,
+        )
+        if snapshot.record_digest != row[offset + 4]:
+            raise SQLiteControlStoreError(
+                "sqlite_kernel_entity_digest_mismatch",
+                f"{self.entity_type} owner row differs from target CAS digest",
+                phase="entity_decode",
+            )
+        return snapshot
+
+    def apply(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        mutation: KernelStateMutation,
+        next_state_version: int | None,
+    ) -> None:
+        if mutation.kind is KernelMutationKind.DELETE:
+            raise SQLiteControlStoreError(
+                "sqlite_resident_contract_history_immutable",
+                f"{self.entity_type} history cannot be deleted",
+                phase="entity_apply",
+            )
+        if self.create_only and mutation.kind is not KernelMutationKind.CREATE:
+            raise SQLiteControlStoreError(
+                "sqlite_resident_contract_immutable",
+                f"{self.entity_type} records are create-only",
+                phase="entity_apply",
+            )
+        assert mutation.payload is not None
+        normalized = self._normalize_payload(mutation.payload)
+        if normalized[self._identity_field] != mutation.entity_id:
+            raise SQLiteControlStoreError(
+                "sqlite_resident_contract_identity_mismatch",
+                f"{self.entity_type} identity differs from mutation target",
+                phase="entity_encode",
+            )
+        self._validate_transition(
+            connection,
+            normalized=normalized,
+            mutation=mutation,
+            next_state_version=next_state_version,
+        )
+        columns = tuple(column for column, _ in self._indexed_fields) + (
+            "payload_json",
+            self._digest_field,
+            "schema_version",
+        )
+        values = tuple(
+            self._payload_index_value(normalized, payload_field)
+            for _, payload_field in self._indexed_fields
+        ) + (
+            _canonical_json(normalized),
+            normalized[self._digest_field],
+            normalized["schema_version"],
+        )
+        if mutation.kind is KernelMutationKind.CREATE:
+            placeholders = ", ".join("?" for _ in columns)
+            connection.execute(
+                f"INSERT INTO {self._table_name} ({', '.join(columns)}) "
+                f"VALUES ({placeholders})",
+                values,
+            )
+            return
+        assignments = ", ".join(f"{column} = ?" for column in columns[1:])
+        cursor = connection.execute(
+            f"UPDATE {self._table_name} SET {assignments} "
+            f"WHERE {self._identity_column} = ?",
+            values[1:] + (mutation.entity_id,),
+        )
+        if cursor.rowcount != 1:
+            raise SQLiteControlStoreError(
+                "sqlite_kernel_owner_row_missing",
+                f"{self.entity_type} owner row disappeared before replacement",
+                phase="entity_apply",
+            )
+
+
+class WorkspaceProvisioningIntentSQLiteKernelEntityCodec(
+    _ClosedResidentJSONSQLiteKernelEntityCodec
+):
+    entity_type = "workspace_provisioning_intent"
+    _table_name = "workspace_provisioning_intent_records"
+    table_names = (_table_name, "openzyme_store_kernel_entity_versions")
+    _identity_column = "intent_id"
+    _identity_field = "intent_id"
+    _schema_version = "workspace_provisioning_intent@1"
+    _digest_field = "intent_digest"
+    _state_version_field = "state_version"
+    create_only = False
+    _indexed_fields = (
+        ("intent_id", "intent_id"),
+        ("session_id", "session_id"),
+        ("agent_member_id", "agent_member_id"),
+        ("workspace_id", "workspace_id"),
+        ("generation", "generation"),
+        ("status", "status"),
+        ("state_version", "state_version"),
+        ("claim_epoch", "claim_epoch"),
+    )
+
+    @classmethod
+    def _normalize_payload(
+        cls, payload: Mapping[str, JsonValue]
+    ) -> dict[str, JsonValue]:
+        try:
+            return WorkspaceProvisioningIntent.from_dict(
+                json_compatible(payload)
+            ).to_dict()
+        except (TypeError, ValueError) as exc:
+            raise SQLiteControlStoreError(
+                "sqlite_workspace_provisioning_intent_payload_invalid",
+                "WorkspaceProvisioningIntent violates its closed contract",
+                phase="entity_encode",
+            ) from exc
+
+    @classmethod
+    def _validate_transition(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        normalized: Mapping[str, JsonValue],
+        mutation: KernelStateMutation,
+        next_state_version: int | None,
+    ) -> None:
+        super()._validate_transition(
+            connection,
+            normalized=normalized,
+            mutation=mutation,
+            next_state_version=next_state_version,
+        )
+        if mutation.kind is KernelMutationKind.CREATE:
+            if (
+                normalized["status"] != WorkspaceProvisioningStatus.PENDING.value
+                or normalized["claim_epoch"] != 0
+            ):
+                raise SQLiteControlStoreError(
+                    "sqlite_workspace_provisioning_lifecycle_invalid",
+                    "new provisioning intent must be pending at epoch zero",
+                    phase="entity_encode",
+                )
+            return
+        row = connection.execute(
+            "SELECT payload_json FROM workspace_provisioning_intent_records WHERE intent_id = ?",
+            (mutation.entity_id,),
+        ).fetchone()
+        if row is None:
+            raise SQLiteControlStoreError(
+                "sqlite_kernel_owner_row_missing",
+                "WorkspaceProvisioningIntent owner row is missing",
+                phase="entity_encode",
+            )
+        current_value = _decode_json(
+            row[0],
+            code="sqlite_resident_contract_json_invalid",
+            subject=cls.entity_type,
+        )
+        assert isinstance(current_value, Mapping)
+        current = WorkspaceProvisioningIntent.from_dict(json_compatible(current_value))
+        proposed = WorkspaceProvisioningIntent.from_dict(json_compatible(normalized))
+        allowed = {
+            WorkspaceProvisioningStatus.PENDING: {WorkspaceProvisioningStatus.CLAIMED},
+            WorkspaceProvisioningStatus.CLAIMED: {
+                WorkspaceProvisioningStatus.CLAIMED,
+                WorkspaceProvisioningStatus.READY,
+                WorkspaceProvisioningStatus.BLOCKED,
+                WorkspaceProvisioningStatus.CANCELLED,
+            },
+            WorkspaceProvisioningStatus.READY: set(),
+            WorkspaceProvisioningStatus.BLOCKED: set(),
+            WorkspaceProvisioningStatus.CANCELLED: set(),
+        }
+        if proposed.status not in allowed[current.status]:
+            raise SQLiteControlStoreError(
+                "sqlite_workspace_provisioning_lifecycle_invalid",
+                "WorkspaceProvisioningIntent lifecycle transition is invalid",
+                phase="entity_encode",
+            )
+        expected_epoch = (
+            current.claim_epoch + 1
+            if proposed.status is WorkspaceProvisioningStatus.CLAIMED
+            else current.claim_epoch
+        )
+        if proposed.claim_epoch != expected_epoch:
+            raise SQLiteControlStoreError(
+                "sqlite_workspace_provisioning_claim_epoch_stale",
+                "WorkspaceProvisioningIntent claim epoch is stale",
+                phase="entity_encode",
+            )
+
+
+class WorkspaceProvisioningReceiptSQLiteKernelEntityCodec(
+    _ClosedResidentJSONSQLiteKernelEntityCodec
+):
+    """Own immutable Adapter observations accepted by Kernel settlement."""
+
+    entity_type = "workspace_provisioning_receipt"
+    _table_name = "workspace_provisioning_receipt_records"
+    table_names = (_table_name, "openzyme_store_kernel_entity_versions")
+    _identity_column = "receipt_id"
+    _identity_field = "receipt_id"
+    _schema_version = "workspace_provisioning_receipt@1"
+    _digest_field = "receipt_digest"
+    _indexed_fields = (
+        ("receipt_id", "receipt_id"),
+        ("session_id", "session_id"),
+        ("intent_id", "intent_id"),
+        ("agent_member_id", "agent_member_id"),
+        ("workspace_id", "workspace_id"),
+        ("generation", "generation"),
+        ("controlled_operation_id", "controlled_operation_id"),
+        ("request_id", "request_id"),
+        ("claim_epoch", "claim_epoch"),
+        ("disposition", "disposition"),
+    )
+
+    @classmethod
+    def _normalize_payload(
+        cls, payload: Mapping[str, JsonValue]
+    ) -> dict[str, JsonValue]:
+        try:
+            return WorkspaceProvisioningReceipt.from_dict(
+                json_compatible(payload)
+            ).to_dict()
+        except (TypeError, ValueError) as exc:
+            raise SQLiteControlStoreError(
+                "sqlite_workspace_provisioning_receipt_payload_invalid",
+                "WorkspaceProvisioningReceipt violates its closed contract",
+                phase="entity_encode",
+            ) from exc
+
+    @classmethod
+    def _validate_transition(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        normalized: Mapping[str, JsonValue],
+        mutation: KernelStateMutation,
+        next_state_version: int | None,
+    ) -> None:
+        super()._validate_transition(
+            connection,
+            normalized=normalized,
+            mutation=mutation,
+            next_state_version=next_state_version,
+        )
+        row = connection.execute(
+            "SELECT payload_json FROM workspace_provisioning_intent_records "
+            "WHERE intent_id = ?",
+            (normalized["intent_id"],),
+        ).fetchone()
+        if row is None:
+            raise SQLiteControlStoreError(
+                "sqlite_workspace_provisioning_receipt_intent_missing",
+                "WorkspaceProvisioningReceipt requires its durable intent",
+                phase="entity_encode",
+            )
+        current_value = _decode_json(
+            row[0],
+            code="sqlite_resident_contract_json_invalid",
+            subject=cls.entity_type,
+        )
+        if not isinstance(current_value, Mapping):
+            raise SQLiteControlStoreError(
+                "sqlite_workspace_provisioning_receipt_intent_invalid",
+                "WorkspaceProvisioningReceipt intent owner row is invalid",
+                phase="entity_encode",
+            )
+        current = WorkspaceProvisioningIntent.from_dict(json_compatible(current_value))
+        receipt = WorkspaceProvisioningReceipt.from_dict(json_compatible(normalized))
+        observed_request = WorkspaceProvisioningRequest(
+            request_id=receipt.request_id,
+            intent_id=receipt.intent_id,
+            intent_digest=receipt.intent_digest,
+            claim_token=receipt.claim_token,
+            claim_epoch=receipt.claim_epoch,
+            session_id=receipt.session_id,
+            agent_member_id=receipt.agent_member_id,
+            workspace_id=receipt.workspace_id,
+            generation=receipt.generation,
+            repository_pin_digest=receipt.repository_pin_digest,
+            provider_id=receipt.provider_id,
+            target_id=receipt.target_id,
+            adapter_binding_digest=receipt.adapter_binding_digest,
+            controlled_operation_id=receipt.controlled_operation_id,
+        )
+        if observed_request.request_digest != receipt.request_digest:
+            raise SQLiteControlStoreError(
+                "sqlite_workspace_provisioning_receipt_request_stale",
+                "WorkspaceProvisioningReceipt does not bind its exact Adapter request",
+                phase="entity_encode",
+            )
+        if current.status not in {
+            WorkspaceProvisioningStatus.CLAIMED,
+            WorkspaceProvisioningStatus.BLOCKED,
+        }:
+            raise SQLiteControlStoreError(
+                "sqlite_workspace_provisioning_receipt_lifecycle_invalid",
+                "Provisioning receipt requires a claimed or reconcilable intent",
+                phase="entity_encode",
+            )
+        if current.status is WorkspaceProvisioningStatus.BLOCKED and (
+            not current.reconcile_required or current.terminal_receipt_digest is None
+        ):
+            raise SQLiteControlStoreError(
+                "sqlite_workspace_provisioning_receipt_reconciliation_invalid",
+                "Blocked provisioning intent is not eligible for reconciliation",
+                phase="entity_encode",
+            )
+        expected_intent_digest = current.intent_digest
+        if current.status is WorkspaceProvisioningStatus.BLOCKED:
+            rows = connection.execute(
+                "SELECT payload_json "
+                "FROM workspace_provisioning_reconciliation_records "
+                "WHERE intent_id = ? AND status = 'claimed' "
+                "ORDER BY attempt",
+                (current.intent_id,),
+            ).fetchall()
+            matching: list[WorkspaceProvisioningReconciliation] = []
+            for reconciliation_row in rows:
+                reconciliation_value = _decode_json(
+                    reconciliation_row[0],
+                    code="sqlite_resident_contract_json_invalid",
+                    subject="workspace_provisioning_reconciliation",
+                )
+                if not isinstance(reconciliation_value, Mapping):
+                    continue
+                reconciliation = WorkspaceProvisioningReconciliation.from_dict(
+                    json_compatible(reconciliation_value)
+                )
+                if reconciliation.provision_request == observed_request:
+                    matching.append(reconciliation)
+            if len(matching) != 1:
+                raise SQLiteControlStoreError(
+                    "sqlite_workspace_provisioning_receipt_reconciliation_stale",
+                    "Reconciliation receipt requires one exact claimed durable observation",
+                    phase="entity_encode",
+                )
+            expected_intent_digest = matching[0].provision_request.intent_digest
+        if (
+            receipt.intent_digest != expected_intent_digest
+            or receipt.session_id != current.session_id
+            or receipt.agent_member_id != current.agent_member_id
+            or receipt.workspace_id != current.workspace_id
+            or receipt.generation != current.generation
+            or receipt.repository_pin_digest != current.repository_pin_digest
+            or receipt.provider_id != current.provider_id
+            or receipt.target_id != current.target_id
+            or receipt.adapter_binding_digest != current.adapter_binding_digest
+            or receipt.controlled_operation_id != current.controlled_operation_id
+            or receipt.claim_token != current.claim_token
+            or receipt.claim_epoch != current.claim_epoch
+        ):
+            raise SQLiteControlStoreError(
+                "sqlite_workspace_provisioning_receipt_identity_stale",
+                "WorkspaceProvisioningReceipt differs from its current occurrence",
+                phase="entity_encode",
+            )
+
+
+class WorkspaceProvisioningReconciliationSQLiteKernelEntityCodec(
+    _ClosedResidentJSONSQLiteKernelEntityCodec
+):
+    """Own one explicit, claim-fenced observation of a blocked dispatch."""
+
+    entity_type = "workspace_provisioning_reconciliation"
+    _table_name = "workspace_provisioning_reconciliation_records"
+    table_names = (_table_name, "openzyme_store_kernel_entity_versions")
+    _identity_column = "reconciliation_id"
+    _identity_field = "reconciliation_id"
+    _schema_version = "workspace_provisioning_reconciliation@1"
+    _digest_field = "reconciliation_digest"
+    _state_version_field = "state_version"
+    create_only = False
+    _indexed_fields = (
+        ("reconciliation_id", "reconciliation_id"),
+        ("session_id", "session_id"),
+        ("intent_id", "intent_id"),
+        ("source_receipt_id", "source_receipt_id"),
+        ("attempt", "attempt"),
+        ("parent_reconciliation_id", "parent_reconciliation_id"),
+        ("status", "status"),
+        ("state_version", "state_version"),
+        ("claim_epoch", "claim_epoch"),
+        ("identity_digest", "identity_digest"),
+    )
+
+    @classmethod
+    def _normalize_payload(
+        cls, payload: Mapping[str, JsonValue]
+    ) -> dict[str, JsonValue]:
+        try:
+            return WorkspaceProvisioningReconciliation.from_dict(
+                json_compatible(payload)
+            ).to_dict()
+        except (TypeError, ValueError) as exc:
+            raise SQLiteControlStoreError(
+                "sqlite_workspace_provisioning_reconciliation_payload_invalid",
+                "WorkspaceProvisioningReconciliation violates its closed contract",
+                phase="entity_encode",
+            ) from exc
+
+    @classmethod
+    def _validate_transition(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        normalized: Mapping[str, JsonValue],
+        mutation: KernelStateMutation,
+        next_state_version: int | None,
+    ) -> None:
+        super()._validate_transition(
+            connection,
+            normalized=normalized,
+            mutation=mutation,
+            next_state_version=next_state_version,
+        )
+        proposed = WorkspaceProvisioningReconciliation.from_dict(
+            json_compatible(normalized)
+        )
+        if mutation.kind is KernelMutationKind.CREATE:
+            if (
+                proposed.status is not WorkspaceProvisioningReconciliationStatus.PENDING
+                or proposed.state_version != 1
+                or proposed.claim_epoch != 0
+            ):
+                raise SQLiteControlStoreError(
+                    "sqlite_workspace_provisioning_reconciliation_lifecycle_invalid",
+                    "New reconciliation must be pending at state version one",
+                    phase="entity_encode",
+                )
+            cls._validate_source_graph(connection, proposed)
+            cls._validate_parent(connection, proposed)
+            return
+
+        row = connection.execute(
+            "SELECT payload_json FROM workspace_provisioning_reconciliation_records "
+            "WHERE reconciliation_id = ?",
+            (mutation.entity_id,),
+        ).fetchone()
+        if row is None:
+            raise SQLiteControlStoreError(
+                "sqlite_kernel_owner_row_missing",
+                "WorkspaceProvisioningReconciliation owner row is missing",
+                phase="entity_encode",
+            )
+        current_value = _decode_json(
+            row[0],
+            code="sqlite_resident_contract_json_invalid",
+            subject=cls.entity_type,
+        )
+        if not isinstance(current_value, Mapping):
+            raise SQLiteControlStoreError(
+                "sqlite_workspace_provisioning_reconciliation_payload_invalid",
+                "Current reconciliation owner payload is invalid",
+                phase="entity_encode",
+            )
+        current = WorkspaceProvisioningReconciliation.from_dict(
+            json_compatible(current_value)
+        )
+        if proposed.identity_digest != current.identity_digest:
+            raise SQLiteControlStoreError(
+                "sqlite_workspace_provisioning_reconciliation_identity_stale",
+                "Reconciliation occurrence identity cannot change",
+                phase="entity_encode",
+            )
+        allowed = {
+            WorkspaceProvisioningReconciliationStatus.PENDING: {
+                WorkspaceProvisioningReconciliationStatus.CLAIMED,
+            },
+            WorkspaceProvisioningReconciliationStatus.CLAIMED: {
+                WorkspaceProvisioningReconciliationStatus.CLAIMED,
+                WorkspaceProvisioningReconciliationStatus.READY,
+                WorkspaceProvisioningReconciliationStatus.BLOCKED,
+            },
+            WorkspaceProvisioningReconciliationStatus.READY: set(),
+            WorkspaceProvisioningReconciliationStatus.BLOCKED: set(),
+        }
+        if proposed.status not in allowed[current.status]:
+            raise SQLiteControlStoreError(
+                "sqlite_workspace_provisioning_reconciliation_lifecycle_invalid",
+                "WorkspaceProvisioningReconciliation lifecycle transition is invalid",
+                phase="entity_encode",
+            )
+        expected_claim_epoch = (
+            current.claim_epoch + 1
+            if proposed.status is WorkspaceProvisioningReconciliationStatus.CLAIMED
+            else current.claim_epoch
+        )
+        if proposed.claim_epoch != expected_claim_epoch:
+            raise SQLiteControlStoreError(
+                "sqlite_workspace_provisioning_reconciliation_claim_epoch_stale",
+                "WorkspaceProvisioningReconciliation claim epoch is stale",
+                phase="entity_encode",
+            )
+        cls._validate_source_graph(connection, proposed)
+
+    @staticmethod
+    def _validate_source_graph(
+        connection: sqlite3.Connection,
+        reconciliation: WorkspaceProvisioningReconciliation,
+    ) -> None:
+        intent_row = connection.execute(
+            "SELECT payload_json FROM workspace_provisioning_intent_records "
+            "WHERE intent_id = ?",
+            (reconciliation.intent_id,),
+        ).fetchone()
+        receipt_row = connection.execute(
+            "SELECT payload_json FROM workspace_provisioning_receipt_records "
+            "WHERE receipt_id = ?",
+            (reconciliation.source_receipt_id,),
+        ).fetchone()
+        if intent_row is None or receipt_row is None:
+            raise SQLiteControlStoreError(
+                "sqlite_workspace_provisioning_reconciliation_source_missing",
+                "Reconciliation requires its blocked intent and source receipt",
+                phase="entity_encode",
+            )
+        intent_value = _decode_json(
+            intent_row[0],
+            code="sqlite_resident_contract_json_invalid",
+            subject="workspace_provisioning_intent",
+        )
+        receipt_value = _decode_json(
+            receipt_row[0],
+            code="sqlite_resident_contract_json_invalid",
+            subject="workspace_provisioning_receipt",
+        )
+        if not isinstance(intent_value, Mapping) or not isinstance(
+            receipt_value, Mapping
+        ):
+            raise SQLiteControlStoreError(
+                "sqlite_workspace_provisioning_reconciliation_source_invalid",
+                "Reconciliation source owner payload is invalid",
+                phase="entity_encode",
+            )
+        intent = WorkspaceProvisioningIntent.from_dict(json_compatible(intent_value))
+        receipt = WorkspaceProvisioningReceipt.from_dict(json_compatible(receipt_value))
+        request = reconciliation.provision_request
+        if (
+            intent.status is not WorkspaceProvisioningStatus.BLOCKED
+            or not intent.reconcile_required
+            or intent.state_version != reconciliation.blocked_intent_state_version
+            or intent.intent_digest != reconciliation.blocked_intent_digest
+            or receipt.receipt_digest != reconciliation.source_receipt_digest
+            or receipt.intent_id != intent.intent_id
+            or receipt.terminal_receipt_digest != reconciliation.dispatch_receipt_digest
+            or receipt.effect_certainty.value != "dispatch_in_doubt"
+            or not receipt.reconcile_required
+            or request.request_id != receipt.request_id
+            or request.request_digest != receipt.request_digest
+            or request.intent_id != intent.intent_id
+            or request.session_id != intent.session_id
+            or request.agent_member_id != intent.agent_member_id
+            or request.workspace_id != intent.workspace_id
+            or request.generation != intent.generation
+            or request.repository_pin_digest != intent.repository_pin_digest
+            or request.provider_id != intent.provider_id
+            or request.target_id != intent.target_id
+            or request.adapter_binding_digest != intent.adapter_binding_digest
+            or request.controlled_operation_id != intent.controlled_operation_id
+            or request.claim_token != intent.claim_token
+            or request.claim_epoch != intent.claim_epoch
+        ):
+            raise SQLiteControlStoreError(
+                "sqlite_workspace_provisioning_reconciliation_source_stale",
+                "Reconciliation differs from the exact blocked dispatch occurrence",
+                phase="entity_encode",
+            )
+
+    @staticmethod
+    def _validate_parent(
+        connection: sqlite3.Connection,
+        reconciliation: WorkspaceProvisioningReconciliation,
+    ) -> None:
+        if reconciliation.parent_reconciliation_id is None:
+            return
+        row = connection.execute(
+            "SELECT payload_json FROM workspace_provisioning_reconciliation_records "
+            "WHERE reconciliation_id = ?",
+            (reconciliation.parent_reconciliation_id,),
+        ).fetchone()
+        if row is None:
+            raise SQLiteControlStoreError(
+                "sqlite_workspace_provisioning_reconciliation_parent_missing",
+                "Reconciliation lineage parent is absent",
+                phase="entity_encode",
+            )
+        value = _decode_json(
+            row[0],
+            code="sqlite_resident_contract_json_invalid",
+            subject="workspace_provisioning_reconciliation",
+        )
+        if not isinstance(value, Mapping):
+            raise SQLiteControlStoreError(
+                "sqlite_workspace_provisioning_reconciliation_parent_invalid",
+                "Reconciliation lineage parent is invalid",
+                phase="entity_encode",
+            )
+        parent = WorkspaceProvisioningReconciliation.from_dict(json_compatible(value))
+        if (
+            parent.status is not WorkspaceProvisioningReconciliationStatus.BLOCKED
+            or not parent.reconcile_required
+            or parent.intent_id != reconciliation.intent_id
+            or parent.attempt + 1 != reconciliation.attempt
+            or parent.provision_request.request_digest
+            != reconciliation.provision_request.request_digest
+        ):
+            raise SQLiteControlStoreError(
+                "sqlite_workspace_provisioning_reconciliation_parent_stale",
+                "Reconciliation lineage parent is not eligible for another observation",
+                phase="entity_encode",
+            )
+
+
+class WorkflowAuthorityBindingSQLiteKernelEntityCodec(
+    _ClosedResidentJSONSQLiteKernelEntityCodec
+):
+    entity_type = "workflow_authority_binding"
+    _table_name = "workflow_authority_binding_records"
+    table_names = (_table_name, "openzyme_store_kernel_entity_versions")
+    _identity_column = "authority_id"
+    _identity_field = "authority_id"
+    _schema_version = "workflow_authority_binding@1"
+    _digest_field = "binding_digest"
+    _state_version_field = "state_version"
+    create_only = False
+    _indexed_fields = (
+        ("authority_id", "authority_id"),
+        ("session_id", "session_id"),
+        ("request_lineage_id", "request_lineage_id"),
+        ("parent_authority_id", "parent_authority_id"),
+        ("status", "status"),
+        ("epoch", "epoch"),
+        ("state_version", "state_version"),
+    )
+
+    @classmethod
+    def _normalize_payload(
+        cls, payload: Mapping[str, JsonValue]
+    ) -> dict[str, JsonValue]:
+        try:
+            return WorkflowAuthorityBinding.from_dict(
+                json_compatible(payload)
+            ).to_dict()
+        except (TypeError, ValueError) as exc:
+            raise SQLiteControlStoreError(
+                "sqlite_workflow_authority_binding_payload_invalid",
+                "WorkflowAuthorityBinding violates its closed contract",
+                phase="entity_encode",
+            ) from exc
+
+    @classmethod
+    def _validate_transition(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        normalized: Mapping[str, JsonValue],
+        mutation: KernelStateMutation,
+        next_state_version: int | None,
+    ) -> None:
+        super()._validate_transition(
+            connection,
+            normalized=normalized,
+            mutation=mutation,
+            next_state_version=next_state_version,
+        )
+        if mutation.kind is KernelMutationKind.CREATE:
+            if (
+                normalized["status"] != WorkflowAuthorityStatus.ACTIVE.value
+                or normalized["epoch"] != 1
+            ):
+                raise SQLiteControlStoreError(
+                    "sqlite_workflow_authority_lifecycle_invalid",
+                    "new workflow authority must be active at epoch one",
+                    phase="entity_encode",
+                )
+            return
+        row = connection.execute(
+            "SELECT payload_json FROM workflow_authority_binding_records WHERE authority_id = ?",
+            (mutation.entity_id,),
+        ).fetchone()
+        if row is None:
+            raise SQLiteControlStoreError(
+                "sqlite_kernel_owner_row_missing",
+                "WorkflowAuthorityBinding owner row is missing",
+                phase="entity_encode",
+            )
+        current_value = _decode_json(
+            row[0],
+            code="sqlite_resident_contract_json_invalid",
+            subject=cls.entity_type,
+        )
+        assert isinstance(current_value, Mapping)
+        current = WorkflowAuthorityBinding.from_dict(json_compatible(current_value))
+        proposed = WorkflowAuthorityBinding.from_dict(json_compatible(normalized))
+        if (
+            current.status is not WorkflowAuthorityStatus.ACTIVE
+            or proposed.status is WorkflowAuthorityStatus.ACTIVE
+            or proposed.epoch != current.epoch + 1
+        ):
+            raise SQLiteControlStoreError(
+                "sqlite_workflow_authority_epoch_stale",
+                "workflow authority transition is terminal or carries a stale epoch",
+                phase="entity_encode",
+            )
+
+
+class RuntimeSignalAuthorityLinkSQLiteKernelEntityCodec(
+    _ClosedResidentJSONSQLiteKernelEntityCodec
+):
+    entity_type = "runtime_signal_authority_link"
+    _table_name = "runtime_signal_authority_link_records"
+    table_names = (_table_name, "openzyme_store_kernel_entity_versions")
+    _identity_column = "signal_id"
+    _identity_field = "signal_id"
+    _schema_version = "runtime_signal_authority_link@1"
+    _digest_field = "link_digest"
+    _indexed_fields = (
+        ("signal_id", "signal_id"),
+        ("session_id", "session_id"),
+        ("authority_id", "authority_id"),
+        ("authority_epoch", "authority_epoch"),
+    )
+
+    @classmethod
+    def _normalize_payload(
+        cls, payload: Mapping[str, JsonValue]
+    ) -> dict[str, JsonValue]:
+        try:
+            return RuntimeSignalAuthorityLink.from_dict(
+                json_compatible(payload)
+            ).to_dict()
+        except (TypeError, ValueError) as exc:
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_signal_authority_link_payload_invalid",
+                "RuntimeSignalAuthorityLink violates its closed contract",
+                phase="entity_encode",
+            ) from exc
+
+    @classmethod
+    def _validate_transition(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        normalized: Mapping[str, JsonValue],
+        mutation: KernelStateMutation,
+        next_state_version: int | None,
+    ) -> None:
+        row = connection.execute(
+            "SELECT status, epoch, binding_digest FROM workflow_authority_binding_records WHERE authority_id = ?",
+            (normalized["authority_id"],),
+        ).fetchone()
+        if row is None or row != (
+            WorkflowAuthorityStatus.ACTIVE.value,
+            normalized["authority_epoch"],
+            normalized["authority_binding_digest"],
+        ):
+            raise SQLiteControlStoreError(
+                "sqlite_workflow_authority_epoch_stale",
+                "runtime signal link does not bind a current active authority",
+                phase="entity_encode",
+            )
+
+
+class RuntimeTurnContextSQLiteKernelEntityCodec(
+    _ClosedResidentJSONSQLiteKernelEntityCodec
+):
+    entity_type = "runtime_turn_context"
+    _table_name = "runtime_turn_context_records"
+    table_names = (_table_name, "openzyme_store_kernel_entity_versions")
+    _identity_column = "context_id"
+    _identity_field = "context_id"
+    _schema_version = "runtime_turn_context@1"
+    _digest_field = "context_digest"
+    _indexed_fields = (
+        ("context_id", "context_id"),
+        ("session_id", "session_id"),
+        ("turn_id", "turn_id"),
+        ("signal_id", "signal_id"),
+    )
+
+    @classmethod
+    def _normalize_payload(
+        cls, payload: Mapping[str, JsonValue]
+    ) -> dict[str, JsonValue]:
+        try:
+            return RuntimeTurnContext.from_dict(json_compatible(payload)).to_dict()
+        except (TypeError, ValueError) as exc:
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_turn_context_payload_invalid",
+                "RuntimeTurnContext violates its closed contract",
+                phase="entity_encode",
+            ) from exc
+
+
+class ToolExposureSnapshotSQLiteKernelEntityCodec(
+    _ClosedResidentJSONSQLiteKernelEntityCodec
+):
+    entity_type = "tool_exposure_snapshot"
+    _table_name = "tool_exposure_snapshot_records"
+    table_names = (_table_name, "openzyme_store_kernel_entity_versions")
+    _identity_column = "exposure_snapshot_id"
+    _identity_field = "exposure_snapshot_id"
+    _schema_version = "tool_exposure_snapshot@1"
+    _digest_field = "exposure_snapshot_digest"
+    _indexed_fields = (
+        ("exposure_snapshot_id", "exposure_snapshot_id"),
+        ("session_id", "session_id"),
+        ("turn_id", "turn_id"),
+        ("workflow_authority_id", "workflow_authority_id"),
+        ("workflow_authority_epoch", "workflow_authority_epoch"),
+    )
+
+    @classmethod
+    def _normalize_payload(
+        cls, payload: Mapping[str, JsonValue]
+    ) -> dict[str, JsonValue]:
+        try:
+            return ToolExposureSnapshot.from_dict(json_compatible(payload)).to_dict()
+        except (TypeError, ValueError) as exc:
+            raise SQLiteControlStoreError(
+                "sqlite_tool_exposure_snapshot_payload_invalid",
+                "ToolExposureSnapshot violates its closed contract",
+                phase="entity_encode",
+            ) from exc
+
+    @classmethod
+    def _validate_transition(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        normalized: Mapping[str, JsonValue],
+        mutation: KernelStateMutation,
+        next_state_version: int | None,
+    ) -> None:
+        row = connection.execute(
+            "SELECT status, epoch, binding_digest FROM workflow_authority_binding_records WHERE authority_id = ?",
+            (normalized["workflow_authority_id"],),
+        ).fetchone()
+        if row is None or row != (
+            WorkflowAuthorityStatus.ACTIVE.value,
+            normalized["workflow_authority_epoch"],
+            normalized["workflow_authority_digest"],
+        ):
+            raise SQLiteControlStoreError(
+                "sqlite_workflow_authority_epoch_stale",
+                "tool exposure snapshot does not bind current workflow authority",
+                phase="entity_encode",
+            )
+
+
+class CommandToolExpansionSQLiteKernelEntityCodec(
+    _ClosedResidentJSONSQLiteKernelEntityCodec
+):
+    entity_type = "command_tool_expansion"
+    _table_name = "command_tool_expansion_records"
+    table_names = (_table_name, "openzyme_store_kernel_entity_versions")
+    _identity_column = "expansion_id"
+    _identity_field = "expansion_id"
+    _schema_version = "command_tool_expansion@1"
+    _digest_field = "expansion_digest"
+    _indexed_fields = (
+        ("expansion_id", "expansion_id"),
+        ("command_id", "command_id"),
+        ("session_id", "session_id"),
+        ("exposure_snapshot_id", "exposure_snapshot_id"),
+        ("expansion_revision", "expansion_revision"),
+    )
+
+    @classmethod
+    def _normalize_payload(
+        cls, payload: Mapping[str, JsonValue]
+    ) -> dict[str, JsonValue]:
+        try:
+            return CommandToolExpansion.from_dict(json_compatible(payload)).to_dict()
+        except (TypeError, ValueError) as exc:
+            raise SQLiteControlStoreError(
+                "sqlite_command_tool_expansion_payload_invalid",
+                "CommandToolExpansion violates its closed contract",
+                phase="entity_encode",
+            ) from exc
+
+    @classmethod
+    def _validate_transition(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        normalized: Mapping[str, JsonValue],
+        mutation: KernelStateMutation,
+        next_state_version: int | None,
+    ) -> None:
+        row = connection.execute(
+            "SELECT payload_json FROM tool_exposure_snapshot_records WHERE exposure_snapshot_id = ?",
+            (normalized["exposure_snapshot_id"],),
+        ).fetchone()
+        if row is None:
+            raise SQLiteControlStoreError(
+                "sqlite_tool_exposure_snapshot_missing",
+                "command tool expansion requires its exact exposure snapshot",
+                phase="entity_encode",
+            )
+        snapshot_value = _decode_json(
+            row[0],
+            code="sqlite_resident_contract_json_invalid",
+            subject="tool_exposure_snapshot",
+        )
+        assert isinstance(snapshot_value, Mapping)
+        snapshot = ToolExposureSnapshot.from_dict(json_compatible(snapshot_value))
+        expansion = CommandToolExpansion.from_dict(json_compatible(normalized))
+        try:
+            from openzyme_contracts import validate_command_tool_expansion
+
+            validate_command_tool_expansion(snapshot, expansion)
+        except (TypeError, ValueError) as exc:
+            raise SQLiteControlStoreError(
+                "sqlite_command_tool_expansion_not_deferred",
+                "command tool expansion is not an exact Deferred subset",
+                phase="entity_encode",
+            ) from exc
 
 
 class _CreateOnlyRuntimeSQLiteKernelEntityCodec:
@@ -1900,9 +3651,7 @@ def _validate_runtime_message_set(value: JsonValue) -> None:
             )
         for optional_id in ("correlation_id", "tool_call_id"):
             if item[optional_id] is not None:
-                _require_runtime_identifier(
-                    item[optional_id], field_name=optional_id
-                )
+                _require_runtime_identifier(item[optional_id], field_name=optional_id)
         if item["role"] == "tool" and item["tool_call_id"] is None:
             raise SQLiteControlStoreError(
                 "sqlite_runtime_turn_command_payload_invalid",
@@ -1915,6 +3664,261 @@ def _validate_runtime_message_set(value: JsonValue) -> None:
             "RuntimeTurnCommand message identities must be unique",
             phase="entity_encode",
         )
+
+
+def _normalize_runtime_turn_outcome_receipt(
+    payload: Mapping[str, JsonValue],
+) -> dict[str, JsonValue]:
+    thawed = json_compatible(payload)
+    if (
+        not isinstance(thawed, dict)
+        or set(thawed)
+        != {
+            "schema_version",
+            "receipt_id",
+            "outcome",
+            "accepted_at",
+            "receipt_digest",
+        }
+        or thawed.get("schema_version") != "runtime_turn_outcome_receipt@1"
+    ):
+        raise SQLiteControlStoreError(
+            "sqlite_runtime_turn_outcome_payload_invalid",
+            "RuntimeTurnOutcomeReceipt has an invalid closed schema",
+            phase="entity_encode",
+        )
+    for field_name in ("receipt_id", "accepted_at"):
+        _require_runtime_identifier(thawed[field_name], field_name=field_name)
+    _require_runtime_digest(thawed["receipt_digest"], field_name="receipt_digest")
+    outcome = thawed["outcome"]
+    expected_outcome = {
+        "schema_version",
+        "outcome_id",
+        "command_id",
+        "command_digest",
+        "turn_id",
+        "session_id",
+        "agent_id",
+        "agent_member_id",
+        "signal_id",
+        "signal_attempt",
+        "runtime_lease_generation",
+        "runtime_fence",
+        "process_epoch",
+        "workflow_authority_id",
+        "workflow_authority_epoch",
+        "workflow_authority_digest",
+        "tool_exposure_snapshot_id",
+        "tool_exposure_snapshot_digest",
+        "disposition",
+        "summary",
+        "messages",
+        "tool_requests",
+        "usage",
+        "continuation_id",
+        "waiting_approval_id",
+        "failure",
+        "task_id",
+        "lane_id",
+        "correlation_id",
+        "outcome_digest",
+    }
+    if (
+        not isinstance(outcome, dict)
+        or set(outcome) != expected_outcome
+        or outcome.get("schema_version") != "runtime_turn_outcome@1"
+    ):
+        raise SQLiteControlStoreError(
+            "sqlite_runtime_turn_outcome_payload_invalid",
+            "RuntimeTurnOutcome has an invalid closed schema",
+            phase="entity_encode",
+        )
+    for field_name in (
+        "outcome_id",
+        "command_id",
+        "turn_id",
+        "session_id",
+        "agent_id",
+        "agent_member_id",
+        "signal_id",
+        "workflow_authority_id",
+        "tool_exposure_snapshot_id",
+    ):
+        _require_runtime_identifier(outcome[field_name], field_name=field_name)
+    for field_name in (
+        "command_digest",
+        "workflow_authority_digest",
+        "tool_exposure_snapshot_digest",
+        "outcome_digest",
+    ):
+        _require_runtime_digest(outcome[field_name], field_name=field_name)
+    for field_name in (
+        "signal_attempt",
+        "runtime_lease_generation",
+        "runtime_fence",
+        "process_epoch",
+        "workflow_authority_epoch",
+    ):
+        _require_positive_runtime_integer(outcome[field_name], field_name=field_name)
+    for field_name in (
+        "continuation_id",
+        "waiting_approval_id",
+        "task_id",
+        "lane_id",
+        "correlation_id",
+    ):
+        if outcome[field_name] is not None:
+            _require_runtime_identifier(outcome[field_name], field_name=field_name)
+    if (
+        outcome["disposition"]
+        not in {
+            "ready_for_next_step",
+            "waiting_approval",
+            "waiting_continuation",
+            "idle",
+            "step_limit_reached",
+            "failed",
+        }
+        or not isinstance(outcome["summary"], str)
+        or not outcome["summary"]
+        or len(outcome["summary"]) > 16_384
+    ):
+        raise SQLiteControlStoreError(
+            "sqlite_runtime_turn_outcome_payload_invalid",
+            "RuntimeTurnOutcome disposition or summary is invalid",
+            phase="entity_encode",
+        )
+    messages = outcome["messages"]
+    if not isinstance(messages, list) or len(messages) > 512:
+        raise SQLiteControlStoreError(
+            "sqlite_runtime_turn_outcome_payload_invalid",
+            "RuntimeTurnOutcome messages exceed their closed bound",
+            phase="entity_encode",
+        )
+    if messages:
+        _validate_runtime_message_set(messages)
+    tool_requests = outcome["tool_requests"]
+    if not isinstance(tool_requests, list) or len(tool_requests) > 64:
+        raise SQLiteControlStoreError(
+            "sqlite_runtime_turn_outcome_payload_invalid",
+            "RuntimeTurnOutcome tool requests exceed their closed bound",
+            phase="entity_encode",
+        )
+    request_ids: list[str] = []
+    for request in tool_requests:
+        if (
+            not isinstance(request, dict)
+            or set(request)
+            != {
+                "schema_version",
+                "request_id",
+                "invocation",
+                "affordance_snapshot_digest",
+            }
+            or request.get("schema_version") != "runtime_tool_request@1"
+        ):
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_turn_outcome_payload_invalid",
+                "RuntimeTurnOutcome contains a non-closed tool request",
+                phase="entity_encode",
+            )
+        _require_runtime_identifier(request["request_id"], field_name="request_id")
+        _require_runtime_digest(
+            request["affordance_snapshot_digest"],
+            field_name="affordance_snapshot_digest",
+        )
+        assert isinstance(request["request_id"], str)
+        request_ids.append(request["request_id"])
+    if len(request_ids) != len(set(request_ids)):
+        raise SQLiteControlStoreError(
+            "sqlite_runtime_turn_outcome_payload_invalid",
+            "RuntimeTurnOutcome tool request IDs must be unique",
+            phase="entity_encode",
+        )
+    failure = outcome["failure"]
+    if failure is not None:
+        if not isinstance(failure, dict):
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_turn_outcome_payload_invalid",
+                "RuntimeTurnOutcome failure must be an object",
+                phase="entity_encode",
+            )
+        try:
+            parsed = parse_failure_observation(failure)
+        except (TypeError, ValueError) as exc:
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_turn_outcome_payload_invalid",
+                "RuntimeTurnOutcome failure violates its closed contract",
+                phase="entity_encode",
+            ) from exc
+        if (
+            not isinstance(parsed, FailureObservation)
+            or parsed.session_id != outcome["session_id"]
+        ):
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_turn_outcome_payload_invalid",
+                "RuntimeTurnOutcome failure identity differs from the outcome",
+                phase="entity_encode",
+            )
+    if (outcome["disposition"] == "failed") != (failure is not None):
+        raise SQLiteControlStoreError(
+            "sqlite_runtime_turn_outcome_payload_invalid",
+            "RuntimeTurnOutcome failure and disposition must agree",
+            phase="entity_encode",
+        )
+    canonical_outcome = dict(outcome)
+    supplied_outcome_digest = canonical_outcome.pop("outcome_digest")
+    if canonical_sha256_digest(canonical_outcome) != supplied_outcome_digest:
+        raise SQLiteControlStoreError(
+            "sqlite_runtime_turn_outcome_digest_mismatch",
+            "RuntimeTurnOutcome digest differs from its closed payload",
+            phase="entity_encode",
+        )
+    canonical_receipt = dict(thawed)
+    supplied_receipt_digest = canonical_receipt.pop("receipt_digest")
+    if canonical_sha256_digest(canonical_receipt) != supplied_receipt_digest:
+        raise SQLiteControlStoreError(
+            "sqlite_runtime_turn_outcome_digest_mismatch",
+            "RuntimeTurnOutcomeReceipt digest differs from its closed payload",
+            phase="entity_encode",
+        )
+    return thawed
+
+
+class RuntimeTurnOutcomeSQLiteKernelEntityCodec(
+    _ClosedResidentJSONSQLiteKernelEntityCodec
+):
+    entity_type = "runtime_turn_outcome"
+    _table_name = "runtime_turn_outcome_records"
+    table_names = (_table_name, "openzyme_store_kernel_entity_versions")
+    _identity_column = "receipt_id"
+    _identity_field = "receipt_id"
+    _schema_version = "runtime_turn_outcome_receipt@1"
+    _digest_field = "receipt_digest"
+    _indexed_fields = (
+        ("receipt_id", "receipt_id"),
+        ("outcome_id", "outcome.outcome_id"),
+        ("command_id", "outcome.command_id"),
+        ("session_id", "outcome.session_id"),
+        ("failure_id", "outcome.failure.failure_id"),
+        ("outcome_digest", "outcome.outcome_digest"),
+    )
+
+    @classmethod
+    def _normalize_payload(
+        cls, payload: Mapping[str, JsonValue]
+    ) -> dict[str, JsonValue]:
+        return _normalize_runtime_turn_outcome_receipt(payload)
+
+    @classmethod
+    def session_id_for_ledger(
+        cls,
+        payload: Mapping[str, JsonValue],
+    ) -> JsonValue:
+        """Expose the receipt's closed nested Session identity to the CAS index."""
+
+        normalized = cls._normalize_payload(payload)
+        return cls._payload_index_value(normalized, "outcome.session_id")
 
 
 class RuntimeTurnCommandSQLiteKernelEntityCodec(
@@ -1950,6 +3954,13 @@ class RuntimeTurnCommandSQLiteKernelEntityCodec(
         "capability_binding_digest",
         "affordance_snapshot_id",
         "affordance_snapshot_digest",
+        "workflow_authority_id",
+        "workflow_authority_epoch",
+        "workflow_authority_digest",
+        "signal_authority_link_digest",
+        "tool_exposure_snapshot_id",
+        "tool_exposure_snapshot_digest",
+        "context",
         "runtime_adapter_id",
         "runtime_adapter_contract_digest",
         "max_steps",
@@ -1964,10 +3975,16 @@ class RuntimeTurnCommandSQLiteKernelEntityCodec(
         "schema_version",
     )
     _columns = tuple(
-        "messages_json" if field_name == "messages" else field_name
+        (
+            "messages_json"
+            if field_name == "messages"
+            else "context_json"
+            if field_name == "context"
+            else field_name
+        )
         for field_name in _fields
     )
-    _json_fields = frozenset({"messages"})
+    _json_fields = frozenset({"context", "messages"})
 
     @classmethod
     def _validate_payload(
@@ -1981,7 +3998,7 @@ class RuntimeTurnCommandSQLiteKernelEntityCodec(
             code="sqlite_runtime_turn_command_payload_invalid",
             subject="RuntimeTurnCommand",
         )
-        if payload["schema_version"] != "runtime_turn_command@1":
+        if payload["schema_version"] != "runtime_turn_command@2":
             raise SQLiteControlStoreError(
                 "sqlite_runtime_turn_command_payload_invalid",
                 "RuntimeTurnCommand schema version is invalid",
@@ -1999,6 +4016,8 @@ class RuntimeTurnCommandSQLiteKernelEntityCodec(
             "distribution_id",
             "capability_binding_id",
             "affordance_snapshot_id",
+            "workflow_authority_id",
+            "tool_exposure_snapshot_id",
             "runtime_adapter_id",
         ):
             _require_runtime_identifier(payload[field_name], field_name=field_name)
@@ -2011,6 +4030,7 @@ class RuntimeTurnCommandSQLiteKernelEntityCodec(
             "runtime_fence",
             "process_epoch",
             "capability_binding_revision",
+            "workflow_authority_epoch",
             "max_steps",
             "max_duration_seconds",
             "max_input_units",
@@ -2027,12 +4047,46 @@ class RuntimeTurnCommandSQLiteKernelEntityCodec(
             "declared_tool_catalog_digest",
             "capability_binding_digest",
             "affordance_snapshot_digest",
+            "workflow_authority_digest",
+            "signal_authority_link_digest",
+            "tool_exposure_snapshot_digest",
             "runtime_adapter_contract_digest",
             "command_digest",
         ):
             _require_runtime_digest(payload[field_name], field_name=field_name)
         _validate_runtime_message_set(payload["messages"])
-        canonical = {key: payload[key] for key in cls._fields if key != "command_digest"}
+        context_value = payload["context"]
+        if not isinstance(context_value, Mapping):
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_turn_context_payload_invalid",
+                "RuntimeTurnCommand context must be a closed object",
+                phase="entity_encode",
+            )
+        try:
+            context = RuntimeTurnContext.from_dict(json_compatible(context_value))
+        except (TypeError, ValueError) as exc:
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_turn_context_payload_invalid",
+                "RuntimeTurnCommand context violates its closed contract",
+                phase="entity_encode",
+            ) from exc
+        if (
+            context.session_id != payload["session_id"]
+            or context.agent_id != payload["agent_id"]
+            or context.agent_member_id != payload["agent_member_id"]
+            or context.turn_id != payload["turn_id"]
+            or context.signal_id != payload["signal_id"]
+            or context.task_id != payload["task_id"]
+            or context.lane_id != payload["lane_id"]
+        ):
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_turn_context_identity_mismatch",
+                "RuntimeTurnCommand context identity differs from command",
+                phase="entity_encode",
+            )
+        canonical = {
+            key: payload[key] for key in cls._fields if key != "command_digest"
+        }
         if canonical_sha256_digest(canonical) != payload["command_digest"]:
             raise SQLiteControlStoreError(
                 "sqlite_runtime_turn_command_digest_mismatch",
@@ -2057,6 +4111,11 @@ class RuntimeContinuationIntentSQLiteKernelEntityCodec(
         "source_command_digest",
         "source_outcome_id",
         "source_outcome_digest",
+        "source_signal_id",
+        "source_signal_authority_link_digest",
+        "source_workflow_authority_id",
+        "source_workflow_authority_epoch",
+        "source_workflow_authority_binding_digest",
         "process_epoch",
         "release_digest",
         "extension_bundle_digest",
@@ -2066,9 +4125,29 @@ class RuntimeContinuationIntentSQLiteKernelEntityCodec(
         "capability_binding_digest",
         "affordance_snapshot_id",
         "affordance_snapshot_digest",
+        "delivery_status",
+        "delivery_attempt",
+        "delivery_signal_id",
+        "delivery_signal_authority_link_digest",
+        "delivery_identity_digest",
+        "created_at",
+        "delivered_at",
+        "recipient_runtime_executed",
+        "fallback_performed",
         "schema_version",
     )
     _columns = _fields
+    _boolean_fields = frozenset({"recipient_runtime_executed", "fallback_performed"})
+    _mutable_delivery_fields = frozenset(
+        {
+            "delivery_status",
+            "delivery_attempt",
+            "delivery_signal_id",
+            "delivery_signal_authority_link_digest",
+            "delivery_identity_digest",
+            "delivered_at",
+        }
+    )
 
     @classmethod
     def _validate_payload(
@@ -2095,6 +4174,8 @@ class RuntimeContinuationIntentSQLiteKernelEntityCodec(
             "agent_member_id",
             "source_command_id",
             "source_outcome_id",
+            "source_signal_id",
+            "source_workflow_authority_id",
             "capability_binding_id",
             "affordance_snapshot_id",
         ):
@@ -2102,6 +4183,8 @@ class RuntimeContinuationIntentSQLiteKernelEntityCodec(
         for field_name in (
             "source_command_digest",
             "source_outcome_digest",
+            "source_signal_authority_link_digest",
+            "source_workflow_authority_binding_digest",
             "release_digest",
             "extension_bundle_digest",
             "declared_tool_catalog_digest",
@@ -2109,9 +4192,241 @@ class RuntimeContinuationIntentSQLiteKernelEntityCodec(
             "affordance_snapshot_digest",
         ):
             _require_runtime_digest(payload[field_name], field_name=field_name)
-        for field_name in ("process_epoch", "capability_binding_revision"):
+        for field_name in (
+            "process_epoch",
+            "capability_binding_revision",
+            "source_workflow_authority_epoch",
+        ):
             _require_positive_runtime_integer(
                 payload[field_name], field_name=field_name
+            )
+        if (
+            not isinstance(payload["delivery_attempt"], int)
+            or isinstance(payload["delivery_attempt"], bool)
+            or payload["delivery_attempt"] not in {0, 1}
+            or payload["delivery_status"] not in {"pending", "delivered"}
+        ):
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_continuation_intent_payload_invalid",
+                "RuntimeContinuationIntent delivery lifecycle is invalid",
+                phase="entity_encode",
+            )
+        for field_name in ("recipient_runtime_executed", "fallback_performed"):
+            if payload[field_name] is not False:
+                raise SQLiteControlStoreError(
+                    "sqlite_runtime_continuation_intent_payload_invalid",
+                    "RuntimeContinuationIntent cannot record runtime execution or fallback",
+                    phase="entity_encode",
+                )
+        cls._require_timestamp(payload["created_at"], field_name="created_at")
+        delivery_fields = (
+            payload["delivery_signal_id"],
+            payload["delivery_signal_authority_link_digest"],
+            payload["delivery_identity_digest"],
+            payload["delivered_at"],
+        )
+        if payload["delivery_status"] == "pending":
+            if payload["delivery_attempt"] != 0 or any(
+                value is not None for value in delivery_fields
+            ):
+                raise SQLiteControlStoreError(
+                    "sqlite_runtime_continuation_intent_payload_invalid",
+                    "Pending RuntimeContinuationIntent carries delivery facts",
+                    phase="entity_encode",
+                )
+            return
+        if payload["delivery_attempt"] != 1 or any(
+            value is None for value in delivery_fields
+        ):
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_continuation_intent_payload_invalid",
+                "Delivered RuntimeContinuationIntent lacks exact delivery facts",
+                phase="entity_encode",
+            )
+        _require_runtime_identifier(
+            payload["delivery_signal_id"],
+            field_name="delivery_signal_id",
+        )
+        _require_runtime_digest(
+            payload["delivery_signal_authority_link_digest"],
+            field_name="delivery_signal_authority_link_digest",
+        )
+        _require_runtime_digest(
+            payload["delivery_identity_digest"],
+            field_name="delivery_identity_digest",
+        )
+        cls._require_timestamp(payload["delivered_at"], field_name="delivered_at")
+
+    def apply(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        mutation: KernelStateMutation,
+        next_state_version: int | None,
+    ) -> None:
+        assert mutation.payload is not None
+        payload = mutation.payload
+        self._validate_payload(payload, entity_id=mutation.entity_id)
+        self._validate_source_authority_graph(connection, payload)
+        if mutation.kind is KernelMutationKind.CREATE:
+            super().apply(
+                connection,
+                mutation=mutation,
+                next_state_version=next_state_version,
+            )
+            return
+        if mutation.kind is not KernelMutationKind.REPLACE:
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_continuation_intent_transition_invalid",
+                "RuntimeContinuationIntent cannot be deleted",
+                phase="entity_apply",
+            )
+        current = self.read(connection, entity_id=mutation.entity_id)
+        if current is None:
+            raise SQLiteControlStoreError(
+                "sqlite_kernel_owner_row_missing",
+                "RuntimeContinuationIntent disappeared before replacement",
+                phase="entity_apply",
+            )
+        immutable_fields = set(self._fields).difference(self._mutable_delivery_fields)
+        if any(
+            current.payload[field_name] != payload[field_name]
+            for field_name in immutable_fields
+        ) or (
+            current.payload["delivery_status"] != "pending"
+            or payload["delivery_status"] != "delivered"
+        ):
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_continuation_intent_transition_invalid",
+                "RuntimeContinuationIntent replacement is not pending-to-delivered",
+                phase="entity_apply",
+            )
+        self._validate_delivery_authority_graph(connection, payload)
+        cursor = connection.execute(
+            """
+            UPDATE runtime_continuation_intent_records
+            SET delivery_status = ?, delivery_attempt = ?, delivery_signal_id = ?,
+                delivery_signal_authority_link_digest = ?,
+                delivery_identity_digest = ?, delivered_at = ?
+            WHERE continuation_id = ?
+            """,
+            (
+                payload["delivery_status"],
+                payload["delivery_attempt"],
+                payload["delivery_signal_id"],
+                payload["delivery_signal_authority_link_digest"],
+                payload["delivery_identity_digest"],
+                payload["delivered_at"],
+                mutation.entity_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise SQLiteControlStoreError(
+                "sqlite_kernel_owner_row_missing",
+                "RuntimeContinuationIntent disappeared before replacement",
+                phase="entity_apply",
+            )
+
+    @staticmethod
+    def _require_timestamp(value: JsonValue, *, field_name: str) -> None:
+        try:
+            if not isinstance(value, str):
+                raise ValueError
+            instant = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if instant.tzinfo is None:
+                raise ValueError
+        except ValueError as exc:
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_continuation_intent_payload_invalid",
+                f"RuntimeContinuationIntent {field_name} must include a timezone",
+                phase="entity_encode",
+            ) from exc
+
+    @staticmethod
+    def _validate_source_authority_graph(
+        connection: sqlite3.Connection,
+        payload: Mapping[str, JsonValue],
+    ) -> None:
+        link = connection.execute(
+            """
+            SELECT authority_id, authority_epoch, link_digest
+            FROM runtime_signal_authority_link_records
+            WHERE signal_id = ?
+            """,
+            (payload["source_signal_id"],),
+        ).fetchone()
+        binding = connection.execute(
+            """
+            SELECT status, epoch, binding_digest
+            FROM workflow_authority_binding_records
+            WHERE authority_id = ?
+            """,
+            (payload["source_workflow_authority_id"],),
+        ).fetchone()
+        if link != (
+            payload["source_workflow_authority_id"],
+            payload["source_workflow_authority_epoch"],
+            payload["source_signal_authority_link_digest"],
+        ) or binding != (
+            WorkflowAuthorityStatus.ACTIVE.value,
+            payload["source_workflow_authority_epoch"],
+            payload["source_workflow_authority_binding_digest"],
+        ):
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_continuation_source_authority_stale",
+                "RuntimeContinuationIntent source authority graph is missing or stale",
+                phase="entity_encode",
+            )
+
+    @staticmethod
+    def _validate_delivery_authority_graph(
+        connection: sqlite3.Connection,
+        payload: Mapping[str, JsonValue],
+    ) -> None:
+        row = connection.execute(
+            """
+            SELECT payload_json, link_digest
+            FROM runtime_signal_authority_link_records
+            WHERE signal_id = ?
+            """,
+            (payload["delivery_signal_id"],),
+        ).fetchone()
+        if row is None:
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_continuation_delivery_link_missing",
+                "RuntimeContinuationIntent delivery link is absent",
+                phase="entity_encode",
+            )
+        value = _decode_json(
+            row[0],
+            code="sqlite_runtime_continuation_delivery_link_invalid",
+            subject="RuntimeContinuationIntent delivery link",
+        )
+        try:
+            if not isinstance(value, Mapping):
+                raise ValueError
+            link = RuntimeSignalAuthorityLink.from_dict(json_compatible(value))
+        except (TypeError, ValueError) as exc:
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_continuation_delivery_link_invalid",
+                "RuntimeContinuationIntent delivery link violates its closed contract",
+                phase="entity_encode",
+            ) from exc
+        if (
+            row[1] != payload["delivery_signal_authority_link_digest"]
+            or link.signal_id != payload["delivery_signal_id"]
+            or link.session_id != payload["session_id"]
+            or link.authority_id != payload["source_workflow_authority_id"]
+            or link.authority_epoch != payload["source_workflow_authority_epoch"]
+            or link.authority_binding_digest
+            != payload["source_workflow_authority_binding_digest"]
+            or link.causation_ref != payload["continuation_id"]
+            or link.source_kind.value != "continuation_delivery"
+        ):
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_continuation_delivery_link_invalid",
+                "RuntimeContinuationIntent delivery link identity drifted",
+                phase="entity_encode",
             )
 
 
@@ -2178,14 +4493,18 @@ class RuntimeSettlementIntentSQLiteKernelEntityCodec(
         _require_positive_runtime_integer(
             payload["signal_attempt"], field_name="signal_attempt"
         )
-        if payload["disposition"] not in {
-            "ready_for_next_step",
-            "waiting_approval",
-            "waiting_continuation",
-            "idle",
-            "step_limit_reached",
-            "failed",
-        } or payload["task_transition_performed"] is not False:
+        if (
+            payload["disposition"]
+            not in {
+                "ready_for_next_step",
+                "waiting_approval",
+                "waiting_continuation",
+                "idle",
+                "step_limit_reached",
+                "failed",
+            }
+            or payload["task_transition_performed"] is not False
+        ):
             raise SQLiteControlStoreError(
                 "sqlite_runtime_settlement_intent_payload_invalid",
                 "RuntimeSettlementIntent disposition or Task-transition fact is invalid",
@@ -2206,6 +4525,7 @@ class RuntimeOutcomeConsumptionSQLiteKernelEntityCodec(
         "command_digest",
         "outcome_id",
         "outcome_digest",
+        "outcome_receipt",
         "session_id",
         "agent_id",
         "agent_member_id",
@@ -2223,6 +4543,7 @@ class RuntimeOutcomeConsumptionSQLiteKernelEntityCodec(
         "command_digest",
         "outcome_id",
         "outcome_digest",
+        "outcome_receipt_json",
         "session_id",
         "agent_id",
         "agent_member_id",
@@ -2234,7 +4555,9 @@ class RuntimeOutcomeConsumptionSQLiteKernelEntityCodec(
         "consumption_digest",
         "schema_version",
     )
-    _json_fields = frozenset({"continuation_intent", "settlement_intent"})
+    _json_fields = frozenset(
+        {"outcome_receipt", "continuation_intent", "settlement_intent"}
+    )
 
     def apply(
         self,
@@ -2252,18 +4575,47 @@ class RuntimeOutcomeConsumptionSQLiteKernelEntityCodec(
         assert mutation.payload is not None
         payload = mutation.payload
         self._validate_payload(payload, entity_id=mutation.entity_id)
+        receipt = payload["outcome_receipt"]
+        assert isinstance(receipt, Mapping)
+        normalized_receipt = _normalize_runtime_turn_outcome_receipt(receipt)
+        outcome = normalized_receipt["outcome"]
+        assert isinstance(outcome, Mapping)
         continuation = payload["continuation_intent"]
         settlement = payload["settlement_intent"]
         assert isinstance(settlement, Mapping)
+        stored_receipt = connection.execute(
+            """
+            SELECT outcome_id, command_id, session_id, outcome_digest,
+                   receipt_digest, payload_json
+            FROM runtime_turn_outcome_records
+            WHERE receipt_id = ?
+            """,
+            (normalized_receipt["receipt_id"],),
+        ).fetchone()
+        expected_receipt = (
+            outcome["outcome_id"],
+            outcome["command_id"],
+            outcome["session_id"],
+            outcome["outcome_digest"],
+            normalized_receipt["receipt_digest"],
+            _canonical_json(normalized_receipt),
+        )
+        if stored_receipt != expected_receipt:
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_outcome_receipt_missing",
+                "RuntimeOutcomeConsumption requires the exact durable outcome receipt",
+                phase="entity_encode",
+            )
         connection.execute(
             """
             INSERT INTO runtime_outcome_consumption_records
             (command_id, consumption_id, command_digest, outcome_id,
-             outcome_digest, session_id, agent_id, agent_member_id, signal_id,
-             signal_attempt, continuation_intent_id, continuation_intent_json,
+             outcome_digest, outcome_receipt_id, outcome_receipt_json,
+             session_id, agent_id, agent_member_id, signal_id, signal_attempt,
+             continuation_intent_id, continuation_intent_json,
              settlement_intent_id, settlement_intent_json, consumed_at,
              consumption_digest, schema_version)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 payload["command_id"],
@@ -2271,6 +4623,8 @@ class RuntimeOutcomeConsumptionSQLiteKernelEntityCodec(
                 payload["command_digest"],
                 payload["outcome_id"],
                 payload["outcome_digest"],
+                normalized_receipt["receipt_id"],
+                _canonical_json(normalized_receipt),
                 payload["session_id"],
                 payload["agent_id"],
                 payload["agent_member_id"],
@@ -2292,7 +4646,8 @@ class RuntimeOutcomeConsumptionSQLiteKernelEntityCodec(
         row = connection.execute(
             """
             SELECT r.command_id, r.consumption_id, r.command_digest,
-                   r.outcome_id, r.outcome_digest, r.session_id, r.agent_id,
+                   r.outcome_id, r.outcome_digest, r.outcome_receipt_id,
+                   r.outcome_receipt_json, r.session_id, r.agent_id,
                    r.agent_member_id, r.signal_id, r.signal_attempt,
                    r.continuation_intent_id, r.continuation_intent_json,
                    r.settlement_intent_id, r.settlement_intent_json,
@@ -2308,7 +4663,7 @@ class RuntimeOutcomeConsumptionSQLiteKernelEntityCodec(
         ).fetchone()
         if row is None:
             return None
-        if row[17] is None or row[19] != self.owner_id:
+        if row[19] is None or row[21] != self.owner_id:
             raise SQLiteControlStoreError(
                 "sqlite_kernel_entity_unadopted",
                 "RuntimeOutcomeConsumption row lacks exact target CAS metadata",
@@ -2316,30 +4671,50 @@ class RuntimeOutcomeConsumptionSQLiteKernelEntityCodec(
             )
         continuation = (
             None
-            if row[11] is None
+            if row[13] is None
             else _decode_json(
-                row[11],
+                row[13],
                 code="sqlite_runtime_coordination_json_invalid",
                 subject="RuntimeOutcomeConsumption continuation",
             )
         )
         settlement = _decode_json(
-            row[13],
+            row[15],
             code="sqlite_runtime_coordination_json_invalid",
             subject="RuntimeOutcomeConsumption settlement",
         )
         if (
-            continuation is not None
-            and (
-                not isinstance(continuation, Mapping)
-                or continuation.get("continuation_id") != row[10]
+            (
+                continuation is not None
+                and (
+                    not isinstance(continuation, Mapping)
+                    or continuation.get("continuation_id") != row[12]
+                )
             )
-        ) or not isinstance(settlement, Mapping) or settlement.get(
-            "settlement_id"
-        ) != row[12]:
+            or not isinstance(settlement, Mapping)
+            or settlement.get("settlement_id") != row[14]
+        ):
             raise SQLiteControlStoreError(
                 "sqlite_runtime_outcome_consumption_reference_mismatch",
                 "RuntimeOutcomeConsumption JSON differs from its explicit intent refs",
+                phase="entity_decode",
+            )
+        receipt = _decode_json(
+            row[6],
+            code="sqlite_runtime_coordination_json_invalid",
+            subject="RuntimeOutcomeConsumption outcome receipt",
+        )
+        if not isinstance(receipt, Mapping):
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_outcome_consumption_reference_mismatch",
+                "RuntimeOutcomeConsumption receipt must be an object",
+                phase="entity_decode",
+            )
+        normalized_receipt = _normalize_runtime_turn_outcome_receipt(receipt)
+        if normalized_receipt["receipt_id"] != row[5]:
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_outcome_consumption_reference_mismatch",
+                "RuntimeOutcomeConsumption receipt identity differs from its explicit ref",
                 phase="entity_decode",
             )
         payload: dict[str, JsonValue] = {
@@ -2348,25 +4723,26 @@ class RuntimeOutcomeConsumptionSQLiteKernelEntityCodec(
             "command_digest": row[2],
             "outcome_id": row[3],
             "outcome_digest": row[4],
-            "session_id": row[5],
-            "agent_id": row[6],
-            "agent_member_id": row[7],
-            "signal_id": row[8],
-            "signal_attempt": row[9],
+            "outcome_receipt": normalized_receipt,
+            "session_id": row[7],
+            "agent_id": row[8],
+            "agent_member_id": row[9],
+            "signal_id": row[10],
+            "signal_attempt": row[11],
             "continuation_intent": continuation,
             "settlement_intent": settlement,
-            "consumed_at": row[14],
-            "consumption_digest": row[15],
-            "schema_version": row[16],
+            "consumed_at": row[16],
+            "consumption_digest": row[17],
+            "schema_version": row[18],
         }
         self._validate_payload(payload, entity_id=entity_id)
         snapshot = KernelRecordSnapshot.create(
             entity_type=self.entity_type,
             entity_id=entity_id,
-            state_version=int(row[17]),
+            state_version=int(row[19]),
             payload=payload,
         )
-        if snapshot.record_digest != row[18]:
+        if snapshot.record_digest != row[20]:
             raise SQLiteControlStoreError(
                 "sqlite_kernel_entity_digest_mismatch",
                 "RuntimeOutcomeConsumption differs from its target CAS digest",
@@ -2386,7 +4762,7 @@ class RuntimeOutcomeConsumptionSQLiteKernelEntityCodec(
             code="sqlite_runtime_outcome_consumption_payload_invalid",
             subject="RuntimeOutcomeConsumption",
         )
-        if payload["schema_version"] != "runtime_outcome_consumption@1":
+        if payload["schema_version"] != "runtime_outcome_consumption@2":
             raise SQLiteControlStoreError(
                 "sqlite_runtime_outcome_consumption_payload_invalid",
                 "RuntimeOutcomeConsumption schema version is invalid",
@@ -2411,6 +4787,36 @@ class RuntimeOutcomeConsumptionSQLiteKernelEntityCodec(
         _require_positive_runtime_integer(
             payload["signal_attempt"], field_name="signal_attempt"
         )
+        receipt = payload["outcome_receipt"]
+        if not isinstance(receipt, Mapping):
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_outcome_consumption_payload_invalid",
+                "RuntimeOutcomeConsumption outcome receipt must be an object",
+                phase="entity_encode",
+            )
+        normalized_receipt = _normalize_runtime_turn_outcome_receipt(receipt)
+        outcome = normalized_receipt["outcome"]
+        assert isinstance(outcome, Mapping)
+        expected_outcome_identity = {
+            "command_id": payload["command_id"],
+            "command_digest": payload["command_digest"],
+            "outcome_id": payload["outcome_id"],
+            "outcome_digest": payload["outcome_digest"],
+            "session_id": payload["session_id"],
+            "agent_id": payload["agent_id"],
+            "agent_member_id": payload["agent_member_id"],
+            "signal_id": payload["signal_id"],
+            "signal_attempt": payload["signal_attempt"],
+        }
+        if any(
+            outcome.get(key) != expected
+            for key, expected in expected_outcome_identity.items()
+        ):
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_outcome_consumption_reference_mismatch",
+                "RuntimeOutcomeConsumption receipt identities do not match",
+                phase="entity_encode",
+            )
         try:
             consumed_at = payload["consumed_at"]
             if not isinstance(consumed_at, str):
@@ -2468,10 +4874,29 @@ class RuntimeOutcomeConsumptionSQLiteKernelEntityCodec(
         if (
             settlement.get("signal_id") != payload["signal_id"]
             or settlement.get("signal_attempt") != payload["signal_attempt"]
+            or settlement.get("disposition") != outcome.get("disposition")
+            or settlement.get("waiting_approval_id")
+            != outcome.get("waiting_approval_id")
+            or settlement.get("failure_id")
+            != (
+                None
+                if outcome.get("failure") is None
+                else outcome["failure"].get("failure_id")
+            )
         ):
             raise SQLiteControlStoreError(
                 "sqlite_runtime_outcome_consumption_reference_mismatch",
                 "RuntimeOutcomeConsumption settlement signal identity does not match",
+                phase="entity_encode",
+            )
+        expected_continuation_id = outcome.get("continuation_id")
+        if (continuation is None) != (expected_continuation_id is None) or (
+            continuation is not None
+            and continuation.get("continuation_id") != expected_continuation_id
+        ):
+            raise SQLiteControlStoreError(
+                "sqlite_runtime_outcome_consumption_reference_mismatch",
+                "RuntimeOutcomeConsumption continuation differs from its outcome",
                 phase="entity_encode",
             )
         canonical = {
@@ -2938,7 +5363,11 @@ class AgentMemberSQLiteKernelEntityCodec:
         return mutation.payload
 
     def _require_ledger(
-        self, row: sqlite3.Row | tuple[object, ...], *, state_index: int, owner_index: int
+        self,
+        row: sqlite3.Row | tuple[object, ...],
+        *,
+        state_index: int,
+        owner_index: int,
     ) -> None:
         if row[state_index] is None:
             raise SQLiteControlStoreError(
@@ -3004,6 +5433,8 @@ class ConversationMessageSQLiteKernelEntityCodec:
             "correlation_id",
             "task_id",
             "lane_id",
+            "request_lineage_id",
+            "workflow_refs",
             "skill_keys",
             "created_at",
         }
@@ -3018,6 +5449,8 @@ class ConversationMessageSQLiteKernelEntityCodec:
             "correlation_id",
             "task_id",
             "lane_id",
+            "request_lineage_id",
+            "workflow_refs",
             "skill_keys",
         }
     )
@@ -3196,9 +5629,7 @@ class ProtocolRecordSQLiteKernelEntityCodec:
             "task_transition_performed",
         }
     )
-    _DOCUMENT_FIELDS = _FIELDS.difference(
-        {"protocol_ref", "session_id", "created_at"}
-    )
+    _DOCUMENT_FIELDS = _FIELDS.difference({"protocol_ref", "session_id", "created_at"})
 
     def read(
         self, connection: sqlite3.Connection, *, entity_id: str
@@ -3716,9 +6147,7 @@ class TaskSQLiteKernelEntityCodec:
             "assigned_ref": row[10],
             "failure_summary": row[11],
             "failure_ref": row[12],
-            "evidence_refs": self._json_array(
-                row[13], field_name="evidence_refs_json"
-            ),
+            "evidence_refs": self._json_array(row[13], field_name="evidence_refs_json"),
             "finish_evidence_refs": self._json_array(
                 row[14], field_name="finish_evidence_refs_json"
             ),
@@ -4170,9 +6599,7 @@ class ProjectRepositoryBindingHeadSQLiteKernelEntityCodec:
             )
 
     @classmethod
-    def _validate(
-        cls, payload: Mapping[str, JsonValue], *, entity_id: str
-    ) -> None:
+    def _validate(cls, payload: Mapping[str, JsonValue], *, entity_id: str) -> None:
         _require_target_payload(
             payload,
             fields=cls._fields,
@@ -4373,6 +6800,8 @@ class WorkspaceGenerationSQLiteKernelEntityCodec:
               ON v.entity_type = 'workspace_generation'
              AND v.entity_id = w.workspace_id
             WHERE w.workspace_id = ?
+            ORDER BY w.generation DESC
+            LIMIT 1
             """,
             (entity_id,),
         ).fetchone()
@@ -4486,19 +6915,61 @@ class WorkspaceGenerationSQLiteKernelEntityCodec:
                 values,
             )
             return
-        cursor = connection.execute(
+        current_row = connection.execute(
             """
-            UPDATE workspace_generation_records
-            SET workspace_kind = ?, session_id = ?, owner_member_id = ?,
-                generation = ?, workspace_state_version = ?, status = ?,
-                provider_id = ?, target_id = ?, created_at = ?, updated_at = ?,
-                root_identity_digest = ?, target_qualification_digest = ?,
-                transition_receipt_digest = ?, controlled_operation_id = ?,
-                retired_at = ?, schema_version = ?
+            SELECT generation
+            FROM workspace_generation_records
             WHERE workspace_id = ?
+            ORDER BY generation DESC
+            LIMIT 1
             """,
-            (*values[1:], generation.workspace_id),
-        )
+            (generation.workspace_id,),
+        ).fetchone()
+        if current_row is None:
+            raise SQLiteControlStoreError(
+                "sqlite_kernel_owner_row_missing",
+                "WorkspaceGeneration disappeared before replacement",
+                phase="entity_apply",
+            )
+        current_generation = int(current_row[0])
+        if generation.generation == current_generation + 1:
+            cursor = connection.execute(
+                """
+                INSERT INTO workspace_generation_records
+                (workspace_id, workspace_kind, session_id, owner_member_id,
+                 generation, workspace_state_version, status, provider_id,
+                 target_id, created_at, updated_at, root_identity_digest,
+                 target_qualification_digest, transition_receipt_digest,
+                 controlled_operation_id, retired_at, schema_version)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                values,
+            )
+        elif generation.generation == current_generation:
+            cursor = connection.execute(
+                """
+                UPDATE workspace_generation_records
+                SET workspace_kind = ?, session_id = ?, owner_member_id = ?,
+                    workspace_state_version = ?, status = ?, provider_id = ?,
+                    target_id = ?, created_at = ?, updated_at = ?,
+                    root_identity_digest = ?, target_qualification_digest = ?,
+                    transition_receipt_digest = ?, controlled_operation_id = ?,
+                    retired_at = ?, schema_version = ?
+                WHERE workspace_id = ? AND generation = ?
+                """,
+                (
+                    *values[1:4],
+                    *values[5:],
+                    generation.workspace_id,
+                    generation.generation,
+                ),
+            )
+        else:
+            raise SQLiteControlStoreError(
+                "sqlite_workspace_generation_non_monotonic",
+                "WorkspaceGeneration replacement must update current state or append one successor",
+                phase="entity_apply",
+            )
         if cursor.rowcount != 1:
             raise SQLiteControlStoreError(
                 "sqlite_kernel_owner_row_missing",
@@ -4821,7 +7292,10 @@ class TaskEvidenceSQLiteKernelEntityCodec:
             "subject_digest",
             "attributes",
         }
-        if set(value) != expected or value.get("schema_version") != EVIDENCE_REF_SCHEMA_VERSION:
+        if (
+            set(value) != expected
+            or value.get("schema_version") != EVIDENCE_REF_SCHEMA_VERSION
+        ):
             raise SQLiteControlStoreError(
                 "sqlite_task_evidence_invalid",
                 "EvidenceRef violates its closed contract",
@@ -5065,9 +7539,11 @@ class KernelCommandReceiptSQLiteKernelEntityCodec:
                 "Kernel mutation receipt mutation_applied must be boolean",
                 phase="entity_encode",
             )
-        if not isinstance(receipt["entity_refs"], (list, tuple)) or not isinstance(
-            receipt["event_refs"], (list, tuple)
-        ) or not isinstance(receipt["result"], Mapping):
+        if (
+            not isinstance(receipt["entity_refs"], (list, tuple))
+            or not isinstance(receipt["event_refs"], (list, tuple))
+            or not isinstance(receipt["result"], Mapping)
+        ):
             raise SQLiteControlStoreError(
                 "sqlite_kernel_command_receipt_invalid",
                 "Kernel mutation receipt collections violate their contract",
@@ -5809,10 +8285,12 @@ def kernel_entity_codecs() -> tuple[SQLiteKernelEntityCodec, ...]:
         AgentMemberSQLiteKernelEntityCodec(),
         AgentRuntimeSignalSQLiteKernelEntityCodec(),
         ApprovalRequestSQLiteKernelEntityCodec(),
+        CommandToolExpansionSQLiteKernelEntityCodec(),
         ConversationMessageSQLiteKernelEntityCodec(),
         ContinuationSQLiteKernelEntityCodec(),
         ControlledOperationSQLiteKernelEntityCodec(),
         FailureObservationSQLiteKernelEntityCodec(),
+        PrivateDiagnosticSQLiteKernelEntityCodec(),
         InboxMessageSQLiteKernelEntityCodec(),
         KernelCommandReceiptSQLiteKernelEntityCodec(),
         LaneSQLiteKernelEntityCodec(),
@@ -5823,9 +8301,13 @@ def kernel_entity_codecs() -> tuple[SQLiteKernelEntityCodec, ...]:
         ProtocolRecordSQLiteKernelEntityCodec(),
         RevisionPathVerificationSQLiteKernelEntityCodec(),
         RuntimeContinuationIntentSQLiteKernelEntityCodec(),
+        RuntimeCommandSQLiteKernelEntityCodec(),
         RuntimeOutcomeConsumptionSQLiteKernelEntityCodec(),
+        RuntimeSignalAuthorityLinkSQLiteKernelEntityCodec(),
         RuntimeSettlementIntentSQLiteKernelEntityCodec(),
         RuntimeTurnCommandSQLiteKernelEntityCodec(),
+        RuntimeTurnContextSQLiteKernelEntityCodec(),
+        RuntimeTurnOutcomeSQLiteKernelEntityCodec(),
         SessionCapabilityBindingSQLiteKernelEntityCodec(),
         SessionCompositionPinSQLiteKernelEntityCodec(),
         SessionRepositoryBindingPinSQLiteKernelEntityCodec(),
@@ -5833,10 +8315,15 @@ def kernel_entity_codecs() -> tuple[SQLiteKernelEntityCodec, ...]:
         SessionSQLiteKernelEntityCodec(),
         TaskSQLiteKernelEntityCodec(),
         TaskEvidenceSQLiteKernelEntityCodec(),
+        ToolExposureSnapshotSQLiteKernelEntityCodec(),
         VerifiedWorkspaceCheckpointSQLiteKernelEntityCodec(),
         WorkspaceGenerationSQLiteKernelEntityCodec(),
+        WorkspaceProvisioningIntentSQLiteKernelEntityCodec(),
+        WorkspaceProvisioningReconciliationSQLiteKernelEntityCodec(),
+        WorkspaceProvisioningReceiptSQLiteKernelEntityCodec(),
         WorkspacePublicationIntentSQLiteKernelEntityCodec(),
         WorkspaceRuntimeBindingSQLiteKernelEntityCodec(),
+        WorkflowAuthorityBindingSQLiteKernelEntityCodec(),
     )
 
 
@@ -5845,10 +8332,12 @@ __all__ = [
     "AgentMemberSQLiteKernelEntityCodec",
     "AgentRuntimeSignalSQLiteKernelEntityCodec",
     "ApprovalRequestSQLiteKernelEntityCodec",
+    "CommandToolExpansionSQLiteKernelEntityCodec",
     "ConversationMessageSQLiteKernelEntityCodec",
     "ContinuationSQLiteKernelEntityCodec",
     "ControlledOperationSQLiteKernelEntityCodec",
     "FailureObservationSQLiteKernelEntityCodec",
+    "PrivateDiagnosticSQLiteKernelEntityCodec",
     "InboxMessageSQLiteKernelEntityCodec",
     "KernelCommandReceiptSQLiteKernelEntityCodec",
     "LaneSQLiteKernelEntityCodec",
@@ -5859,9 +8348,13 @@ __all__ = [
     "ProtocolRecordSQLiteKernelEntityCodec",
     "RevisionPathVerificationSQLiteKernelEntityCodec",
     "RuntimeContinuationIntentSQLiteKernelEntityCodec",
+    "RuntimeCommandSQLiteKernelEntityCodec",
     "RuntimeOutcomeConsumptionSQLiteKernelEntityCodec",
+    "RuntimeSignalAuthorityLinkSQLiteKernelEntityCodec",
     "RuntimeSettlementIntentSQLiteKernelEntityCodec",
     "RuntimeTurnCommandSQLiteKernelEntityCodec",
+    "RuntimeTurnContextSQLiteKernelEntityCodec",
+    "RuntimeTurnOutcomeSQLiteKernelEntityCodec",
     "SessionCapabilityBindingSQLiteKernelEntityCodec",
     "SessionCompositionPinSQLiteKernelEntityCodec",
     "SessionRuntimeLeaseSQLiteKernelEntityCodec",
@@ -5869,9 +8362,14 @@ __all__ = [
     "SessionSQLiteKernelEntityCodec",
     "TaskSQLiteKernelEntityCodec",
     "TaskEvidenceSQLiteKernelEntityCodec",
+    "ToolExposureSnapshotSQLiteKernelEntityCodec",
     "VerifiedWorkspaceCheckpointSQLiteKernelEntityCodec",
     "WorkspaceGenerationSQLiteKernelEntityCodec",
+    "WorkspaceProvisioningIntentSQLiteKernelEntityCodec",
+    "WorkspaceProvisioningReconciliationSQLiteKernelEntityCodec",
+    "WorkspaceProvisioningReceiptSQLiteKernelEntityCodec",
     "WorkspaceRuntimeBindingSQLiteKernelEntityCodec",
     "WorkspacePublicationIntentSQLiteKernelEntityCodec",
+    "WorkflowAuthorityBindingSQLiteKernelEntityCodec",
     "kernel_entity_codecs",
 ]

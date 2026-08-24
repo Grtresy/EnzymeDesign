@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import json
 import sqlite3
+from threading import Thread
 
 import pytest
 
@@ -117,6 +118,18 @@ def test_explicit_offline_bootstrap_then_read_only_verify_and_writer_open(
     assert observed == proof
     assert proof.composition is not None
     assert writer.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    cross_thread_results: list[int | BaseException] = []
+
+    def read_from_worker_thread() -> None:
+        try:
+            cross_thread_results.append(int(writer.execute("SELECT 1").fetchone()[0]))
+        except BaseException as exc:  # pragma: no cover - diagnostic capture
+            cross_thread_results.append(exc)
+
+    thread = Thread(target=read_from_worker_thread)
+    thread.start()
+    thread.join(timeout=1)
+    assert cross_thread_results == [1]
     writer.close()
 
 
@@ -149,7 +162,7 @@ def test_fresh_standard_bootstrap_binds_selected_owner_schema_profile(
     assert proof.owner_schema.schema_profile_digest == (
         OPENZYME_STANDARD_OWNER_SCHEMA_PROFILE.profile_digest
     )
-    assert proof.owner_schema.table_count == 98
+    assert proof.owner_schema.table_count == 107
     connection = sqlite3.connect(database)
     assert connection.execute(
         "SELECT 1 FROM sqlite_master WHERE name = 'scientific_attempt_records'"

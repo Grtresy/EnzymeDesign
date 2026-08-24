@@ -63,8 +63,17 @@ try {
     const form = event.target;
     if (!(form instanceof HTMLFormElement) || form.id !== "message-form") return;
     event.preventDefault();
-    const message = String(new FormData(form).get("message") ?? "");
-    void controller.sendMessage(message, gestureIdentity("message"));
+    const formData = new FormData(form);
+    const message = String(formData.get("message") ?? "");
+    const workflowSelection = String(formData.get("workflow_refs") ?? "").trim();
+    const workflowRefs = workflowSelection
+      ? workflowSelection.split(",").map((item) => item.trim())
+      : [];
+    void controller.sendMessage(
+      message,
+      gestureIdentity("message"),
+      workflowRefs,
+    );
   });
 
   appElement.addEventListener("click", (event) => {
@@ -75,6 +84,16 @@ try {
     }
     if (target.closest("[data-action='runtime-drain']")) {
       void controller.drainRuntime({}, gestureIdentity("runtime-drain"));
+    }
+    const approvalButton = target.closest("[data-action='approval-decision']");
+    if (approvalButton) {
+      const approvalId = approvalButton.dataset.approvalId ?? "";
+      const decision = approvalButton.dataset.decision ?? "";
+      void controller.decideApproval(
+        approvalId,
+        decision,
+        gestureIdentity(`approval-${decision}`),
+      );
     }
   });
 

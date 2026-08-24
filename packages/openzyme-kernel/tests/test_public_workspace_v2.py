@@ -67,6 +67,7 @@ def _core_payload() -> dict[str, object]:
     }
     catalog, snapshot = _catalog_and_snapshot()
     payload["capability_binding"] = {"binding_digest": _digest("binding")}
+    payload["failures"] = {"observations": []}
     payload["tool_reflection"] = build_public_tool_reflection(
         declared_catalog=catalog,
         affordance_snapshot=snapshot,

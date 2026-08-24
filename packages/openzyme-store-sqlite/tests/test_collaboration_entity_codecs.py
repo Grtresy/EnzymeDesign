@@ -193,6 +193,8 @@ def test_agent_conversation_and_memory_use_existing_semantic_owner_tables() -> N
         "correlation_id": None,
         "task_id": None,
         "lane_id": None,
+        "request_lineage_id": None,
+        "workflow_refs": [],
         "skill_keys": [],
         "created_at": "2026-08-20T00:03:00+00:00",
     }

@@ -74,6 +74,21 @@ class _Store:
     def read(self, *, entity_type: str, entity_id: str):
         return self.records.get((entity_type, entity_id))
 
+    def list_for_session(
+        self,
+        *,
+        entity_type: str,
+        session_id: str,
+        max_items: int,
+    ):
+        matches = tuple(
+            record
+            for (kind, _entity_id), record in sorted(self.records.items())
+            if kind == entity_type
+            and record.payload.get("session_id") == session_id
+        )
+        return matches[:max_items]
+
     def begin(self, request):  # noqa: ANN001
         return _Unit(self, request)
 

@@ -19,6 +19,12 @@ dependencies = [
 dev = [
   "pytest>=9.0.0",
 ]
+server = [
+  "uvicorn>=0.30,<1.0",
+]
+
+[project.scripts]
+openzyme-standard = "openzyme_standard.launcher:main"
 
 [build-system]
 requires = ["hatchling>=1.24.0"]

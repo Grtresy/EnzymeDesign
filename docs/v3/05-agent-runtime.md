@@ -14,23 +14,30 @@
 ## Resident teammate
 
 agent member 是 session-scoped durable identity，拥有 role、authority lease、workspace generation、
-private namespace 和 runtime state。LLM process 可以重启，但 member/task/protocol/workspace 状态继续由
-control plane 持有。
+private namespace 和 runtime state。Session bootstrap 原子保留 exact repository pin、workspace generation、
+pending exact-generation lease 与 provisioning intent；Distribution 选定的 bounded worker 才调用 workspace
+Adapter，并把公开状态推进为 `provisioning`、`ready` 或 `blocked`。HTTP bootstrap 不等待外部 provision，
+Adapter 成功也不能自行激活 authority、完成 Task 或发布 revision。LLM process 可以重启，但
+member/task/protocol/workspace/provisioning 状态继续由 control plane 持有。
 
 当前 `@1` 数据模型和部分源码仍使用历史名 `AgentCapabilityLease`；目标 `@2` 公共 contract 只使用
 `AgentAuthorityLease`，物理表名首轮保留。
 
 ## Signal 与 drain
 
-message、delegation、protocol delivery 或显式 operator action 产生 durable `AgentRuntimeSignal`。
-scheduler claim pending/expired signal 后，在 session runtime lease 下执行一个 bounded turn。
+message、delegation、protocol delivery 或显式 operator action 产生 durable `AgentRuntimeSignal`。每个可运行
+occurrence 还必须绑定 exact `RuntimeSignalAuthorityLink@1`：root user message 指向该 request-lineage 的
+`WorkflowAuthorityBinding@1`，delegation 只能派生 caller 当前 binding 的显式子集，protocol、approval 与
+continuation 只传播既有 causation。scheduler claim pending/expired signal 后，在 session runtime lease 下执行
+一个 bounded turn；它不扫描 latest/all conversation 或从 prose、task kind、operator drain 参数猜 workflow。
 
-`POST .../messages` 不 drain。`POST .../runtime/drain` 是显式 bounded command：Standard 当前在一次请求的明确
-上限内取得 Session lease、claim 最多 `max_signals` 个 occurrence、预注册 exact runtime command、调用所选
-Agent runtime Adapter、once-only 消费 outcome，并在 `finally` release lease。它不扫描 ready Task、不隐式完成
-Task，也不在失败时换 Provider/route 或重放可能已发生的工具调用。未来可把同一 application command 交给独立
-worker，但不能改变这些 canonical identity 与 effect certainty。`auto_enqueue_ready_tasks` 默认 false，只用于显式
-operator/debug/recovery。
+`POST .../messages` 不 drain。`POST .../runtime/drain` 只接纳一个显式 bounded durable command：短事务原子写入
+`RuntimeCommandRecord@1` 与 outbox 后返回 HTTP `202`，请求线程不取得 Session lease、不 claim signal、不调用
+Provider/Adapter。独立 `RuntimeCommandWorker` 以 CAS claim、lease token、expiry 与 fencing token 获取 command，
+再取得 Session lease、claim 最多 `max_signals` 个 occurrence、预注册 exact turn command/context/exposure、调用所选
+Agent runtime Adapter、once-only 消费 outcome，并最终结算顶层 command。客户端只通过 exact command status GET
+观察进度，不能重复 POST 当作轮询。该路径不扫描 ready Task、不隐式完成 Task，也不在失败时换 Provider/route 或
+重放可能已发生的工具调用。`auto_enqueue_ready_tasks` 默认 false，只用于显式 operator/debug/recovery。
 
 ## Bounded turn
 
@@ -39,8 +46,10 @@ operator/debug/recovery。
 TTL 有界 heartbeat；确认 lease 丢失后停止 canonical write。
 
 新 Kernel 的 `RuntimeTurnCommand` 固定 Session/agent/member/turn/signal、runtime lease/fence/process epoch/budget、Distribution/
-Extension/DeclaredToolCatalog、Session capability binding 和 ToolAffordanceSnapshot identity。Adapter 只返回
-closed `RuntimeTurnOutcome`；Kernel 对 command/session/member/signal/lease/fence/epoch 和 usage 逐项重验。消费
+Extension/DeclaredToolCatalog、Session capability binding 和 ToolAffordanceSnapshot identity，并携带 Kernel
+构造的 `RuntimeTurnContext@1`、exact workflow binding/link/epoch 与 `ToolExposureSnapshot@1`；Adapter
+不得从 conversation prose 恢复这些权威事实。Adapter 只返回 closed `RuntimeTurnOutcome`；Kernel 对
+command/session/member/signal/lease/fence/epoch 和 usage 逐项重验。消费
 repository 以 command+outcome digest 原子判定 accepted/duplicate，duplicate ingestion 只返回既有 receipt，
 不会再次运行 Adapter；cross-Session、wrong-member、late epoch 或 bundle drift 在 outbox 写入前拒绝。
 continuation delivery 与 runtime settlement 是两个独立 typed intent，后者固定
@@ -55,7 +64,9 @@ release/bundle/catalog/owner/process epoch 漂移硬失败；binding/affordance 
 `SessionRuntimeLease` generation/fence、未退休 `AgentMember` process epoch 做同事务 CAS 并写 durable
 admission event。outcome 消费点重新读取同一组 current facts；lease 到期、signal attempt 改变、member
 retirement/epoch 前进或 command digest 漂移均以 no-effect 拒绝。接受路径原子写 signal settlement、outcome
-consumption、可选 continuation intent 和独立 runtime settlement outbox，完全没有 Task mutation；exact
+consumption、ordered assistant message、每个 tool invocation/result、public failure、可选 continuation intent
+和独立 runtime settlement outbox；这些记录保留 command/task/lane/correlation/message order identity，并成为
+下一 turn transcript 的 canonical source，完全没有 Task mutation；exact
 duplicate 只返回 duplicate receipt，不重新运行 Adapter。
 
 runtime Adapter 不能直接持有 Plugin registry 或调用 runtime object；它只能使用 Kernel 注入的
@@ -83,8 +94,18 @@ handle 会在 contract 构造/qualification 时拒绝。Process request 另外�
 generation/fence、process epoch、exact argv/environment/image/mount manifest 和 timeout，只返回 opaque
 process identity 与 bounded receipt。
 
-LLM Adapter 只能看到本 turn effective function list。blocked 工具通过只读 `capabilities.inspect` 呈现；
-Adapter 不自行增加已安装工具、探测 HPC、延长 lease、换模型/provider/route 或重放可能已发生的调用。
+上述 SPI/Store DTO 是内部恢复真相，不是公开响应 schema。Kernel public projector 先逐字解析和验 digest，再生成
+独立 `*_public@1` allowlist：lease/claim token、raw `RuntimeTurnContext`、输入 messages、raw tool requests 与 tool
+arguments 永不越过 Host 边界；公开 outcome 以 count/aggregate digest 与 `source_*_digest` 保留可核对关系。猜测
+Hidden/unknown 名称的拒绝 receipt 使用固定 `unexposed.tool` identity，公开 tool transcript 再去掉 internal
+`tool_name`，因此 API、CLI、UI 都不会因拒绝路径反向披露名称。
+
+LLM Adapter 每个 provider step 都从 Kernel gateway 重新取得本 turn effective function list。稳定协作动词与
+role-essential capability 为 Direct；long-tail capability 先由只读 `capabilities.inspect` 返回非隐藏 Deferred
+摘要，再经 exact command-scoped expansion 进入后续 step；Hidden 的名称、描述和参数永不披露，context只含
+aggregate count与完整snapshot identity digest。expanded tool 在每次 dispatch
+前仍重验 workflow epoch、authority、approval、workspace、qualification、health 与 exact route。Adapter 不
+自行增加已安装工具、探测 HPC、延长 lease、换模型/provider/route 或重放可能已发生的调用。
 
 目标 `openzyme-runtime-llm` 从 closed `LlmAdapterConfiguration` 接收 exact provider/model/base URL、
 credential slot、timeout/retry/context/output limits 和 credential-free provider options。composition root 先选择
@@ -173,6 +194,11 @@ inner process active request 与 terminal receipt 仍是进程内状态；若进
 硬崩溃，新 Adapter epoch 可能永久保持 `reconcile_required`。外层 ledger 阻止重复执行，但这不是自动恢复到
 terminal truth 的 liveness 证明。
 
+workspace provisioning 将这一原则提升为持久化产品生命周期：原 intent/dispatch receipt/failure 在
+`dispatch_in_doubt` 后保持 blocked；每次显式恢复都是带attempt/parent/claim fence的独立
+`WorkspaceProvisioningReconciliation`。reconciliation READY可以激活原reserved generation但不覆写历史；
+terminal diagnosis只能允许显式successor创建新generation/intent，绝不把旧intent重新交给provision worker。
+
 同一 Kernel 包已提供五个 base tool runtimes：`workspace.status`、`workspace.fs.read/list/mutate` 与
 `workspace.exec`。Host 的 read-only context resolver 从 exact Session/member/current AgentGitWorkspace/current
 authority lease 与显式 composition pin 构造 binding、fence、process epoch 和 local route；调用参数不能提交
@@ -219,11 +245,23 @@ Podman Adapter 的 component manifest 绑定 closed configuration schema 与 pre
 使用 exact run/root labels 和防替换 CID 读取，retirement 失败不能解释为 workspace 已静止。旧
 `openzyme_runtime.podman_lifecycle` compatibility path 已删除。
 
-## Prompt 与 context
+## RuntimeTurnContext 与 prompt
 
-prompt 呈现 task/lane、inbox、approval、workspace/revision、jobs、scientific state 和 safe failure facts，
-不嵌入隐藏 scheduler policy。oversized context 使用 durable engine document 或结构化摘要，但不能创建
-第二套文件权威 identity。
+Kernel 是唯一 `RuntimeTurnContext@1` projection builder。它从 canonical repositories 读取并有界呈现：
+Session/member/role、current Task 与 task board、lane、exact workspace generation/readiness/revision、
+inbox/protocol、approval/continuation、workflow binding/link/epoch、capability/affordance/exposure、safe failure
+以及 ordered conversation/runtime transcript。每个 section 有 item/byte budget、truncation marker 和 continuation
+identity；`observed`、`unknown`、`stale`、`not_authorized`、`absent` 不能互换。
+
+Adapter 把结构化事实渲染给模型，但 prompt prose 不覆盖其中的 authority、owner、terminal、readiness 或
+effect certainty。contradictory user/assistant 文案只是 conversation evidence，不能把 blocked workspace 说成
+ready、把 revoked workflow 说成 active，或把 tool/runtime result 说成 Task completed。oversized context 只对
+历史 transcript 做确定性压缩并留下可验证 marker；current authority、task、workspace、approval、exposure 和
+failure facts不得被摘要掉，也不能创建第二套文件或 workflow identity。
+
+Runtime outcome 是完整可重放 transcript，而不只是 consumption receipt。provider success、tool loop、provider
+failure 和 bounded exit 都以同一 closed outcome 进入 once-only settlement；exact duplicate 幂等返回已有
+receipt，不同 outcome 复用 identity、stale fence/epoch 或 message/failure collision 在任何部分写入前拒绝。
 
 ## Retirement
 

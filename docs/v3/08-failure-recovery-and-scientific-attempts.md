@@ -10,6 +10,12 @@ terminal proof。一个异常可以阻断当前 observation，但不能自动说
 service 决定写入与状态转换，Store Adapter 负责持久化；Plugin 只通过 `FailureApplicationService` 提交
 安全 observation，不能写 raw diagnostic table。
 
+非空失败采用一一对应的公开/私有 pair：公开 `FailureObservation` 必须携带私有记录的 exact digest，私有
+`PrivateDiagnosticRecord` 必须回指同一 failure/diagnostic/source identity。Kernel 在拥有业务状态的同一个 fenced
+Unit of Work 内同时写 pair 与 terminal/blocked owner；若业务事务本身因 stale/collision 在零部分写后拒绝，则只
+允许另一个稳定、幂等的诊断 occurrence 记录拒绝事实。缺半边、digest 冲突或用新时间重写同一 occurrence 都
+fail closed；公开投影永远不序列化私有记录。
+
 目标 SQLite Store 对 extension participant、CAS、budget、authorizer 和 event/outbox 冲突采用同一
 fail-closed 规则：公开错误保留 stable code、phase、safe observed identity、`mutation_applied=false` 与
 `fallback_performed=false`，底层 SQLite cause 通过 exception chaining 留在私有诊断。任一 participant
@@ -30,6 +36,18 @@ LLM provider 调用不是可据此改变 Task/Science 的业务 effect。目标 
 `mutation_applied=false`、`fallback_performed=false`；原始异常、credential 和私有 URL 只进入 private
 diagnostic。显式 retry budget 只可重试同一 provider/backend，禁止自动换模型、Provider 或 base URL。
 
+Runtime outcome consumption 必须在一个 fenced Store Unit of Work 中写完整 outcome、ordered assistant/tool
+conversation、public `FailureObservation`、signal settlement 与 outbox。exact duplicate 只返回原 receipt；同一
+command 的不同 outcome、message/failure collision、stale runtime fence、workflow epoch 或 exposure identity
+在任何部分写入前失败。provider failure 不能只留在进程日志，也不能因 transcript 写入失败而把 signal伪装成
+已成功消费；下一 turn 与公开 projection必须读取同一 canonical transcript。
+
+顶层 runtime command 的 worker failure 使用同一规则：`RuntimeCommandRecord(FAILED)`、公开 failure 与私有
+diagnostic 在同一个 command claim/fence 下原子结算，且 status API 只返回安全 ID 与 effect facts。structured
+context 缺失、legacy command、identity drift 或超界在 provider/tool/list/revalidation 前失败；provider generic
+exception exactly once，不自动 retry、换 backend 或 fallback。workflow registry 在 message admission 前失败时，
+message/binding/inbox/signal/link 保持不存在，另一个同 ingress authority 的诊断事务保存 pair 与原始 cause。
+
 远端 Workspace Runtime 还要求 response identity 回绑 exact operation/request digest。SSH/SFTP/rsync 请求发出后
 响应丢失时，Adapter 返回 `dispatch_in_doubt`，`mutation_applied=null` 且无 result payload；后续只允许通过同一
 opaque workspace、generation、target qualification 和 operation identity reconcile，禁止重新执行命令、切换
@@ -44,6 +62,30 @@ credential 永远不能升级为 scheduler occurrence credential。
 recovery disposition 必须绑定 exact occurrence、owner、phase、operation digest、fence 和理由。允许的动作由
 machine contract 限定，但 agent 决定何时检查、如何解释和是否请求新的用户授权。不能用“换 backend/参数”
 绕开原 approval 或未知 effect。
+
+workspace provisioning 复用同一 certainty 规则。`no_effect`、known terminal failure 或
+`dispatch_in_doubt` 都会把 exact `WorkspaceProvisioningIntent@1` 结算为公开 `blocked`；只有同一 claim/intent/
+generation 的 verified success receipt 才能由 Kernel 原子激活 workspace binding 与 root lease。unknown effect
+只能 reconcile 同一 occurrence，禁止重跑 clone/volume helper、选择另一个 provider、补造 ready observation 或
+让 message/runtime route绕过 readiness。恢复或 replacement 必须是显式 operator command，并创建可区分的新
+occurrence或 generation。
+
+具体而言，`WorkspaceProvisioningReconciliation@1` 是独立durable owner，保存原 intent state-version/digest、
+原request/dispatch receipt、attempt/parent、claim fence与settlement receipt。即使它结算READY并激活原reserved
+generation，原blocked intent、failure和dispatch receipt也不可改写；若它证明terminal failure，则只有显式
+`/workspace/provisioning/successor` 可创建下一generation。reconcile与successor都不授权自动provision、drain、
+Task mutation或Adapter fallback。
+
+provisioning Adapter 的 blocked receipt 通过进程内 private sidecar 把原始 cause 交给 Kernel；Kernel 结算时原子
+持久化 pair、receipt 与 blocked owner。缺失 sidecar 的 blocked receipt 不会被默认为完整失败，必须转成明确的
+harness failure 或被拒绝。`dispatch_in_doubt` 的私有 request/receipt/context 只用于同 occurrence reconcile，
+不得进入公开 workspace projection。
+
+workflow authority failure 同样 fail closed。binding/link 缺失、revoked、epoch/digest drift、registry drift 或
+causation不成立时，不扫描 latest/all conversation，不从 prompt/task/protocol payload 猜 refs，也不降级为
+authority-empty provider turn。tool expansion、approval resolution、continuation 和 manual drain 都不能重开
+revoked action或扩大 selection；如果外部 dispatch已经发生，revocation只阻止后续 canonical write，原 effect
+仍按 certainty/reconcile合同处理。
 
 deployment/cutover failure 还必须区分发生边界。只读 dry run、quiescence、backup verification 或 startup proof
 失败时，`mutation_applied=false`，修复输入后从完整只读序列重跑；不得在失败点继续 mount surface。offline

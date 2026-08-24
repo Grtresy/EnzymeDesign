@@ -13,10 +13,19 @@ from openzyme_contracts import LayeredReleaseIdentity
 from openzyme_contracts import ToolAffordance
 from openzyme_contracts import ToolAffordanceSnapshot
 from openzyme_contracts import ToolAffordanceState
+from openzyme_contracts import ToolExposure
+from openzyme_contracts import ToolExposureDecision
+from openzyme_contracts import ToolExposureSnapshot
 from openzyme_contracts import canonical_sha256_digest
 from openzyme_contracts import load_file_workspace_public_v2_json_schema
 from openzyme_contracts.public_workspace import (
+    FILE_WORKSPACE_FAILURE_OBSERVATION_PUBLIC_FIELDS,
+)
+from openzyme_contracts.public_workspace import (
     FILE_WORKSPACE_PUBLIC_TOOL_AFFORDANCE_STATES,
+)
+from openzyme_contracts.public_workspace import (
+    FILE_WORKSPACE_RUNTIME_OUTCOME_CONSUMPTION_PUBLIC_FIELDS,
 )
 from openzyme_contracts.public_workspace import FILE_WORKSPACE_TOOL_AFFORDANCE_FIELDS
 from openzyme_contracts.public_workspace import FILE_WORKSPACE_TOOL_REFLECTION_FIELDS
@@ -51,10 +60,12 @@ def _core_payload() -> dict[str, object]:
         "authority_leases",
         "publications",
     }
-    return {
+    payload: dict[str, object] = {
         field: [] if field in array_sections else {}
         for field in FILE_WORKSPACE_CORE_SECTION_FIELDS
     }
+    payload["failures"] = {"observations": []}
+    return payload
 
 
 def _snapshot() -> ToolAffordanceSnapshot:
@@ -154,6 +165,16 @@ def test_packaged_public_v2_json_schema_matches_runtime_contract() -> None:
     assert set(affordance["properties"]["state"]["enum"]) == (
         FILE_WORKSPACE_PUBLIC_TOOL_AFFORDANCE_STATES
     )
+    failures = schema["$defs"]["failure_observations"]
+    assert failures["additionalProperties"] is False
+    failure = schema["$defs"]["failure_observation_public"]
+    assert set(failure["required"]) == (
+        FILE_WORKSPACE_FAILURE_OBSERVATION_PUBLIC_FIELDS
+    )
+    consumption = schema["$defs"]["runtime_outcome_consumption"]
+    assert set(consumption["required"]) == (
+        FILE_WORKSPACE_RUNTIME_OUTCOME_CONSUMPTION_PUBLIC_FIELDS
+    )
 
 
 def test_public_v2_rejects_top_level_domain_fields_and_catalog_drift() -> None:
@@ -167,6 +188,83 @@ def test_public_v2_rejects_top_level_domain_fields_and_catalog_drift() -> None:
             declared_tool_catalog_digest=_digest("other-tools"),
             affordance_snapshot=_snapshot(),
         )
+
+
+def test_public_v2_accepts_ready_reconciliation_without_rewriting_failed_intent() -> (
+    None
+):
+    intent_digest = _digest("blocked-intent")
+    core = _core_payload()
+    core["session"] = {
+        "resident_readiness": {
+            "schema_version": "resident_teammate_readiness@1",
+            "readiness": "ready",
+            "workspace_id": "workspace-1",
+            "workspace_generation": 1,
+            "provisioning_intent_id": "intent-1",
+            "provisioning_intent_digest": intent_digest,
+            "failure_id": None,
+            "next_action": "message_or_drain",
+        }
+    }
+    core["workspace"] = {
+        "provisioning": {
+            "schema_version": "workspace_provisioning_public@2",
+            "intent_id": "intent-1",
+            "intent_digest": intent_digest,
+            "intent_state_version": 3,
+            "status": "blocked",
+            "workspace_id": "workspace-1",
+            "workspace_generation": 1,
+            "runtime_binding_id": "workspace-1",
+            "failure_id": "failure-original",
+            "error_code": "workspace_provisioning_dispatch_in_doubt",
+            "effect_certainty": "dispatch_in_doubt",
+            "mutation_applied": None,
+            "fallback_performed": False,
+            "retry_permitted": False,
+            "reconcile_required": True,
+            "diagnostic_id": "diagnostic-original",
+            "next_action": "message_or_drain",
+            "reconciliation": {
+                "schema_version": ("workspace_provisioning_reconciliation_public@1"),
+                "reconciliation_id": "reconciliation-1",
+                "reconciliation_digest": _digest("reconciliation"),
+                "status": "ready",
+                "attempt": 1,
+                "parent_reconciliation_id": None,
+                "blocked_intent_state_version": 3,
+                "blocked_intent_digest": intent_digest,
+                "source_receipt_id": "receipt-original",
+                "source_receipt_digest": _digest("receipt-original"),
+                "dispatch_receipt_digest": _digest("dispatch-original"),
+                "result_receipt_id": "receipt-reconciled",
+                "result_receipt_digest": _digest("receipt-reconciled"),
+                "effect_certainty": "terminal_known",
+                "mutation_applied": True,
+                "fallback_performed": False,
+                "retry_permitted": False,
+                "reconcile_required": False,
+                "failure_id": None,
+                "diagnostic_id": None,
+                "requested_at": "2026-08-24T00:01:00Z",
+                "requested_claim_seconds": 60,
+                "settled_at": "2026-08-24T00:02:00Z",
+                "next_action": "message_or_drain",
+            },
+        }
+    }
+    core["capability_binding"] = {"binding_digest": _digest("binding")}
+    core["tool_reflection"] = FileWorkspaceToolReflection(
+        declared_tool_catalog_digest=_digest("tools"),
+        affordance_snapshot=_snapshot(),
+    ).to_dict()
+
+    projection = FileWorkspaceCoreProjectionV2(core)
+
+    provisioning = projection.payload["workspace"]["provisioning"]
+    assert provisioning["status"] == "blocked"
+    assert provisioning["reconciliation"]["status"] == "ready"
 
 
 def test_public_v2_rejects_tool_reflection_binding_or_affordance_drift() -> None:
@@ -186,6 +284,201 @@ def test_public_v2_rejects_tool_reflection_binding_or_affordance_drift() -> None
         "available_tool_names": [],
     }
     with pytest.raises(ValueError, match="differ from public affordances"):
+        FileWorkspaceCoreProjectionV2(core)
+
+
+def test_public_tool_exposure_keeps_deferred_affordance_non_callable() -> None:
+    snapshot = _snapshot()
+    exposure = ToolExposureSnapshot(
+        exposure_snapshot_id="exposure-1",
+        session_id=snapshot.session_id,
+        agent_member_id=snapshot.agent_member_id,
+        turn_id=snapshot.turn_id,
+        subject_policy_digest=_digest("policy"),
+        declared_tool_catalog_digest=snapshot.declared_tool_catalog_digest,
+        capability_binding_digest=snapshot.capability_binding_digest,
+        affordance_snapshot_id=snapshot.snapshot_id,
+        affordance_snapshot_digest=snapshot.snapshot_digest,
+        workflow_authority_id="authority-1",
+        workflow_authority_epoch=1,
+        workflow_authority_digest=_digest("authority"),
+        catalog_tool_names=("workspace.status",),
+        decisions=(
+            ToolExposureDecision(
+                tool_name="workspace.status",
+                exposure=ToolExposure.DEFERRED,
+                reason_code="long_tail",
+            ),
+        ),
+        created_at="2026-08-24T00:00:00+00:00",
+    )
+    reflection = FileWorkspaceToolReflection(
+        declared_tool_catalog_digest=_digest("tools"),
+        affordance_snapshot=snapshot,
+        exposure_snapshot=exposure,
+    ).to_dict()
+
+    assert reflection["available_tool_names"] == []
+    assert reflection["affordances"][0]["state"] == "available"
+    assert reflection["tool_exposure"]["deferred_tool_names"] == ["workspace.status"]
+    assert "hidden_tool_names" not in reflection["tool_exposure"]
+
+    core = _core_payload()
+    core["capability_binding"] = {"binding_digest": _digest("binding")}
+    core["tool_reflection"] = reflection
+    FileWorkspaceCoreProjectionV2(core)
+
+
+def test_public_runtime_command_accepts_initial_zero_fence() -> None:
+    core = _core_payload()
+    core["capability_binding"] = {"binding_digest": _digest("binding")}
+    core["tool_reflection"] = FileWorkspaceToolReflection(
+        declared_tool_catalog_digest=_digest("tools"),
+        affordance_snapshot=_snapshot(),
+    ).to_dict()
+    core["runtime"] = {
+        "commands": [
+            {
+                "schema_version": "runtime_command_public@1",
+                "command_id": "runtime-command-1",
+                "session_id": "session-1",
+                "command_type": "runtime.drain",
+                "request_digest": _digest("runtime-request"),
+                "idempotency_key": "runtime-drain-1",
+                "status": "accepted",
+                "max_signals": 2,
+                "max_steps_per_agent": 3,
+                "auto_enqueue_ready_tasks": False,
+                "state_version": 1,
+                "fencing_token": 0,
+                "accepted_at": "2026-08-24T00:00:00+00:00",
+                "claim_owner": None,
+                "lease_expires_at": None,
+                "bounded_outcome_summary": None,
+                "failure_id": None,
+                "diagnostic_id": None,
+                "error_code": None,
+                "safe_error_summary": None,
+                "safe_retry_hint": None,
+                "started_at": None,
+                "completed_at": None,
+            }
+        ]
+    }
+
+    FileWorkspaceCoreProjectionV2(core)
+
+
+def test_public_runtime_command_outcome_summary_is_closed() -> None:
+    core = _core_payload()
+    core["capability_binding"] = {"binding_digest": _digest("binding")}
+    core["tool_reflection"] = FileWorkspaceToolReflection(
+        declared_tool_catalog_digest=_digest("tools"),
+        affordance_snapshot=_snapshot(),
+    ).to_dict()
+    summary = {
+        "schema_version": "runtime_command_outcome_summary_public@1",
+        "processed_signals": 1,
+        "turn_count": 1,
+        "turns_digest": canonical_sha256_digest([{"turn_id": "turn-1"}]),
+        "runtime_executed": True,
+        "task_transition_performed": False,
+        "fallback_performed": False,
+    }
+    core["runtime"] = {
+        "commands": [
+            {
+                "schema_version": "runtime_command_public@1",
+                "command_id": "runtime-command-1",
+                "session_id": "session-1",
+                "command_type": "runtime.drain",
+                "request_digest": _digest("runtime-request"),
+                "idempotency_key": "runtime-drain-1",
+                "status": "completed",
+                "max_signals": 2,
+                "max_steps_per_agent": 3,
+                "auto_enqueue_ready_tasks": False,
+                "state_version": 3,
+                "fencing_token": 2,
+                "accepted_at": "2026-08-24T00:00:00+00:00",
+                "claim_owner": "runtime-worker-1",
+                "lease_expires_at": "2026-08-24T00:02:00+00:00",
+                "bounded_outcome_summary": summary,
+                "failure_id": None,
+                "diagnostic_id": None,
+                "error_code": None,
+                "safe_error_summary": None,
+                "safe_retry_hint": None,
+                "started_at": "2026-08-24T00:00:01+00:00",
+                "completed_at": "2026-08-24T00:01:00+00:00",
+            }
+        ]
+    }
+    FileWorkspaceCoreProjectionV2(core)
+
+    summary["tool_requests"] = [
+        {"tool_name": "hidden.admin", "arguments": {"private": "argument"}}
+    ]
+    with pytest.raises(ValueError, match="forbidden public field|fields are closed"):
+        FileWorkspaceCoreProjectionV2(core)
+
+
+def test_public_runtime_outcome_consumption_is_aggregate_only_and_closed() -> None:
+    core = _core_payload()
+    core["capability_binding"] = {"binding_digest": _digest("binding")}
+    core["tool_reflection"] = FileWorkspaceToolReflection(
+        declared_tool_catalog_digest=_digest("tools"),
+        affordance_snapshot=_snapshot(),
+    ).to_dict()
+    consumption = {
+        "schema_version": "runtime_outcome_consumption_public@1",
+        "consumption_id": "consumption-1",
+        "consumption_digest": _digest("consumption-1"),
+        "command_id": "command-1",
+        "command_digest": _digest("command-1"),
+        "outcome_id": "outcome-1",
+        "outcome_digest": _digest("outcome-1"),
+        "outcome_receipt_id": "receipt-1",
+        "outcome_receipt_digest": _digest("receipt-1"),
+        "session_id": "session-1",
+        "agent_id": "agent-1",
+        "agent_member_id": "member-1",
+        "signal_id": "signal-1",
+        "signal_attempt": 1,
+        "continuation_intent_id": None,
+        "settlement_intent_id": "settlement-1",
+        "consumed_at": "2026-08-24T00:01:00Z",
+    }
+    core["runtime"] = {"outcome_consumptions": [consumption]}
+    FileWorkspaceCoreProjectionV2(core)
+
+    consumption["outcome_receipt"] = {
+        "outcome": {
+            "messages": ["PRIVATE MESSAGE"],
+            "tool_requests": [{"tool_name": "hidden.admin"}],
+        }
+    }
+    with pytest.raises(ValueError, match="forbidden public field|fields are closed"):
+        FileWorkspaceCoreProjectionV2(core)
+
+
+def test_public_projection_rejects_legacy_failure_observation() -> None:
+    core = _core_payload()
+    core["capability_binding"] = {"binding_digest": _digest("binding")}
+    core["tool_reflection"] = FileWorkspaceToolReflection(
+        declared_tool_catalog_digest=_digest("tools"),
+        affordance_snapshot=_snapshot(),
+    ).to_dict()
+    core["failures"] = {
+        "observations": [
+            {
+                "schema_version": "failure_observation@1",
+                "failure_id": "failure-legacy-1",
+                "session_id": "session-1",
+            }
+        ]
+    }
+    with pytest.raises(ValueError, match="legacy failure observation"):
         FileWorkspaceCoreProjectionV2(core)
 
 
@@ -221,6 +514,16 @@ def test_public_v2_rejects_tool_reflection_binding_or_affordance_drift() -> None
         (
             "workspace",
             {"lfs_object_locator": "/srv/lfs/aa/bb"},
+            "forbidden public field",
+        ),
+        (
+            "runtime",
+            {"signals": [{"claim_token": "private-claim"}]},
+            "forbidden public field",
+        ),
+        (
+            "runtime",
+            {"turn_commands": [{"runtime_lease_token": "private-lease"}]},
             "forbidden public field",
         ),
     ],

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
+from typing import Mapping
 from typing import Protocol
 
 from openzyme_contracts import AgentRuntimeSignal
@@ -11,34 +13,65 @@ from openzyme_contracts import AgentRuntimeSignalStatus
 from openzyme_contracts import ClockPort
 from openzyme_contracts import ControlStorePort
 from openzyme_contracts import DurableEventRecord
+from openzyme_contracts import ExternalEffectCertainty
+from openzyme_contracts import FailureActorKind
+from openzyme_contracts import FailureClass
+from openzyme_contracts import FailureRecoverability
 from openzyme_contracts import IdGeneratorPort
 from openzyme_contracts import KernelMutationKind
 from openzyme_contracts import KernelRecordReaderPort
 from openzyme_contracts import KernelStateMutation
 from openzyme_contracts import LayeredReleaseIdentity
 from openzyme_contracts import OutboxRecord
+from openzyme_contracts import PrivateDiagnosticRecord
+from openzyme_contracts import RetryEligibility
+from openzyme_contracts import RuntimeSignalAuthorityLink
+from openzyme_contracts import RuntimeTurnContext
 from openzyme_contracts import SessionCapabilityBindingRevision
 from openzyme_contracts import SessionRuntimeLease
+from openzyme_contracts import StructuredFailureContext
 from openzyme_contracts import ToolAffordanceSnapshot
+from openzyme_contracts import ToolExposureSnapshot
 from openzyme_contracts import UnitOfWorkRequest
+from openzyme_contracts import WorkflowAuthorityBinding
+from openzyme_contracts import WorkflowAuthorityStatus
 from openzyme_contracts import canonical_sha256_digest
+from openzyme_contracts import observe_structured_failure
 from openzyme_contracts import require_digest
 from openzyme_contracts import require_identifier
+from openzyme_contracts import validate_failure_diagnostic_pair
+from openzyme_contracts.identity import json_compatible
 from openzyme_runtime_spi import AgentRuntimeAdapter
 from openzyme_runtime_spi import RuntimeCapabilityGateway
 from openzyme_runtime_spi import RuntimeMessage
+from openzyme_runtime_spi import RuntimeMessageRole
 from openzyme_runtime_spi import RuntimeTurnCommand
 from openzyme_runtime_spi import RuntimeTurnDisposition
 from openzyme_runtime_spi import RuntimeTurnOutcome
+from openzyme_runtime_spi import RuntimeTurnOutcomeReceipt
 
 from .errors import KernelContractError
 
 
-RUNTIME_OUTCOME_CONSUMPTION_SCHEMA_VERSION = "runtime_outcome_consumption@1"
+RUNTIME_OUTCOME_CONSUMPTION_SCHEMA_VERSION = "runtime_outcome_consumption@2"
 RUNTIME_CONTINUATION_INTENT_SCHEMA_VERSION = "runtime_continuation_intent@1"
 RUNTIME_SETTLEMENT_INTENT_SCHEMA_VERSION = "runtime_settlement_intent@1"
 RUNTIME_CONTINUATION_RESUME_VALIDATION_SCHEMA_VERSION = (
     "runtime_continuation_resume_validation@1"
+)
+_DURABLE_SETTLEMENT_DIAGNOSTIC_CODES = frozenset(
+    {
+        "runtime_command_outcome_collision",
+        "runtime_settlement_identity_missing",
+        "runtime_settlement_fence_stale",
+        "runtime_settlement_lease_expired",
+        "runtime_outcome_receipt_collision",
+        "runtime_outcome_failure_collision",
+        "runtime_outcome_private_diagnostic_collision",
+        "runtime_outcome_message_collision",
+        "runtime_canonical_state_stale",
+        "runtime_outcome_commit_failed",
+    }
 )
 
 
@@ -50,6 +83,17 @@ def _parse_instant(value: str, *, field_name: str) -> datetime:
     if instant.tzinfo is None:
         raise ValueError(f"{field_name} must include a timezone")
     return instant
+
+
+def _command_correlation_id(command: RuntimeTurnCommand) -> str | None:
+    return next(
+        (
+            message.correlation_id
+            for message in reversed(command.messages)
+            if message.correlation_id is not None
+        ),
+        None,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +130,10 @@ class RuntimeTurnAdmission:
     release_identity: LayeredReleaseIdentity
     capability_binding: SessionCapabilityBindingRevision
     affordance_snapshot: ToolAffordanceSnapshot
+    workflow_authority: WorkflowAuthorityBinding
+    signal_authority_link: RuntimeSignalAuthorityLink
+    tool_exposure_snapshot: ToolExposureSnapshot
+    context: RuntimeTurnContext
     runtime_adapter_id: str
     runtime_adapter_contract_digest: str
     budget: RuntimeTurnBudget
@@ -115,13 +163,20 @@ class RuntimeTurnAdmission:
         if self.continuation_id is not None:
             require_identifier(self.continuation_id, field_name="continuation_id")
         if not self.messages or len(self.messages) > 512:
-            raise ValueError("runtime admission requires a bounded non-empty message set")
+            raise ValueError(
+                "runtime admission requires a bounded non-empty message set"
+            )
         _parse_instant(self.observed_at, field_name="observed_at")
 
 
 class RuntimeOutcomeConsumeDisposition(StrEnum):
     ACCEPTED = "accepted"
     DUPLICATE = "duplicate"
+
+
+class RuntimeContinuationDeliveryStatus(StrEnum):
+    PENDING = "pending"
+    DELIVERED = "delivered"
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +189,11 @@ class RuntimeContinuationIntent:
     source_command_digest: str
     source_outcome_id: str
     source_outcome_digest: str
+    source_signal_id: str
+    source_signal_authority_link_digest: str
+    source_workflow_authority_id: str
+    source_workflow_authority_epoch: int
+    source_workflow_authority_binding_digest: str
     process_epoch: int
     release_digest: str
     extension_bundle_digest: str
@@ -143,6 +203,15 @@ class RuntimeContinuationIntent:
     capability_binding_digest: str
     affordance_snapshot_id: str
     affordance_snapshot_digest: str
+    delivery_status: RuntimeContinuationDeliveryStatus
+    delivery_attempt: int
+    created_at: str
+    delivery_signal_id: str | None = None
+    delivery_signal_authority_link_digest: str | None = None
+    delivery_identity_digest: str | None = None
+    delivered_at: str | None = None
+    recipient_runtime_executed: bool = False
+    fallback_performed: bool = False
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -152,6 +221,8 @@ class RuntimeContinuationIntent:
             "agent_member_id",
             "source_command_id",
             "source_outcome_id",
+            "source_signal_id",
+            "source_workflow_authority_id",
             "capability_binding_id",
             "affordance_snapshot_id",
         ):
@@ -159,6 +230,8 @@ class RuntimeContinuationIntent:
         for field_name in (
             "source_command_digest",
             "source_outcome_digest",
+            "source_signal_authority_link_digest",
+            "source_workflow_authority_binding_digest",
             "release_digest",
             "extension_bundle_digest",
             "declared_tool_catalog_digest",
@@ -166,9 +239,63 @@ class RuntimeContinuationIntent:
             "affordance_snapshot_digest",
         ):
             require_digest(getattr(self, field_name), field_name=field_name)
-        for field_name in ("process_epoch", "capability_binding_revision"):
-            if getattr(self, field_name) < 1:
+        for field_name in (
+            "process_epoch",
+            "capability_binding_revision",
+            "source_workflow_authority_epoch",
+        ):
+            value = getattr(self, field_name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 raise ValueError(f"{field_name} must be positive")
+        if (
+            not isinstance(self.delivery_attempt, int)
+            or isinstance(self.delivery_attempt, bool)
+            or self.delivery_attempt < 0
+        ):
+            raise ValueError("delivery_attempt must be non-negative")
+        if not isinstance(self.delivery_status, RuntimeContinuationDeliveryStatus):
+            raise ValueError("delivery_status must be a closed continuation status")
+        if not isinstance(self.recipient_runtime_executed, bool) or not isinstance(
+            self.fallback_performed,
+            bool,
+        ):
+            raise ValueError("continuation delivery facts must be booleans")
+        _parse_instant(self.created_at, field_name="created_at")
+        delivery_fields = (
+            self.delivery_signal_id,
+            self.delivery_signal_authority_link_digest,
+            self.delivery_identity_digest,
+            self.delivered_at,
+        )
+        if self.delivery_status is RuntimeContinuationDeliveryStatus.PENDING:
+            if self.delivery_attempt != 0 or any(
+                value is not None for value in delivery_fields
+            ):
+                raise ValueError("pending continuation must not carry delivery facts")
+        elif self.delivery_attempt != 1 or any(
+            value is None for value in delivery_fields
+        ):
+            raise ValueError("delivered continuation requires one exact delivery")
+        else:
+            assert self.delivery_signal_id is not None
+            assert self.delivery_signal_authority_link_digest is not None
+            assert self.delivery_identity_digest is not None
+            assert self.delivered_at is not None
+            require_identifier(
+                self.delivery_signal_id,
+                field_name="delivery_signal_id",
+            )
+            require_digest(
+                self.delivery_signal_authority_link_digest,
+                field_name="delivery_signal_authority_link_digest",
+            )
+            require_digest(
+                self.delivery_identity_digest,
+                field_name="delivery_identity_digest",
+            )
+            _parse_instant(self.delivered_at, field_name="delivered_at")
+        if self.recipient_runtime_executed or self.fallback_performed:
+            raise ValueError("continuation delivery only queues work without fallback")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -181,6 +308,15 @@ class RuntimeContinuationIntent:
             "source_command_digest": self.source_command_digest,
             "source_outcome_id": self.source_outcome_id,
             "source_outcome_digest": self.source_outcome_digest,
+            "source_signal_id": self.source_signal_id,
+            "source_signal_authority_link_digest": (
+                self.source_signal_authority_link_digest
+            ),
+            "source_workflow_authority_id": self.source_workflow_authority_id,
+            "source_workflow_authority_epoch": (self.source_workflow_authority_epoch),
+            "source_workflow_authority_binding_digest": (
+                self.source_workflow_authority_binding_digest
+            ),
             "process_epoch": self.process_epoch,
             "release_digest": self.release_digest,
             "extension_bundle_digest": self.extension_bundle_digest,
@@ -190,7 +326,174 @@ class RuntimeContinuationIntent:
             "capability_binding_digest": self.capability_binding_digest,
             "affordance_snapshot_id": self.affordance_snapshot_id,
             "affordance_snapshot_digest": self.affordance_snapshot_digest,
+            "delivery_status": self.delivery_status.value,
+            "delivery_attempt": self.delivery_attempt,
+            "delivery_signal_id": self.delivery_signal_id,
+            "delivery_signal_authority_link_digest": (
+                self.delivery_signal_authority_link_digest
+            ),
+            "delivery_identity_digest": self.delivery_identity_digest,
+            "created_at": self.created_at,
+            "delivered_at": self.delivered_at,
+            "recipient_runtime_executed": False,
+            "fallback_performed": False,
         }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "RuntimeContinuationIntent":
+        value = dict(payload)
+        expected = {
+            "schema_version",
+            "continuation_id",
+            "session_id",
+            "agent_id",
+            "agent_member_id",
+            "source_command_id",
+            "source_command_digest",
+            "source_outcome_id",
+            "source_outcome_digest",
+            "source_signal_id",
+            "source_signal_authority_link_digest",
+            "source_workflow_authority_id",
+            "source_workflow_authority_epoch",
+            "source_workflow_authority_binding_digest",
+            "process_epoch",
+            "release_digest",
+            "extension_bundle_digest",
+            "declared_tool_catalog_digest",
+            "capability_binding_id",
+            "capability_binding_revision",
+            "capability_binding_digest",
+            "affordance_snapshot_id",
+            "affordance_snapshot_digest",
+            "delivery_status",
+            "delivery_attempt",
+            "delivery_signal_id",
+            "delivery_signal_authority_link_digest",
+            "delivery_identity_digest",
+            "created_at",
+            "delivered_at",
+            "recipient_runtime_executed",
+            "fallback_performed",
+        }
+        if (
+            set(value) != expected
+            or value.get("schema_version") != RUNTIME_CONTINUATION_INTENT_SCHEMA_VERSION
+        ):
+            raise ValueError("runtime continuation intent has an invalid closed schema")
+        for field_name in ("recipient_runtime_executed", "fallback_performed"):
+            if not isinstance(value[field_name], bool):
+                raise ValueError(
+                    f"runtime continuation intent {field_name} must be boolean"
+                )
+        for field_name in (
+            "continuation_id",
+            "session_id",
+            "agent_id",
+            "agent_member_id",
+            "source_command_id",
+            "source_command_digest",
+            "source_outcome_id",
+            "source_outcome_digest",
+            "source_signal_id",
+            "source_signal_authority_link_digest",
+            "source_workflow_authority_id",
+            "source_workflow_authority_binding_digest",
+            "release_digest",
+            "extension_bundle_digest",
+            "declared_tool_catalog_digest",
+            "capability_binding_id",
+            "capability_binding_digest",
+            "affordance_snapshot_id",
+            "affordance_snapshot_digest",
+            "delivery_status",
+            "created_at",
+        ):
+            if not isinstance(value[field_name], str):
+                raise ValueError(
+                    f"runtime continuation intent {field_name} must be a string"
+                )
+        for field_name in (
+            "source_workflow_authority_epoch",
+            "process_epoch",
+            "capability_binding_revision",
+            "delivery_attempt",
+        ):
+            if not isinstance(value[field_name], int) or isinstance(
+                value[field_name],
+                bool,
+            ):
+                raise ValueError(
+                    f"runtime continuation intent {field_name} must be an integer"
+                )
+        for field_name in (
+            "delivery_signal_id",
+            "delivery_signal_authority_link_digest",
+            "delivery_identity_digest",
+            "delivered_at",
+        ):
+            if value[field_name] is not None and not isinstance(
+                value[field_name],
+                str,
+            ):
+                raise ValueError(
+                    f"runtime continuation intent {field_name} must be a string or null"
+                )
+        return cls(
+            continuation_id=str(value["continuation_id"]),
+            session_id=str(value["session_id"]),
+            agent_id=str(value["agent_id"]),
+            agent_member_id=str(value["agent_member_id"]),
+            source_command_id=str(value["source_command_id"]),
+            source_command_digest=str(value["source_command_digest"]),
+            source_outcome_id=str(value["source_outcome_id"]),
+            source_outcome_digest=str(value["source_outcome_digest"]),
+            source_signal_id=str(value["source_signal_id"]),
+            source_signal_authority_link_digest=str(
+                value["source_signal_authority_link_digest"]
+            ),
+            source_workflow_authority_id=str(value["source_workflow_authority_id"]),
+            source_workflow_authority_epoch=int(
+                value["source_workflow_authority_epoch"]
+            ),
+            source_workflow_authority_binding_digest=str(
+                value["source_workflow_authority_binding_digest"]
+            ),
+            process_epoch=int(value["process_epoch"]),
+            release_digest=str(value["release_digest"]),
+            extension_bundle_digest=str(value["extension_bundle_digest"]),
+            declared_tool_catalog_digest=str(value["declared_tool_catalog_digest"]),
+            capability_binding_id=str(value["capability_binding_id"]),
+            capability_binding_revision=int(value["capability_binding_revision"]),
+            capability_binding_digest=str(value["capability_binding_digest"]),
+            affordance_snapshot_id=str(value["affordance_snapshot_id"]),
+            affordance_snapshot_digest=str(value["affordance_snapshot_digest"]),
+            delivery_status=RuntimeContinuationDeliveryStatus(
+                str(value["delivery_status"])
+            ),
+            delivery_attempt=int(value["delivery_attempt"]),
+            delivery_signal_id=(
+                None
+                if value["delivery_signal_id"] is None
+                else str(value["delivery_signal_id"])
+            ),
+            delivery_signal_authority_link_digest=(
+                None
+                if value["delivery_signal_authority_link_digest"] is None
+                else str(value["delivery_signal_authority_link_digest"])
+            ),
+            delivery_identity_digest=(
+                None
+                if value["delivery_identity_digest"] is None
+                else str(value["delivery_identity_digest"])
+            ),
+            created_at=str(value["created_at"]),
+            delivered_at=(
+                None if value["delivered_at"] is None else str(value["delivered_at"])
+            ),
+            recipient_runtime_executed=value["recipient_runtime_executed"],
+            fallback_performed=value["fallback_performed"],
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,17 +510,19 @@ class RuntimeContinuationResumeValidation:
         if not self.conversation_resume_allowed:
             raise ValueError("hard continuation rejection must raise a Kernel error")
         if self.dispatch_allowed != (self.blocker_code is None):
-            raise ValueError("dispatch permission and blocker identity are inconsistent")
+            raise ValueError(
+                "dispatch permission and blocker identity are inconsistent"
+            )
         if self.blocker_code is not None:
             require_identifier(self.blocker_code, field_name="blocker_code")
         if self.mutation_applied or self.fallback_performed:
-            raise ValueError("continuation validation is read-only and never falls back")
+            raise ValueError(
+                "continuation validation is read-only and never falls back"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": (
-                RUNTIME_CONTINUATION_RESUME_VALIDATION_SCHEMA_VERSION
-            ),
+            "schema_version": (RUNTIME_CONTINUATION_RESUME_VALIDATION_SCHEMA_VERSION),
             "continuation_id": self.continuation_id,
             "conversation_resume_allowed": self.conversation_resume_allowed,
             "dispatch_allowed": self.dispatch_allowed,
@@ -247,6 +552,23 @@ def validate_runtime_continuation_resume(
         "declared_tool_catalog_digest": (
             intent.declared_tool_catalog_digest,
             command.declared_tool_catalog_digest,
+        ),
+        "workflow_authority_id": (
+            intent.source_workflow_authority_id,
+            command.workflow_authority_id,
+        ),
+        "workflow_authority_epoch": (
+            intent.source_workflow_authority_epoch,
+            command.workflow_authority_epoch,
+        ),
+        "workflow_authority_digest": (
+            intent.source_workflow_authority_binding_digest,
+            command.workflow_authority_digest,
+        ),
+        "delivery_signal_id": (intent.delivery_signal_id, command.signal_id),
+        "delivery_signal_authority_link_digest": (
+            intent.delivery_signal_authority_link_digest,
+            command.signal_authority_link_digest,
         ),
     }
     drifted = sorted(
@@ -353,6 +675,7 @@ class RuntimeOutcomeConsumption:
     command_digest: str
     outcome_id: str
     outcome_digest: str
+    outcome_receipt: RuntimeTurnOutcomeReceipt
     session_id: str
     agent_id: str
     agent_member_id: str
@@ -361,6 +684,11 @@ class RuntimeOutcomeConsumption:
     continuation_intent: RuntimeContinuationIntent | None
     settlement_intent: RuntimeSettlementIntent
     consumed_at: str
+    private_diagnostic: PrivateDiagnosticRecord | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -375,8 +703,40 @@ class RuntimeOutcomeConsumption:
             require_identifier(getattr(self, field_name), field_name=field_name)
         require_digest(self.command_digest, field_name="command_digest")
         require_digest(self.outcome_digest, field_name="outcome_digest")
+        if (
+            self.outcome_receipt.outcome.command_id != self.command_id
+            or self.outcome_receipt.outcome.command_digest != self.command_digest
+            or self.outcome_receipt.outcome.outcome_id != self.outcome_id
+            or self.outcome_receipt.outcome.outcome_digest != self.outcome_digest
+            or self.outcome_receipt.outcome.session_id != self.session_id
+            or self.outcome_receipt.outcome.agent_id != self.agent_id
+            or self.outcome_receipt.outcome.agent_member_id != self.agent_member_id
+            or self.outcome_receipt.outcome.signal_id != self.signal_id
+            or self.outcome_receipt.outcome.signal_attempt != self.signal_attempt
+        ):
+            raise ValueError(
+                "runtime outcome receipt identity differs from consumption"
+            )
         if self.signal_attempt < 1:
             raise ValueError("signal_attempt must be positive")
+        outcome = self.outcome_receipt.outcome
+        if self.private_diagnostic is not outcome.private_diagnostic:
+            if (
+                self.private_diagnostic is None
+                or outcome.private_diagnostic is None
+                or self.private_diagnostic.record_digest
+                != outcome.private_diagnostic.record_digest
+            ):
+                raise ValueError(
+                    "runtime consumption private diagnostic differs from outcome"
+                )
+        if self.private_diagnostic is not None:
+            if outcome.failure is None:
+                raise ValueError("runtime private diagnostic lacks a failure")
+            validate_failure_diagnostic_pair(
+                outcome.failure,
+                self.private_diagnostic,
+            )
         _parse_instant(self.consumed_at, field_name="consumed_at")
 
     def to_dict(self) -> dict[str, Any]:
@@ -387,6 +747,7 @@ class RuntimeOutcomeConsumption:
             "command_digest": self.command_digest,
             "outcome_id": self.outcome_id,
             "outcome_digest": self.outcome_digest,
+            "outcome_receipt": self.outcome_receipt.to_dict(),
             "session_id": self.session_id,
             "agent_id": self.agent_id,
             "agent_member_id": self.agent_member_id,
@@ -450,7 +811,22 @@ class ControlStoreRuntimeOutcomeRepository:
         self._clock = clock
         self._ids = ids
 
-    def register_command(self, command: RuntimeTurnCommand) -> str:
+    def register_command(
+        self,
+        command: RuntimeTurnCommand,
+        *,
+        tool_exposure_snapshot: ToolExposureSnapshot | None = None,
+    ) -> str:
+        if tool_exposure_snapshot is not None and (
+            tool_exposure_snapshot.exposure_snapshot_id
+            != command.tool_exposure_snapshot_id
+            or tool_exposure_snapshot.exposure_snapshot_digest
+            != command.tool_exposure_snapshot_digest
+        ):
+            raise KernelContractError(
+                "runtime_tool_exposure_snapshot_identity_conflict",
+                "Runtime command and supplied tool exposure snapshot differ",
+            )
         existing = self._reader.read(
             entity_type="runtime_turn_command", entity_id=command.command_id
         )
@@ -460,8 +836,44 @@ class ControlStoreRuntimeOutcomeRepository:
                     "runtime_command_identity_conflict",
                     "Runtime command identity already names another command",
                 )
+            existing_exposure = self._reader.read(
+                entity_type="tool_exposure_snapshot",
+                entity_id=command.tool_exposure_snapshot_id,
+            )
+            if (
+                existing_exposure is None
+                or existing_exposure.payload.get("exposure_snapshot_digest")
+                != command.tool_exposure_snapshot_digest
+            ):
+                raise KernelContractError(
+                    "runtime_command_identity_missing",
+                    "Admitted runtime command lacks its exact tool exposure snapshot",
+                )
             return command.command_digest
-        session, signal, lease, member = self._require_live_command_identity(command)
+        (
+            session,
+            signal,
+            lease,
+            member,
+            workflow,
+            signal_link,
+            exposure,
+        ) = self._require_live_command_identity(
+            command,
+            tool_exposure_snapshot=tool_exposure_snapshot,
+        )
+        context_record = self._reader.read(
+            entity_type="runtime_turn_context",
+            entity_id=command.context.context_id,
+        )
+        if context_record is not None and (
+            context_record.payload.get("context_digest")
+            != command.context.context_digest
+        ):
+            raise KernelContractError(
+                "runtime_turn_context_identity_conflict",
+                "Runtime context identity already names different canonical facts",
+            )
         request = UnitOfWorkRequest(
             unit_of_work_id=self._ids.new_id(namespace="uow"),
             command_id=command.command_id,
@@ -476,10 +888,42 @@ class ControlStoreRuntimeOutcomeRepository:
         )
         unit = self._store.begin(request)
         try:
-            self._require_same_record(unit, session)
-            self._require_same_record(unit, signal)
-            self._require_same_record(unit, lease)
-            self._require_same_record(unit, member)
+            for record in (
+                session,
+                signal,
+                lease,
+                member,
+                workflow,
+                signal_link,
+            ):
+                self._require_same_record(unit, record)
+            if exposure is None:
+                assert tool_exposure_snapshot is not None
+                unit.stage(
+                    KernelStateMutation.create(
+                        mutation_id=self._ids.new_id(namespace="mutation"),
+                        kind=KernelMutationKind.CREATE,
+                        entity_type="tool_exposure_snapshot",
+                        entity_id=tool_exposure_snapshot.exposure_snapshot_id,
+                        expected_state_version=None,
+                        payload=tool_exposure_snapshot.to_dict(),
+                    )
+                )
+            else:
+                self._require_same_record(unit, exposure)
+            if context_record is None:
+                unit.stage(
+                    KernelStateMutation.create(
+                        mutation_id=self._ids.new_id(namespace="mutation"),
+                        kind=KernelMutationKind.CREATE,
+                        entity_type="runtime_turn_context",
+                        entity_id=command.context.context_id,
+                        expected_state_version=None,
+                        payload=command.context.to_dict(),
+                    )
+                )
+            else:
+                self._require_same_record(unit, context_record)
             unit.stage(
                 KernelStateMutation.create(
                     mutation_id=self._ids.new_id(namespace="mutation"),
@@ -502,6 +946,10 @@ class ControlStoreRuntimeOutcomeRepository:
                     "command_id": command.command_id,
                     "command_digest": command.command_digest,
                     "signal_id": command.signal_id,
+                    "workflow_authority_id": command.workflow_authority_id,
+                    "workflow_authority_epoch": command.workflow_authority_epoch,
+                    "tool_exposure_snapshot_id": command.tool_exposure_snapshot_id,
+                    "context_id": command.context.context_id,
                     "task_transition_performed": False,
                 },
             )
@@ -541,6 +989,36 @@ class ControlStoreRuntimeOutcomeRepository:
         self,
         consumption: RuntimeOutcomeConsumption,
     ) -> RuntimeOutcomeConsumeResult:
+        """Settle once, recording stale/collision rejection as a new occurrence."""
+
+        try:
+            return self._consume_once(consumption)
+        except KernelContractError as exc:
+            if exc.code not in _DURABLE_SETTLEMENT_DIAGNOSTIC_CODES:
+                raise
+            try:
+                self._record_settlement_diagnostic(consumption, exc)
+            except Exception as diagnostic_error:
+                rejected = KernelContractError(
+                    "runtime_settlement_diagnostic_record_failed",
+                    "Runtime settlement was rejected and its diagnostic could not be recorded",
+                    details={
+                        "source_error_code": exc.code,
+                        "diagnostic_recorded": False,
+                        "mutation_applied": False,
+                        "fallback_performed": False,
+                    },
+                )
+                rejected.add_note(
+                    f"diagnostic writer failed with {type(diagnostic_error).__name__}"
+                )
+                raise rejected from diagnostic_error
+            raise
+
+    def _consume_once(
+        self,
+        consumption: RuntimeOutcomeConsumption,
+    ) -> RuntimeOutcomeConsumeResult:
         existing = self._reader.read(
             entity_type="runtime_outcome_consumption",
             entity_id=consumption.command_id,
@@ -554,6 +1032,7 @@ class ControlStoreRuntimeOutcomeRepository:
                     "runtime_command_outcome_collision",
                     "One RuntimeCommand cannot consume another outcome",
                 )
+            self._require_existing_failure_pair(consumption)
             return RuntimeOutcomeConsumeResult(
                 disposition=RuntimeOutcomeConsumeDisposition.DUPLICATE,
                 command_digest=consumption.command_digest,
@@ -581,12 +1060,34 @@ class ControlStoreRuntimeOutcomeRepository:
         member = self._reader.read(
             entity_type="agent_member", entity_id=consumption.agent_member_id
         )
-        if signal is None or lease is None or member is None:
+        workflow = self._reader.read(
+            entity_type="workflow_authority_binding",
+            entity_id=str(command_record.payload.get("workflow_authority_id")),
+        )
+        signal_link = self._reader.read(
+            entity_type="runtime_signal_authority_link",
+            entity_id=consumption.signal_id,
+        )
+        exposure = self._reader.read(
+            entity_type="tool_exposure_snapshot",
+            entity_id=str(command_record.payload.get("tool_exposure_snapshot_id")),
+        )
+        if any(
+            record is None
+            for record in (signal, lease, member, workflow, signal_link, exposure)
+        ):
             raise KernelContractError(
                 "runtime_settlement_identity_missing",
                 "Runtime settlement canonical identity is incomplete",
             )
+        assert signal is not None
+        assert lease is not None
+        assert member is not None
+        assert workflow is not None
+        assert signal_link is not None
+        assert exposure is not None
         command_payload = command_record.payload
+        outcome = consumption.outcome_receipt.outcome
         if (
             signal.payload.get("status") != "claimed"
             or signal.payload.get("attempt_count") != consumption.signal_attempt
@@ -603,24 +1104,40 @@ class ControlStoreRuntimeOutcomeRepository:
             or lease.payload.get("released_at") is not None
             or member.payload.get("process_epoch")
             != command_payload.get("process_epoch")
-            or member.payload.get("status") in {
+            or member.payload.get("status")
+            in {
                 "completed",
                 "failed",
                 "stopped",
                 "shutdown",
             }
+            or workflow.payload.get("status") != "active"
+            or workflow.payload.get("epoch")
+            != command_payload.get("workflow_authority_epoch")
+            or workflow.payload.get("binding_digest")
+            != command_payload.get("workflow_authority_digest")
+            or signal_link.payload.get("link_digest")
+            != command_payload.get("signal_authority_link_digest")
+            or signal_link.payload.get("authority_id")
+            != command_payload.get("workflow_authority_id")
+            or exposure.payload.get("exposure_snapshot_digest")
+            != command_payload.get("tool_exposure_snapshot_digest")
+            or outcome.task_id != signal.payload.get("task_id")
+            or outcome.lane_id != signal.payload.get("lane_id")
+            or outcome.correlation_id != signal.payload.get("correlation_id")
         ):
             raise KernelContractError(
                 "runtime_settlement_fence_stale",
                 "Runtime outcome differs from current signal/lease/process epoch",
             )
-        if _parse_instant(str(lease.payload["expires_at"]), field_name="lease.expires_at") <= _parse_instant(
-            self._clock.now_iso(), field_name="now"
-        ):
+        if _parse_instant(
+            str(lease.payload["expires_at"]), field_name="lease.expires_at"
+        ) <= _parse_instant(self._clock.now_iso(), field_name="now"):
             raise KernelContractError(
                 "runtime_settlement_lease_expired",
                 "Runtime outcome arrived after Session lease expiry",
             )
+        conversation_payloads = self._preflight_outcome_records(consumption)
         session = self._reader.read(
             entity_type="session", entity_id=consumption.session_id
         )
@@ -640,8 +1157,62 @@ class ControlStoreRuntimeOutcomeRepository:
         )
         unit = self._store.begin(request)
         try:
-            for record in (session, command_record, signal, lease, member):
+            for record in (
+                session,
+                command_record,
+                signal,
+                lease,
+                member,
+                workflow,
+                signal_link,
+                exposure,
+            ):
                 self._require_same_record(unit, record)
+            failure = consumption.outcome_receipt.outcome.failure
+            if failure is not None:
+                unit.stage(
+                    KernelStateMutation.create(
+                        mutation_id=self._ids.new_id(namespace="mutation"),
+                        kind=KernelMutationKind.CREATE,
+                        entity_type="failure_observation",
+                        entity_id=failure.failure_id,
+                        expected_state_version=None,
+                        payload=failure.to_internal_dict(),
+                    )
+                )
+            private_diagnostic = consumption.private_diagnostic
+            if private_diagnostic is not None:
+                unit.stage(
+                    KernelStateMutation.create(
+                        mutation_id=self._ids.new_id(namespace="mutation"),
+                        kind=KernelMutationKind.CREATE,
+                        entity_type="private_diagnostic",
+                        entity_id=private_diagnostic.diagnostic_id,
+                        expected_state_version=None,
+                        payload=private_diagnostic.to_dict(),
+                    )
+                )
+            unit.stage(
+                KernelStateMutation.create(
+                    mutation_id=self._ids.new_id(namespace="mutation"),
+                    kind=KernelMutationKind.CREATE,
+                    entity_type="runtime_turn_outcome",
+                    entity_id=consumption.outcome_receipt.receipt_id,
+                    expected_state_version=None,
+                    payload=consumption.outcome_receipt.to_dict(),
+                )
+            )
+            for message_id, payload in conversation_payloads:
+                unit.stage(
+                    KernelStateMutation.create(
+                        mutation_id=self._ids.new_id(namespace="mutation"),
+                        kind=KernelMutationKind.CREATE,
+                        entity_type="conversation_message",
+                        entity_id=message_id,
+                        expected_state_version=None,
+                        payload=payload,
+                    )
+                )
             terminal_signal = dict(signal.payload)
             terminal_signal.update(
                 {
@@ -718,7 +1289,20 @@ class ControlStoreRuntimeOutcomeRepository:
                     "command_id": consumption.command_id,
                     "outcome_id": consumption.outcome_id,
                     "outcome_digest": consumption.outcome_digest,
+                    "outcome_receipt_id": consumption.outcome_receipt.receipt_id,
+                    "outcome_receipt_digest": (
+                        consumption.outcome_receipt.receipt_digest
+                    ),
                     "disposition": consumption.settlement_intent.disposition.value,
+                    "message_ids": [
+                        message.message_id
+                        for message in consumption.outcome_receipt.outcome.messages
+                    ],
+                    "failure_id": (
+                        None
+                        if consumption.outcome_receipt.outcome.failure is None
+                        else consumption.outcome_receipt.outcome.failure.failure_id
+                    ),
                     "task_transition_performed": False,
                 },
             )
@@ -759,6 +1343,388 @@ class ControlStoreRuntimeOutcomeRepository:
             consumption_digest=consumption.consumption_digest,
         )
 
+    def _preflight_outcome_records(
+        self,
+        consumption: RuntimeOutcomeConsumption,
+    ) -> tuple[tuple[str, dict[str, Any]], ...]:
+        receipt = consumption.outcome_receipt
+        existing_receipt = self._reader.read(
+            entity_type="runtime_turn_outcome",
+            entity_id=receipt.receipt_id,
+        )
+        if existing_receipt is not None:
+            raise KernelContractError(
+                "runtime_outcome_receipt_collision",
+                "Outcome receipt exists without the exact consumption marker",
+                details={
+                    "receipt_id": receipt.receipt_id,
+                    "mutation_applied": False,
+                    "fallback_performed": False,
+                },
+            )
+        failure = receipt.outcome.failure
+        if (
+            failure is not None
+            and self._reader.read(
+                entity_type="failure_observation",
+                entity_id=failure.failure_id,
+            )
+            is not None
+        ):
+            raise KernelContractError(
+                "runtime_outcome_failure_collision",
+                "Runtime outcome failure identity already exists",
+                details={
+                    "failure_id": failure.failure_id,
+                    "mutation_applied": False,
+                    "fallback_performed": False,
+                },
+            )
+        private_diagnostic = consumption.private_diagnostic
+        if (
+            private_diagnostic is not None
+            and self._reader.read(
+                entity_type="private_diagnostic",
+                entity_id=private_diagnostic.diagnostic_id,
+            )
+            is not None
+        ):
+            raise KernelContractError(
+                "runtime_outcome_private_diagnostic_collision",
+                "Runtime outcome private diagnostic identity already exists",
+                details={
+                    "diagnostic_id": private_diagnostic.diagnostic_id,
+                    "mutation_applied": False,
+                    "fallback_performed": False,
+                },
+            )
+        payloads = self._conversation_payloads(receipt)
+        collisions = tuple(
+            message_id
+            for message_id, _ in payloads
+            if self._reader.read(
+                entity_type="conversation_message",
+                entity_id=message_id,
+            )
+            is not None
+        )
+        if collisions:
+            raise KernelContractError(
+                "runtime_outcome_message_collision",
+                "Runtime output message identity already exists",
+                details={
+                    "message_ids": collisions,
+                    "mutation_applied": False,
+                    "fallback_performed": False,
+                },
+            )
+        return payloads
+
+    def _require_existing_failure_pair(
+        self,
+        consumption: RuntimeOutcomeConsumption,
+    ) -> None:
+        failure = consumption.outcome_receipt.outcome.failure
+        if failure is None:
+            return
+        existing_failure = self._reader.read(
+            entity_type="failure_observation",
+            entity_id=failure.failure_id,
+        )
+        if (
+            existing_failure is None
+            or json_compatible(existing_failure.payload) != failure.to_internal_dict()
+        ):
+            raise KernelContractError(
+                "runtime_outcome_failure_collision",
+                "Duplicate Runtime outcome differs from its durable failure pair",
+                details={
+                    "failure_id": failure.failure_id,
+                    "mutation_applied": False,
+                    "fallback_performed": False,
+                },
+            )
+        private_diagnostic = consumption.private_diagnostic
+        if private_diagnostic is None:
+            return
+        existing_private = self._reader.read(
+            entity_type="private_diagnostic",
+            entity_id=private_diagnostic.diagnostic_id,
+        )
+        if (
+            existing_private is None
+            or json_compatible(existing_private.payload) != private_diagnostic.to_dict()
+        ):
+            raise KernelContractError(
+                "runtime_outcome_private_diagnostic_collision",
+                "Duplicate Runtime outcome differs from its private diagnostic",
+                details={
+                    "diagnostic_id": private_diagnostic.diagnostic_id,
+                    "mutation_applied": False,
+                    "fallback_performed": False,
+                },
+            )
+
+    def _record_settlement_diagnostic(
+        self,
+        consumption: RuntimeOutcomeConsumption,
+        error: KernelContractError,
+    ) -> None:
+        suffix = canonical_sha256_digest(
+            {
+                "command_id": consumption.command_id,
+                "outcome_digest": consumption.outcome_digest,
+                "error_code": error.code,
+            }
+        ).removeprefix("sha256:")[:24]
+        failure_id = f"failure_settlement_{suffix}"
+        diagnostic_id = f"diagnostic_settlement_{suffix}"
+        outcome = consumption.outcome_receipt.outcome
+        records = observe_structured_failure(
+            error,
+            context=StructuredFailureContext(
+                failure_id=failure_id,
+                diagnostic_id=diagnostic_id,
+                session_id=consumption.session_id,
+                component="openzyme.kernel.runtime-outcome-repository",
+                operation="consume_outcome",
+                phase="outcome_settlement",
+                source_kind="runtime_outcome_settlement",
+                source_ref=consumption.command_id,
+                source_version=consumption.outcome_digest,
+                # The diagnostic occurrence is derived from this exact settlement
+                # attempt.  Reuse its canonical timestamp so an advancing wall
+                # clock cannot turn an exact retry (including after restart) into
+                # a different public/private pair.
+                created_at=consumption.consumed_at,
+                task_id=outcome.task_id,
+                lane_id=outcome.lane_id,
+                agent_id=consumption.agent_id,
+                correlation_id=outcome.correlation_id,
+            ),
+            failure_class=FailureClass.RUNTIME,
+            recoverability=FailureRecoverability.TERMINAL,
+            effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+            retry_eligibility=RetryEligibility.TERMINAL,
+            actor_kind=FailureActorKind.HARNESS,
+            error_code=error.code,
+            safe_summary=(
+                "Runtime outcome settlement was rejected before any partial mutation."
+            ),
+            safe_hint=(
+                "Refresh the exact command, signal, lease, workflow, transcript, and "
+                "failure identities before a new occurrence."
+            ),
+            next_action="inspect_settlement_diagnostic",
+            mutation_applied=False,
+            fallback_performed=False,
+            reconcile_required=False,
+            public_facts={
+                "prior_output_message_count": len(outcome.messages),
+                "prior_tool_request_count": len(outcome.tool_requests),
+            },
+            identities={
+                "command_id": consumption.command_id,
+                "signal_id": consumption.signal_id,
+            },
+            likely_causes=(
+                "A current settlement fence or immutable outcome identity changed.",
+            ),
+            private_context={
+                "error_details": error.details,
+                "consumption": consumption.to_dict(),
+            },
+        )
+        existing_failure = self._reader.read(
+            entity_type="failure_observation",
+            entity_id=failure_id,
+        )
+        existing_private = self._reader.read(
+            entity_type="private_diagnostic",
+            entity_id=diagnostic_id,
+        )
+        if existing_failure is not None or existing_private is not None:
+            if (
+                existing_failure is not None
+                and existing_private is not None
+                and json_compatible(existing_failure.payload)
+                == records.public.to_internal_dict()
+                and json_compatible(existing_private.payload)
+                == records.private.to_dict()
+            ):
+                return
+            raise KernelContractError(
+                "runtime_settlement_diagnostic_collision",
+                "Settlement diagnostic identity already names another occurrence",
+                details={
+                    "diagnostic_id": diagnostic_id,
+                    "diagnostic_recorded": False,
+                    "mutation_applied": False,
+                    "fallback_performed": False,
+                },
+            )
+        session = self._reader.read(
+            entity_type="session",
+            entity_id=consumption.session_id,
+        )
+        signal = self._reader.read(
+            entity_type="agent_runtime_signal",
+            entity_id=consumption.signal_id,
+        )
+        lease = self._reader.read(
+            entity_type="session_runtime_lease",
+            entity_id=consumption.session_id,
+        )
+        member = self._reader.read(
+            entity_type="agent_member",
+            entity_id=consumption.agent_member_id,
+        )
+        if any(record is None for record in (session, signal, lease, member)):
+            raise KernelContractError(
+                "runtime_settlement_diagnostic_authority_missing",
+                "Current canonical authority cannot record settlement diagnostics",
+                details={
+                    "diagnostic_id": diagnostic_id,
+                    "diagnostic_recorded": False,
+                    "mutation_applied": False,
+                    "fallback_performed": False,
+                },
+            )
+        assert session is not None
+        assert signal is not None
+        assert lease is not None
+        assert member is not None
+        diagnostic_command_id = f"settlement-diagnostic-{suffix}"
+        request = UnitOfWorkRequest(
+            unit_of_work_id=self._ids.new_id(namespace="uow"),
+            command_id=diagnostic_command_id,
+            session_id=consumption.session_id,
+            actor_id=consumption.agent_member_id,
+            authority_lease_id=str(signal.payload["capability_lease_id"]),
+            authority_generation=int(lease.payload["generation"]),
+            authority_fence=int(lease.payload["fencing_token"]),
+            expected_session_version=session.state_version,
+            idempotency_key=f"runtime-settlement-diagnostic:{suffix}",
+            command_digest=canonical_sha256_digest(
+                {
+                    "public": records.public.to_internal_dict(),
+                    "private_digest": records.private.record_digest,
+                }
+            ),
+        )
+        unit = self._store.begin(request)
+        try:
+            for current in (session, signal, lease, member):
+                self._require_same_record(unit, current)
+            unit.stage(
+                KernelStateMutation.create(
+                    mutation_id=self._ids.new_id(namespace="mutation"),
+                    kind=KernelMutationKind.CREATE,
+                    entity_type="failure_observation",
+                    entity_id=failure_id,
+                    expected_state_version=None,
+                    payload=records.public.to_internal_dict(),
+                )
+            )
+            unit.stage(
+                KernelStateMutation.create(
+                    mutation_id=self._ids.new_id(namespace="mutation"),
+                    kind=KernelMutationKind.CREATE,
+                    entity_type="private_diagnostic",
+                    entity_id=diagnostic_id,
+                    expected_state_version=None,
+                    payload=records.private.to_dict(),
+                )
+            )
+            event = DurableEventRecord.create(
+                event_id=self._ids.new_id(namespace="event"),
+                session_id=consumption.session_id,
+                event_type="runtime.outcome.settlement_rejected",
+                source_entity_type="failure_observation",
+                source_entity_id=failure_id,
+                source_state_version=1,
+                command_id=diagnostic_command_id,
+                payload={
+                    "failure_id": failure_id,
+                    "diagnostic_id": diagnostic_id,
+                    "source_command_id": consumption.command_id,
+                    "source_outcome_id": consumption.outcome_id,
+                    "error_code": error.code,
+                    "mutation_applied": False,
+                    "fallback_performed": False,
+                },
+            )
+            unit.append_event(event)
+            outbox_payload = {
+                "event_id": event.event_id,
+                "failure_id": failure_id,
+                "diagnostic_id": diagnostic_id,
+                "source_command_id": consumption.command_id,
+            }
+            unit.append_outbox(
+                OutboxRecord(
+                    outbox_id=self._ids.new_id(namespace="outbox"),
+                    session_id=consumption.session_id,
+                    topic="openzyme.kernel.runtime-settlement-diagnostics",
+                    occurrence_id=event.event_id,
+                    payload=outbox_payload,
+                    payload_digest=canonical_sha256_digest(outbox_payload),
+                    created_at=self._clock.now_iso(),
+                )
+            )
+            receipt = unit.commit()
+        except Exception:
+            unit.rollback()
+            raise
+        if not receipt.committed:
+            raise KernelContractError(
+                "runtime_settlement_diagnostic_commit_failed",
+                "Settlement diagnostic Unit of Work did not commit",
+                details={
+                    "diagnostic_id": diagnostic_id,
+                    "diagnostic_recorded": False,
+                    "mutation_applied": False,
+                    "fallback_performed": False,
+                },
+            )
+
+    @staticmethod
+    def _conversation_payloads(
+        receipt: RuntimeTurnOutcomeReceipt,
+    ) -> tuple[tuple[str, dict[str, Any]], ...]:
+        outcome = receipt.outcome
+        rows: list[tuple[str, dict[str, Any]]] = []
+        for message in outcome.messages:
+            message_type = (
+                "assistant_message"
+                if message.role is RuntimeMessageRole.ASSISTANT
+                else "tool_message"
+            )
+            rows.append(
+                (
+                    message.message_id,
+                    {
+                        "message_id": message.message_id,
+                        "session_id": outcome.session_id,
+                        "sender_actor_id": outcome.agent_member_id,
+                        "admitted_by_actor_id": outcome.agent_member_id,
+                        "sender_kind": message.role.value,
+                        "content": message.content,
+                        "message_type": message_type,
+                        "correlation_id": (
+                            message.correlation_id or outcome.correlation_id
+                        ),
+                        "task_id": outcome.task_id,
+                        "lane_id": outcome.lane_id,
+                        "request_lineage_id": None,
+                        "workflow_refs": [],
+                        "skill_keys": [],
+                        "created_at": receipt.accepted_at,
+                    },
+                )
+            )
+        return tuple(rows)
+
     @staticmethod
     def _require_same_record(unit, expected) -> None:  # noqa: ANN001
         current = unit.read(
@@ -770,7 +1736,12 @@ class ControlStoreRuntimeOutcomeRepository:
                 "Runtime canonical identity changed before atomic commit",
             )
 
-    def _require_live_command_identity(self, command: RuntimeTurnCommand):
+    def _require_live_command_identity(
+        self,
+        command: RuntimeTurnCommand,
+        *,
+        tool_exposure_snapshot: ToolExposureSnapshot | None,
+    ):
         session = self._reader.read(entity_type="session", entity_id=command.session_id)
         signal = self._reader.read(
             entity_type="agent_runtime_signal", entity_id=command.signal_id
@@ -781,10 +1752,48 @@ class ControlStoreRuntimeOutcomeRepository:
         member = self._reader.read(
             entity_type="agent_member", entity_id=command.agent_member_id
         )
-        if session is None or signal is None or lease is None or member is None:
+        workflow = self._reader.read(
+            entity_type="workflow_authority_binding",
+            entity_id=command.workflow_authority_id,
+        )
+        signal_link = self._reader.read(
+            entity_type="runtime_signal_authority_link",
+            entity_id=command.signal_id,
+        )
+        exposure = self._reader.read(
+            entity_type="tool_exposure_snapshot",
+            entity_id=command.tool_exposure_snapshot_id,
+        )
+        if any(
+            record is None
+            for record in (session, signal, lease, member, workflow, signal_link)
+        ) or (exposure is None and tool_exposure_snapshot is None):
             raise KernelContractError(
                 "runtime_command_identity_missing",
                 "Runtime command canonical identity is incomplete",
+            )
+        assert session is not None
+        assert signal is not None
+        assert lease is not None
+        assert member is not None
+        assert workflow is not None
+        assert signal_link is not None
+        exposure_payload = (
+            exposure.payload
+            if exposure is not None
+            else tool_exposure_snapshot.to_dict()
+            if tool_exposure_snapshot is not None
+            else {}
+        )
+        if (
+            exposure is not None
+            and tool_exposure_snapshot is not None
+            and exposure.payload.get("exposure_snapshot_digest")
+            != tool_exposure_snapshot.exposure_snapshot_digest
+        ):
+            raise KernelContractError(
+                "runtime_tool_exposure_snapshot_identity_conflict",
+                "Stored and supplied tool exposure snapshots differ",
             )
         now = _parse_instant(self._clock.now_iso(), field_name="now")
         if (
@@ -803,12 +1812,49 @@ class ControlStoreRuntimeOutcomeRepository:
             or member.payload.get("session_id") != command.session_id
             or member.payload.get("agent_id") != command.agent_id
             or member.payload.get("process_epoch") != command.process_epoch
-            or member.payload.get("status") in {
+            or member.payload.get("status")
+            in {
                 "completed",
                 "failed",
                 "stopped",
                 "shutdown",
             }
+            or workflow.payload.get("session_id") != command.session_id
+            or workflow.payload.get("authorized_actor_id") != command.agent_member_id
+            or workflow.payload.get("status") != "active"
+            or workflow.payload.get("epoch") != command.workflow_authority_epoch
+            or workflow.payload.get("binding_digest")
+            != command.workflow_authority_digest
+            or signal_link.payload.get("session_id") != command.session_id
+            or signal_link.payload.get("signal_id") != command.signal_id
+            or signal_link.payload.get("authority_id") != command.workflow_authority_id
+            or signal_link.payload.get("authority_epoch")
+            != command.workflow_authority_epoch
+            or signal_link.payload.get("authority_binding_digest")
+            != command.workflow_authority_digest
+            or signal_link.payload.get("link_digest")
+            != command.signal_authority_link_digest
+            or exposure_payload.get("exposure_snapshot_id")
+            != command.tool_exposure_snapshot_id
+            or exposure_payload.get("session_id") != command.session_id
+            or exposure_payload.get("agent_member_id") != command.agent_member_id
+            or exposure_payload.get("turn_id") != command.turn_id
+            or exposure_payload.get("declared_tool_catalog_digest")
+            != command.declared_tool_catalog_digest
+            or exposure_payload.get("capability_binding_digest")
+            != command.capability_binding_digest
+            or exposure_payload.get("affordance_snapshot_id")
+            != command.affordance_snapshot_id
+            or exposure_payload.get("affordance_snapshot_digest")
+            != command.affordance_snapshot_digest
+            or exposure_payload.get("workflow_authority_id")
+            != command.workflow_authority_id
+            or exposure_payload.get("workflow_authority_epoch")
+            != command.workflow_authority_epoch
+            or exposure_payload.get("workflow_authority_digest")
+            != command.workflow_authority_digest
+            or exposure_payload.get("exposure_snapshot_digest")
+            != command.tool_exposure_snapshot_digest
             or _parse_instant(
                 str(signal.payload["claim_expires_at"]), field_name="claim_expires_at"
             )
@@ -822,7 +1868,7 @@ class ControlStoreRuntimeOutcomeRepository:
                 "runtime_command_fence_stale",
                 "Runtime command differs from current signal/lease/process epoch",
             )
-        return session, signal, lease, member
+        return session, signal, lease, member, workflow, signal_link, exposure
 
 
 @dataclass(frozen=True, slots=True)
@@ -858,10 +1904,19 @@ class RuntimeTurnCoordinator:
             capability_binding_digest=admission.capability_binding.binding_digest,
             affordance_snapshot_id=admission.affordance_snapshot.snapshot_id,
             affordance_snapshot_digest=admission.affordance_snapshot.snapshot_digest,
-            runtime_adapter_id=admission.runtime_adapter_id,
-            runtime_adapter_contract_digest=(
-                admission.runtime_adapter_contract_digest
+            workflow_authority_id=admission.workflow_authority.authority_id,
+            workflow_authority_epoch=admission.workflow_authority.epoch,
+            workflow_authority_digest=(admission.workflow_authority.binding_digest),
+            signal_authority_link_digest=(admission.signal_authority_link.link_digest),
+            tool_exposure_snapshot_id=(
+                admission.tool_exposure_snapshot.exposure_snapshot_id
             ),
+            tool_exposure_snapshot_digest=(
+                admission.tool_exposure_snapshot.exposure_snapshot_digest
+            ),
+            context=admission.context,
+            runtime_adapter_id=admission.runtime_adapter_id,
+            runtime_adapter_contract_digest=(admission.runtime_adapter_contract_digest),
             max_steps=admission.budget.max_steps,
             max_duration_seconds=admission.budget.max_duration_seconds,
             max_input_units=admission.budget.max_input_units,
@@ -922,6 +1977,10 @@ class RuntimeTurnCoordinator:
         lease = admission.session_lease
         binding = admission.capability_binding
         snapshot = admission.affordance_snapshot
+        workflow = admission.workflow_authority
+        signal_link = admission.signal_authority_link
+        exposure = admission.tool_exposure_snapshot
+        context = admission.context
         observed_at = _parse_instant(admission.observed_at, field_name="observed_at")
         if (
             signal.status is not AgentRuntimeSignalStatus.CLAIMED
@@ -980,6 +2039,49 @@ class RuntimeTurnCoordinator:
                 signal.workspace_generation is not None
                 and signal.workspace_generation != snapshot.workspace_generation
             ),
+            "workflow_status": workflow.status is not WorkflowAuthorityStatus.ACTIVE,
+            "workflow_session": workflow.session_id != signal.session_id,
+            "workflow_actor": (
+                workflow.authorized_actor_id != admission.agent_member_id
+            ),
+            "workflow_task": (
+                workflow.task_id is not None and workflow.task_id != signal.task_id
+            ),
+            "workflow_lane": (
+                workflow.lane_id is not None and workflow.lane_id != signal.lane_id
+            ),
+            "signal_link_signal": signal_link.signal_id != signal.signal_id,
+            "signal_link_session": signal_link.session_id != signal.session_id,
+            "signal_link_authority": (
+                signal_link.authority_id != workflow.authority_id
+                or signal_link.authority_epoch != workflow.epoch
+                or signal_link.authority_binding_digest != workflow.binding_digest
+            ),
+            "exposure_session": exposure.session_id != signal.session_id,
+            "exposure_member": (exposure.agent_member_id != admission.agent_member_id),
+            "exposure_turn": exposure.turn_id != admission.turn_id,
+            "exposure_affordance": (
+                exposure.affordance_snapshot_id != snapshot.snapshot_id
+                or exposure.affordance_snapshot_digest != snapshot.snapshot_digest
+            ),
+            "exposure_capability": (
+                exposure.capability_binding_digest != binding.binding_digest
+            ),
+            "exposure_workflow": (
+                exposure.workflow_authority_id != workflow.authority_id
+                or exposure.workflow_authority_epoch != workflow.epoch
+                or exposure.workflow_authority_digest != workflow.binding_digest
+            ),
+            "context_session": context.session_id != signal.session_id,
+            "context_agent": context.agent_id != signal.agent_id,
+            "context_member": context.agent_member_id != admission.agent_member_id,
+            "context_turn": context.turn_id != admission.turn_id,
+            "context_signal": context.signal_id != signal.signal_id,
+            "context_task": context.task_id != signal.task_id,
+            "context_lane": context.lane_id != signal.lane_id,
+            "context_lineage": (
+                context.request_lineage_id != workflow.request_lineage_id
+            ),
         }
         drifted = sorted(key for key, mismatch in mismatches.items() if mismatch)
         if drifted:
@@ -1018,6 +2120,14 @@ class RuntimeTurnCoordinator:
             "runtime_lease_generation": command.runtime_lease_generation,
             "runtime_fence": command.runtime_fence,
             "process_epoch": command.process_epoch,
+            "workflow_authority_id": command.workflow_authority_id,
+            "workflow_authority_epoch": command.workflow_authority_epoch,
+            "workflow_authority_digest": command.workflow_authority_digest,
+            "tool_exposure_snapshot_id": command.tool_exposure_snapshot_id,
+            "tool_exposure_snapshot_digest": (command.tool_exposure_snapshot_digest),
+            "task_id": command.task_id,
+            "lane_id": command.lane_id,
+            "correlation_id": _command_correlation_id(command),
         }
         observed = {field_name: getattr(outcome, field_name) for field_name in expected}
         drifted = sorted(
@@ -1040,11 +2150,39 @@ class RuntimeTurnCoordinator:
                 "runtime Adapter reported usage outside the immutable command budget",
                 details={"command_id": command.command_id},
             )
+        unexpected_roles = sorted(
+            {
+                message.role.value
+                for message in outcome.messages
+                if message.role
+                not in {RuntimeMessageRole.ASSISTANT, RuntimeMessageRole.TOOL}
+            }
+        )
+        if unexpected_roles:
+            raise KernelContractError(
+                "runtime_outcome_message_role_invalid",
+                "Runtime outcome may persist only assistant and tool output rows",
+                details={
+                    "command_id": command.command_id,
+                    "message_roles": unexpected_roles,
+                },
+            )
+        failure = outcome.failure
+        if failure is not None and (
+            failure.session_id != command.session_id
+            or failure.agent_id != command.agent_id
+            or failure.task_id != command.task_id
+            or failure.lane_id != command.lane_id
+        ):
+            raise KernelContractError(
+                "runtime_outcome_failure_identity_drift",
+                "Runtime failure differs from the exact turn task/lane/agent scope",
+                details={"command_id": command.command_id},
+            )
         for request in outcome.tool_requests:
             invocation = request.invocation
             if (
-                request.affordance_snapshot_digest
-                != command.affordance_snapshot_digest
+                request.affordance_snapshot_digest != command.affordance_snapshot_digest
                 or invocation.affordance_snapshot_digest
                 != command.affordance_snapshot_digest
                 or invocation.session_id != command.session_id
@@ -1072,6 +2210,15 @@ class RuntimeTurnCoordinator:
                 source_command_digest=command.command_digest,
                 source_outcome_id=outcome.outcome_id,
                 source_outcome_digest=outcome.outcome_digest,
+                source_signal_id=command.signal_id,
+                source_signal_authority_link_digest=(
+                    command.signal_authority_link_digest
+                ),
+                source_workflow_authority_id=command.workflow_authority_id,
+                source_workflow_authority_epoch=command.workflow_authority_epoch,
+                source_workflow_authority_binding_digest=(
+                    command.workflow_authority_digest
+                ),
                 process_epoch=command.process_epoch,
                 release_digest=command.release_digest,
                 extension_bundle_digest=command.extension_bundle_digest,
@@ -1081,6 +2228,9 @@ class RuntimeTurnCoordinator:
                 capability_binding_digest=command.capability_binding_digest,
                 affordance_snapshot_id=command.affordance_snapshot_id,
                 affordance_snapshot_digest=command.affordance_snapshot_digest,
+                delivery_status=RuntimeContinuationDeliveryStatus.PENDING,
+                delivery_attempt=0,
+                created_at=consumed_at,
             )
         settlement = RuntimeSettlementIntent(
             settlement_id=f"settlement-{outcome.outcome_id}",
@@ -1097,12 +2247,18 @@ class RuntimeTurnCoordinator:
             waiting_approval_id=outcome.waiting_approval_id,
             failure_id=None if outcome.failure is None else outcome.failure.failure_id,
         )
+        outcome_receipt = RuntimeTurnOutcomeReceipt(
+            receipt_id=f"outcome-receipt-{outcome.outcome_id}",
+            outcome=outcome,
+            accepted_at=consumed_at,
+        )
         return RuntimeOutcomeConsumption(
             consumption_id=f"consumption-{command.command_id}",
             command_id=command.command_id,
             command_digest=command.command_digest,
             outcome_id=outcome.outcome_id,
             outcome_digest=outcome.outcome_digest,
+            outcome_receipt=outcome_receipt,
             session_id=command.session_id,
             agent_id=command.agent_id,
             agent_member_id=command.agent_member_id,
@@ -1111,6 +2267,7 @@ class RuntimeTurnCoordinator:
             continuation_intent=continuation,
             settlement_intent=settlement,
             consumed_at=consumed_at,
+            private_diagnostic=outcome.private_diagnostic,
         )
 
 
@@ -1121,6 +2278,7 @@ __all__ = [
     "RUNTIME_OUTCOME_CONSUMPTION_SCHEMA_VERSION",
     "RUNTIME_SETTLEMENT_INTENT_SCHEMA_VERSION",
     "RuntimeContinuationIntent",
+    "RuntimeContinuationDeliveryStatus",
     "RuntimeContinuationResumeValidation",
     "RuntimeOutcomeConsumeDisposition",
     "RuntimeOutcomeConsumeResult",

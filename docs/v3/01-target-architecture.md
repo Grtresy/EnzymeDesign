@@ -257,6 +257,27 @@ Workspace application service 显式写入、提交和发布后才形成共享 r
 但闭包验证成功不代表 Host 已 cutover 或任何 live Provider/HPC 可用；这些仍需 exact
 startup proof、deployment epoch 与另行的 live qualification。
 
+## Resident teammate 的跨层数据流
+
+Distribution composition root 显式选择 Store、Workspace、Runtime/Process Adapters、Plugin/Driver、workflow
+registry与role exposure policy。Kernel仍是产品链唯一canonical owner：
+
+```text
+Host bootstrap -> Kernel reservation UoW -> Workspace Adapter mechanism -> Kernel readiness settlement
+Host message -> Kernel workflow binding + inbox + signal -> explicit drain worker
+Kernel context/affordance/exposure -> Runtime Adapter -> Kernel full outcome settlement
+Kernel projection -> Host -> Client/CLI/UI
+```
+
+`WorkspaceProvisioningIntent`拥有work occurrence，`WorkspaceGeneration`拥有workspace identity，
+`AgentAuthorityLease`拥有agent mutation authority；三者成功时原子对齐，但不是同一个lifecycle。类似地，
+`WorkflowAuthorityBinding`拥有request-lineage selection authority，`RuntimeSignalAuthorityLink`只绑定一次signal
+causation，`ToolAffordanceSnapshot`表示真实callability，`ToolExposureSnapshot`只表示provider presentation。
+
+Runtime Adapter和Plugin tool runtime没有ControlStore writer。它们返回closed proposal/receipt；Kernel在current
+signal/lease/process/workflow/affordance/exposure fence下持久化outcome、assistant/tool conversation和failure。
+任何Adapter/Plugin私有表、prompt或provider response都不能变成第二套协作真相。
+
 ## Public projection 与 persistence
 
 当前源码唯一的在线公共合同是 `file_workspace_public@2`；旧 mixed composition 已删除，`@1` shape 只允许由
@@ -271,10 +292,11 @@ Kernel core query provider 与 exact projection contributors，不构造 Plugin 
 `openzyme_store_kernel_entity_versions.session_id` 的 bounded index 找 identity，再由 exact target codec 从 owner
 table 重建并校验 record；Kernel 选择 Session subject、authority、latest capability binding、workspace readiness，
 生成 closed Core 与 affordance。Distribution 把该 provider 和 verified empty Plugin mount 注入 Host，Host 不反向
-依赖 Standard。Standard 已把 Session bootstrap、Task/Lane/Agent、Protocol、Approval、AgentAuthorityLease 与
-message ingress 通过真实 gateway 接到 target SQLite，并组装为通用 `@2` Host；message 只形成 conversation、
-user-kind inbox 与 pending signal。runtime/workspace/publication 的其余 route、event/restore/continuation 收口和
-真实 offline activation 仍属于 cutover 前的未完成工作。
+依赖 Standard。Standard 与 EnzymeDesign 的可执行 composition 都把 Session bootstrap、Task/Lane/Agent、
+Protocol、Approval、AgentAuthorityLease、provisioning、workflow authority、message ingress 与 explicit runtime
+drain 接到 target SQLite；message 只形成 conversation、workflow binding/link、user-kind inbox 与 pending signal，
+runtime outcome 只有经 fenced settlement 才形成 assistant/tool/failure truth。源码与 non-live E2E 闭合仍不等于
+真实 offline activation 或 deployment cutover。
 
 SQLite 是 control-plane persistence Adapter；项目 Git 是文件内容真值。所有现有表、索引、触发器和外键的
 目标 semantic owner 由 [`architecture/table-owner-manifest.json`](architecture/table-owner-manifest.json)

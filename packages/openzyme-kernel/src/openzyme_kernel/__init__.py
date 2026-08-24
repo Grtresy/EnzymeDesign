@@ -41,6 +41,18 @@ from .catalog import build_route_catalog
 from .collaboration_application import CollaborationApplicationCommand
 from .collaboration_application import CollaborationCommandKind
 from .collaboration_application import CollaborationKernelApplicationService
+from .collaboration_tools import ApprovalApplicationPort
+from .collaboration_tools import CollaborationApplicationPort
+from .collaboration_tools import CollaborationToolApplications
+from .collaboration_tools import CollaborationToolContextResolver
+from .collaboration_tools import KernelCollaborationToolRuntime
+from .collaboration_tools import ProtocolToolApplicationPort
+from .collaboration_tools import ResolvedCollaborationToolContext
+from .collaboration_tools import TaskApplicationPort
+from .collaboration_tools import WorldInspectionApplicationPort
+from .collaboration_tools import build_kernel_collaboration_tool_runtimes
+from .collaboration_tools import kernel_collaboration_declared_tool_entries
+from .collaboration_tools import kernel_collaboration_tool_specs
 from .binding import CapabilityBindingAction
 from .binding import CapabilityBindingActorKind
 from .binding import CapabilityBindingCommand
@@ -113,6 +125,7 @@ from .runtime_turns import RUNTIME_CONTINUATION_INTENT_SCHEMA_VERSION
 from .runtime_turns import RUNTIME_CONTINUATION_RESUME_VALIDATION_SCHEMA_VERSION
 from .runtime_turns import RUNTIME_OUTCOME_CONSUMPTION_SCHEMA_VERSION
 from .runtime_turns import RUNTIME_SETTLEMENT_INTENT_SCHEMA_VERSION
+from .runtime_turns import RuntimeContinuationDeliveryStatus
 from .runtime_turns import RuntimeContinuationIntent
 from .runtime_turns import RuntimeContinuationResumeValidation
 from .runtime_turns import ControlStoreRuntimeOutcomeRepository
@@ -130,12 +143,25 @@ from .runtime_coordination_application import RuntimeLeaseAction
 from .runtime_coordination_application import RuntimeSignalClaimCommand
 from .runtime_coordination_application import RuntimeSignalEnqueueCommand
 from .runtime_coordination_application import SessionRuntimeLeaseCommand
+from .runtime_continuation_application import RuntimeContinuationDeliveryCommand
+from .runtime_continuation_application import (
+    RuntimeContinuationDeliveryKernelApplicationService,
+)
+from .runtime_continuation_application import RuntimeContinuationDeliveryWorker
 from .runtime_capability_gateway import KernelToolRuntimeContribution
 from .runtime_capability_gateway import MountedRuntimeCapabilityGateway
 from .runtime_capability_gateway import MountedRuntimeToolSet
 from .runtime_capability_gateway import RuntimeToolScope
 from .runtime_capability_gateway import RuntimeToolScopeProvider
 from .runtime_capability_gateway import mount_runtime_tool_set
+from .runtime_command_application import RuntimeCommandAdmissionCommand
+from .runtime_command_application import RuntimeCommandClaimCommand
+from .runtime_command_application import RuntimeCommandKernelApplicationService
+from .runtime_command_application import RuntimeCommandSettlementCommand
+from .runtime_command_application import runtime_command_id
+from .runtime_context import RuntimeContextBounds
+from .runtime_context import RuntimeTurnContextBuildRequest
+from .runtime_context import RuntimeTurnContextBuilder
 from .session_composition import SESSION_COMPOSITION_GUARD_DECISION_SCHEMA_VERSION
 from .session_composition import SessionCompositionCreateCommand
 from .session_composition import SessionCompositionGuard
@@ -149,6 +175,36 @@ from .session_bootstrap_application import SessionBootstrapCommand
 from .session_bootstrap_application import SessionBootstrapKernelApplicationService
 from .task_application import TaskKernelApplicationService
 from .task_evidence_application import TaskEvidenceKernelApplicationService
+from .tool_exposure import CommandToolExpansionQueryPort
+from .tool_exposure import CommandToolExpansionStorePort
+from .tool_exposure import ControlStoreCommandToolExpansionStore
+from .tool_exposure import InMemoryCommandToolExpansionStore
+from .tool_exposure import KernelCapabilitiesInspectRuntime
+from .tool_exposure import ToolExposureInspection
+from .tool_exposure import ToolExposurePublicSnapshot
+from .tool_exposure import ToolExposureRolePolicy
+from .tool_exposure import inspect_and_expand_tool_exposure
+from .tool_exposure import model_visible_exposed_tool_specs
+from .tool_exposure import resolve_public_tool_exposure_snapshot
+from .tool_exposure import resolve_tool_exposure_role_policy
+from .tool_exposure import resolve_tool_exposure_snapshot
+from .workflow_authority_application import DerivedWorkflowAuthorityRequest
+from .workflow_authority_application import ExistingWorkflowAuthoritySignalRequest
+from .workflow_authority_application import RootWorkflowAuthorityRequest
+from .workflow_authority_application import WorkflowAuthorityKernelApplicationService
+from .workflow_authority_application import WorkflowAuthorityTransitionCommand
+from .workflow_authority_application import WorkflowAuthorityUnitOfWorkOwner
+from .workspace_provisioning_application import WorkspaceProvisionerPort
+from .workspace_provisioning_application import WorkspaceProvisioningClaimCommand
+from .workspace_provisioning_application import WorkspaceProvisioningKernelApplicationService
+from .workspace_provisioning_application import WorkspaceProvisioningReconciliationAdmissionCommand
+from .workspace_provisioning_application import WorkspaceProvisioningReconciliationClaimCommand
+from .workspace_provisioning_application import WorkspaceProvisioningReconciliationSettlementCommand
+from .workspace_provisioning_application import WorkspaceProvisioningReplacementCommand
+from .workspace_provisioning_application import WorkspaceProvisioningSettlementCommand
+from .workspace_provisioning_application import WorkspaceProvisioningWorker
+from .workspace_provisioning_application import WorkspaceProvisioningWorkerContext
+from .workspace_provisioning_application import build_workspace_provisioning_controlled_operation_payload
 from .workspace_operations import WorkspaceOperationCoordinationError
 from .workspace_operations import WorkspaceOperationCoordinator
 from .workspace_operations import WorkspaceOperationOutcome
@@ -177,6 +233,7 @@ __all__ = [
     "AuthorityLeaseMutationKind",
     "AuthorityLeaseRevokeCommand",
     "ApprovalKernelApplicationService",
+    "ApprovalApplicationPort",
     "ACTIVATED_DISTRIBUTION_SCHEMA_VERSION",
     "ActivationBlocker",
     "CapabilityRegistry",
@@ -192,6 +249,12 @@ __all__ = [
     "CollaborationApplicationCommand",
     "CollaborationCommandKind",
     "CollaborationKernelApplicationService",
+    "CollaborationApplicationPort",
+    "CollaborationToolApplications",
+    "CollaborationToolContextResolver",
+    "CommandToolExpansionQueryPort",
+    "CommandToolExpansionStorePort",
+    "ControlStoreCommandToolExpansionStore",
     "ControlledOperationKernelApplicationService",
     "ContinuationKernelApplicationService",
     "DEPLOYMENT_SURFACE_AUTHORIZATION_SCHEMA_VERSION",
@@ -209,6 +272,8 @@ __all__ = [
     "DEFAULT_EXTENSION_SECTION_MAX_ITEMS",
     "DEFAULT_PUBLIC_PROJECTION_MAX_BYTES",
     "KernelContractError",
+    "KernelCapabilitiesInspectRuntime",
+    "KernelCollaborationToolRuntime",
     "KernelToolRuntimeContribution",
     "KernelWorkspaceToolRuntime",
     "ProjectRepositoryBindingCommand",
@@ -219,6 +284,7 @@ __all__ = [
     "MountedExtensionSurfaces",
     "MountedRuntimeCapabilityGateway",
     "MountedRuntimeToolSet",
+    "InMemoryCommandToolExpansionStore",
     "OFFLINE_PLUGIN_CHANGE_VERIFICATION_SCHEMA_VERSION",
     "OfflinePluginChangeRequest",
     "OfflinePluginChangeVerification",
@@ -242,6 +308,7 @@ __all__ = [
     "PluginSessionPinObservation",
     "PluginStateDisposition",
     "ProtocolKernelApplicationService",
+    "ProtocolToolApplicationPort",
     "PublicationCoordinationError",
     "PublicationCoordinationOutcome",
     "PublicationCoordinationState",
@@ -256,7 +323,16 @@ __all__ = [
     "SESSION_COMPOSITION_GUARD_DECISION_SCHEMA_VERSION",
     "RouteCatalog",
     "ReadOnlyDeploymentVerification",
+    "RuntimeContinuationDeliveryCommand",
+    "RuntimeContinuationDeliveryKernelApplicationService",
+    "RuntimeContinuationDeliveryStatus",
+    "RuntimeContinuationDeliveryWorker",
     "RuntimeContinuationIntent",
+    "RuntimeCommandAdmissionCommand",
+    "RuntimeCommandClaimCommand",
+    "RuntimeCommandKernelApplicationService",
+    "RuntimeCommandSettlementCommand",
+    "RuntimeContextBounds",
     "RuntimeContinuationResumeValidation",
     "ControlStoreRuntimeOutcomeRepository",
     "RuntimeOutcomeConsumeDisposition",
@@ -267,6 +343,8 @@ __all__ = [
     "RuntimeTurnAdmission",
     "RuntimeTurnBudget",
     "RuntimeTurnCoordinator",
+    "RuntimeTurnContextBuildRequest",
+    "RuntimeTurnContextBuilder",
     "RuntimeToolScope",
     "RuntimeToolScopeProvider",
     "validate_runtime_continuation_resume",
@@ -276,6 +354,7 @@ __all__ = [
     "RuntimeSignalEnqueueCommand",
     "SessionRuntimeLeaseCommand",
     "ResolvedLocalWorkspaceToolContext",
+    "ResolvedCollaborationToolContext",
     "SessionCapabilityBindingService",
     "SessionRepositoryBindingPinCommand",
     "SessionCompositionCreateCommand",
@@ -288,6 +367,9 @@ __all__ = [
     "SessionBootstrapCommand",
     "SessionBootstrapKernelApplicationService",
     "ToolAffordanceContext",
+    "ToolExposureInspection",
+    "ToolExposurePublicSnapshot",
+    "ToolExposureRolePolicy",
     "WorkspaceGenerationTransitionCommand",
     "WorkspaceIdentityAction",
     "WorkspaceIdentityKernelApplicationService",
@@ -295,6 +377,7 @@ __all__ = [
     "ToolSubjectPolicyAction",
     "ToolSubjectPolicyDecision",
     "TaskKernelApplicationService",
+    "TaskApplicationPort",
     "TaskEvidenceKernelApplicationService",
     "WorkspaceOperationCoordinationError",
     "WorkspaceOperationCoordinator",
@@ -302,6 +385,23 @@ __all__ = [
     "WorkspaceOperationSettlementState",
     "WorkspacePublicationCoordinator",
     "WorkspacePublicationRequest",
+    "WorkspaceProvisionerPort",
+    "WorkspaceProvisioningClaimCommand",
+    "WorkspaceProvisioningKernelApplicationService",
+    "WorkspaceProvisioningReconciliationAdmissionCommand",
+    "WorkspaceProvisioningReconciliationClaimCommand",
+    "WorkspaceProvisioningReconciliationSettlementCommand",
+    "WorkspaceProvisioningReplacementCommand",
+    "WorkspaceProvisioningSettlementCommand",
+    "WorkspaceProvisioningWorker",
+    "WorkspaceProvisioningWorkerContext",
+    "WorldInspectionApplicationPort",
+    "DerivedWorkflowAuthorityRequest",
+    "ExistingWorkflowAuthoritySignalRequest",
+    "RootWorkflowAuthorityRequest",
+    "WorkflowAuthorityKernelApplicationService",
+    "WorkflowAuthorityTransitionCommand",
+    "WorkflowAuthorityUnitOfWorkOwner",
     "activate_plugin_composition",
     "activate_distribution_composition",
     "assemble_file_workspace_public_v2",
@@ -310,23 +410,33 @@ __all__ = [
     "build_route_catalog",
     "build_extension_contribution_catalogs",
     "build_kernel_workspace_tool_runtimes",
+    "build_kernel_collaboration_tool_runtimes",
+    "build_workspace_provisioning_controlled_operation_payload",
     "build_public_tool_reflection",
     "CapabilityRegistryResolverPort",
     "KernelCoreProjectionProvider",
     "KernelCoreProjectionSource",
     "KernelPublicWorkspaceProjectionService",
     "inspect_tool_affordances",
+    "inspect_and_expand_tool_exposure",
+    "kernel_collaboration_declared_tool_entries",
+    "kernel_collaboration_tool_specs",
     "kernel_workspace_tool_specs",
     "kernel_workspace_declared_tool_entries",
     "inspect_capabilities",
     "model_visible_tool_specs",
+    "model_visible_exposed_tool_specs",
     "mount_extension_surfaces",
     "mount_runtime_tool_set",
     "observe_composition_failure",
     "resolve_tool_affordance_snapshot",
+    "resolve_public_tool_exposure_snapshot",
+    "resolve_tool_exposure_role_policy",
+    "resolve_tool_exposure_snapshot",
     "revalidate_tool_dispatch",
     "revalidate_continuation_route",
     "resolve_tool_capabilities",
+    "runtime_command_id",
     "select_distribution_manifest_locators",
     "version_satisfies",
     "verify_offline_plugin_change",

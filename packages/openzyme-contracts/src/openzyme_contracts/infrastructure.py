@@ -503,6 +503,23 @@ class KernelRecordQueryPort(KernelRecordReaderPort, Protocol):
     ) -> tuple[KernelRecordSnapshot, ...]: ...
 
 
+class KernelSessionDiscoveryPort(Protocol):
+    """Bounded scheduler-only discovery of canonical Session identities.
+
+    This Port reveals identities only; callers must use exact Session-scoped
+    query/application Ports for all product facts and mutations.  The cursor is
+    an exclusive canonical Session identity and implementations must preserve
+    lexical ordering without an ambient/global unbounded scan.
+    """
+
+    def list_session_ids(
+        self,
+        *,
+        after_session_id: str | None,
+        max_items: int,
+    ) -> tuple[str, ...]: ...
+
+
 class OutboxDeliveryPort(Protocol):
     provider_id: str
 

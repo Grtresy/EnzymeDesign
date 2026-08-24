@@ -10,6 +10,9 @@ from openzyme_contracts import ControlledOperationDispatchRequest
 from openzyme_contracts import ControlledOperationProviderDispatchReceipt
 from openzyme_contracts import ControlledOperationProviderObservationReceipt
 from openzyme_contracts import ExternalEffectCertainty
+from openzyme_contracts import RuntimeContextSection
+from openzyme_contracts import RuntimeContextSectionKind
+from openzyme_contracts import RuntimeTurnContext
 from openzyme_contracts import WorkspaceExecRequest
 from openzyme_contracts import WorkspaceKind
 from openzyme_contracts import WorkspaceObservation
@@ -47,6 +50,21 @@ class _NoToolGateway(RuntimeCapabilityGateway):
 
 
 def _runtime_command(adapter: ScriptedAgentRuntimeAdapter) -> RuntimeTurnCommand:
+    context = RuntimeTurnContext(
+        context_id="context-1",
+        session_id="session-1",
+        agent_id="agent-1",
+        agent_member_id="member-1",
+        turn_id="turn-1",
+        signal_id="signal-1",
+        request_lineage_id="request-lineage-1",
+        sections=tuple(
+            RuntimeContextSection(kind=kind, items=())
+            for kind in RuntimeContextSectionKind
+        ),
+        max_bytes=131_072,
+        created_at="2026-08-20T00:00:00+00:00",
+    )
     return RuntimeTurnCommand(
         command_id="command-1",
         turn_id="turn-1",
@@ -71,6 +89,13 @@ def _runtime_command(adapter: ScriptedAgentRuntimeAdapter) -> RuntimeTurnCommand
         capability_binding_digest=_digest("binding"),
         affordance_snapshot_id="snapshot-1",
         affordance_snapshot_digest=_digest("affordance"),
+        workflow_authority_id="workflow-authority-1",
+        workflow_authority_epoch=1,
+        workflow_authority_digest=_digest("workflow-authority"),
+        signal_authority_link_digest=_digest("signal-authority-link"),
+        tool_exposure_snapshot_id="exposure-1",
+        tool_exposure_snapshot_digest=_digest("tool-exposure"),
+        context=context,
         runtime_adapter_id=adapter.adapter_id,
         runtime_adapter_contract_digest=adapter.adapter_contract_digest,
         max_steps=4,
@@ -101,6 +126,11 @@ def _runtime_outcome(command: RuntimeTurnCommand) -> RuntimeTurnOutcome:
         runtime_lease_generation=command.runtime_lease_generation,
         runtime_fence=command.runtime_fence,
         process_epoch=command.process_epoch,
+        workflow_authority_id=command.workflow_authority_id,
+        workflow_authority_epoch=command.workflow_authority_epoch,
+        workflow_authority_digest=command.workflow_authority_digest,
+        tool_exposure_snapshot_id=command.tool_exposure_snapshot_id,
+        tool_exposure_snapshot_digest=command.tool_exposure_snapshot_digest,
         disposition=RuntimeTurnDisposition.IDLE,
         summary="No tool invocation was needed.",
     )

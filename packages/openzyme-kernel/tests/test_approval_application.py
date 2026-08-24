@@ -3,6 +3,10 @@ from __future__ import annotations
 import pytest
 
 from openzyme_contracts import KernelRecordSnapshot
+from openzyme_contracts import WorkflowAuthorityBinding
+from openzyme_contracts import WorkflowAuthorityDerivationKind
+from openzyme_contracts import WorkflowAuthorityStatus
+from openzyme_contracts import canonical_sha256_digest
 from openzyme_extension_spi import ApprovalApplicationCommand
 from openzyme_extension_spi import ApprovalCommandKind
 from openzyme_extension_spi import KernelCommandContext
@@ -17,6 +21,15 @@ from test_controlled_operation_application import _digest
 
 def _store() -> _Store:
     store = _Store()
+    workflow = _workflow_authority()
+    store.records[("workflow_authority_binding", workflow.authority_id)] = (
+        KernelRecordSnapshot.create(
+            entity_type="workflow_authority_binding",
+            entity_id=workflow.authority_id,
+            state_version=1,
+            payload=workflow.to_dict(),
+        )
+    )
     store.records[("agent_authority_lease", "lease-1")] = KernelRecordSnapshot.create(
         entity_type="agent_authority_lease",
         entity_id="lease-1",
@@ -57,6 +70,35 @@ def _store() -> _Store:
     return store
 
 
+def _workflow_authority() -> WorkflowAuthorityBinding:
+    registry_digest = _digest("workflow-registry")
+    selected_refs = ("workflow.external-compute",)
+    return WorkflowAuthorityBinding(
+        authority_id="workflow-authority-1",
+        session_id="session-1",
+        project_id="project-1",
+        request_lineage_id="request-lineage-1",
+        source_message_id="message-1",
+        source_principal_id="user-1",
+        authorized_actor_id="agent-1",
+        selected_workflow_refs=selected_refs,
+        selection_digest=canonical_sha256_digest(
+            {
+                "schema_version": "workflow_selection_binding@1",
+                "registry_snapshot_digest": registry_digest,
+                "selected_workflow_refs": list(selected_refs),
+            }
+        ),
+        registry_snapshot_digest=registry_digest,
+        derivation_kind=WorkflowAuthorityDerivationKind.ROOT_MESSAGE,
+        status=WorkflowAuthorityStatus.ACTIVE,
+        epoch=1,
+        state_version=1,
+        created_at="2026-08-20T10:00:00+00:00",
+        updated_at="2026-08-20T10:00:00+00:00",
+    )
+
+
 def _context(*, phase: str, session_version: int) -> KernelCommandContext:
     return KernelCommandContext(
         command_id=f"command-{phase}",
@@ -83,6 +125,7 @@ def _service(store: _Store, *, clock: _Clock | None = None):
 
 
 def _request(*, expires_at: str = "2026-08-20T10:30:00+00:00"):
+    workflow = _workflow_authority()
     return ApprovalApplicationCommand(
         context=_context(phase="request", session_version=4),
         operation=ApprovalCommandKind.REQUEST,
@@ -93,6 +136,9 @@ def _request(*, expires_at: str = "2026-08-20T10:30:00+00:00"):
             "scope_id": "operation-1",
             "expires_at": expires_at,
             "reason": "requires external compute",
+            "workflow_authority_id": workflow.authority_id,
+            "workflow_authority_epoch": workflow.epoch,
+            "workflow_authority_digest": workflow.binding_digest,
         },
     )
 
@@ -115,11 +161,11 @@ def test_request_and_consume_are_distinct_from_operation_dispatch() -> None:
     )
 
     approval = store.read(entity_type="approval_request", entity_id="approval-1")
-    assert requested.result == {
-        "approval_id": "approval-1",
-        "status": "pending",
-        "operation_dispatched": False,
-    }
+    assert requested.result["approval_id"] == "approval-1"
+    assert requested.result["status"] == "pending"
+    assert requested.result["workflow_authority_id"] == "workflow-authority-1"
+    assert requested.result["runtime_signal_id"] is None
+    assert requested.result["operation_dispatched"] is False
     assert resolved.result["status"] == "approved"
     assert resolved.result["operation_dispatched"] is False
     assert approval.payload["status"] == "approved"
@@ -131,6 +177,13 @@ def test_request_and_consume_are_distinct_from_operation_dispatch() -> None:
     ]
     assert len(signals) == 1
     assert signals[0].payload["reason"] == "approval_resolved"
+    link = store.read(
+        entity_type="runtime_signal_authority_link",
+        entity_id=signals[0].entity_id,
+    )
+    assert link is not None
+    assert link.payload["authority_id"] == "workflow-authority-1"
+    assert link.payload["authority_epoch"] == 1
 
 
 def test_intent_drift_and_duplicate_resolution_fail_closed() -> None:

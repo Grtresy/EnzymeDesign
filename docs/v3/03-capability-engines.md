@@ -318,6 +318,25 @@ generation/digest 与 capability proof。当前 non-live 产品资格场景通�
 链，只把 Agent-turn、Git-shaped revision backend 与 external Compute runner 明确替换为测试 Port，并证明
 terminal result 只生成 owner continuation，Task 不自动完成。该证明不提升为真实 HPC/Slurm cutover 或 live。
 
+## Direct、Deferred 与 Hidden exposure
+
+DeclaredToolCatalog、capability/resource/route facts、per-turn ToolAffordance和model exposure是四个不同合同。
+Distribution对每个role和exact catalog entry给出digest-bound`Direct | Deferred | Hidden`；policy缺失、unknown、
+duplicate或release drift在startup/admission拒绝，不能用`decisions=()`或“全部available”作为默认。
+
+- Direct：稳定collaboration verbs与role essentials，且affordance available时进入provider schema；
+- Deferred：long-tail Plugin tools，经`capabilities.inspect`安全发现并按exact name在一个command内扩展；
+- Hidden：名称、描述和参数不向provider、inspection或public client披露；structured context只保留不含名称的
+  aggregate count以及覆盖完整snapshot的identity digest，用于证明策略完整性而不提供可发现性。
+
+`capabilities.inspect`只改变同一command后续step的presentation。新command/continuation重新求值；blocked Deferred
+不会变成callable。无论Direct或expanded，dispatch都重验workflow epoch、Agent authority、approval、workspace、
+qualification、health与exact route。exposure从不创造authority、不解除blocker、不route fallback。
+
+Kernel stable tool runtimes把`task.create/update/finish/delegate`、`protocol.send`、`approval.request`和world/
+capability inspection落到现有application owner；`task.delegate`固定走Protocol owner，`protocol.send`只enqueue，
+`task.update`不接受业务终态。
+
 ## 错误与策略自由
 
 Plugin/Adapter error 必须保留 stable code、component/phase、typed identities、effect certainty、

@@ -1,14 +1,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC
+from datetime import datetime
 from typing import Protocol
 from typing import TypeAlias
 
+from openzyme_contracts import ClockPort
+from openzyme_contracts import ExternalEffectCertainty
+from openzyme_contracts import FailureActorKind
+from openzyme_contracts import FailureClass
+from openzyme_contracts import FailureRecoverability
+from openzyme_contracts import RetryEligibility
+from openzyme_contracts import StructuredFailureContext
 from openzyme_contracts import ToolAffordanceSnapshot
+from openzyme_contracts import ToolExposure
+from openzyme_contracts import ToolExposureSnapshot
 from openzyme_contracts import ToolInvocation
 from openzyme_contracts import ToolResult
 from openzyme_contracts import ToolSpec
+from openzyme_contracts import WorkflowAuthorityBinding
+from openzyme_contracts import WorkflowAuthorityStatus
 from openzyme_contracts import canonical_sha256_digest
+from openzyme_contracts import observe_structured_failure
 from openzyme_extension_spi import ToolRuntimeContribution
 from openzyme_extension_spi import ToolDispatchBinding
 from openzyme_runtime_spi import RuntimeCapabilityGateway
@@ -23,6 +37,9 @@ from .deployment_activation import DeploymentActivationGate
 from .deployment_activation import DeploymentSurface
 from .errors import KernelContractError
 from .extension_mount import MountedExtensionSurfaces
+from .tool_exposure import CommandToolExpansionStorePort
+from .tool_exposure import inspect_and_expand_tool_exposure
+from .tool_exposure import model_visible_exposed_tool_specs
 
 
 class KernelToolRuntimeContribution(Protocol):
@@ -45,9 +62,7 @@ class KernelToolRuntimeContribution(Protocol):
     def invoke(self, invocation: ToolInvocation) -> ToolResult: ...
 
 
-MountedToolRuntime: TypeAlias = (
-    ToolRuntimeContribution | KernelToolRuntimeContribution
-)
+MountedToolRuntime: TypeAlias = ToolRuntimeContribution | KernelToolRuntimeContribution
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,14 +199,36 @@ class RuntimeToolScope:
     catalog: DeclaredToolCatalog
     snapshot: ToolAffordanceSnapshot
     current_context: ToolAffordanceContext
+    exposure_snapshot: ToolExposureSnapshot | None = None
+    current_workflow_authority: WorkflowAuthorityBinding | None = None
 
     def __post_init__(self) -> None:
         if not self.command_id:
             raise ValueError("runtime tool scope command_id must be non-empty")
         if self.snapshot.declared_tool_catalog_digest != self.catalog.catalog_digest:
             raise ValueError("runtime tool scope catalog identity drifted")
-        if self.current_context.declared_catalog.catalog_digest != self.catalog.catalog_digest:
+        if (
+            self.current_context.declared_catalog.catalog_digest
+            != self.catalog.catalog_digest
+        ):
             raise ValueError("runtime tool scope current catalog identity drifted")
+        if (self.exposure_snapshot is None) != (
+            self.current_workflow_authority is None
+        ):
+            raise ValueError(
+                "runtime tool scope exposure and workflow authority must be complete"
+            )
+        if self.exposure_snapshot is not None:
+            exposure = self.exposure_snapshot
+            mismatches = (
+                exposure.session_id != self.snapshot.session_id,
+                exposure.agent_member_id != self.snapshot.agent_member_id,
+                exposure.turn_id != self.snapshot.turn_id,
+                exposure.affordance_snapshot_id != self.snapshot.snapshot_id,
+                exposure.affordance_snapshot_digest != self.snapshot.snapshot_digest,
+            )
+            if any(mismatches):
+                raise ValueError("runtime tool scope exposure identity drifted")
 
 
 class RuntimeToolScopeProvider(Protocol):
@@ -206,6 +243,8 @@ class MountedRuntimeCapabilityGateway(RuntimeCapabilityGateway):
 
     scopes: RuntimeToolScopeProvider
     runtimes: tuple[tuple[str, MountedToolRuntime], ...]
+    expansions: CommandToolExpansionStorePort | None = None
+    clock: ClockPort | None = None
 
     def __post_init__(self) -> None:
         names = [name for name, _ in self.runtimes]
@@ -222,16 +261,28 @@ class MountedRuntimeCapabilityGateway(RuntimeCapabilityGateway):
         affordance_snapshot_digest: str,
     ) -> tuple[ToolSpec, ...]:
         scope = self._scope(command_id)
+        self._validate_current_turn_scope(scope)
         if scope.snapshot.snapshot_digest != affordance_snapshot_digest:
             raise KernelContractError(
                 "tool_affordance_stale",
                 "runtime requested tools from another affordance snapshot",
                 details={"command_id": command_id},
             )
-        visible = model_visible_tool_specs(
-            snapshot=scope.snapshot,
-            catalog=scope.catalog,
-        )
+        if scope.exposure_snapshot is None:
+            visible = model_visible_tool_specs(
+                snapshot=scope.snapshot,
+                catalog=scope.catalog,
+            )
+        else:
+            expansion = (
+                None if self.expansions is None else self.expansions.get(command_id)
+            )
+            visible = model_visible_exposed_tool_specs(
+                catalog=scope.catalog,
+                affordance_snapshot=scope.snapshot,
+                exposure_snapshot=scope.exposure_snapshot,
+                expansion=expansion,
+            )
         mounted = dict(self.runtimes)
         missing = sorted(
             spec.tool_name for spec in visible if spec.tool_name not in mounted
@@ -244,6 +295,48 @@ class MountedRuntimeCapabilityGateway(RuntimeCapabilityGateway):
             )
         return visible
 
+    def revalidate_provider_step(
+        self,
+        *,
+        command_id: str,
+        workflow_authority_id: str,
+        workflow_authority_epoch: int,
+        workflow_authority_digest: str,
+        tool_exposure_snapshot_id: str,
+        tool_exposure_snapshot_digest: str,
+    ) -> None:
+        """Fence every provider step against current workflow and exposure state."""
+
+        scope = self._scope(command_id)
+        exposure = scope.exposure_snapshot
+        if exposure is None:
+            raise KernelContractError(
+                "runtime_tool_exposure_scope_missing",
+                "Runtime command has no exact tool exposure scope",
+                details={"command_id": command_id, "fallback_performed": False},
+            )
+        supplied = (
+            workflow_authority_id,
+            workflow_authority_epoch,
+            workflow_authority_digest,
+            tool_exposure_snapshot_id,
+            tool_exposure_snapshot_digest,
+        )
+        expected = (
+            exposure.workflow_authority_id,
+            exposure.workflow_authority_epoch,
+            exposure.workflow_authority_digest,
+            exposure.exposure_snapshot_id,
+            exposure.exposure_snapshot_digest,
+        )
+        if supplied != expected:
+            raise KernelContractError(
+                "runtime_turn_fence_stale",
+                "Provider step identities differ from the exact runtime command scope",
+                details={"command_id": command_id, "fallback_performed": False},
+            )
+        self._validate_current_turn_scope(scope)
+
     def invoke(
         self,
         *,
@@ -252,10 +345,18 @@ class MountedRuntimeCapabilityGateway(RuntimeCapabilityGateway):
     ) -> ToolResult:
         scope = self._scope(command_id)
         invocation = request.invocation
+        try:
+            self._validate_current_turn_scope(scope)
+        except KernelContractError as exc:
+            return self._rejected(
+                invocation.call_id,
+                invocation.tool_name,
+                code=exc.code,
+                summary=str(exc),
+            )
         if (
             request.affordance_snapshot_digest != scope.snapshot.snapshot_digest
-            or invocation.affordance_snapshot_digest
-            != scope.snapshot.snapshot_digest
+            or invocation.affordance_snapshot_digest != scope.snapshot.snapshot_digest
             or invocation.session_id != scope.snapshot.session_id
             or invocation.agent_member_id != scope.snapshot.agent_member_id
         ):
@@ -265,6 +366,22 @@ class MountedRuntimeCapabilityGateway(RuntimeCapabilityGateway):
                 code="tool_affordance_stale",
                 summary="Tool request identity drifted from the bounded turn snapshot.",
             )
+        if scope.exposure_snapshot is not None:
+            try:
+                presented = self._is_presented(scope, invocation.tool_name)
+            except KernelContractError as exc:
+                return self._rejected(
+                    invocation.call_id,
+                    invocation.tool_name,
+                    code=exc.code,
+                    summary=str(exc),
+                )
+            if not presented:
+                return self._undisclosed_rejection(
+                    invocation.call_id,
+                    code="tool_not_exposed",
+                    summary="The requested tool is not exposed in this runtime command.",
+                )
         try:
             admission = revalidate_tool_dispatch(
                 snapshot=scope.snapshot,
@@ -281,12 +398,16 @@ class MountedRuntimeCapabilityGateway(RuntimeCapabilityGateway):
             )
         runtime = dict(self.runtimes).get(invocation.tool_name)
         declaration = scope.catalog.get(invocation.tool_name)
-        if runtime is None or declaration is None or (
-            runtime.contract.contract_digest != admission.tool_contract_digest
-            or runtime.contract.contract_digest
-            != declaration.contract.contract_digest
-            or _runtime_owner(runtime) != declaration.owner_component_id
-            or runtime.runtime_id != declaration.runtime_id
+        if (
+            runtime is None
+            or declaration is None
+            or (
+                runtime.contract.contract_digest != admission.tool_contract_digest
+                or runtime.contract.contract_digest
+                != declaration.contract.contract_digest
+                or _runtime_owner(runtime) != declaration.owner_component_id
+                or runtime.runtime_id != declaration.runtime_id
+            )
         ):
             return self._rejected(
                 invocation.call_id,
@@ -316,6 +437,8 @@ class MountedRuntimeCapabilityGateway(RuntimeCapabilityGateway):
                 code="tool_affordance_stale",
                 summary="The admitted route proof changed before Plugin dispatch.",
             )
+        if invocation.tool_name == "capabilities.inspect":
+            return self._inspect_capabilities(scope, invocation)
         try:
             admitted_invoke = getattr(runtime, "invoke_admitted", None)
             if callable(admitted_invoke):
@@ -375,24 +498,17 @@ class MountedRuntimeCapabilityGateway(RuntimeCapabilityGateway):
                 error_code=exc.code,
                 hint=exc.hint,
             )
-        except Exception:
-            return ToolResult(
-                call_id=invocation.call_id,
-                tool_name=invocation.tool_name,
-                ok=False,
-                status="runtime_contract_failure",
-                summary="The mounted tool runtime failed without a terminal receipt.",
-                payload={
-                    "effect_certainty": "dispatch_in_doubt",
-                    "mutation_applied": None,
-                    "fallback_performed": False,
-                    "retry_performed": False,
-                    "reconcile_required": True,
-                },
-                error_code="extension_tool_runtime_failed",
-                hint="Observe or reconcile the same operation identity; do not retry blindly.",
+        except Exception as exc:
+            return self._unclassified_runtime_failure(
+                scope=scope,
+                invocation=invocation,
+                runtime=runtime,
+                error=exc,
             )
-        if result.call_id != invocation.call_id or result.tool_name != invocation.tool_name:
+        if (
+            result.call_id != invocation.call_id
+            or result.tool_name != invocation.tool_name
+        ):
             return ToolResult(
                 call_id=invocation.call_id,
                 tool_name=invocation.tool_name,
@@ -411,6 +527,201 @@ class MountedRuntimeCapabilityGateway(RuntimeCapabilityGateway):
             )
         return result
 
+    def _validate_current_turn_scope(self, scope: RuntimeToolScope) -> None:
+        if scope.current_context.authority_lease.state.value != "active":
+            raise KernelContractError(
+                "tool_affordance_stale",
+                "Current agent authority lease is not active",
+                details={"command_id": scope.command_id, "fallback_performed": False},
+            )
+        exposure = scope.exposure_snapshot
+        if exposure is None:
+            return
+        authority = scope.current_workflow_authority
+        if authority is None:
+            raise KernelContractError(
+                "workflow_authority_scope_missing",
+                "Runtime command has no current workflow authority binding",
+                details={"command_id": scope.command_id, "fallback_performed": False},
+            )
+        mismatches = {
+            "authority_status": authority.status is not WorkflowAuthorityStatus.ACTIVE,
+            "authority_id": authority.authority_id != exposure.workflow_authority_id,
+            "authority_epoch": authority.epoch != exposure.workflow_authority_epoch,
+            "authority_digest": (
+                authority.binding_digest != exposure.workflow_authority_digest
+            ),
+            "session": authority.session_id != exposure.session_id,
+            "actor": authority.authorized_actor_id != exposure.agent_member_id,
+            "capability_binding": (
+                scope.current_context.capability_binding.binding_digest
+                != exposure.capability_binding_digest
+            ),
+        }
+        drifted = sorted(name for name, mismatch in mismatches.items() if mismatch)
+        if drifted:
+            raise KernelContractError(
+                "runtime_turn_fence_stale",
+                "Current workflow or capability fences differ from the runtime command",
+                details={
+                    "command_id": scope.command_id,
+                    "drifted_fields": drifted,
+                    "fallback_performed": False,
+                },
+            )
+
+    def _is_presented(self, scope: RuntimeToolScope, tool_name: str) -> bool:
+        exposure = scope.exposure_snapshot
+        assert exposure is not None
+        decision = next(
+            (item for item in exposure.decisions if item.tool_name == tool_name),
+            None,
+        )
+        if decision is None or decision.exposure is ToolExposure.HIDDEN:
+            return False
+        if decision.exposure is ToolExposure.DIRECT:
+            return True
+        expansion = (
+            None if self.expansions is None else self.expansions.get(scope.command_id)
+        )
+        if expansion is None:
+            return False
+        # The shared model-visible resolver validates the expansion's exact
+        # command/exposure/workflow closure before we rely on its names.
+        model_visible_exposed_tool_specs(
+            catalog=scope.catalog,
+            affordance_snapshot=scope.snapshot,
+            exposure_snapshot=exposure,
+            expansion=expansion,
+        )
+        return tool_name in expansion.expanded_tool_names
+
+    def _inspect_capabilities(
+        self,
+        scope: RuntimeToolScope,
+        invocation: ToolInvocation,
+    ) -> ToolResult:
+        exposure = scope.exposure_snapshot
+        if exposure is None or self.expansions is None or self.clock is None:
+            return self._rejected(
+                invocation.call_id,
+                invocation.tool_name,
+                code="tool_exposure_expansion_unavailable",
+                summary="The exact command-scoped exposure state is unavailable.",
+            )
+        arguments = dict(invocation.arguments)
+        unexpected = set(arguments).difference(
+            {"query", "expand_tool_names", "max_items"}
+        )
+        if unexpected:
+            return self._rejected(
+                invocation.call_id,
+                invocation.tool_name,
+                code="invalid_tool_arguments",
+                summary=f"capabilities.inspect arguments are closed: {sorted(unexpected)}",
+            )
+        query = arguments.get("query")
+        raw_names = arguments.get("expand_tool_names", ())
+        max_items = arguments.get("max_items", 50)
+        if query is not None and not isinstance(query, str):
+            return self._rejected(
+                invocation.call_id,
+                invocation.tool_name,
+                code="invalid_tool_arguments",
+                summary="capabilities.inspect query must be a string or null.",
+            )
+        if not isinstance(raw_names, tuple | list) or any(
+            not isinstance(item, str) for item in raw_names
+        ):
+            return self._rejected(
+                invocation.call_id,
+                invocation.tool_name,
+                code="invalid_tool_arguments",
+                summary="expand_tool_names must be an array of exact tool names.",
+            )
+        if (
+            not isinstance(max_items, int)
+            or isinstance(max_items, bool)
+            or not 1 <= max_items <= 200
+        ):
+            return self._rejected(
+                invocation.call_id,
+                invocation.tool_name,
+                code="invalid_tool_arguments",
+                summary="max_items must be an integer between 1 and 200.",
+            )
+        current = self.expansions.get(scope.command_id)
+        try:
+            inspection = inspect_and_expand_tool_exposure(
+                command_id=scope.command_id,
+                catalog=scope.catalog,
+                affordance_snapshot=scope.snapshot,
+                exposure_snapshot=exposure,
+                current_expansion=current,
+                requested_tool_names=tuple(raw_names),
+                query=query,
+                max_items=max_items,
+                created_at=self.clock.now_iso(),
+            )
+            next_expansion = inspection.expansion
+            changed = next_expansion is not None and (
+                current is None
+                or next_expansion.expansion_digest != current.expansion_digest
+            )
+            if changed:
+                assert next_expansion is not None
+                self.expansions.put(
+                    next_expansion,
+                    expected_revision=(
+                        0 if current is None else current.expansion_revision
+                    ),
+                )
+        except (KernelContractError, ValueError) as exc:
+            code = (
+                exc.code
+                if isinstance(exc, KernelContractError)
+                else "invalid_tool_arguments"
+            )
+            return self._rejected(
+                invocation.call_id,
+                invocation.tool_name,
+                code=code,
+                summary=str(exc),
+            )
+        except Exception:
+            return ToolResult(
+                call_id=invocation.call_id,
+                tool_name=invocation.tool_name,
+                ok=False,
+                status="runtime_contract_failure",
+                summary="Command-scoped tool expansion could not be settled.",
+                payload={
+                    "effect_certainty": "dispatch_in_doubt",
+                    "mutation_applied": None,
+                    "fallback_performed": False,
+                    "retry_performed": False,
+                    "reconcile_required": True,
+                },
+                error_code="tool_expansion_settlement_failed",
+                hint="Observe the exact command expansion before retrying.",
+            )
+        return ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=True,
+            status="capabilities_inspected",
+            summary="Inspected bounded non-Hidden capabilities for this command.",
+            payload={
+                "inspection": inspection.to_dict(),
+                "command_scope_expansion_applied": changed,
+                "mutation_applied": changed,
+                "task_transition_performed": False,
+                "authority_widened": False,
+                "route_changed": False,
+                "fallback_performed": False,
+            },
+        )
+
     def _scope(self, command_id: str) -> RuntimeToolScope:
         scope = self.scopes.get(command_id)
         if scope is None or scope.command_id != command_id:
@@ -420,6 +731,107 @@ class MountedRuntimeCapabilityGateway(RuntimeCapabilityGateway):
                 details={"command_id": command_id},
             )
         return scope
+
+    def _unclassified_runtime_failure(
+        self,
+        *,
+        scope: RuntimeToolScope,
+        invocation: ToolInvocation,
+        runtime: MountedToolRuntime,
+        error: Exception,
+    ) -> ToolResult:
+        occurrence_digest = canonical_sha256_digest(
+            {
+                "command_id": scope.command_id,
+                "call_id": invocation.call_id,
+                "tool_name": invocation.tool_name,
+                "runtime_id": runtime.runtime_id,
+                "contract_digest": runtime.contract.contract_digest,
+                "error_code": "extension_tool_runtime_failed",
+            }
+        ).removeprefix("sha256:")[:24]
+        component = _runtime_owner(runtime)
+        operation = (
+            "invoke_admitted"
+            if callable(getattr(runtime, "invoke_admitted", None))
+            else "invoke"
+        )
+        identities = {
+            "command_id": scope.command_id,
+            "component_id": component,
+        }
+        if invocation.route_id is not None:
+            identities["route_id"] = invocation.route_id
+        records = observe_structured_failure(
+            error,
+            context=StructuredFailureContext(
+                failure_id=f"failure_{occurrence_digest}",
+                diagnostic_id=f"diagnostic_{occurrence_digest}",
+                session_id=invocation.session_id,
+                component=component,
+                operation=operation,
+                phase="tool_dispatch",
+                source_kind="mounted_tool_runtime",
+                source_ref=invocation.call_id,
+                source_version=runtime.contract.contract_digest,
+                created_at=(
+                    self.clock.now_iso()
+                    if self.clock is not None
+                    else datetime.now(UTC).isoformat()
+                ),
+                task_id=invocation.task_id,
+                lane_id=invocation.lane_id,
+                agent_id=scope.current_context.authority_lease.agent_id,
+                correlation_id=scope.command_id,
+            ),
+            failure_class=FailureClass.TOOL,
+            recoverability=FailureRecoverability.RECONCILIATION_REQUIRED,
+            effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
+            retry_eligibility=RetryEligibility.RECONCILE_REQUIRED,
+            actor_kind=FailureActorKind.HARNESS,
+            error_code="extension_tool_runtime_failed",
+            safe_summary=(
+                "The mounted tool runtime failed after dispatch began without "
+                "a terminal receipt."
+            ),
+            safe_hint=(
+                "Observe or reconcile the same operation identity; do not retry blindly."
+            ),
+            next_action="reconcile_exact_tool_dispatch",
+            mutation_applied=None,
+            fallback_performed=False,
+            reconcile_required=True,
+            identities=identities,
+            likely_causes=(
+                "The mounted runtime raised before producing a typed terminal receipt.",
+            ),
+            private_context={
+                "command_id": scope.command_id,
+                "invocation": invocation.to_dict(),
+                "owner_component_id": component,
+                "runtime_id": runtime.runtime_id,
+            },
+        )
+        return ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=False,
+            status="runtime_contract_failure",
+            summary=records.public.safe_summary,
+            payload={
+                "effect_certainty": "dispatch_in_doubt",
+                "mutation_applied": None,
+                "fallback_performed": False,
+                "retry_performed": False,
+                "reconcile_required": True,
+                "diagnostic_id": records.public.diagnostic_id,
+            },
+            error_code=records.public.error_code,
+            hint=records.public.safe_hint,
+            failure_observation=records.public.to_dict(),
+            terminates_turn=True,
+            private_diagnostic=records.private,
+        )
 
     @staticmethod
     def _rejected(
@@ -432,6 +844,31 @@ class MountedRuntimeCapabilityGateway(RuntimeCapabilityGateway):
         return ToolResult(
             call_id=call_id,
             tool_name=tool_name,
+            ok=False,
+            status="rejected",
+            summary=summary,
+            payload={
+                "effect_certainty": "no_effect",
+                "mutation_applied": False,
+                "fallback_performed": False,
+                "retry_performed": False,
+                "reconcile_required": False,
+            },
+            error_code=code,
+        )
+
+    @staticmethod
+    def _undisclosed_rejection(
+        call_id: str,
+        *,
+        code: str,
+        summary: str,
+    ) -> ToolResult:
+        """Reject an unexposed guess without echoing its Hidden/unknown name."""
+
+        return ToolResult(
+            call_id=call_id,
+            tool_name="unexposed.tool",
             ok=False,
             status="rejected",
             summary=summary,

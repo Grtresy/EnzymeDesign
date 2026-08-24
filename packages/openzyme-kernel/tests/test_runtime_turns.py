@@ -10,20 +10,43 @@ import pytest
 from openzyme_contracts import AgentRuntimeSignal
 from openzyme_contracts import AgentRuntimeSignalReason
 from openzyme_contracts import AgentRuntimeSignalStatus
+from openzyme_contracts import ExternalEffectCertainty
+from openzyme_contracts import FailureActorKind
+from openzyme_contracts import FailureClass
+from openzyme_contracts import FailureObservation
+from openzyme_contracts import FailureRecoverability
+from openzyme_contracts import FILE_WORKSPACE_FAILURE_FACT_PUBLIC_FIELDS
+from openzyme_contracts import FILE_WORKSPACE_FAILURE_IDENTITY_PUBLIC_FIELDS
 from openzyme_contracts import LayeredReleaseIdentity
 from openzyme_contracts import KernelRecordSnapshot
+from openzyme_contracts import RuntimeContextSection
+from openzyme_contracts import RuntimeContextSectionKind
+from openzyme_contracts import RuntimeSignalAuthorityLink
+from openzyme_contracts import RuntimeTurnContext
+from openzyme_contracts import RetryEligibility
 from openzyme_contracts import SessionCapabilityBindingRevision
 from openzyme_contracts import SessionRuntimeLease
 from openzyme_contracts import SessionRuntimeLeaseMode
+from openzyme_contracts import StructuredFailureContext
 from openzyme_contracts import ToolAffordanceSnapshot
+from openzyme_contracts import ToolExposure
+from openzyme_contracts import ToolExposureDecision
+from openzyme_contracts import ToolExposureSnapshot
 from openzyme_contracts import ToolSpec
 from openzyme_contracts import ToolResult
+from openzyme_contracts import WorkflowAuthorityBinding
+from openzyme_contracts import WorkflowAuthorityDerivationKind
+from openzyme_contracts import WorkflowAuthoritySignalSourceKind
+from openzyme_contracts import WorkflowAuthorityStatus
 from openzyme_contracts import canonical_sha256_digest
+from openzyme_contracts import observe_structured_failure
+from openzyme_contracts import parse_failure_observation
 from openzyme_kernel import KernelContractError
 from openzyme_kernel import ControlStoreRuntimeOutcomeRepository
 from openzyme_kernel import RuntimeOutcomeConsumeDisposition
 from openzyme_kernel import RuntimeOutcomeConsumeResult
 from openzyme_kernel import RuntimeOutcomeConsumption
+from openzyme_kernel import RuntimeContinuationDeliveryStatus
 from openzyme_kernel import RuntimeTurnAdmission
 from openzyme_kernel import RuntimeTurnBudget
 from openzyme_kernel import RuntimeTurnCoordinator
@@ -97,6 +120,101 @@ def _snapshot(binding: SessionCapabilityBindingRevision) -> ToolAffordanceSnapsh
     )
 
 
+def _workflow() -> WorkflowAuthorityBinding:
+    registry_digest = _digest("workflow-registry")
+    selection_digest = canonical_sha256_digest(
+        {
+            "schema_version": "workflow_selection_binding@1",
+            "registry_snapshot_digest": registry_digest,
+            "selected_workflow_refs": ["workflow.inspect@1"],
+        }
+    )
+    return WorkflowAuthorityBinding(
+        authority_id="workflow-authority-1",
+        session_id="session-1",
+        project_id="project-1",
+        request_lineage_id="request-lineage-1",
+        source_message_id="message-1",
+        source_principal_id="user-1",
+        authorized_actor_id="member-1",
+        selected_workflow_refs=("workflow.inspect@1",),
+        selection_digest=selection_digest,
+        registry_snapshot_digest=registry_digest,
+        derivation_kind=WorkflowAuthorityDerivationKind.ROOT_MESSAGE,
+        status=WorkflowAuthorityStatus.ACTIVE,
+        epoch=2,
+        state_version=1,
+        created_at="2026-08-19T00:00:00+00:00",
+        updated_at="2026-08-19T00:00:00+00:00",
+        task_id="task-1",
+        lane_id="lane-1",
+    )
+
+
+def _signal_link(workflow: WorkflowAuthorityBinding) -> RuntimeSignalAuthorityLink:
+    return RuntimeSignalAuthorityLink(
+        signal_id="signal-1",
+        session_id="session-1",
+        authority_id=workflow.authority_id,
+        authority_epoch=workflow.epoch,
+        authority_binding_digest=workflow.binding_digest,
+        causation_ref="message-1",
+        source_kind=WorkflowAuthoritySignalSourceKind.ROOT_MESSAGE,
+        created_at="2026-08-19T00:00:00+00:00",
+    )
+
+
+def _exposure(
+    *,
+    binding: SessionCapabilityBindingRevision,
+    snapshot: ToolAffordanceSnapshot,
+    workflow: WorkflowAuthorityBinding,
+) -> ToolExposureSnapshot:
+    return ToolExposureSnapshot(
+        exposure_snapshot_id="exposure-1",
+        session_id="session-1",
+        agent_member_id="member-1",
+        turn_id="turn-1",
+        subject_policy_digest=_digest("exposure-policy"),
+        declared_tool_catalog_digest=_digest("tools"),
+        capability_binding_digest=binding.binding_digest,
+        affordance_snapshot_id=snapshot.snapshot_id,
+        affordance_snapshot_digest=snapshot.snapshot_digest,
+        workflow_authority_id=workflow.authority_id,
+        workflow_authority_epoch=workflow.epoch,
+        workflow_authority_digest=workflow.binding_digest,
+        catalog_tool_names=("world.inspect",),
+        decisions=(
+            ToolExposureDecision(
+                tool_name="world.inspect",
+                exposure=ToolExposure.DIRECT,
+                reason_code="stable_collaboration_tool",
+            ),
+        ),
+        created_at="2026-08-19T00:00:01+00:00",
+    )
+
+
+def _context(signal: AgentRuntimeSignal) -> RuntimeTurnContext:
+    return RuntimeTurnContext(
+        context_id="context-1",
+        session_id=signal.session_id,
+        agent_id=signal.agent_id,
+        agent_member_id="member-1",
+        turn_id="turn-1",
+        signal_id=signal.signal_id,
+        request_lineage_id="request-lineage-1",
+        task_id=signal.task_id,
+        lane_id=signal.lane_id,
+        sections=tuple(
+            RuntimeContextSection(kind=kind, items=())
+            for kind in RuntimeContextSectionKind
+        ),
+        max_bytes=131_072,
+        created_at="2026-08-19T00:00:01+00:00",
+    )
+
+
 def _signal() -> AgentRuntimeSignal:
     return AgentRuntimeSignal(
         signal_id="signal-1",
@@ -153,7 +271,9 @@ class FakeRuntimeAdapter(AgentRuntimeAdapter):
     adapter_id = "test.runtime.fake"
     adapter_contract_digest = _digest("runtime-adapter")
 
-    def __init__(self, disposition: RuntimeTurnDisposition = RuntimeTurnDisposition.IDLE):
+    def __init__(
+        self, disposition: RuntimeTurnDisposition = RuntimeTurnDisposition.IDLE
+    ):
         self.disposition = disposition
         self.calls = 0
 
@@ -214,12 +334,15 @@ def _admission(
     snapshot: ToolAffordanceSnapshot | None = None,
 ) -> RuntimeTurnAdmission:
     binding = _binding()
+    signal_value = signal or _signal()
+    snapshot_value = snapshot or _snapshot(binding)
+    workflow = _workflow()
     return RuntimeTurnAdmission(
         command_id="command-1",
         turn_id="turn-1",
         agent_member_id="member-1",
         signal_claim_token="signal-claim-1",
-        signal=signal or _signal(),
+        signal=signal_value,
         session_lease=_lease(),
         runtime_lease_generation=5,
         process_epoch=3,
@@ -227,7 +350,15 @@ def _admission(
         distribution_manifest_digest=_digest("distribution"),
         release_identity=_release(),
         capability_binding=binding,
-        affordance_snapshot=snapshot or _snapshot(binding),
+        affordance_snapshot=snapshot_value,
+        workflow_authority=workflow,
+        signal_authority_link=_signal_link(workflow),
+        tool_exposure_snapshot=_exposure(
+            binding=binding,
+            snapshot=snapshot_value,
+            workflow=workflow,
+        ),
+        context=_context(signal_value),
         runtime_adapter_id=adapter.adapter_id,
         runtime_adapter_contract_digest=adapter.adapter_contract_digest,
         budget=RuntimeTurnBudget(
@@ -258,6 +389,36 @@ def _outcome(
         if disposition is RuntimeTurnDisposition.WAITING_CONTINUATION
         else None
     )
+    failure = None
+    if disposition is RuntimeTurnDisposition.FAILED:
+        failure = FailureObservation(
+            failure_id=f"failure-{outcome_id}",
+            session_id=command.session_id,
+            source_kind="agent_runtime_adapter",
+            source_ref=command.command_id,
+            source_version=command.command_digest,
+            phase="provider_invoke",
+            failure_class=FailureClass.PROVIDER,
+            recoverability=FailureRecoverability.TERMINAL,
+            effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+            retry_eligibility=RetryEligibility.TERMINAL,
+            actor_kind=FailureActorKind.SYSTEM,
+            error_code="provider_failed",
+            safe_summary="The selected provider failed.",
+            facts={"fallback_performed": False},
+            likely_causes=("The selected provider is unavailable.",),
+            evidence_refs=(),
+            created_at="2026-08-19T00:00:04+00:00",
+            task_id=command.task_id,
+            lane_id=command.lane_id,
+            agent_id=command.agent_id,
+            component="test_runtime_adapter",
+            operation="run_turn",
+            mutation_applied=False,
+            fallback_performed=False,
+            diagnostic_id=f"diagnostic-{outcome_id}",
+            next_action="inspect_diagnostic",
+        )
     return RuntimeTurnOutcome(
         outcome_id=outcome_id,
         command_id=command.command_id,
@@ -271,8 +432,20 @@ def _outcome(
         runtime_lease_generation=command.runtime_lease_generation,
         runtime_fence=command.runtime_fence,
         process_epoch=command.process_epoch,
+        workflow_authority_id=command.workflow_authority_id,
+        workflow_authority_epoch=command.workflow_authority_epoch,
+        workflow_authority_digest=command.workflow_authority_digest,
+        tool_exposure_snapshot_id=command.tool_exposure_snapshot_id,
+        tool_exposure_snapshot_digest=command.tool_exposure_snapshot_digest,
         disposition=disposition,
         summary="Bounded turn completed without a Task transition.",
+        messages=(
+            RuntimeMessage(
+                message_id=f"assistant-message-{outcome_id}",
+                role=RuntimeMessageRole.ASSISTANT,
+                content="Canonical facts inspected; no Task transition inferred.",
+            ),
+        ),
         usage=RuntimeUsage(
             input_units=100,
             output_units=20,
@@ -280,6 +453,49 @@ def _outcome(
             provider_reported=False,
         ),
         continuation_id=continuation_id,
+        failure=failure,
+        task_id=command.task_id,
+        lane_id=command.lane_id,
+    )
+
+
+def _failed_outcome_with_private_diagnostic(
+    command: RuntimeTurnCommand,
+) -> RuntimeTurnOutcome:
+    records = observe_structured_failure(
+        RuntimeError("operator-only-settlement-token=top-secret"),
+        context=StructuredFailureContext(
+            failure_id="failure-outcome-1",
+            diagnostic_id="diagnostic-outcome-1",
+            session_id=command.session_id,
+            component="openzyme.runtime.llm",
+            operation="run_turn",
+            phase="provider_invoke",
+            source_kind="agent_runtime_adapter",
+            source_ref=command.command_id,
+            source_version=command.command_digest,
+            created_at="2026-08-19T00:00:04+00:00",
+            task_id=command.task_id,
+            lane_id=command.lane_id,
+            agent_id=command.agent_id,
+            correlation_id="correlation-1",
+        ),
+        failure_class=FailureClass.PROVIDER,
+        recoverability=FailureRecoverability.TERMINAL,
+        effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+        retry_eligibility=RetryEligibility.TERMINAL,
+        actor_kind=FailureActorKind.SYSTEM,
+        error_code="provider_failed",
+        safe_summary="The selected provider failed.",
+        safe_hint="Inspect the private diagnostic.",
+        next_action="inspect_diagnostic",
+        mutation_applied=False,
+        private_context={"credential": "operator-only-settlement-token=top-secret"},
+    )
+    return replace(
+        _outcome(command, disposition=RuntimeTurnDisposition.FAILED),
+        failure=records.public,
+        private_diagnostic=records.private,
     )
 
 
@@ -421,10 +637,30 @@ def test_continuation_and_runtime_settlement_are_separate_outbox_intents() -> No
     assert record.continuation_intent.declared_tool_catalog_digest == _digest("tools")
     assert record.continuation_intent.capability_binding_id == "binding-1"
     assert record.continuation_intent.capability_binding_revision == 4
-    assert record.continuation_intent.capability_binding_digest == _binding().binding_digest
+    assert (
+        record.continuation_intent.capability_binding_digest
+        == _binding().binding_digest
+    )
     assert record.continuation_intent.affordance_snapshot_id == "snapshot-1"
     assert record.continuation_intent.affordance_snapshot_digest == (
         _snapshot(_binding()).snapshot_digest
+    )
+    assert record.continuation_intent.source_signal_id == "signal-1"
+    assert (
+        record.continuation_intent.source_signal_authority_link_digest
+        == _signal_link(_workflow()).link_digest
+    )
+    assert record.continuation_intent.source_workflow_authority_id == (
+        _workflow().authority_id
+    )
+    assert record.continuation_intent.source_workflow_authority_epoch == (
+        _workflow().epoch
+    )
+    assert record.continuation_intent.source_workflow_authority_binding_digest == (
+        _workflow().binding_digest
+    )
+    assert record.continuation_intent.delivery_status is (
+        RuntimeContinuationDeliveryStatus.PENDING
     )
     assert record.settlement_intent.disposition is (
         RuntimeTurnDisposition.WAITING_CONTINUATION
@@ -446,7 +682,24 @@ def test_continuation_resume_rejects_contract_drift_and_blocks_stale_dispatch() 
     )
     intent = repository.by_command["command-1"].continuation_intent
     assert intent is not None
-    command = replace(command, continuation_id=intent.continuation_id)
+    delivery_signal_id = "continuation-delivery-signal-1"
+    delivery_link_digest = _digest("continuation-delivery-link-1")
+    intent = replace(
+        intent,
+        delivery_status=RuntimeContinuationDeliveryStatus.DELIVERED,
+        delivery_attempt=1,
+        delivery_signal_id=delivery_signal_id,
+        delivery_signal_authority_link_digest=delivery_link_digest,
+        delivery_identity_digest=_digest("continuation-delivery-identity-1"),
+        delivered_at="2026-08-19T00:00:05+00:00",
+    )
+    command = replace(
+        command,
+        continuation_id=intent.continuation_id,
+        signal_id=delivery_signal_id,
+        signal_authority_link_digest=delivery_link_digest,
+        context=replace(command.context, signal_id=delivery_signal_id),
+    )
 
     exact = validate_runtime_continuation_resume(intent, command)
     assert exact.conversation_resume_allowed is True
@@ -479,6 +732,8 @@ def _control_store_for_command(
     command: RuntimeTurnCommand,
     *,
     member_epoch: int | None = None,
+    include_exposure: bool = True,
+    extra_records: tuple[KernelRecordSnapshot, ...] = (),
 ) -> InMemoryControlStore:
     signal_payload = _signal().to_dict()
     signal_payload.update(
@@ -520,11 +775,117 @@ def _control_store_for_command(
                     "process_epoch": member_epoch or command.process_epoch,
                 },
             ),
+            KernelRecordSnapshot.create(
+                entity_type="workflow_authority_binding",
+                entity_id=command.workflow_authority_id,
+                state_version=1,
+                payload=_workflow().to_dict(),
+            ),
+            KernelRecordSnapshot.create(
+                entity_type="runtime_signal_authority_link",
+                entity_id=command.signal_id,
+                state_version=1,
+                payload=_signal_link(_workflow()).to_dict(),
+            ),
+            *(
+                (
+                    KernelRecordSnapshot.create(
+                        entity_type="tool_exposure_snapshot",
+                        entity_id=command.tool_exposure_snapshot_id,
+                        state_version=1,
+                        payload=_exposure(
+                            binding=_binding(),
+                            snapshot=_snapshot(_binding()),
+                            workflow=_workflow(),
+                        ).to_dict(),
+                    ),
+                )
+                if include_exposure
+                else ()
+            ),
+            *extra_records,
         )
     )
 
 
-def test_control_store_outcome_owner_registers_and_settles_without_task_mutation() -> None:
+def test_register_command_atomically_owns_new_tool_exposure_snapshot() -> None:
+    adapter = FakeRuntimeAdapter()
+    admission = _admission(adapter=adapter)
+    command = RuntimeTurnCoordinator(
+        adapter, InMemoryOutcomeRepository()
+    ).build_command(admission)
+    store = _control_store_for_command(command, include_exposure=False)
+    repository = ControlStoreRuntimeOutcomeRepository(
+        store=store,
+        reader=store,
+        clock=DeterministicClock(datetime(2026, 8, 19, 0, 0, 3, tzinfo=UTC)),
+        ids=DeterministicIdGenerator(),
+    )
+
+    assert (
+        repository.register_command(
+            command,
+            tool_exposure_snapshot=admission.tool_exposure_snapshot,
+        )
+        == command.command_digest
+    )
+
+    exposure = store.read(
+        entity_type="tool_exposure_snapshot",
+        entity_id=command.tool_exposure_snapshot_id,
+    )
+    assert exposure is not None
+    assert (
+        exposure.payload["exposure_snapshot_digest"]
+        == command.tool_exposure_snapshot_digest
+    )
+    assert (
+        store.read(
+            entity_type="runtime_turn_context",
+            entity_id=command.context.context_id,
+        )
+        is not None
+    )
+    assert (
+        store.read(
+            entity_type="runtime_turn_command",
+            entity_id=command.command_id,
+        )
+        is not None
+    )
+    assert store.commit_count == 1
+
+
+def test_register_command_rejects_missing_tool_exposure_without_partial_write() -> None:
+    adapter = FakeRuntimeAdapter()
+    command = RuntimeTurnCoordinator(
+        adapter, InMemoryOutcomeRepository()
+    ).build_command(_admission(adapter=adapter))
+    store = _control_store_for_command(command, include_exposure=False)
+    repository = ControlStoreRuntimeOutcomeRepository(
+        store=store,
+        reader=store,
+        clock=DeterministicClock(datetime(2026, 8, 19, 0, 0, 3, tzinfo=UTC)),
+        ids=DeterministicIdGenerator(),
+    )
+
+    with pytest.raises(KernelContractError) as missing:
+        repository.register_command(command)
+
+    assert missing.value.code == "runtime_command_identity_missing"
+    assert (
+        store.read(
+            entity_type="runtime_turn_command",
+            entity_id=command.command_id,
+        )
+        is None
+    )
+    assert store.commit_count == 0
+
+
+def test_control_store_outcome_owner_registers_and_settles_without_task_mutation() -> (
+    None
+):
     adapter = FakeRuntimeAdapter(RuntimeTurnDisposition.WAITING_CONTINUATION)
     command = RuntimeTurnCoordinator(
         adapter, InMemoryOutcomeRepository()
@@ -551,10 +912,310 @@ def test_control_store_outcome_owner_registers_and_settles_without_task_mutation
     assert duplicate.disposition is RuntimeOutcomeConsumeDisposition.DUPLICATE
     signal = store.read(entity_type="agent_runtime_signal", entity_id="signal-1")
     assert signal.payload["status"] == "completed"
-    assert store.read(
-        entity_type="runtime_continuation_intent", entity_id="continuation-1"
-    ) is not None
+    assert (
+        store.read(
+            entity_type="runtime_continuation_intent", entity_id="continuation-1"
+        )
+        is not None
+    )
+    assert (
+        store.read(
+            entity_type="runtime_turn_outcome",
+            entity_id="outcome-receipt-outcome-1",
+        )
+        is not None
+    )
+    assert (
+        store.read(
+            entity_type="conversation_message",
+            entity_id="assistant-message-outcome-1",
+        )
+        is not None
+    )
+    assert (
+        store.read(
+            entity_type="runtime_turn_context",
+            entity_id=command.context.context_id,
+        )
+        is not None
+    )
+    assert store.commit_count == 2
     assert store.read(entity_type="task", entity_id="task-1") is None
+
+
+def test_failed_outcome_persists_failure_receipt_and_messages_atomically() -> None:
+    adapter = FakeRuntimeAdapter(RuntimeTurnDisposition.FAILED)
+    command = RuntimeTurnCoordinator(
+        adapter, InMemoryOutcomeRepository()
+    ).build_command(_admission(adapter=adapter))
+    store = _control_store_for_command(command)
+    repository = ControlStoreRuntimeOutcomeRepository(
+        store=store,
+        reader=store,
+        clock=DeterministicClock(datetime(2026, 8, 19, 0, 0, 3, tzinfo=UTC)),
+        ids=DeterministicIdGenerator(),
+    )
+    coordinator = RuntimeTurnCoordinator(adapter, repository)
+    repository.register_command(command)
+
+    outcome = _failed_outcome_with_private_diagnostic(command)
+    accepted = coordinator.consume_outcome(
+        command,
+        outcome,
+        consumed_at="2026-08-19T00:00:04+00:00",
+    )
+
+    failure = store.read(
+        entity_type="failure_observation",
+        entity_id="failure-outcome-1",
+    )
+    private = store.read(
+        entity_type="private_diagnostic",
+        entity_id="diagnostic-outcome-1",
+    )
+    receipt = store.read(
+        entity_type="runtime_turn_outcome",
+        entity_id="outcome-receipt-outcome-1",
+    )
+    message = store.read(
+        entity_type="conversation_message",
+        entity_id="assistant-message-outcome-1",
+    )
+    signal = store.read(entity_type="agent_runtime_signal", entity_id="signal-1")
+    assert failure is not None
+    assert private is not None
+    assert receipt is not None
+    assert message is not None
+    assert signal is not None and signal.payload["status"] == "failed"
+    assert receipt.payload["outcome"]["failure"]["failure_id"] == failure.entity_id
+    assert "private_diagnostic_digest" not in receipt.payload["outcome"]["failure"]
+    assert "private_diagnostic" not in receipt.payload["outcome"]
+    assert (
+        failure.payload["private_diagnostic_digest"] == private.payload["record_digest"]
+    )
+    assert "top-secret" not in str(receipt.payload)
+    assert "top-secret" in private.payload["exception_message"]
+    assert accepted.disposition is RuntimeOutcomeConsumeDisposition.ACCEPTED
+    assert store.commit_count == 2
+    assert store.read(entity_type="task", entity_id="task-1") is None
+
+    duplicate = coordinator.consume_outcome(
+        command,
+        outcome,
+        consumed_at="2026-08-19T00:00:05+00:00",
+    )
+    assert duplicate.disposition is RuntimeOutcomeConsumeDisposition.DUPLICATE
+    assert store.commit_count == 2
+
+
+def test_output_message_collision_rejects_before_any_settlement_mutation() -> None:
+    adapter = FakeRuntimeAdapter()
+    command = RuntimeTurnCoordinator(
+        adapter, InMemoryOutcomeRepository()
+    ).build_command(_admission(adapter=adapter))
+    collision = KernelRecordSnapshot.create(
+        entity_type="conversation_message",
+        entity_id="assistant-message-outcome-1",
+        state_version=1,
+        payload={"session_id": "session-1", "content": "pre-existing"},
+    )
+    store = _control_store_for_command(command, extra_records=(collision,))
+    clock = DeterministicClock(datetime(2026, 8, 19, 0, 0, 3, tzinfo=UTC))
+    repository = ControlStoreRuntimeOutcomeRepository(
+        store=store,
+        reader=store,
+        clock=clock,
+        ids=DeterministicIdGenerator(),
+    )
+    coordinator = RuntimeTurnCoordinator(adapter, repository)
+    repository.register_command(command)
+
+    with pytest.raises(KernelContractError) as raised:
+        coordinator.consume_outcome(
+            command,
+            _outcome(command),
+            consumed_at="2026-08-19T00:00:04+00:00",
+        )
+
+    assert raised.value.code == "runtime_outcome_message_collision"
+    signal = store.read(entity_type="agent_runtime_signal", entity_id="signal-1")
+    assert signal is not None and signal.payload["status"] == "claimed"
+    assert (
+        store.read(
+            entity_type="runtime_turn_outcome",
+            entity_id="outcome-receipt-outcome-1",
+        )
+        is None
+    )
+    assert (
+        store.read(
+            entity_type="runtime_settlement_intent",
+            entity_id="settlement-outcome-1",
+        )
+        is None
+    )
+    assert (
+        store.read(
+            entity_type="runtime_outcome_consumption",
+            entity_id=command.command_id,
+        )
+        is None
+    )
+    assert (
+        store.read(
+            entity_type="conversation_message",
+            entity_id="assistant-message-outcome-1",
+        )
+        == collision
+    )
+
+    failures = tuple(
+        record
+        for record in store.records
+        if record.entity_type == "failure_observation"
+        and record.payload.get("source_kind") == "runtime_outcome_settlement"
+    )
+    assert len(failures) == 1
+    failure = failures[0]
+    assert failure.payload["error_code"] == "runtime_outcome_message_collision"
+    assert failure.payload["mutation_applied"] is False
+    assert failure.payload["fallback_performed"] is False
+    diagnostic = store.read(
+        entity_type="private_diagnostic",
+        entity_id=str(failure.payload["diagnostic_id"]),
+    )
+    assert diagnostic is not None
+    assert (
+        failure.payload["private_diagnostic_digest"]
+        == diagnostic.payload["record_digest"]
+    )
+    parsed_failure = parse_failure_observation(failure.payload)
+    assert isinstance(parsed_failure, FailureObservation)
+    public_failure = parsed_failure.to_dict()
+    assert "private_diagnostic_digest" not in public_failure
+    assert set(public_failure["facts"]) <= FILE_WORKSPACE_FAILURE_FACT_PUBLIC_FIELDS
+    assert set(public_failure["identities"]) <= (
+        FILE_WORKSPACE_FAILURE_IDENTITY_PUBLIC_FIELDS
+    )
+    assert store.commit_count == 2
+
+    # An exact retry after an advancing clock and repository restart observes the
+    # same derived diagnostic occurrence.  It re-raises the original rejection
+    # without a second diagnostic commit or a partial business settlement.
+    clock.advance(seconds=30)
+    restarted = ControlStoreRuntimeOutcomeRepository(
+        store=store,
+        reader=store,
+        clock=clock,
+        ids=DeterministicIdGenerator(),
+    )
+    with pytest.raises(KernelContractError) as duplicate:
+        RuntimeTurnCoordinator(adapter, restarted).consume_outcome(
+            command,
+            _outcome(command),
+            consumed_at="2026-08-19T00:00:04+00:00",
+        )
+    assert duplicate.value.code == "runtime_outcome_message_collision"
+    assert store.commit_count == 2
+    assert (
+        store.read(
+            entity_type="failure_observation",
+            entity_id=failure.entity_id,
+        )
+        == failure
+    )
+    assert (
+        store.read(
+            entity_type="private_diagnostic",
+            entity_id=diagnostic.entity_id,
+        )
+        == diagnostic
+    )
+
+
+def test_stale_workflow_epoch_records_durable_pair_without_business_settlement() -> (
+    None
+):
+    adapter = FakeRuntimeAdapter()
+    command = RuntimeTurnCoordinator(
+        adapter, InMemoryOutcomeRepository()
+    ).build_command(_admission(adapter=adapter))
+    store = _control_store_for_command(command)
+    repository = ControlStoreRuntimeOutcomeRepository(
+        store=store,
+        reader=store,
+        clock=DeterministicClock(datetime(2026, 8, 19, 0, 0, 3, tzinfo=UTC)),
+        ids=DeterministicIdGenerator(),
+    )
+    repository.register_command(command)
+    current_workflow = store.read(
+        entity_type="workflow_authority_binding",
+        entity_id=command.workflow_authority_id,
+    )
+    assert current_workflow is not None
+    store._records[
+        (  # noqa: SLF001
+            "workflow_authority_binding",
+            command.workflow_authority_id,
+        )
+    ] = KernelRecordSnapshot.create(
+        entity_type="workflow_authority_binding",
+        entity_id=command.workflow_authority_id,
+        state_version=current_workflow.state_version + 1,
+        payload={
+            **current_workflow.payload,
+            "epoch": command.workflow_authority_epoch + 1,
+        },
+    )
+
+    with pytest.raises(KernelContractError) as stale:
+        RuntimeTurnCoordinator(adapter, repository).consume_outcome(
+            command,
+            _outcome(command),
+            consumed_at="2026-08-19T00:00:04+00:00",
+        )
+
+    assert stale.value.code == "runtime_settlement_fence_stale"
+    assert store.commit_count == 2
+    assert (
+        store.read(
+            entity_type="runtime_outcome_consumption",
+            entity_id=command.command_id,
+        )
+        is None
+    )
+    assert (
+        store.read(
+            entity_type="runtime_turn_outcome",
+            entity_id="outcome-receipt-outcome-1",
+        )
+        is None
+    )
+    assert (
+        store.read(
+            entity_type="conversation_message",
+            entity_id="assistant-message-outcome-1",
+        )
+        is None
+    )
+    signal = store.read(entity_type="agent_runtime_signal", entity_id=command.signal_id)
+    assert signal is not None and signal.payload["status"] == "claimed"
+    failures = tuple(
+        record
+        for record in store.records
+        if record.entity_type == "failure_observation"
+        and record.payload.get("error_code") == "runtime_settlement_fence_stale"
+    )
+    assert len(failures) == 1
+    private = store.read(
+        entity_type="private_diagnostic",
+        entity_id=str(failures[0].payload["diagnostic_id"]),
+    )
+    assert private is not None
+    assert (
+        failures[0].payload["private_diagnostic_digest"]
+        == (private.payload["record_digest"])
+    )
 
 
 def test_control_store_runtime_command_rejects_late_process_epoch() -> None:
@@ -562,9 +1223,7 @@ def test_control_store_runtime_command_rejects_late_process_epoch() -> None:
     command = RuntimeTurnCoordinator(
         adapter, InMemoryOutcomeRepository()
     ).build_command(_admission(adapter=adapter))
-    store = _control_store_for_command(
-        command, member_epoch=command.process_epoch + 1
-    )
+    store = _control_store_for_command(command, member_epoch=command.process_epoch + 1)
     repository = ControlStoreRuntimeOutcomeRepository(
         store=store,
         reader=store,

@@ -48,10 +48,12 @@ from .entity_codecs import AgentAuthorityLeaseSQLiteKernelEntityCodec
 from .entity_codecs import AgentMemberSQLiteKernelEntityCodec
 from .entity_codecs import AgentRuntimeSignalSQLiteKernelEntityCodec
 from .entity_codecs import ApprovalRequestSQLiteKernelEntityCodec
+from .entity_codecs import CommandToolExpansionSQLiteKernelEntityCodec
 from .entity_codecs import ConversationMessageSQLiteKernelEntityCodec
 from .entity_codecs import ContinuationSQLiteKernelEntityCodec
 from .entity_codecs import ControlledOperationSQLiteKernelEntityCodec
 from .entity_codecs import FailureObservationSQLiteKernelEntityCodec
+from .entity_codecs import PrivateDiagnosticSQLiteKernelEntityCodec
 from .entity_codecs import InboxMessageSQLiteKernelEntityCodec
 from .entity_codecs import KernelCommandReceiptSQLiteKernelEntityCodec
 from .entity_codecs import LaneSQLiteKernelEntityCodec
@@ -62,9 +64,13 @@ from .entity_codecs import ProjectRepositoryBindingSQLiteKernelEntityCodec
 from .entity_codecs import ProtocolRecordSQLiteKernelEntityCodec
 from .entity_codecs import RevisionPathVerificationSQLiteKernelEntityCodec
 from .entity_codecs import RuntimeContinuationIntentSQLiteKernelEntityCodec
+from .entity_codecs import RuntimeCommandSQLiteKernelEntityCodec
 from .entity_codecs import RuntimeOutcomeConsumptionSQLiteKernelEntityCodec
+from .entity_codecs import RuntimeSignalAuthorityLinkSQLiteKernelEntityCodec
 from .entity_codecs import RuntimeSettlementIntentSQLiteKernelEntityCodec
 from .entity_codecs import RuntimeTurnCommandSQLiteKernelEntityCodec
+from .entity_codecs import RuntimeTurnContextSQLiteKernelEntityCodec
+from .entity_codecs import RuntimeTurnOutcomeSQLiteKernelEntityCodec
 from .entity_codecs import SessionCapabilityBindingSQLiteKernelEntityCodec
 from .entity_codecs import SessionCompositionPinSQLiteKernelEntityCodec
 from .entity_codecs import SessionRepositoryBindingPinSQLiteKernelEntityCodec
@@ -72,10 +78,15 @@ from .entity_codecs import SessionRuntimeLeaseSQLiteKernelEntityCodec
 from .entity_codecs import SessionSQLiteKernelEntityCodec
 from .entity_codecs import TaskSQLiteKernelEntityCodec
 from .entity_codecs import TaskEvidenceSQLiteKernelEntityCodec
+from .entity_codecs import ToolExposureSnapshotSQLiteKernelEntityCodec
 from .entity_codecs import VerifiedWorkspaceCheckpointSQLiteKernelEntityCodec
 from .entity_codecs import WorkspaceGenerationSQLiteKernelEntityCodec
+from .entity_codecs import WorkspaceProvisioningIntentSQLiteKernelEntityCodec
+from .entity_codecs import WorkspaceProvisioningReconciliationSQLiteKernelEntityCodec
+from .entity_codecs import WorkspaceProvisioningReceiptSQLiteKernelEntityCodec
 from .entity_codecs import WorkspacePublicationIntentSQLiteKernelEntityCodec
 from .entity_codecs import WorkspaceRuntimeBindingSQLiteKernelEntityCodec
+from .entity_codecs import WorkflowAuthorityBindingSQLiteKernelEntityCodec
 from .entity_codecs import kernel_entity_codecs
 from .migration_catalog import ClosedSQLiteMigrationCatalog
 from .migration_catalog import SQLiteMigrationCatalogError
@@ -244,10 +255,12 @@ __all__ = [
     "AgentMemberSQLiteKernelEntityCodec",
     "AgentRuntimeSignalSQLiteKernelEntityCodec",
     "ApprovalRequestSQLiteKernelEntityCodec",
+    "CommandToolExpansionSQLiteKernelEntityCodec",
     "ConversationMessageSQLiteKernelEntityCodec",
     "ContinuationSQLiteKernelEntityCodec",
     "ControlledOperationSQLiteKernelEntityCodec",
     "FailureObservationSQLiteKernelEntityCodec",
+    "PrivateDiagnosticSQLiteKernelEntityCodec",
     "InboxMessageSQLiteKernelEntityCodec",
     "KernelCommandReceiptSQLiteKernelEntityCodec",
     "LaneSQLiteKernelEntityCodec",
@@ -258,9 +271,13 @@ __all__ = [
     "ProtocolRecordSQLiteKernelEntityCodec",
     "RevisionPathVerificationSQLiteKernelEntityCodec",
     "RuntimeContinuationIntentSQLiteKernelEntityCodec",
+    "RuntimeCommandSQLiteKernelEntityCodec",
     "RuntimeOutcomeConsumptionSQLiteKernelEntityCodec",
+    "RuntimeSignalAuthorityLinkSQLiteKernelEntityCodec",
     "RuntimeSettlementIntentSQLiteKernelEntityCodec",
     "RuntimeTurnCommandSQLiteKernelEntityCodec",
+    "RuntimeTurnContextSQLiteKernelEntityCodec",
+    "RuntimeTurnOutcomeSQLiteKernelEntityCodec",
     "SessionCapabilityBindingSQLiteKernelEntityCodec",
     "SessionCompositionPinSQLiteKernelEntityCodec",
     "SessionRepositoryBindingPinSQLiteKernelEntityCodec",
@@ -268,10 +285,15 @@ __all__ = [
     "SessionSQLiteKernelEntityCodec",
     "TaskSQLiteKernelEntityCodec",
     "TaskEvidenceSQLiteKernelEntityCodec",
+    "ToolExposureSnapshotSQLiteKernelEntityCodec",
     "VerifiedWorkspaceCheckpointSQLiteKernelEntityCodec",
     "WorkspaceGenerationSQLiteKernelEntityCodec",
+    "WorkspaceProvisioningIntentSQLiteKernelEntityCodec",
+    "WorkspaceProvisioningReconciliationSQLiteKernelEntityCodec",
+    "WorkspaceProvisioningReceiptSQLiteKernelEntityCodec",
     "WorkspacePublicationIntentSQLiteKernelEntityCodec",
     "WorkspaceRuntimeBindingSQLiteKernelEntityCodec",
+    "WorkflowAuthorityBindingSQLiteKernelEntityCodec",
     "kernel_entity_codecs",
     "SQLiteSchemaMismatchError",
     "SQLiteStartupSchemaProof",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace
 from datetime import UTC
 from datetime import datetime
 import hashlib
@@ -13,9 +14,15 @@ from openzyme_contracts import FailureActorKind
 from openzyme_contracts import FailureClass
 from openzyme_contracts import FailureObservation
 from openzyme_contracts import FailureRecoverability
+from openzyme_contracts import PrivateDiagnosticRecord
 from openzyme_contracts import RetryEligibility
+from openzyme_contracts import StructuredFailureContext
 from openzyme_contracts import ToolInvocation
+from openzyme_contracts import ToolResult
 from openzyme_contracts import canonical_sha256_digest
+from openzyme_contracts import observe_structured_failure
+from openzyme_contracts import parse_failure_observation
+from openzyme_contracts import validate_failure_diagnostic_pair
 from openzyme_runtime_spi import RuntimeCapabilityGateway
 from openzyme_runtime_spi import RuntimeMessage
 from openzyme_runtime_spi import RuntimeMessageRole
@@ -30,6 +37,7 @@ from .provider import LLM_PROVIDER_BACKEND_CONTRACT_DIGEST
 from .provider import LlmProviderBackend
 from .provider import LlmProviderError
 from .provider import ProviderTurnRequest
+from .provider import ProviderTurnResponse
 
 
 LLM_RUNTIME_ADAPTER_ID = "openzyme.runtime.llm"
@@ -37,13 +45,16 @@ LLM_RUNTIME_ADAPTER_CONTRACT = "openzyme.agent-runtime-adapter@1"
 LLM_RUNTIME_ADAPTER_CONTRACT_DIGEST = canonical_sha256_digest(
     {
         "contract": LLM_RUNTIME_ADAPTER_CONTRACT,
-        "command": "runtime_turn_command@1",
+        "command": "runtime_turn_command@2",
         "outcome": "runtime_turn_outcome@1",
         "provider_backend_contract_digest": LLM_PROVIDER_BACKEND_CONTRACT_DIGEST,
         "prompt_owner": LLM_RUNTIME_ADAPTER_ID,
         "bounded_steps": True,
         "silent_provider_switch": False,
         "task_transition_inference": False,
+        "structured_runtime_context": True,
+        "provider_step_fence_revalidation": True,
+        "provider_step_tool_relisting": True,
     }
 )
 LLM_ADAPTER_PREFLIGHT_CONTRACT = "openzyme.llm-adapter-preflight@1"
@@ -62,6 +73,15 @@ LLM_ADAPTER_PREFLIGHT_CONTRACT_DIGEST = canonical_sha256_digest(
         "network_probe_performed": False,
     }
 )
+
+
+class _AdapterGuardError(RuntimeError):
+    def __init__(self, code: str, phase: str, summary: str) -> None:
+        self.code = code
+        self.phase = phase
+        self.retryable = False
+        self.safe_summary = summary
+        super().__init__(summary)
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,11 +145,10 @@ class LlmRuntimeAdapter:
             command.runtime_adapter_contract_digest != self.adapter_contract_digest
         ):
             raise ValueError("runtime command targets another Adapter identity")
-        tools = capability_gateway.list_tools(
-            command_id=command.command_id,
-            affordance_snapshot_digest=command.affordance_snapshot_digest,
-        )
-        messages = _compose_bounded_context(command)
+        try:
+            messages = _compose_bounded_context(command)
+        except _AdapterGuardError as exc:
+            return self._failed_outcome(command, exc)
         started = self.clock()
         input_units = 0
         output_units = 0
@@ -150,18 +169,74 @@ class LlmRuntimeAdapter:
                     provider_reported=provider_reported,
                 )
             try:
+                self._revalidate_gateway(
+                    command,
+                    capability_gateway,
+                    phase="provider_tool_list",
+                )
+                tools = capability_gateway.list_tools(
+                    command_id=command.command_id,
+                    affordance_snapshot_digest=command.affordance_snapshot_digest,
+                )
+            except _AdapterGuardError as exc:
+                return self._failed_outcome(
+                    command,
+                    exc,
+                    messages=emitted_messages,
+                    tool_requests=emitted_requests,
+                    input_units=input_units,
+                    output_units=output_units,
+                    provider_reported=provider_reported,
+                )
+            except Exception as exc:
+                return self._failed_outcome(
+                    command,
+                    _guard_error(
+                        exc,
+                        phase="provider_tool_list",
+                        default_code="runtime_tool_listing_failed",
+                    ),
+                    messages=emitted_messages,
+                    tool_requests=emitted_requests,
+                    input_units=input_units,
+                    output_units=output_units,
+                    provider_reported=provider_reported,
+                )
+            try:
                 response = self._invoke_provider(
                     command=command,
+                    capability_gateway=capability_gateway,
                     messages=tuple(messages),
                     tools=tools,
                     step=step,
                 )
             except LlmProviderError as exc:
-                return self._failed_outcome(command, exc)
+                return self._failed_outcome(
+                    command,
+                    exc,
+                    messages=emitted_messages,
+                    tool_requests=emitted_requests,
+                    input_units=input_units,
+                    output_units=output_units,
+                    provider_reported=provider_reported,
+                )
+            except _AdapterGuardError as exc:
+                return self._failed_outcome(
+                    command,
+                    exc,
+                    messages=emitted_messages,
+                    tool_requests=emitted_requests,
+                    input_units=input_units,
+                    output_units=output_units,
+                    provider_reported=provider_reported,
+                )
             input_units += response.input_units
             output_units += response.output_units
             provider_reported = provider_reported and response.provider_reported_usage
-            if input_units > command.max_input_units or output_units > command.max_output_units:
+            if (
+                input_units > command.max_input_units
+                or output_units > command.max_output_units
+            ):
                 return self._outcome(
                     command,
                     disposition=RuntimeTurnDisposition.STEP_LIMIT_REACHED,
@@ -177,6 +252,7 @@ class LlmRuntimeAdapter:
                 message_id=_stable_id(command.command_id, "assistant", step),
                 role=RuntimeMessageRole.ASSISTANT,
                 content=response.content or "Model requested tool execution.",
+                correlation_id=_command_correlation_id(command),
             )
             emitted_messages.append(assistant_message)
             messages.append(_provider_message(assistant_message))
@@ -209,18 +285,66 @@ class LlmRuntimeAdapter:
                     affordance_snapshot_digest=command.affordance_snapshot_digest,
                 )
                 emitted_requests.append(request)
-                result = capability_gateway.invoke(
-                    command_id=command.command_id,
-                    request=request,
-                )
+                try:
+                    self._revalidate_gateway(
+                        command,
+                        capability_gateway,
+                        phase="tool_dispatch",
+                    )
+                    result = capability_gateway.invoke(
+                        command_id=command.command_id,
+                        request=request,
+                    )
+                    tool_failure = self._tool_failure(command, result)
+                except _AdapterGuardError as exc:
+                    return self._failed_outcome(
+                        command,
+                        exc,
+                        messages=emitted_messages,
+                        tool_requests=emitted_requests,
+                        input_units=input_units,
+                        output_units=output_units,
+                        provider_reported=provider_reported,
+                    )
+                except Exception as exc:
+                    return self._failed_outcome(
+                        command,
+                        _guard_error(
+                            exc,
+                            phase="tool_dispatch",
+                            default_code="runtime_tool_dispatch_failed",
+                        ),
+                        messages=emitted_messages,
+                        tool_requests=emitted_requests,
+                        input_units=input_units,
+                        output_units=output_units,
+                        provider_reported=provider_reported,
+                    )
                 tool_message = RuntimeMessage(
-                    message_id=_stable_id(command.command_id, "tool", call.call_id, step),
+                    message_id=_stable_id(
+                        command.command_id, "tool", call.call_id, step
+                    ),
                     role=RuntimeMessageRole.TOOL,
-                    content=json.dumps(result.to_dict(), ensure_ascii=False, sort_keys=True),
+                    content=json.dumps(
+                        result.to_dict(), ensure_ascii=False, sort_keys=True
+                    ),
+                    correlation_id=_command_correlation_id(command),
                     tool_call_id=call.call_id,
                 )
                 emitted_messages.append(tool_message)
                 messages.append(_provider_message(tool_message))
+                if tool_failure is not None:
+                    failure, private_diagnostic = tool_failure
+                    return self._structured_tool_failed_outcome(
+                        command,
+                        failure=failure,
+                        private_diagnostic=private_diagnostic,
+                        messages=emitted_messages,
+                        tool_requests=emitted_requests,
+                        input_units=input_units,
+                        output_units=output_units,
+                        provider_reported=provider_reported,
+                    )
                 if result.terminates_turn:
                     return self._outcome(
                         command,
@@ -248,6 +372,7 @@ class LlmRuntimeAdapter:
         self,
         *,
         command: RuntimeTurnCommand,
+        capability_gateway: RuntimeCapabilityGateway,
         messages: tuple[dict[str, object], ...],
         tools: tuple,
         step: int,
@@ -256,7 +381,12 @@ class LlmRuntimeAdapter:
         last_error: LlmProviderError | None = None
         for attempt in range(1, attempts + 1):
             try:
-                return self.provider.invoke(
+                self._revalidate_gateway(
+                    command,
+                    capability_gateway,
+                    phase="provider_invoke",
+                )
+                response = self.provider.invoke(
                     ProviderTurnRequest(
                         provider_id=self.configuration.provider_id,
                         model=self.configuration.model,
@@ -275,18 +405,100 @@ class LlmRuntimeAdapter:
                             "command_id": command.command_id,
                             "turn_id": command.turn_id,
                             "step": str(step),
+                            "workflow_authority_id": (command.workflow_authority_id),
+                            "workflow_authority_epoch": str(
+                                command.workflow_authority_epoch
+                            ),
+                            "tool_exposure_snapshot_id": (
+                                command.tool_exposure_snapshot_id
+                            ),
                             "provider_backend_identity_digest": (
                                 self.provider.backend_identity_digest
                             ),
                         },
                     )
                 )
+                if not isinstance(response, ProviderTurnResponse):
+                    raise TypeError(
+                        "selected provider returned a non-ProviderTurnResponse value"
+                    )
+                return response
+            except _AdapterGuardError:
+                raise
             except LlmProviderError as exc:
                 last_error = exc
                 if not exc.retryable or attempt == attempts:
                     raise
+            except Exception as exc:
+                raise _provider_error(exc) from exc
         assert last_error is not None
         raise last_error
+
+    @staticmethod
+    def _tool_failure(
+        command: RuntimeTurnCommand,
+        result: ToolResult,
+    ) -> tuple[FailureObservation, PrivateDiagnosticRecord] | None:
+        if not isinstance(result, ToolResult):
+            raise TypeError("capability gateway returned a non-ToolResult value")
+        if result.failure_observation is None:
+            if result.private_diagnostic is not None:
+                raise ValueError(
+                    "ToolResult private diagnostic lacks a public failure observation"
+                )
+            return None
+        parsed = parse_failure_observation(result.failure_observation)
+        if not isinstance(parsed, FailureObservation):
+            raise ValueError("legacy tool failure cannot enter a current runtime turn")
+        if result.private_diagnostic is None:
+            raise ValueError("structured tool failure lacks its private diagnostic")
+        if result.ok or not result.terminates_turn:
+            raise ValueError(
+                "structured tool failure must fail and terminate the bounded turn"
+            )
+        failure = replace(
+            parsed,
+            private_diagnostic_digest=result.private_diagnostic.record_digest,
+        )
+        validate_failure_diagnostic_pair(failure, result.private_diagnostic)
+        if (
+            failure.session_id != command.session_id
+            or failure.agent_id != command.agent_id
+            or failure.task_id != command.task_id
+            or failure.lane_id != command.lane_id
+        ):
+            raise ValueError("structured tool failure escaped the command identity")
+        return failure, result.private_diagnostic
+
+    @staticmethod
+    def _revalidate_gateway(
+        command: RuntimeTurnCommand,
+        capability_gateway: RuntimeCapabilityGateway,
+        *,
+        phase: str,
+    ) -> None:
+        validator = getattr(capability_gateway, "revalidate_provider_step", None)
+        if not callable(validator):
+            raise _AdapterGuardError(
+                "runtime_turn_fence_revalidator_missing",
+                phase,
+                "The capability gateway cannot revalidate the current turn fences.",
+            )
+        try:
+            validator(
+                command_id=command.command_id,
+                workflow_authority_id=command.workflow_authority_id,
+                workflow_authority_epoch=command.workflow_authority_epoch,
+                workflow_authority_digest=command.workflow_authority_digest,
+                tool_exposure_snapshot_id=command.tool_exposure_snapshot_id,
+                tool_exposure_snapshot_digest=(command.tool_exposure_snapshot_digest),
+            )
+        except Exception as exc:
+            raise _guard_error(
+                exc,
+                phase=phase,
+                default_code="runtime_turn_fence_stale",
+            ) from exc
 
     def _outcome(
         self,
@@ -313,6 +525,11 @@ class LlmRuntimeAdapter:
             runtime_lease_generation=command.runtime_lease_generation,
             runtime_fence=command.runtime_fence,
             process_epoch=command.process_epoch,
+            workflow_authority_id=command.workflow_authority_id,
+            workflow_authority_epoch=command.workflow_authority_epoch,
+            workflow_authority_digest=command.workflow_authority_digest,
+            tool_exposure_snapshot_id=command.tool_exposure_snapshot_id,
+            tool_exposure_snapshot_digest=command.tool_exposure_snapshot_digest,
             disposition=disposition,
             summary=summary,
             messages=tuple(messages),
@@ -323,72 +540,108 @@ class LlmRuntimeAdapter:
                 total_units=input_units + output_units,
                 provider_reported=provider_reported,
             ),
+            task_id=command.task_id,
+            lane_id=command.lane_id,
+            correlation_id=_command_correlation_id(command),
         )
 
     def _failed_outcome(
         self,
         command: RuntimeTurnCommand,
-        error: LlmProviderError,
+        error: LlmProviderError | _AdapterGuardError,
+        *,
+        messages: list[RuntimeMessage] | None = None,
+        tool_requests: list[RuntimeToolRequest] | None = None,
+        input_units: int = 0,
+        output_units: int = 0,
+        provider_reported: bool = False,
     ) -> RuntimeTurnOutcome:
+        emitted_messages = [] if messages is None else messages
+        emitted_requests = [] if tool_requests is None else tool_requests
+        provider_failure = isinstance(error, LlmProviderError)
         created_at = self.now().astimezone(UTC).isoformat()
         failure_id = _stable_id(command.command_id, "failure", error.code)
         diagnostic_id = _stable_id(command.command_id, "diagnostic", error.code)
-        failure = FailureObservation(
-            failure_id=failure_id,
-            session_id=command.session_id,
-            task_id=command.task_id,
-            lane_id=command.lane_id,
-            agent_id=command.agent_id,
-            source_kind="agent_runtime_adapter",
-            source_ref=command.command_id,
-            source_version=command.command_digest,
-            phase=error.phase,
-            failure_class=FailureClass.PROVIDER,
+        records = observe_structured_failure(
+            error,
+            context=StructuredFailureContext(
+                failure_id=failure_id,
+                diagnostic_id=diagnostic_id,
+                session_id=command.session_id,
+                component=self.adapter_id,
+                operation="run_turn",
+                phase=error.phase,
+                source_kind="agent_runtime_adapter",
+                source_ref=command.command_id,
+                source_version=command.command_digest,
+                created_at=created_at,
+                task_id=command.task_id,
+                lane_id=command.lane_id,
+                agent_id=command.agent_id,
+                correlation_id=_command_correlation_id(command),
+            ),
+            failure_class=(
+                FailureClass.PROVIDER if provider_failure else FailureClass.RUNTIME
+            ),
             recoverability=(
                 FailureRecoverability.RUNTIME_RETRY
-                if error.retryable
+                if provider_failure and error.retryable
                 else FailureRecoverability.TERMINAL
             ),
             effect_certainty=ExternalEffectCertainty.NO_EFFECT,
             retry_eligibility=(
                 RetryEligibility.SAME_PHASE_SAFE
-                if error.retryable
+                if provider_failure and error.retryable
                 else RetryEligibility.TERMINAL
             ),
             actor_kind=FailureActorKind.SYSTEM,
             error_code=error.code,
-            safe_summary="The explicitly selected LLM provider failed.",
-            facts={
+            safe_summary=(
+                "The explicitly selected LLM provider failed."
+                if provider_failure
+                else error.safe_summary
+            ),
+            public_facts={
                 "provider_id": self.configuration.provider_id,
                 "provider_backend_identity_digest": (
                     self.provider.backend_identity_digest
                 ),
-                "mutation_applied": False,
-                "fallback_performed": False,
+                "workflow_authority_id": command.workflow_authority_id,
+                "workflow_authority_epoch": command.workflow_authority_epoch,
+                "tool_exposure_snapshot_id": command.tool_exposure_snapshot_id,
+                "prior_output_message_count": len(emitted_messages),
+                "prior_tool_request_count": len(emitted_requests),
             },
-            likely_causes=("The selected provider or its configuration is unavailable.",),
+            likely_causes=(
+                ("The selected provider or its configuration is unavailable.",)
+                if provider_failure
+                else ("A current runtime fence or bounded context contract changed.",)
+            ),
             evidence_refs=(),
-            created_at=created_at,
             safe_hint="Inspect the private diagnostic and retry only when policy permits.",
-            component=self.adapter_id,
-            operation="run_turn",
             identities={
                 "command_id": command.command_id,
                 "provider_id": self.configuration.provider_id,
             },
             mutation_applied=False,
             fallback_performed=False,
-            cause_chain=(
-                {
-                    "type": "LlmProviderError",
-                    "code": error.code,
-                    "message_digest": canonical_sha256_digest(
-                        {"message": str(error)}
-                    ),
-                },
+            reconcile_required=False,
+            next_action=(
+                "retry_selected_provider"
+                if provider_failure and error.retryable
+                else "inspect_diagnostic"
             ),
-            diagnostic_id=diagnostic_id,
-            next_action=("retry_selected_provider" if error.retryable else "inspect_diagnostic"),
+            private_context={
+                "command_id": command.command_id,
+                "turn_id": command.turn_id,
+                "provider_id": self.configuration.provider_id,
+                "provider_backend_identity_digest": (
+                    self.provider.backend_identity_digest
+                ),
+                "configuration_digest": self.configuration.configuration_digest,
+                "prior_output_message_count": len(emitted_messages),
+                "prior_tool_request_count": len(emitted_requests),
+            },
         )
         return RuntimeTurnOutcome(
             outcome_id=_stable_id(command.command_id, "outcome", "failed"),
@@ -403,36 +656,147 @@ class LlmRuntimeAdapter:
             runtime_lease_generation=command.runtime_lease_generation,
             runtime_fence=command.runtime_fence,
             process_epoch=command.process_epoch,
+            workflow_authority_id=command.workflow_authority_id,
+            workflow_authority_epoch=command.workflow_authority_epoch,
+            workflow_authority_digest=command.workflow_authority_digest,
+            tool_exposure_snapshot_id=command.tool_exposure_snapshot_id,
+            tool_exposure_snapshot_digest=command.tool_exposure_snapshot_digest,
             disposition=RuntimeTurnDisposition.FAILED,
-            summary="The selected LLM provider failed; no fallback was performed.",
+            summary=(
+                "The selected LLM provider failed; no fallback was performed."
+                if provider_failure
+                else "The bounded runtime turn failed before unsafe continuation."
+            ),
+            messages=tuple(emitted_messages),
+            tool_requests=tuple(emitted_requests),
+            usage=RuntimeUsage(
+                input_units=input_units,
+                output_units=output_units,
+                total_units=input_units + output_units,
+                provider_reported=provider_reported,
+            ),
+            failure=records.public,
+            task_id=command.task_id,
+            lane_id=command.lane_id,
+            correlation_id=_command_correlation_id(command),
+            private_diagnostic=records.private,
+        )
+
+    def _structured_tool_failed_outcome(
+        self,
+        command: RuntimeTurnCommand,
+        *,
+        failure: FailureObservation,
+        private_diagnostic: PrivateDiagnosticRecord,
+        messages: list[RuntimeMessage],
+        tool_requests: list[RuntimeToolRequest],
+        input_units: int,
+        output_units: int,
+        provider_reported: bool,
+    ) -> RuntimeTurnOutcome:
+        return RuntimeTurnOutcome(
+            outcome_id=_stable_id(command.command_id, "outcome", "failed"),
+            command_id=command.command_id,
+            command_digest=command.command_digest,
+            turn_id=command.turn_id,
+            session_id=command.session_id,
+            agent_id=command.agent_id,
+            agent_member_id=command.agent_member_id,
+            signal_id=command.signal_id,
+            signal_attempt=command.signal_attempt,
+            runtime_lease_generation=command.runtime_lease_generation,
+            runtime_fence=command.runtime_fence,
+            process_epoch=command.process_epoch,
+            workflow_authority_id=command.workflow_authority_id,
+            workflow_authority_epoch=command.workflow_authority_epoch,
+            workflow_authority_digest=command.workflow_authority_digest,
+            tool_exposure_snapshot_id=command.tool_exposure_snapshot_id,
+            tool_exposure_snapshot_digest=command.tool_exposure_snapshot_digest,
+            disposition=RuntimeTurnDisposition.FAILED,
+            summary=(
+                "A mounted tool failed with uncertain dispatch; no fallback or "
+                "additional provider step was performed."
+            ),
+            messages=tuple(messages),
+            tool_requests=tuple(tool_requests),
+            usage=RuntimeUsage(
+                input_units=input_units,
+                output_units=output_units,
+                total_units=input_units + output_units,
+                provider_reported=provider_reported,
+            ),
             failure=failure,
+            task_id=command.task_id,
+            lane_id=command.lane_id,
+            correlation_id=_command_correlation_id(command),
+            private_diagnostic=private_diagnostic,
         )
 
 
 def _compose_bounded_context(command: RuntimeTurnCommand) -> list[dict[str, object]]:
-    messages = [_provider_message(item) for item in command.messages]
-    estimated = sum(max(1, len(str(item["content"])) // 4) for item in messages)
-    if estimated <= command.max_input_units:
-        return messages
-    system = [item for item in messages if item["role"] == "system"]
-    non_system = [item for item in messages if item["role"] != "system"]
-    kept: list[dict[str, object]] = []
-    budget = max(1, command.max_input_units - sum(len(str(item["content"])) // 4 for item in system))
+    canonical_context = {
+        "schema_version": "openzyme_runtime_prompt_context@1",
+        "precedence": (
+            "canonical_runtime_facts_override_conflicting_conversation_or_memory"
+        ),
+        "task_terminal_transition_rule": (
+            "only_explicit_task_finish_or_documented_mechanical_migration"
+        ),
+        "fallback_performed": False,
+        "runtime_turn_context": command.context.to_dict(),
+    }
+    constraint_message: dict[str, object] = {
+        "role": "system",
+        "content": json.dumps(
+            canonical_context,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    }
+    constraint_units = _estimated_message_units(constraint_message)
+    if constraint_units > command.max_input_units:
+        raise _AdapterGuardError(
+            "runtime_context_budget_exceeded",
+            "context_compose",
+            "Current canonical runtime constraints exceed the provider input budget.",
+        )
+    conversation = [_provider_message(item) for item in command.messages]
+    conversation_units = sum(_estimated_message_units(item) for item in conversation)
+    if constraint_units + conversation_units <= command.max_input_units:
+        return [constraint_message, *conversation]
+
+    marker: dict[str, object] = {
+        "role": "system",
+        "content": json.dumps(
+            {
+                "schema_version": "openzyme_transcript_compaction@1",
+                "reason": "provider_input_budget",
+                "historical_only": True,
+                "canonical_context_preserved": True,
+                "fallback_performed": False,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    }
+    fixed_units = constraint_units + _estimated_message_units(marker)
+    if fixed_units > command.max_input_units:
+        raise _AdapterGuardError(
+            "runtime_context_budget_exceeded",
+            "context_compose",
+            "Current canonical runtime constraints leave no safe compaction envelope.",
+        )
+    available = command.max_input_units - fixed_units
+    kept_reversed: list[dict[str, object]] = []
     used = 0
-    for item in reversed(non_system):
-        units = max(1, len(str(item["content"])) // 4)
-        if kept and used + units > budget:
+    for item in reversed(conversation):
+        units = _estimated_message_units(item)
+        if used + units > available:
             break
-        kept.append(item)
+        kept_reversed.append(item)
         used += units
-    return [
-        *system,
-        {
-            "role": "system",
-            "content": "Older turn context was deterministically compacted by the selected LLM Adapter.",
-        },
-        *reversed(kept),
-    ]
+    return [constraint_message, marker, *reversed(kept_reversed)]
 
 
 def _provider_message(message: RuntimeMessage) -> dict[str, object]:
@@ -443,6 +807,55 @@ def _provider_message(message: RuntimeMessage) -> dict[str, object]:
     if message.tool_call_id is not None:
         value["tool_call_id"] = message.tool_call_id
     return value
+
+
+def _estimated_message_units(message: dict[str, object]) -> int:
+    encoded = json.dumps(
+        message,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return max(1, (len(encoded) + 3) // 4)
+
+
+def _guard_error(
+    error: Exception,
+    *,
+    phase: str,
+    default_code: str,
+) -> _AdapterGuardError:
+    code = getattr(error, "code", default_code)
+    if not isinstance(code, str) or not code:
+        code = default_code
+    guarded = _AdapterGuardError(
+        code,
+        phase,
+        "A current runtime fence or capability contract rejected the turn step.",
+    )
+    guarded.__cause__ = error
+    return guarded
+
+
+def _provider_error(error: Exception) -> LlmProviderError:
+    guarded = LlmProviderError(
+        "llm_provider_call_failed",
+        "The selected LLM provider failed without a typed provider receipt.",
+        retryable=False,
+    )
+    guarded.__cause__ = error
+    return guarded
+
+
+def _command_correlation_id(command: RuntimeTurnCommand) -> str | None:
+    return next(
+        (
+            message.correlation_id
+            for message in reversed(command.messages)
+            if message.correlation_id is not None
+        ),
+        None,
+    )
 
 
 def _stable_id(*parts: object) -> str:

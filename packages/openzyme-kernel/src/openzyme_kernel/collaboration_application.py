@@ -436,6 +436,8 @@ class CollaborationKernelApplicationService:
                 "correlation_id": payload.get("correlation_id"),
                 "task_id": payload.get("task_id"),
                 "lane_id": payload.get("lane_id"),
+                "request_lineage_id": payload.get("request_lineage_id"),
+                "workflow_refs": payload.get("workflow_refs", []),
                 "skill_keys": payload.get("skill_keys", []),
                 "created_at": now,
             }

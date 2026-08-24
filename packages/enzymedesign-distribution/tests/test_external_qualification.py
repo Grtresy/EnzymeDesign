@@ -43,7 +43,7 @@ def test_catalog_closes_exact_selected_external_components_and_operations() -> N
         "enzymedesign.docking.preprocess",
     } == {unit.component_id for _, unit in catalog}
     assert external_qualification_catalog_digest() == (
-        "sha256:c08d86d3d9056a5b8fad29972aa7b055f97f01369499bd4494d15bc9a228ddae"
+        "sha256:e6a614b23af2192ef1dbb6738d3a9766524b7f58387e8b1a24e1d01f2dfa3416"
     )
 
 

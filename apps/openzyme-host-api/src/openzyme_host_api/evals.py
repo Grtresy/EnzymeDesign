@@ -72,6 +72,81 @@ class _EvalCoreProvider:
         payload["session"] = {
             "session_id": session_id,
             "project_id": "project-eval",
+            "resident_readiness": {
+                "schema_version": "resident_teammate_readiness@1",
+                "readiness": "ready",
+                "workspace_id": "workspace-eval",
+                "workspace_generation": 1,
+                "provisioning_intent_id": "provisioning-eval",
+                "provisioning_intent_digest": _digest("provisioning-eval"),
+                "failure_id": None,
+                "next_action": "message_or_drain",
+            },
+        }
+        payload["conversation"] = {
+            "messages": [],
+            "memories": [],
+            "transcript": {
+                "schema_version": "ordered_transcript@1",
+                "messages": [],
+                "transcript_digest": canonical_sha256_digest(
+                    {
+                        "schema_version": "ordered_transcript@1",
+                        "messages": [],
+                    }
+                ),
+            },
+        }
+        payload["protocol"] = {"records": [], "inbox": []}
+        payload["operations"] = {
+            "controlled": [],
+            "continuations": [],
+            "publication_intents": [],
+            "task_evidence": [],
+            "command_receipts": [],
+        }
+        payload["failures"] = {"observations": []}
+        payload["runtime"] = {
+            "commands": [],
+            "signals": [],
+            "session_leases": [],
+            "turn_commands": [],
+            "continuation_intents": [],
+            "settlement_intents": [],
+            "outcome_consumptions": [],
+            "outcomes": [],
+            "workflow_authority": {
+                "schema_version": "workflow_authority_projection@1",
+                "bindings": [],
+                "signal_links": [],
+            },
+        }
+        payload["workspace"] = {
+            "generations": [],
+            "runtime_bindings": [],
+            "repository_binding_pins": [],
+            "checkpoints": [],
+            "revision_path_verifications": [],
+            "provisioning": {
+                "schema_version": "workspace_provisioning_public@2",
+                "intent_id": "provisioning-eval",
+                "intent_digest": _digest("provisioning-eval"),
+                "intent_state_version": 2,
+                "status": "ready",
+                "workspace_id": "workspace-eval",
+                "workspace_generation": 1,
+                "runtime_binding_id": "runtime-binding-eval",
+                "failure_id": None,
+                "error_code": None,
+                "effect_certainty": "effect_known",
+                "mutation_applied": True,
+                "fallback_performed": False,
+                "retry_permitted": False,
+                "reconcile_required": False,
+                "diagnostic_id": None,
+                "next_action": "message_or_drain",
+                "reconciliation": None,
+            },
         }
         payload["capability_binding"] = {
             "binding_revision": 1,
@@ -85,6 +160,14 @@ class _EvalCoreProvider:
             "affordance_snapshot_digest": affordance_digest,
             "available_tool_names": [],
             "affordances": [],
+            "tool_exposure": {
+                "schema_version": "tool_exposure_public@1",
+                "exposure_snapshot_id": "exposure-eval",
+                "exposure_snapshot_digest": _digest("exposure-eval"),
+                "direct_tool_names": [],
+                "deferred_tool_names": [],
+                "command_expansions": [],
+            },
         }
         return KernelCoreProjectionSource(
             context=KernelQueryContext(
@@ -116,7 +199,13 @@ class _EvalCommandGateway:
             operation="session.bootstrap",
             mutation_applied=True,
             effect_certainty=ExternalEffectCertainty.NO_EFFECT,
-            result={"session_id": invocation.session_id},
+            result={
+                "session_id": invocation.session_id,
+                "workspace_readiness": "provisioning",
+                "runtime_executed": False,
+                "task_transition_performed": False,
+                "fallback_performed": False,
+            },
         )
 
     def invoke(self, invocation: HostV2MutationInvocation) -> KernelMutationReceipt:
@@ -127,7 +216,12 @@ class _EvalCommandGateway:
             operation=invocation.route_id,
             mutation_applied=True,
             effect_certainty=ExternalEffectCertainty.NO_EFFECT,
-            result={"accepted": True},
+            result={
+                "accepted": True,
+                "runtime_executed": False,
+                "task_transition_performed": False,
+                "fallback_performed": False,
+            },
         )
 
 
@@ -217,9 +311,13 @@ async def run_eval() -> dict[str, Any]:
         accepted = await client.post(
             "/v3/sessions/session-eval/messages",
             headers=mutation_headers,
-            json={"content": "bounded eval"},
+            json={"message": "bounded eval", "workflow_refs": []},
         )
         accepted.raise_for_status()
+        if bootstrap.status_code != 202 or accepted.status_code != 202:
+            raise RuntimeError("Host @2 eval expected asynchronous admission status")
+        if accepted.json().get("result", {}).get("runtime_executed") is not False:
+            raise RuntimeError("Host @2 message admission executed runtime synchronously")
 
     projection = inspected.json()
     core = projection["core"]

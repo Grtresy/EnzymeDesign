@@ -79,6 +79,9 @@ from openzyme_kernel import SelectedManifestLocators
 from openzyme_kernel import activate_distribution_composition
 from openzyme_kernel import kernel_workspace_declared_tool_entries
 from openzyme_kernel import select_distribution_manifest_locators
+from openzyme_kernel.collaboration_tools import (
+    kernel_collaboration_declared_tool_entries,
+)
 from openzyme_process_podman.manifest_locator import (
     locate_component_manifest as podman_locator,
 )
@@ -237,7 +240,15 @@ def activate_enzymedesign_composition() -> ActivatedDistributionComposition:
             manifest_digest=kernel.implementation_manifest_digest,
         ),
         located_manifests=manifests,
-        kernel_tools=kernel_workspace_declared_tool_entries(),
+        kernel_tools=tuple(
+            sorted(
+                (
+                    *kernel_collaboration_declared_tool_entries(),
+                    *kernel_workspace_declared_tool_entries(),
+                ),
+                key=lambda item: item.contract.tool_name,
+            )
+        ),
     )
 
 

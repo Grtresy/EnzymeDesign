@@ -130,6 +130,43 @@ class InMemoryControlStore:
     ) -> KernelRecordSnapshot | None:
         return self._records.get((entity_type, entity_id))
 
+    def list_for_session(
+        self,
+        *,
+        entity_type: str,
+        session_id: str,
+        max_items: int,
+    ) -> tuple[KernelRecordSnapshot, ...]:
+        if not session_id:
+            raise ValueError("session_id must be non-empty")
+        if not 1 <= max_items <= 1_000:
+            raise ValueError("max_items must be between 1 and 1000")
+        return tuple(
+            record
+            for record in self.records
+            if record.entity_type == entity_type
+            and record.payload.get("session_id") == session_id
+        )[:max_items]
+
+    def list_command_tool_expansions(
+        self,
+        *,
+        session_id: str,
+        command_id: str,
+        max_items: int,
+    ) -> tuple[KernelRecordSnapshot, ...]:
+        if not session_id or not command_id:
+            raise ValueError("session_id and command_id must be non-empty")
+        if not 1 <= max_items <= 1_000:
+            raise ValueError("max_items must be between 1 and 1000")
+        return tuple(
+            record
+            for record in self.records
+            if record.entity_type == "command_tool_expansion"
+            and record.payload.get("session_id") == session_id
+            and record.payload.get("command_id") == command_id
+        )[:max_items]
+
     def seed(self, record: KernelRecordSnapshot) -> None:
         identity = (record.entity_type, record.entity_id)
         if identity in self._records:

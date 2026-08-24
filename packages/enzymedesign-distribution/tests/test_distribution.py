@@ -1,5 +1,6 @@
 from pathlib import Path
 import asyncio
+import json
 import sqlite3
 from dataclasses import replace
 from datetime import UTC
@@ -19,6 +20,11 @@ from enzymedesign_distribution import EnzymeDesignAdapterRuntimeSet
 from enzymedesign_distribution import EnzymeDesignOperationalAdapterSelection
 from enzymedesign_distribution import EnzymeDesignPodmanOperationalRuntime
 from enzymedesign_distribution import EnzymeDesignSlurmOperationalRuntime
+from enzymedesign_distribution import EnzymeDesignWorkspaceOperationalRuntime
+from enzymedesign_distribution import EnzymeDesignWorkspaceBootstrapDefaults
+from enzymedesign_distribution import (
+    EnzymeDesignWorkspaceProvisioningWorkerAuthority,
+)
 from enzymedesign_distribution import EnzymeDesignPluginRuntimeSurfaceSet
 from enzymedesign_distribution import EnzymeDesignFormalComputeApplicationBinding
 from enzymedesign_distribution import ExactComputeRouteRouter
@@ -72,8 +78,10 @@ from openzyme_contracts import UnitOfWorkRequest
 from openzyme_contracts import VerifiedWorkspaceCheckpoint
 from openzyme_contracts import WorkspaceFormalBoundary
 from openzyme_contracts import WorkspaceGeneration
-from openzyme_contracts import WorkspaceGenerationStatus
-from openzyme_contracts import WorkspaceKind
+from openzyme_contracts import WorkspaceProvisioningIntent
+from openzyme_contracts import WorkspaceProvisioningReceipt
+from openzyme_contracts import WorkspaceProvisioningReceiptDisposition
+from openzyme_contracts import RetryEligibility
 from openzyme_contracts import WorkspacePublicationManifest
 from openzyme_contracts import WorkspacePublicationRemoteReceipt
 from openzyme_extension_spi import ControlledOperationCommandKind
@@ -96,7 +104,10 @@ from openzyme_hpc import TargetCapabilityFact
 from openzyme_hpc import TargetToolchainInventory
 from openzyme_hpc_slurm import SlurmSchedulerAdapterFactory
 from openzyme_host_api import HostSecurityPolicy
+from openzyme_host_api import HostV2CommandError
 from openzyme_host_api import HostV2SessionBootstrapInvocation
+from openzyme_host_api import HostV2WorkspaceProvisioningReconciliationInvocation
+from openzyme_host_api import HostV2WorkspaceProvisioningSuccessorInvocation
 from openzyme_kernel import KernelContractError
 from openzyme_kernel import CapabilityRegistry
 from openzyme_kernel import ExtensionBundleRegistry
@@ -118,6 +129,10 @@ from openzyme_science import SCIENCE_CLOSURE_EVIDENCE_CONTRACT_ID
 from openzyme_science import SCIENCE_FINISH_VALIDATOR_ID
 from openzyme_execution_contracts import ExecutionResultReceipt
 from openzyme_runtime_spi import RuntimeToolRequest
+from openzyme_runtime_spi import RuntimeMessage
+from openzyme_runtime_spi import RuntimeMessageRole
+from openzyme_runtime_spi import RuntimeTurnDisposition
+from openzyme_runtime_spi import RuntimeTurnOutcome
 from openzyme_store_sqlite import ENZYMEDESIGN_OWNER_SCHEMA_PROFILE
 from openzyme_store_sqlite import install_owner_partitioned_schema_for_offline_migration
 from openzyme_store_sqlite import install_store_schema_for_offline_migration
@@ -148,6 +163,14 @@ class _NoopApplication:
     def contract_digest(self, renderer_id):
         return DIGEST
 
+    def project(self, **kwargs):  # noqa: ANN003, ANN201
+        del kwargs
+        return {}, None
+
+    def list_session(self, session_id):  # noqa: ANN001, ANN201
+        del session_id
+        return ()
+
 
 class _EmptyInventoryRepository:
     def get(self, target_id, generation):  # noqa: ANN001, ANN201
@@ -163,6 +186,287 @@ class _IdleRuntimeAdapter:
     def run_turn(self, command, capability_gateway):  # noqa: ANN001, ANN201
         del command, capability_gateway
         raise AssertionError("runtime turn was not expected during composition")
+
+
+class _ResidentRuntimeAdapter:
+    """Framework-free adapter proving exact exposure and canonical transcript."""
+
+    def __init__(self, adapter_id: str, adapter_contract_digest: str) -> None:
+        self.adapter_id = adapter_id
+        self.adapter_contract_digest = adapter_contract_digest
+        self.commands = []
+        self.initial_tool_names: tuple[str, ...] = ()
+        self.expanded_tool_names: tuple[str, ...] = ()
+        self.expansion_fences_before: tuple[object, ...] = ()
+        self.expansion_fences_after: tuple[object, ...] = ()
+        self.world_result = None
+        self.inspection_result = None
+        self.deferred_result = None
+
+    def run_turn(self, command, capability_gateway):  # noqa: ANN001, ANN201
+        revalidate = getattr(capability_gateway, "revalidate_provider_step", None)
+        assert callable(revalidate)
+        revalidate(
+            command_id=command.command_id,
+            workflow_authority_id=command.workflow_authority_id,
+            workflow_authority_epoch=command.workflow_authority_epoch,
+            workflow_authority_digest=command.workflow_authority_digest,
+            tool_exposure_snapshot_id=command.tool_exposure_snapshot_id,
+            tool_exposure_snapshot_digest=command.tool_exposure_snapshot_digest,
+        )
+        self.initial_tool_names = tuple(
+            spec.tool_name
+            for spec in capability_gateway.list_tools(
+                command_id=command.command_id,
+                affordance_snapshot_digest=command.affordance_snapshot_digest,
+            )
+        )
+        assert "world.inspect" in self.initial_tool_names
+        assert "capabilities.inspect" in self.initial_tool_names
+        assert "report_draft.get" not in self.initial_tool_names
+        assert "hpc.workspace.exec" not in self.initial_tool_names
+
+        world_request = self._request(
+            command,
+            call_id=f"world-{command.command_id}",
+            tool_name="world.inspect",
+            arguments={},
+        )
+        self.world_result = capability_gateway.invoke(
+            command_id=command.command_id,
+            request=world_request,
+        )
+        assert self.world_result.ok
+
+        inspection_request = self._request(
+            command,
+            call_id=f"inspect-{command.command_id}",
+            tool_name="capabilities.inspect",
+            arguments={
+                "query": "report",
+                "expand_tool_names": ["report_draft.get"],
+                "max_items": 50,
+            },
+        )
+        self.expansion_fences_before = (
+            command.workflow_authority_id,
+            command.workflow_authority_epoch,
+            command.workflow_authority_digest,
+            command.tool_exposure_snapshot_id,
+            command.tool_exposure_snapshot_digest,
+            command.affordance_snapshot_digest,
+            inspection_request.invocation.route_id,
+        )
+        self.inspection_result = capability_gateway.invoke(
+            command_id=command.command_id,
+            request=inspection_request,
+        )
+        inspection_text = json.dumps(
+            self.inspection_result.to_dict(),
+            sort_keys=True,
+        )
+        assert "hpc.workspace.exec" not in inspection_text
+        self.expanded_tool_names = tuple(
+            spec.tool_name
+            for spec in capability_gateway.list_tools(
+                command_id=command.command_id,
+                affordance_snapshot_digest=command.affordance_snapshot_digest,
+            )
+        )
+        assert "hpc.workspace.exec" not in self.expanded_tool_names
+        revalidate(
+            command_id=command.command_id,
+            workflow_authority_id=command.workflow_authority_id,
+            workflow_authority_epoch=command.workflow_authority_epoch,
+            workflow_authority_digest=command.workflow_authority_digest,
+            tool_exposure_snapshot_id=command.tool_exposure_snapshot_id,
+            tool_exposure_snapshot_digest=command.tool_exposure_snapshot_digest,
+        )
+        deferred_request = self._request(
+            command,
+            call_id=f"deferred-{command.command_id}",
+            tool_name="report_draft.get",
+            arguments={},
+        )
+        self.expansion_fences_after = (
+            command.workflow_authority_id,
+            command.workflow_authority_epoch,
+            command.workflow_authority_digest,
+            command.tool_exposure_snapshot_id,
+            command.tool_exposure_snapshot_digest,
+            command.affordance_snapshot_digest,
+            deferred_request.invocation.route_id,
+        )
+        assert self.expansion_fences_after == self.expansion_fences_before
+        self.deferred_result = capability_gateway.invoke(
+            command_id=command.command_id,
+            request=deferred_request,
+        )
+
+        self.commands.append(command)
+        correlation_id = next(
+            (
+                message.correlation_id
+                for message in reversed(command.messages)
+                if message.correlation_id is not None
+            ),
+            None,
+        )
+        requests = (world_request, inspection_request, deferred_request)
+        results = (
+            self.world_result,
+            self.inspection_result,
+            self.deferred_result,
+        )
+        tool_messages = tuple(
+            RuntimeMessage(
+                message_id=f"tool-{request.request_id}",
+                role=RuntimeMessageRole.TOOL,
+                content=json.dumps(result.to_dict(), sort_keys=True),
+                correlation_id=correlation_id,
+                tool_call_id=request.invocation.call_id,
+            )
+            for request, result in zip(requests, results, strict=True)
+        )
+        outcome = RuntimeTurnOutcome(
+            outcome_id=f"outcome-{command.command_id}",
+            command_id=command.command_id,
+            command_digest=command.command_digest,
+            turn_id=command.turn_id,
+            session_id=command.session_id,
+            agent_id=command.agent_id,
+            agent_member_id=command.agent_member_id,
+            signal_id=command.signal_id,
+            signal_attempt=command.signal_attempt,
+            runtime_lease_generation=command.runtime_lease_generation,
+            runtime_fence=command.runtime_fence,
+            process_epoch=command.process_epoch,
+            workflow_authority_id=command.workflow_authority_id,
+            workflow_authority_epoch=command.workflow_authority_epoch,
+            workflow_authority_digest=command.workflow_authority_digest,
+            tool_exposure_snapshot_id=command.tool_exposure_snapshot_id,
+            tool_exposure_snapshot_digest=command.tool_exposure_snapshot_digest,
+            disposition=RuntimeTurnDisposition.IDLE,
+            summary="deterministic non-live EnzymeDesign resident turn",
+            messages=(
+                *tool_messages,
+                RuntimeMessage(
+                    message_id=f"assistant-{command.command_id}",
+                    role=RuntimeMessageRole.ASSISTANT,
+                    content=(
+                        "I inspected the exact resident world and stayed within "
+                        "the admitted tool boundary."
+                    ),
+                    correlation_id=correlation_id,
+                ),
+            ),
+            tool_requests=requests,
+            task_id=command.task_id,
+            lane_id=command.lane_id,
+            correlation_id=correlation_id,
+        )
+        return outcome
+
+    @staticmethod
+    def _request(command, *, call_id, tool_name, arguments):  # noqa: ANN001, ANN205
+        invocation = ToolInvocation(
+            call_id=call_id,
+            tool_name=tool_name,
+            arguments=arguments,
+            session_id=command.session_id,
+            agent_member_id=command.agent_member_id,
+            task_id=command.task_id,
+            lane_id=command.lane_id,
+            affordance_snapshot_digest=command.affordance_snapshot_digest,
+        )
+        return RuntimeToolRequest(
+            request_id=f"request-{call_id}",
+            invocation=invocation,
+            affordance_snapshot_digest=command.affordance_snapshot_digest,
+        )
+
+
+class _ReadyWorkspaceProvisioner:
+    def __init__(self, *, provider_id: str, adapter_binding_digest: str) -> None:
+        self.provider_id = provider_id
+        self.adapter_binding_digest = adapter_binding_digest
+        self.requests = []
+
+    def provision(self, request):  # noqa: ANN001, ANN201
+        self.requests.append(request)
+        terminal_digest = canonical_sha256_digest(
+            {"request_digest": request.request_digest, "state": "ready"}
+        )
+        return WorkspaceProvisioningReceipt(
+            receipt_id=f"receipt-{request.request_id}",
+            request_id=request.request_id,
+            request_digest=request.request_digest,
+            intent_id=request.intent_id,
+            intent_digest=request.intent_digest,
+            claim_token=request.claim_token,
+            claim_epoch=request.claim_epoch,
+            controlled_operation_id=request.controlled_operation_id,
+            disposition=WorkspaceProvisioningReceiptDisposition.READY,
+            session_id=request.session_id,
+            agent_member_id=request.agent_member_id,
+            workspace_id=request.workspace_id,
+            generation=request.generation,
+            repository_pin_digest=request.repository_pin_digest,
+            provider_id=request.provider_id,
+            target_id=request.target_id,
+            adapter_binding_digest=request.adapter_binding_digest,
+            effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+            mutation_applied=True,
+            fallback_performed=False,
+            retry_eligibility=RetryEligibility.TERMINAL,
+            reconcile_required=False,
+            observed_root_identity_digest=canonical_sha256_digest(
+                {
+                    "workspace_id": request.workspace_id,
+                    "generation": request.generation,
+                }
+            ),
+            terminal_receipt_digest=terminal_digest,
+            completed_at="2026-08-22T00:00:00+00:00",
+        )
+
+    def reconcile(self, request):  # noqa: ANN001, ANN201
+        del request
+        raise AssertionError("reconciliation was not expected")
+
+
+class _RecordingWorkspaceProvisioningKernelWorker:
+    def __init__(self) -> None:
+        self.reconciliations = []
+        self.successors = []
+
+    def admit_reconciliation(self, **kwargs):  # noqa: ANN003, ANN201
+        self.reconciliations.append(kwargs)
+        context = kwargs["context"]
+        return KernelMutationReceipt.create(
+            command_id=context.command_id,
+            service_id="recording.workspace-provisioning-worker",
+            operation="admit_reconciliation",
+            mutation_applied=True,
+            effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+            result={
+                "reconciliation_status": "pending",
+                "adapter_invoked": False,
+                "fallback_performed": False,
+            },
+        )
+
+    def replace_failed_generation(self, **kwargs):  # noqa: ANN003, ANN201
+        self.successors.append(kwargs)
+        context = kwargs["context"]
+        return KernelMutationReceipt.create(
+            command_id=context.command_id,
+            service_id="recording.workspace-provisioning-worker",
+            operation="replace_failed_generation",
+            mutation_applied=True,
+            effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+            result={"adapter_invoked": False, "fallback_performed": False},
+        )
 
 
 class _NoopSlurmBackend:
@@ -318,8 +622,7 @@ class _ProductFormalRunnerPort:
                             "vina_result_profile": "legacy-log-v1",
                             "score_semantics": "legacy-log-file-v1",
                         }
-                        if request.route.route_id
-                        == "enzymedesign.vina.hpc-primary@1"
+                        if request.route.route_id == "enzymedesign.vina.hpc-primary@1"
                         else {}
                     ),
                 },
@@ -439,6 +742,14 @@ class _BootstrapAuthority:
             session_composition_pin_digest=facts["session_composition_pin_digest"],
             extension_bundle_digest=facts["extension_bundle_digest"],
             capability_binding_digest=facts["capability_binding_digest"],
+            repository_pin_digest=facts["repository_pin_digest"],
+            workspace_generation=facts["workspace_generation"],
+            workspace_provisioning_intent_id=(
+                facts["workspace_provisioning_intent_id"]
+            ),
+            workspace_provisioning_intent_digest=(
+                facts["workspace_provisioning_intent_digest"]
+            ),
             generation=1,
             fence=1,
             issued_at=issued_at.isoformat(),
@@ -455,7 +766,9 @@ class _BootstrapAuthority:
 
 
 def _operational_selection(
-    *, revision_backend=None  # noqa: ANN001
+    *,
+    revision_backend=None,
+    runtime_adapter=None,  # noqa: ANN001
 ) -> EnzymeDesignOperationalAdapterSelection:
     composition = activate_enzymedesign_composition()
     runtime_manifest = next(
@@ -464,13 +777,21 @@ def _operational_selection(
         if item.selection.slot_id == "agent.turn"
     )
     return EnzymeDesignOperationalAdapterSelection(
-        runtime_adapter=_IdleRuntimeAdapter(
-            runtime_manifest.identity.component_id,
-            runtime_manifest.identity.contract_digest,
+        runtime_adapter=(
+            runtime_adapter
+            or _IdleRuntimeAdapter(
+                runtime_manifest.identity.component_id,
+                runtime_manifest.identity.contract_digest,
+            )
         ),
         workspace_mounts=object(),  # type: ignore[arg-type]
         process_isolation=object(),  # type: ignore[arg-type]
         revision_backend=revision_backend or object(),  # type: ignore[arg-type]
+        workspace_provisioner=_ReadyWorkspaceProvisioner(
+            provider_id="openzyme.workspace.git-lfs",
+            adapter_binding_digest=DIGEST,
+        ),
+        workspace_adapter_binding_digest=DIGEST,
         slurm_factory=SlurmSchedulerAdapterFactory(),
         slurm_backend=_NoopSlurmBackend(),  # type: ignore[arg-type]
         slurm_credential_resolver=_EmptySchedulerCredentials(),
@@ -554,11 +875,12 @@ def _runtime_surface_set(
 
 def _adapter_runtime_set(
     operational_selection: EnzymeDesignOperationalAdapterSelection,
+    *,
+    workspace_provisioner_factory=None,  # noqa: ANN001
 ) -> EnzymeDesignAdapterRuntimeSet:
     composition = activate_enzymedesign_composition()
     runtimes = {
         "agent.turn": operational_selection.runtime_adapter,
-        "workspace.backend": operational_selection.revision_backend,
         "process.isolation": EnzymeDesignPodmanOperationalRuntime(
             workspace_mounts=operational_selection.workspace_mounts,
             process_isolation=operational_selection.process_isolation,
@@ -570,20 +892,104 @@ def _adapter_runtime_set(
             credential_resolver=operational_selection.slurm_credential_resolver,
         ),
     }
-    return EnzymeDesignAdapterRuntimeSet(
-        bindings=tuple(
-            EnzymeDesignAdapterRuntimeBinding(
-                slot_id=item.selection.slot_id,
-                target_id=item.selection.target_id,
-                component_id=item.manifest.identity.component_id,
-                manifest_digest=item.manifest.manifest_digest,
-                contract_digest=item.manifest.identity.contract_digest,
-                build_digest=item.manifest.identity.build_digest,
-                runtime=runtimes.get(item.selection.slot_id, object()),
-            )
-            for item in composition.adapters
+    bindings = []
+    for item in composition.adapters:
+        binding = EnzymeDesignAdapterRuntimeBinding(
+            slot_id=item.selection.slot_id,
+            target_id=item.selection.target_id,
+            component_id=item.manifest.identity.component_id,
+            manifest_digest=item.manifest.manifest_digest,
+            contract_digest=item.manifest.identity.contract_digest,
+            build_digest=item.manifest.identity.build_digest,
+            runtime=runtimes.get(item.selection.slot_id, object()),
         )
+        if item.selection.slot_id == "workspace.backend":
+            provisioner = (
+                _ReadyWorkspaceProvisioner(
+                    provider_id=item.manifest.identity.component_id,
+                    adapter_binding_digest=binding.binding_digest,
+                )
+                if workspace_provisioner_factory is None
+                else workspace_provisioner_factory(
+                    item.manifest.identity.component_id,
+                    binding.binding_digest,
+                )
+            )
+            binding = replace(
+                binding,
+                runtime=EnzymeDesignWorkspaceOperationalRuntime(
+                    revision_backend=operational_selection.revision_backend,
+                    provisioner=provisioner,
+                ),
+            )
+        bindings.append(binding)
+    return EnzymeDesignAdapterRuntimeSet(bindings=tuple(bindings))
+
+
+def _project_repository_binding(
+    project_id: str,
+    *,
+    created_by: str,
+) -> ProjectRepositoryBinding:
+    suffix = canonical_sha256_digest({"project_id": project_id}).removeprefix(
+        "sha256:"
+    )[:12]
+    return ProjectRepositoryBinding.create(
+        binding_id=f"repository-binding-{suffix}",
+        project_id=project_id,
+        binding_version=1,
+        repository_id=f"repository-{suffix}",
+        internal_git_service_id="git-test",
+        internal_git_endpoint=f"https://git.invalid/{suffix}",
+        lfs_service_id="lfs-test",
+        lfs_endpoint=f"https://lfs.invalid/{suffix}",
+        upstream_identity=f"upstream-{suffix}",
+        upstream_url=f"https://upstream.invalid/{suffix}.git",
+        object_format=GitObjectFormat.SHA1,
+        default_base_ref="refs/heads/main",
+        default_base_commit="a" * 40,
+        ref_namespace_policy=RepositoryRefNamespacePolicy(
+            private_prefix="refs/openzyme/private",
+            publication_prefix="refs/openzyme/public",
+            historical_prefix="refs/openzyme/history",
+        ),
+        repository_policy_version="test@1",
+        repository_policy_digest=canonical_sha256_digest(
+            {"repository_policy": "test@1"}
+        ),
+        created_at="2026-08-22T00:00:00+00:00",
+        created_by=created_by,
     )
+
+
+def _bootstrap_runtime_kwargs(
+    *,
+    project_id: str,
+    adapters: EnzymeDesignAdapterRuntimeSet,
+    created_by: str = "operator-1",
+) -> dict[str, object]:
+    workspace_binding = adapters.require_binding(slot_id="workspace.backend")
+    return {
+        "bootstrap_defaults_by_project": {
+            project_id: EnzymeDesignWorkspaceBootstrapDefaults(
+                repository_binding=_project_repository_binding(
+                    project_id,
+                    created_by=created_by,
+                ),
+                provider_id=workspace_binding.component_id,
+                target_id="local-test",
+                adapter_binding_digest=workspace_binding.binding_digest,
+            )
+        },
+        "workspace_worker_authority": (
+            EnzymeDesignWorkspaceProvisioningWorkerAuthority(
+                worker_id="workspace-worker-test",
+                authority_id="workspace-worker-authority-test",
+                generation=1,
+                fence=1,
+            )
+        ),
+    }
 
 
 def _activated_startup():
@@ -671,9 +1077,7 @@ def _publish_product_inventory(
                 {"qualification": suffix}
             ),
             target_id="hpc-primary",
-            environment_digest=canonical_sha256_digest(
-                {"environment": "hpc-primary"}
-            ),
+            environment_digest=canonical_sha256_digest({"environment": "hpc-primary"}),
             capability_id=capability_id,
             observed_version=version,
             version_query_receipt_digest=canonical_sha256_digest(
@@ -685,9 +1089,7 @@ def _publish_product_inventory(
                 {"result_schema": suffix}
             ),
             operations=(
-                ("hmmbuild", "hmmsearch")
-                if suffix == "hmmer"
-                else ("dock", "score")
+                ("hmmbuild", "hmmsearch") if suffix == "hmmer" else ("dock", "score")
             ),
             status=QualificationReceiptStatus.PASSED,
             observed_at=observed_at,
@@ -713,9 +1115,7 @@ def _publish_product_inventory(
                 operations=("hmmbuild", "hmmsearch"),
                 environment_digest=receipts[0].environment_digest,
                 qualification_digest=receipts[0].receipt_digest,
-                implementation_digest=canonical_sha256_digest(
-                    {"binary": "hmmer-3.4"}
-                ),
+                implementation_digest=canonical_sha256_digest({"binary": "hmmer-3.4"}),
             ),
             TargetCapabilityFact(
                 capability_id="software.autodock-vina",
@@ -725,14 +1125,10 @@ def _publish_product_inventory(
                 operations=("dock", "score"),
                 environment_digest=receipts[1].environment_digest,
                 qualification_digest=receipts[1].receipt_digest,
-                implementation_digest=canonical_sha256_digest(
-                    {"binary": "vina-1.1.2"}
-                ),
+                implementation_digest=canonical_sha256_digest({"binary": "vina-1.1.2"}),
             ),
         ),
-        qualification_receipt_digests=tuple(
-            item.receipt_digest for item in receipts
-        ),
+        qualification_receipt_digests=tuple(item.receipt_digest for item in receipts),
         valid_until=valid_until,
         created_at=observed_at,
     )
@@ -761,103 +1157,65 @@ def _seed_product_source(
     lease: AgentAuthorityLease,
     backend: _ProductRevisionBackend,
 ) -> tuple[str, dict[str, str]]:
-    base = "c" * 40
-    commit = "a" * 40
+    pin_record = runtime.store.read(
+        entity_type="session_repository_binding_pin",
+        entity_id=session_id,
+    )
+    assert pin_record is not None
+    pin = SessionRepositoryBindingPin.from_dict(pin_record.payload)
+    binding_record = runtime.store.read(
+        entity_type="project_repository_binding",
+        entity_id=pin.binding_id,
+    )
+    assert binding_record is not None
+    binding = ProjectRepositoryBinding.from_dict(binding_record.payload)
+    generations = tuple(
+        WorkspaceGeneration.from_dict(item.payload)
+        for item in runtime.store.list_for_session(
+            entity_type="workspace_generation",
+            session_id=session_id,
+            max_items=8,
+        )
+        if item.payload.get("owner_member_id") == member_id
+        and item.payload.get("status") == "ready"
+    )
+    assert len(generations) == 1
+    generation = generations[0]
+    base = binding.default_base_commit
+    commit = "c" * 40
     tree = "b" * 40
-    workspace_id = "workspace-product-1"
-    binding = ProjectRepositoryBinding.create(
-        binding_id="repository-binding-product-1",
-        project_id="project-product-cross-layer-1",
-        binding_version=1,
-        repository_id="repository-product-1",
-        internal_git_service_id="git-product-1",
-        internal_git_endpoint="https://git.internal.example/product-1",
-        lfs_service_id="lfs-product-1",
-        lfs_endpoint="https://lfs.internal.example/product-1",
-        upstream_identity="upstream-product-1",
-        upstream_url="https://example.org/product/repository.git",
-        object_format=GitObjectFormat.SHA1,
-        default_base_ref="refs/heads/main",
-        default_base_commit=base,
-        ref_namespace_policy=RepositoryRefNamespacePolicy(
-            private_prefix="refs/openzyme/private",
-            publication_prefix="refs/openzyme/publications",
-            historical_prefix="refs/openzyme/historical",
-        ),
-        repository_policy_version="repository-policy-product-1",
-        repository_policy_digest=canonical_sha256_digest(
-            {"repository_policy": "product"}
-        ),
-        created_at="2026-08-22T00:00:00+00:00",
-        created_by="operator-1",
-    )
-    pin = SessionRepositoryBindingPin(
-        session_id=session_id,
-        project_id=binding.project_id,
-        binding_id=binding.binding_id,
-        binding_version=binding.binding_version,
-        repository_id=binding.repository_id,
-        resolved_base_commit=binding.default_base_commit,
-        binding_canonical_digest=binding.canonical_digest,
-        pinned_at="2026-08-22T00:00:00+00:00",
-    )
-    generation = WorkspaceGeneration(
-        workspace_id=workspace_id,
-        workspace_kind=WorkspaceKind.AGENT_LOCAL,
-        session_id=session_id,
-        owner_member_id=member_id,
-        generation=1,
-        state_version=1,
-        status=WorkspaceGenerationStatus.READY,
-        provider_id="openzyme.workspace.git-lfs",
-        target_id="local:host",
-        created_at="2026-08-22T00:00:00+00:00",
-        updated_at="2026-08-22T00:00:00+00:00",
-        root_identity_digest=canonical_sha256_digest(
-            {"workspace_root": workspace_id}
-        ),
-        transition_receipt_digest=canonical_sha256_digest(
-            {"workspace_ready": workspace_id}
-        ),
-        controlled_operation_id="workspace-operation-product-1",
-    )
     checkpoint = VerifiedWorkspaceCheckpoint.create(
         checkpoint_id="checkpoint-product-1",
         boundary=WorkspaceFormalBoundary.PUBLICATION,
-        workspace_id=workspace_id,
+        workspace_id=generation.workspace_id,
         session_id=session_id,
         agent_member_id=member_id,
         agent_id=member_id,
-        workspace_generation=1,
+        workspace_generation=generation.generation,
         repository_binding_id=binding.binding_id,
         repository_binding_version=binding.binding_version,
         repository_id=binding.repository_id,
         commit=commit,
         tree=tree,
-        private_ref=f"refs/openzyme/private/{session_id}/{member_id}",
+        private_ref=(
+            f"{binding.ref_namespace_policy.private_prefix}/{session_id}/{member_id}"
+        ),
         prior_commit=base,
         advance_kind=PrivateRefAdvanceKind.FAST_FORWARD,
         remote_observed_at="2026-08-22T00:00:00+00:00",
         verified_at="2026-08-22T00:00:00+00:00",
     )
-    for label, entity_type, entity_id, payload in (
-        ("repository-binding", "project_repository_binding", binding.binding_id, binding.to_dict()),
-        ("repository-pin", "session_repository_binding_pin", session_id, pin.to_dict()),
-        ("workspace-generation", "workspace_generation", workspace_id, generation.to_dict()),
-        ("workspace-runtime", "workspace_runtime_binding", workspace_id, generation.runtime_binding().to_dict()),
-        ("checkpoint", "verified_workspace_checkpoint", checkpoint.checkpoint_id, checkpoint.to_dict()),
-    ):
-        _seed_kernel_record(
-            runtime,
-            session_id=session_id,
-            session_version=session_version,
-            actor_id=member_id,
-            lease=lease,
-            label=label,
-            entity_type=entity_type,
-            entity_id=entity_id,
-            payload=payload,
-        )
+    _seed_kernel_record(
+        runtime,
+        session_id=session_id,
+        session_version=session_version,
+        actor_id=member_id,
+        lease=lease,
+        label="checkpoint",
+        entity_type="verified_workspace_checkpoint",
+        entity_id=checkpoint.checkpoint_id,
+        payload=checkpoint.to_dict(),
+    )
     context = KernelCommandContext(
         command_id="command-product-publish",
         session_id=session_id,
@@ -875,7 +1233,7 @@ def _seed_product_source(
         )[0].payload["binding_digest"],
         idempotency_key="product-publication-1",
         correlation_id="correlation-product-publication-1",
-        workspace_generation=1,
+        workspace_generation=generation.generation,
         route_id="openzyme.workspace.git-lfs",
     )
     intent, outcome = WorkspacePublicationCoordinator(
@@ -889,13 +1247,13 @@ def _seed_product_source(
         context=context,
         request=WorkspacePublicationRequest(
             idempotency_key="product-publication-1",
-            workspace_id=workspace_id,
-            workspace_generation=1,
+            workspace_id=generation.workspace_id,
+            workspace_generation=generation.generation,
             expected_head_commit=commit,
             expected_tree=tree,
             declared_base_commit=base,
             checkpoint_id=checkpoint.checkpoint_id,
-            repository_binding_version=1,
+            repository_binding_version=binding.binding_version,
         ),
         created_at="2026-08-22T00:00:00+00:00",
     )
@@ -973,12 +1331,20 @@ def test_distribution_builds_exact_active_catalogs_without_live_probes() -> None
     assert len(activated.adapters) == 8
     assert len(activated.plugins.activations) == 14
     assert len(activated.drivers) == 8
-    assert len(activated.declared_tool_catalog.entries) == 37
+    assert len(activated.declared_tool_catalog.entries) == 45
     assert {
         entry.contract.tool_name
         for entry in activated.declared_tool_catalog.entries
         if entry.owner_component_id == "openzyme.kernel"
     } == {
+        "approval.request",
+        "capabilities.inspect",
+        "protocol.send",
+        "task.create",
+        "task.delegate",
+        "task.finish",
+        "task.update",
+        "world.inspect",
         "workspace.status",
         "workspace.fs.read",
         "workspace.fs.list",
@@ -1213,17 +1579,36 @@ def test_distribution_rejects_one_missing_product_route_before_mount() -> None:
 def test_application_runtime_mounts_exact_product_before_enabling_writer() -> None:
     connection, startup = _activated_startup()
     operational_selection = _operational_selection()
+    adapters = _adapter_runtime_set(operational_selection)
     try:
         runtime = build_enzymedesign_application_runtime(
             connection,
             startup=startup,
             surfaces=_runtime_surface_set(),
-            adapter_runtimes=_adapter_runtime_set(operational_selection),
+            adapter_runtimes=adapters,
             inventories=_EmptyInventoryRepository(),
             clock=DeterministicClock(datetime(2026, 8, 22, tzinfo=UTC)),
             ids=DeterministicIdGenerator(),
             bootstrap_authority=_BootstrapAuthority(),
+            **_bootstrap_runtime_kwargs(
+                project_id="project-product-runtime-1",
+                adapters=adapters,
+            ),
         )
+        runtime.validate_identity()
+        with pytest.raises(KernelContractError) as identity_drift:
+            replace(
+                runtime,
+                role_policy_digest=canonical_sha256_digest({"drift": "role-policy"}),
+            )
+        with pytest.raises(KernelContractError) as adapter_binding_drift:
+            replace(
+                runtime,
+                adapter_runtimes=replace(
+                    runtime.adapter_runtimes,
+                    bindings=runtime.adapter_runtimes.bindings[:-1],
+                ),
+            )
         app = build_enzymedesign_v2_host_app(
             runtime=runtime,
             security_policy=HostSecurityPolicy.from_settings(None),
@@ -1261,8 +1646,14 @@ def test_application_runtime_mounts_exact_product_before_enabling_writer() -> No
     assert runtime.store.provider_id == "openzyme.store.sqlite"
     assert len(runtime.adapter_runtimes.bindings) == 8
     assert len(runtime.mounted_surfaces.tools) == 32
-    assert len(runtime.mounted_tools.tools) == 37
+    assert len(runtime.mounted_tools.tools) == 45
     assert runtime.proof_digest.startswith("sha256:")
+    assert identity_drift.value.code == (
+        "enzymedesign_application_runtime_identity_drift"
+    )
+    assert adapter_binding_drift.value.code == (
+        "enzymedesign_adapter_runtime_set_incomplete"
+    )
     assert runtime.external_qualification_admission is None
     assert bootstrap_receipt.mutation_applied is True
     assert stored_session is not None
@@ -1278,6 +1669,169 @@ def test_application_runtime_mounts_exact_product_before_enabling_writer() -> No
     assert {
         contribution.path for _, contribution in runtime.mounted_surfaces.http_routes
     }.issubset(mounted_paths)
+
+
+def test_gateway_uses_direct_exact_provisioning_recovery_commands() -> None:
+    connection, startup = _activated_startup()
+    adapters = _adapter_runtime_set(_operational_selection())
+    try:
+        runtime = build_enzymedesign_application_runtime(
+            connection,
+            startup=startup,
+            surfaces=_runtime_surface_set(),
+            adapter_runtimes=adapters,
+            inventories=_EmptyInventoryRepository(),
+            clock=DeterministicClock(datetime(2026, 8, 22, tzinfo=UTC)),
+            ids=DeterministicIdGenerator(),
+            bootstrap_authority=_BootstrapAuthority(),
+            **_bootstrap_runtime_kwargs(
+                project_id="project-provisioning-recovery-1",
+                adapters=adapters,
+            ),
+        )
+        runtime.gateway.bootstrap(
+            HostV2SessionBootstrapInvocation(
+                session_id="session-provisioning-recovery-1",
+                actor_id="operator-1",
+                idempotency_key="bootstrap-provisioning-recovery-1",
+                correlation_id="request-bootstrap-provisioning-recovery-1",
+                payload={
+                    "session_id": "session-provisioning-recovery-1",
+                    "project_id": "project-provisioning-recovery-1",
+                    "title": "Provisioning recovery",
+                    "objective": "Prove explicit reconciliation and successor admission",
+                },
+            )
+        )
+        intent_snapshot = runtime.store.list_for_session(
+            entity_type="workspace_provisioning_intent",
+            session_id="session-provisioning-recovery-1",
+            max_items=2,
+        )[0]
+        intent = WorkspaceProvisioningIntent.from_dict(intent_snapshot.payload)
+        recording = _RecordingWorkspaceProvisioningKernelWorker()
+        runtime.workspace_provisioning_runner.worker = recording  # type: ignore[assignment]
+
+        reconciled = runtime.gateway.reconcile_workspace_provisioning(
+            HostV2WorkspaceProvisioningReconciliationInvocation(
+                session_id=intent.session_id,
+                actor_id="operator-1",
+                idempotency_key="reconcile-provisioning-recovery-1",
+                correlation_id="request-reconcile-provisioning-recovery-1",
+                intent_id=intent.intent_id,
+                intent_digest=intent.intent_digest,
+                expected_intent_version=intent_snapshot.state_version,
+                claim_seconds=120,
+                precondition=None,  # type: ignore[arg-type]
+            )
+        )
+        assert reconciled.operation == "admit_reconciliation"
+        assert len(recording.reconciliations) == 1
+        reconciliation = recording.reconciliations[0]
+        assert reconciliation["intent_id"] == intent.intent_id
+        assert reconciliation["expected_intent_version"] == (
+            intent_snapshot.state_version
+        )
+        assert reconciliation["claim_seconds"] == 120
+        reconcile_context = reconciliation["context"]
+        assert reconcile_context.session_id == intent.session_id
+        assert reconcile_context.requested_by_actor_id == "operator-1"
+        assert reconcile_context.idempotency_key == (
+            "reconcile-provisioning-recovery-1"
+        )
+        assert reconcile_context.correlation_id == (
+            "request-reconcile-provisioning-recovery-1"
+        )
+
+        successor = runtime.gateway.create_workspace_provisioning_successor(
+            HostV2WorkspaceProvisioningSuccessorInvocation(
+                session_id=intent.session_id,
+                actor_id="operator-1",
+                idempotency_key="successor-provisioning-recovery-1",
+                correlation_id="request-successor-provisioning-recovery-1",
+                failed_intent_id=intent.intent_id,
+                failed_intent_digest=intent.intent_digest,
+                expected_failed_intent_version=intent_snapshot.state_version,
+                resolved_reconciliation_id=None,
+                precondition=None,  # type: ignore[arg-type]
+            )
+        )
+        assert successor.operation == "replace_failed_generation"
+        assert len(recording.successors) == 1
+        replacement = recording.successors[0]
+        assert replacement["failed_intent_id"] == intent.intent_id
+        assert replacement["expected_failed_intent_version"] == (
+            intent_snapshot.state_version
+        )
+        assert replacement["resolved_reconciliation_id"] is None
+        successor_context = replacement["context"]
+        assert successor_context.session_id == intent.session_id
+        assert successor_context.requested_by_actor_id == "operator-1"
+        assert successor_context.idempotency_key == (
+            "successor-provisioning-recovery-1"
+        )
+        assert successor_context.correlation_id == (
+            "request-successor-provisioning-recovery-1"
+        )
+
+        with pytest.raises(HostV2CommandError) as stale_digest:
+            runtime.gateway.reconcile_workspace_provisioning(
+                HostV2WorkspaceProvisioningReconciliationInvocation(
+                    session_id=intent.session_id,
+                    actor_id="operator-1",
+                    idempotency_key="reconcile-provisioning-stale-digest",
+                    correlation_id="request-reconcile-provisioning-stale-digest",
+                    intent_id=intent.intent_id,
+                    intent_digest=canonical_sha256_digest({"stale": True}),
+                    expected_intent_version=intent_snapshot.state_version,
+                    claim_seconds=120,
+                    precondition=None,  # type: ignore[arg-type]
+                )
+            )
+        assert stale_digest.value.code == (
+            "workspace_provisioning_intent_digest_mismatch"
+        )
+        with pytest.raises(HostV2CommandError) as stale_version:
+            runtime.gateway.create_workspace_provisioning_successor(
+                HostV2WorkspaceProvisioningSuccessorInvocation(
+                    session_id=intent.session_id,
+                    actor_id="operator-1",
+                    idempotency_key="successor-provisioning-stale-version",
+                    correlation_id="request-successor-provisioning-stale-version",
+                    failed_intent_id=intent.intent_id,
+                    failed_intent_digest=intent.intent_digest,
+                    expected_failed_intent_version=intent_snapshot.state_version + 1,
+                    resolved_reconciliation_id=None,
+                    precondition=None,  # type: ignore[arg-type]
+                )
+            )
+        assert stale_version.value.code == "workspace_provisioning_intent_stale"
+        with pytest.raises(HostV2CommandError) as wrong_session:
+            runtime.gateway.reconcile_workspace_provisioning(
+                HostV2WorkspaceProvisioningReconciliationInvocation(
+                    session_id="session-provisioning-recovery-other",
+                    actor_id="operator-1",
+                    idempotency_key="reconcile-provisioning-wrong-session",
+                    correlation_id="request-reconcile-provisioning-wrong-session",
+                    intent_id=intent.intent_id,
+                    intent_digest=intent.intent_digest,
+                    expected_intent_version=intent_snapshot.state_version,
+                    claim_seconds=120,
+                    precondition=None,  # type: ignore[arg-type]
+                )
+            )
+        assert wrong_session.value.code == (
+            "workspace_provisioning_intent_session_mismatch"
+        )
+        assert len(recording.reconciliations) == len(recording.successors) == 1
+        assert "openzyme.kernel.workspace.provisioning.reconcile@2" not in (
+            runtime.gateway.route_applications
+        )
+        assert "openzyme.kernel.workspace.provisioning.successor@2" not in (
+            runtime.gateway.route_applications
+        )
+    finally:
+        connection.close()
 
 
 def test_application_runtime_rejects_missing_adapter_before_writer_enablement() -> None:
@@ -1296,6 +1850,10 @@ def test_application_runtime_rejects_missing_adapter_before_writer_enablement() 
                 clock=DeterministicClock(datetime(2026, 8, 22, tzinfo=UTC)),
                 ids=DeterministicIdGenerator(),
                 bootstrap_authority=_BootstrapAuthority(),
+                **_bootstrap_runtime_kwargs(
+                    project_id="project-missing-adapter",
+                    adapters=adapters,
+                ),
             )
         assert connection.total_changes == before
     finally:
@@ -1329,6 +1887,10 @@ def test_application_runtime_rejects_operational_object_outside_exact_binding() 
                 clock=DeterministicClock(datetime(2026, 8, 22, tzinfo=UTC)),
                 ids=DeterministicIdGenerator(),
                 bootstrap_authority=_BootstrapAuthority(),
+                **_bootstrap_runtime_kwargs(
+                    project_id="project-drifted-adapter",
+                    adapters=drifted,
+                ),
             )
         assert connection.total_changes == before
     finally:
@@ -1519,7 +2081,9 @@ def test_formal_product_tools_compile_driver_and_enter_compute_lifecycle(
     ]
 
 
-def test_real_product_composition_runs_hmmer_and_vina_through_one_pinned_graph() -> None:
+def test_real_product_composition_runs_hmmer_and_vina_through_one_pinned_graph() -> (
+    None
+):
     """Prove the mounted graph's formal HMMER/Vina non-live cross-layer slice."""
 
     connection, startup = _activated_startup()
@@ -1558,9 +2122,8 @@ def test_real_product_composition_runs_hmmer_and_vina_through_one_pinned_graph()
         clock=clock,
     )
     science_reader = _AcceptedScienceEvidenceReader()
-    operational_selection = _operational_selection(
-        revision_backend=revision_backend
-    )
+    operational_selection = _operational_selection(revision_backend=revision_backend)
+    adapters = _adapter_runtime_set(operational_selection)
     runtime = build_enzymedesign_application_runtime(
         connection,
         startup=startup,
@@ -1568,12 +2131,17 @@ def test_real_product_composition_runs_hmmer_and_vina_through_one_pinned_graph()
             formal_application=formal_binding,
             science_evidence_reader=science_reader,
         ),
-        adapter_runtimes=_adapter_runtime_set(operational_selection),
+        adapter_runtimes=adapters,
         inventories=inventory_repository,
         clock=clock,
         ids=DeterministicIdGenerator(),
         bootstrap_authority=_BootstrapAuthority(),
         application_bindings=(formal_binding,),
+        **_bootstrap_runtime_kwargs(
+            project_id="project-product-cross-layer-1",
+            adapters=adapters,
+            created_by="user:local-dev",
+        ),
     )
     app = build_enzymedesign_v2_host_app(
         runtime=runtime,
@@ -1609,8 +2177,23 @@ def test_real_product_composition_runs_hmmer_and_vina_through_one_pinned_graph()
             )
 
     response = asyncio.run(bootstrap_through_generic_host())
-    assert response.status_code == 200, response.text
+    assert response.status_code == 202, response.text
     session_id = "session-product-cross-layer-1"
+    intent = runtime.store.list_for_session(
+        entity_type="workspace_provisioning_intent",
+        session_id=session_id,
+        max_items=4,
+    )[0]
+    runtime.workspace_provisioning_runner.run(
+        intent_id=intent.entity_id,
+        expected_intent_version=intent.state_version,
+        claim_seconds=300,
+    )
+    session_after_provisioning = runtime.store.read(
+        entity_type="session",
+        entity_id=session_id,
+    )
+    assert session_after_provisioning is not None
     member_record = runtime.store.list_for_session(
         entity_type="agent_member",
         session_id=session_id,
@@ -1642,7 +2225,7 @@ def test_real_product_composition_runs_hmmer_and_vina_through_one_pinned_graph()
                 authority_lease_id=lease.lease_id,
                 authority_generation=lease.generation,
                 authority_fence=lease.fence,
-                expected_session_version=1,
+                expected_session_version=session_after_provisioning.state_version,
                 extension_bundle_digest=initial_binding.extension_bundle_digest,
                 capability_binding_digest=initial_binding.binding_digest,
                 idempotency_key="product-task-create",
@@ -1659,6 +2242,11 @@ def test_real_product_composition_runs_hmmer_and_vina_through_one_pinned_graph()
             },
         )
     )
+    session_after_task_create = runtime.store.read(
+        entity_type="session",
+        entity_id=session_id,
+    )
+    assert session_after_task_create is not None
     binding = SessionCapabilityBindingRevision.create(
         binding_id="binding-product-cross-layer-2",
         session_id=session_id,
@@ -1679,7 +2267,7 @@ def test_real_product_composition_runs_hmmer_and_vina_through_one_pinned_graph()
     _seed_kernel_record(
         runtime,
         session_id=session_id,
-        session_version=2,
+        session_version=session_after_task_create.state_version,
         actor_id=member_id,
         lease=lease,
         label="capability-binding-2",
@@ -1690,7 +2278,7 @@ def test_real_product_composition_runs_hmmer_and_vina_through_one_pinned_graph()
     publication_id, content_digests = _seed_product_source(
         runtime,
         session_id=session_id,
-        session_version=2,
+        session_version=session_after_task_create.state_version,
         member_id=member_id,
         lease=lease,
         backend=revision_backend,
@@ -1743,7 +2331,9 @@ def test_real_product_composition_runs_hmmer_and_vina_through_one_pinned_graph()
         created_at="2026-08-22T00:00:00+00:00",
     )
     affordances = {item.tool_name: item for item in snapshot.affordances}
-    assert affordances["enzymedesign.hmmer.search"].state is ToolAffordanceState.AVAILABLE
+    assert (
+        affordances["enzymedesign.hmmer.search"].state is ToolAffordanceState.AVAILABLE
+    )
     assert affordances["enzymedesign.vina.dock"].state is ToolAffordanceState.AVAILABLE
     scope = RuntimeToolScope(
         command_id="runtime-command-product-cross-layer-1",
@@ -1770,7 +2360,7 @@ def test_real_product_composition_runs_hmmer_and_vina_through_one_pinned_graph()
                 "inputs": [
                     {
                         "revision_id": publication_id,
-                        "commit": "a" * 40,
+                        "commit": "c" * 40,
                         "tree": "b" * 40,
                         "path": path,
                         "content_digest": content_digests[path],
@@ -1794,7 +2384,7 @@ def test_real_product_composition_runs_hmmer_and_vina_through_one_pinned_graph()
                 "inputs": [
                     {
                         "revision_id": publication_id,
-                        "commit": "a" * 40,
+                        "commit": "c" * 40,
                         "tree": "b" * 40,
                         "path": path,
                         "content_digest": content_digests[path],
@@ -1848,7 +2438,7 @@ def test_real_product_composition_runs_hmmer_and_vina_through_one_pinned_graph()
                 authority_lease_id=lease.lease_id,
                 authority_generation=lease.generation,
                 authority_fence=lease.fence,
-                expected_session_version=2,
+                expected_session_version=session_after_task_create.state_version,
                 extension_bundle_digest=binding.extension_bundle_digest,
                 capability_binding_digest=binding.binding_digest,
                 idempotency_key=f"formal-{call_id}",
@@ -1876,9 +2466,7 @@ def test_real_product_composition_runs_hmmer_and_vina_through_one_pinned_graph()
         session_id=session_id,
         task_id="task-product-cross-layer-1",
         subject_ref="closure-product-cross-layer-1",
-        subject_digest=canonical_sha256_digest(
-            {"closure": "product-cross-layer"}
-        ),
+        subject_digest=canonical_sha256_digest({"closure": "product-cross-layer"}),
         attributes={"execution_ids": execution_ids},
     )
     validation = runtime.finish_validators.validate(
@@ -1925,9 +2513,7 @@ def test_real_product_composition_runs_hmmer_and_vina_through_one_pinned_graph()
     }
     assert revision_backend.dispatch_count == 1
     assert len(continuations) == 2
-    assert {
-        item.payload["recipient_actor_id"] for item in continuations
-    } == {member_id}
+    assert {item.payload["recipient_actor_id"] for item in continuations} == {member_id}
     assert validation.accepted is True
     assert len(science_reader.calls) == 1
     assert task_after is not None

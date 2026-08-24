@@ -8,18 +8,21 @@ OpenZyme 的 `file_workspace_public@2` 浏览器交付面。生产入口只接�
 - `src/client.js` 校验 exact media type、layered release、public contract、projection、Session capability
   binding、ToolAffordanceSnapshot 和每个 extension projection digest；mutation 先读取当前 projection，绑定
   全部 identity，发送后再次读取 canonical `@2` state。响应 identity 丢失或漂移按
-  `dispatch_in_doubt` 处理，不消费旧 workspace body，也不重试或 fallback。
+  `dispatch_in_doubt` 处理，不消费旧 workspace body，也不重试或 fallback。Host 当前没有公开 event
+  stream，client 因而只轮询现有 workspace inspection，并在完整校验后形成 browser-local projection
+  change observation；它不把该 observation 声称为 Host event。
 - `src/file_workspace_v2_state.js` 校验 closed `core`、各 Core 子 section、工具 affordance 和 namespaced
-  extension section；Core 中的产品、artifact 和私有 locator 字段会被拒绝。
+  extension section；Core 中的产品、artifact、claim/lease token 和私有 locator 字段会被拒绝。
 - `src/core_shell.js` 只拥有 Kernel state。Extension payload 只进入其 renderer，不会合并回 Core。
 - `src/extension_renderer_loader.js` 只接受 manifest/catalog 声明的 exact renderer。缺少 renderer、renderer
   catalog drift 或 section contract drift 会禁用所有 mutation controls。
-- `src/controller.js` 只进行 canonical refresh、消息和 bounded runtime drain；stale `@1` event 使 UI
-  non-operational。当前 Host 尚未激活的 Session 列表/创建、approval mutation、SSE 和 extension route
-  不会在 UI 中伪装可用。
-- `src/view.js` 直接显示 Task、Agent、Approval、AgentAuthorityLease、Workspace generation、checkpoint、
-  publication、runtime、controlled operation、failure 和 blocked affordance；Plugin-free Standard 不显示
-  Research/Report/Science/Compute/HPC 占位面板。
+- `src/controller.js` 管理 verified projection polling、消息 admission、显式 bounded runtime drain、exact
+  runtime command status polling 和 approval decision。轮询失败或 release/Session/cursor/projection identity
+  漂移会立即禁用 mutation；重连只接受重新验证的 projection，`close()` 会撤销 timer 和旧请求 generation。
+- `src/view.js` 直接显示 readiness、ordered transcript、Task、Agent、delegation/inbox、Approval、
+  AgentAuthorityLease、Workspace generation、checkpoint、publication、runtime command、controlled operation、
+  failure 和 blocked affordance，并明确把本地 change observation 与 Host canonical event stream 区分开；
+  Plugin-free Standard 不显示 Research/Report/Science/Compute/HPC 占位面板。
 
 这表示目标 UI 代码和 build closure 已经只使用 `@2`。它不表示真实部署已切换：真正 activation 仍要求
 后续获批的 offline cutover、exact release 文件和 Host Distribution mount。
@@ -67,4 +70,5 @@ npm run build
 ```
 
 测试覆盖 Plugin-free Core shell、inactive/degraded affordance、missing/stale renderer、closed Core 子结构、
-旧 payload/event 拒绝、完整响应 identity、post-dispatch unknown effect 和 canonical mutation re-inspection。
+私有 claim/lease token 拒绝、旧 projection observation 拒绝、轮询失败/重连/关闭、完整响应 identity、
+post-dispatch unknown effect、stale pre-mutation projection 和 canonical mutation re-inspection。

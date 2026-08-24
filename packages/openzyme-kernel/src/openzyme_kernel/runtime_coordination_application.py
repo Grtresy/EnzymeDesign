@@ -20,7 +20,9 @@ from openzyme_contracts import KernelStateMutation
 from openzyme_contracts import OutboxRecord
 from openzyme_contracts import SessionRuntimeLeaseMode
 from openzyme_contracts import UnitOfWorkRequest
+from openzyme_contracts import WorkflowAuthoritySignalSourceKind
 from openzyme_contracts import canonical_sha256_digest
+from openzyme_contracts import require_digest
 from openzyme_contracts import require_identifier
 from openzyme_extension_spi import KernelCommandContext
 from openzyme_extension_spi import KernelEntityRef
@@ -28,6 +30,8 @@ from openzyme_extension_spi import KernelMutationReceipt
 
 from .authority_application import evaluate_authority_payload
 from .errors import KernelContractError
+from .workflow_authority_application import ExistingWorkflowAuthoritySignalRequest
+from .workflow_authority_application import WorkflowAuthorityUnitOfWorkOwner
 
 
 _RETIRED_MEMBER_STATES = frozenset({"completed", "failed", "stopped", "shutdown"})
@@ -128,6 +132,10 @@ class RuntimeSignalEnqueueCommand:
     reason: AgentRuntimeSignalReason
     target_authority_lease_id: str
     workspace_generation: int
+    workflow_authority_id: str
+    workflow_authority_epoch: int
+    workflow_authority_digest: str
+    workflow_authority_source_kind: WorkflowAuthoritySignalSourceKind
     task_id: str | None = None
     lane_id: str | None = None
     source_ref: str | None = None
@@ -138,13 +146,24 @@ class RuntimeSignalEnqueueCommand:
             "agent_id",
             "agent_member_id",
             "target_authority_lease_id",
+            "workflow_authority_id",
+            "workflow_authority_digest",
+            "source_ref",
         ):
             require_identifier(getattr(self, field_name), field_name=field_name)
-        for field_name in ("task_id", "lane_id", "source_ref"):
+        for field_name in ("task_id", "lane_id"):
             value = getattr(self, field_name)
             if value is not None:
                 require_identifier(value, field_name=field_name)
         _positive_seconds(self.workspace_generation, field_name="workspace_generation")
+        _positive_seconds(
+            self.workflow_authority_epoch,
+            field_name="workflow_authority_epoch",
+        )
+        require_digest(
+            self.workflow_authority_digest,
+            field_name="workflow_authority_digest",
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,6 +245,10 @@ class RuntimeCoordinationKernelApplicationService:
         self._reader = reader
         self._clock = clock
         self._ids = ids
+        self._workflow_authority = WorkflowAuthorityUnitOfWorkOwner(
+            clock=clock,
+            ids=ids,
+        )
 
     def enqueue_signal(
         self, command: RuntimeSignalEnqueueCommand
@@ -241,27 +264,17 @@ class RuntimeCoordinationKernelApplicationService:
                 "reason": command.reason.value,
                 "target_authority_lease_id": command.target_authority_lease_id,
                 "workspace_generation": command.workspace_generation,
+                "workflow_authority_id": command.workflow_authority_id,
+                "workflow_authority_epoch": command.workflow_authority_epoch,
+                "workflow_authority_digest": command.workflow_authority_digest,
+                "workflow_authority_source_kind": (
+                    command.workflow_authority_source_kind.value
+                ),
                 "task_id": command.task_id,
                 "lane_id": command.lane_id,
                 "source_ref": command.source_ref,
             }
         )
-        existing = self._reader.read(
-            entity_type="agent_runtime_signal", entity_id=command.signal_id
-        )
-        if existing is not None:
-            if existing.payload.get("enqueue_command_digest") != command_digest:
-                raise KernelContractError(
-                    "runtime_signal_identity_conflict",
-                    "Signal identity already names another occurrence",
-                )
-            return self._receipt(
-                context=command.context,
-                operation="signal.enqueue",
-                record=existing,
-                mutation_applied=False,
-            )
-
         request = self._uow_request(command.context, command_digest)
         unit = self._store.begin(request)
         try:
@@ -272,6 +285,53 @@ class RuntimeCoordinationKernelApplicationService:
                 operation="runtime.signal.enqueue",
                 scope_id=command.signal_id,
             )
+            existing = unit.read(
+                entity_type="agent_runtime_signal",
+                entity_id=command.signal_id,
+            )
+            if existing is not None:
+                if existing.payload.get("enqueue_command_digest") != command_digest:
+                    raise KernelContractError(
+                        "runtime_signal_identity_conflict",
+                        "Signal identity already names another occurrence",
+                    )
+                link, binding = self._workflow_authority.require_signal_link(
+                    unit,
+                    signal_id=command.signal_id,
+                )
+                if (
+                    link.authority_id != command.workflow_authority_id
+                    or link.authority_epoch != command.workflow_authority_epoch
+                    or link.authority_binding_digest
+                    != command.workflow_authority_digest
+                    or binding.authorized_actor_id != command.agent_member_id
+                ):
+                    raise KernelContractError(
+                        "workflow_authority_link_conflict",
+                        "Duplicate signal carries another workflow authority",
+                    )
+                unit.rollback()
+                link_snapshot = KernelRecordSnapshot.create(
+                    entity_type="runtime_signal_authority_link",
+                    entity_id=link.signal_id,
+                    state_version=1,
+                    payload=link.to_dict(),
+                )
+                return self._receipt(
+                    context=command.context,
+                    operation="signal.enqueue",
+                    record=existing,
+                    mutation_applied=False,
+                    extra_records=(link_snapshot,),
+                    result={
+                        "workflow_authority_id": link.authority_id,
+                        "workflow_authority_epoch": link.authority_epoch,
+                        "workflow_authority_digest": (
+                            link.authority_binding_digest
+                        ),
+                        "runtime_signal_authority_link_digest": link.link_digest,
+                    },
+                )
             member = self._require_member(
                 unit,
                 session_id=command.context.session_id,
@@ -303,6 +363,19 @@ class RuntimeCoordinationKernelApplicationService:
                 created_at=now,
                 enqueue_command_digest=command_digest,
             )
+            signal_link = self._workflow_authority.link_existing(
+                unit,
+                ExistingWorkflowAuthoritySignalRequest(
+                    session_id=command.context.session_id,
+                    authority_id=command.workflow_authority_id,
+                    authority_epoch=command.workflow_authority_epoch,
+                    authority_binding_digest=command.workflow_authority_digest,
+                    authorized_actor_id=command.agent_member_id,
+                    signal_id=command.signal_id,
+                    causation_ref=str(command.source_ref),
+                    source_kind=command.workflow_authority_source_kind,
+                ),
+            )
             mutation = KernelStateMutation.create(
                 mutation_id=self._ids.new_id(namespace="mutation"),
                 kind=KernelMutationKind.CREATE,
@@ -311,7 +384,11 @@ class RuntimeCoordinationKernelApplicationService:
                 expected_state_version=None,
                 payload=payload,
             )
-            unit.stage(mutation)
+            self._workflow_authority.stage_runtime_signal_with_link(
+                unit,
+                signal_mutation=mutation,
+                link=signal_link,
+            )
             event = self._event_and_outbox(
                 unit,
                 context=command.context,
@@ -319,7 +396,16 @@ class RuntimeCoordinationKernelApplicationService:
                 entity_type="agent_runtime_signal",
                 entity_id=command.signal_id,
                 state_version=1,
-                payload={"signal_id": command.signal_id, "task_transition_performed": False},
+                payload={
+                    "signal_id": command.signal_id,
+                    "workflow_authority_id": signal_link.authority_id,
+                    "workflow_authority_epoch": signal_link.authority_epoch,
+                    "workflow_authority_digest": (
+                        signal_link.authority_binding_digest
+                    ),
+                    "runtime_signal_authority_link_digest": signal_link.link_digest,
+                    "task_transition_performed": False,
+                },
             )
             committed = unit.commit()
         except Exception:
@@ -331,12 +417,27 @@ class RuntimeCoordinationKernelApplicationService:
             state_version=1,
             payload=payload,
         )
+        link_snapshot = KernelRecordSnapshot.create(
+            entity_type="runtime_signal_authority_link",
+            entity_id=signal_link.signal_id,
+            state_version=1,
+            payload=signal_link.to_dict(),
+        )
         return self._receipt(
             context=command.context,
             operation="signal.enqueue",
             record=record,
             mutation_applied=committed.committed,
             event_id=event.event_id,
+            extra_records=(link_snapshot,),
+            result={
+                "workflow_authority_id": signal_link.authority_id,
+                "workflow_authority_epoch": signal_link.authority_epoch,
+                "workflow_authority_digest": (
+                    signal_link.authority_binding_digest
+                ),
+                "runtime_signal_authority_link_digest": signal_link.link_digest,
+            },
         )
 
     def mutate_session_lease(
@@ -495,6 +596,26 @@ class RuntimeCoordinationKernelApplicationService:
                 raise KernelContractError("runtime_signal_not_found", "Signal is absent")
             if signal.state_version != command.expected_signal_version:
                 raise KernelContractError("runtime_signal_state_stale", "Signal version is stale")
+            _link, workflow_binding = self._workflow_authority.require_signal_link(
+                unit,
+                signal_id=command.signal_id,
+            )
+            if (
+                workflow_binding.authorized_actor_id
+                != signal.payload.get("agent_member_id")
+                or (
+                    workflow_binding.task_id is not None
+                    and workflow_binding.task_id != signal.payload.get("task_id")
+                )
+                or (
+                    workflow_binding.lane_id is not None
+                    and workflow_binding.lane_id != signal.payload.get("lane_id")
+                )
+            ):
+                raise KernelContractError(
+                    "workflow_authority_signal_scope_mismatch",
+                    "Runtime signal target/scope differs from its workflow binding",
+                )
             self._require_active_runtime_lease(lease, command)
             member = self._require_member(
                 unit,
@@ -837,6 +958,8 @@ class RuntimeCoordinationKernelApplicationService:
         record: KernelRecordSnapshot,
         mutation_applied: bool,
         event_id: str | None = None,
+        extra_records: tuple[KernelRecordSnapshot, ...] = (),
+        result: Mapping[str, Any] | None = None,
     ) -> KernelMutationReceipt:
         return KernelMutationReceipt.create(
             command_id=context.command_id,
@@ -851,11 +974,21 @@ class RuntimeCoordinationKernelApplicationService:
                     state_version=record.state_version,
                     entity_digest=record.record_digest,
                 ),
+                *(
+                    KernelEntityRef(
+                        entity_kind=item.entity_type,
+                        entity_id=item.entity_id,
+                        state_version=item.state_version,
+                        entity_digest=item.record_digest,
+                    )
+                    for item in extra_records
+                ),
             ),
             event_refs=() if event_id is None else (event_id,),
             result={
                 "task_transition_performed": False,
                 "record_digest": record.record_digest,
+                **({} if result is None else result),
             },
         )
 

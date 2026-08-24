@@ -2,8 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from dataclasses import field
+from dataclasses import replace
 from typing import Any
 
+from .failures import FailureObservation
+from .failures import PrivateDiagnosticRecord
+from .failures import parse_failure_observation
+from .failures import validate_failure_diagnostic_pair
 from .identity import JsonValue
 from .identity import canonical_sha256_digest
 from .identity import freeze_json
@@ -77,8 +83,18 @@ class ToolResult:
     failure_observation: Mapping[str, JsonValue] | None = None
     terminal_action: str | None = None
     terminates_turn: bool = False
+    private_diagnostic: PrivateDiagnosticRecord | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
+        if self.private_diagnostic is not None and not isinstance(
+            self.private_diagnostic,
+            PrivateDiagnosticRecord,
+        ):
+            raise TypeError("private_diagnostic must be a PrivateDiagnosticRecord")
         for field_name in ("call_id", "tool_name", "status"):
             require_identifier(getattr(self, field_name), field_name=field_name)
         for field_name in ("error_code", "terminal_action"):
@@ -103,7 +119,24 @@ class ToolResult:
             )
             if not isinstance(observation, Mapping):
                 raise ValueError("failure_observation must be a JSON object")
+            parsed = parse_failure_observation(json_compatible(observation))
+            if not isinstance(parsed, FailureObservation):
+                raise ValueError("legacy failure cannot enter a current ToolResult")
             object.__setattr__(self, "failure_observation", observation)
+            if self.ok:
+                raise ValueError("successful ToolResult cannot carry a failure")
+            if self.private_diagnostic is not None:
+                validate_failure_diagnostic_pair(
+                    replace(
+                        parsed,
+                        private_diagnostic_digest=(
+                            self.private_diagnostic.record_digest
+                        ),
+                    ),
+                    self.private_diagnostic,
+                )
+        elif self.private_diagnostic is not None:
+            raise ValueError("private diagnostic requires a public failure observation")
         if self.ok and self.error_code is not None:
             raise ValueError("successful ToolResult must not carry error_code")
         if not self.ok and self.error_code is None:

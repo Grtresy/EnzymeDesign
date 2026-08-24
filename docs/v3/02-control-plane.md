@@ -446,6 +446,27 @@ generation/fence，parent 在同一事务变为 `superseded`。revoke 需要 `au
 operation-specific `AuthorityGrant` 使其 generation/fence 与 terminal lease 一致。reason 只进入 durable
 audit event，不进入签名 authority payload；失败不会留下 child、parent 半更新或 outbox。
 
+workspace bootstrap再以`WorkspaceProvisioningIntent`记录exact generation/repository pin/provider/target/Adapter
+binding和claim lease。Session bootstrap可以在operator authorization下原子创建RESERVED generation与pending
+lease；worker不能使用该pending Agent lease冒充mutation authority，而是以exact provisioning occurrence claim
+回到专用Kernel settlement。READY settlement必须同时CAS generation、runtime binding、member、lease、intent；
+blocked/reconcile也以同一owner事实闭合。mechanism在短SQLite事务外运行，callback identity漂移整体拒绝。
+
+`dispatch_in_doubt` 后原 `WorkspaceProvisioningIntent` 永久保持 blocked。显式 reconcile command 创建独立
+`WorkspaceProvisioningReconciliation`，并固定原 intent state-version/digest、原 request/dispatch receipt、
+attempt/parent、claim lease与result receipt；worker只能观察原 occurrence，不能重新 provision。reconciliation
+READY时可以原子激活原 generation/runtime binding/lease，但不能重写原 intent、receipt或failure；terminal
+BLOCKED diagnosis 后只有显式 successor command可以创建下一 monotonic generation、新pending lease和新intent。
+
+`WorkflowAuthorityBinding`与`RuntimeSignalAuthorityLink`是另一组Kernel entities。root message UoW原子写
+conversation/inbox/binding/signal/link；delegation以parent epoch/digest为expected identity派生子集；approval、
+continuation、protocol wakeup复制或显式派生causal authority。binding使用closed
+`active | revoked | expired | consumed` lifecycle与monotonic epoch；没有link的legacy signal不被online修复。
+
+runtime command注册和outcome消费还必须把structured context、tool exposure、workflow authority identity纳入
+command digest。首次consume原子写full outcome、assistant/tool conversation、canonical FailureObservation、
+signal/settlement/continuation/event/outbox；exact duplicate只读返回，collision/stale不产生partial rows。
+
 ## Final schema
 
 normal migration loader 的物理 owner 已迁为 `openzyme-store-sqlite`。目标 schema 由所选 Distribution 的
@@ -457,7 +478,10 @@ adoption 成功写 `offline_removal_complete`。old、unknown 或 `offline_remov
 final schema 中保留 `legacy_removal_ledger/items` 只用于证明 deployment removal 完成与幂等重试，
 它们不提供旧领域读取、写入、投影或 tool surface。
 
-当前 schema 可在内存 SQLite 中重算出 150 张业务表、134 个索引、679 个触发器和 422 个外键；每个 index/
+当前 schema 可在内存 SQLite 中重算出 159 张业务表、134 个索引、706 个触发器和 462 个外键；本产品闭环新增的
+Kernel owner 表分别持久化 workspace provisioning intent、immutable provisioning receipt、durable provisioning
+reconciliation、workflow authority binding、runtime signal authority link、runtime turn context、tool exposure
+snapshot、command expansion 与 full runtime turn outcome。每个 index/
 trigger/FK 通过 origin table 继承唯一 semantic owner。运行
 `scripts/partition-openzyme-sqlite-schema.py` 会按 owner 与 tables/indexes/triggers/finalize phase 生成 25 个
 closed migration bundles；`--check` 必须证明分区重放后的 `sqlite_master`、`user_version` 与全部 FK 数量同

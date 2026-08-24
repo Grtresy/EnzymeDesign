@@ -154,6 +154,9 @@ from .workspace_status import AgentGitWorkspaceStatusError
 from .workspace_status import AgentGitWorkspaceStatusMechanism
 from .workspace_status import WORKSPACE_STATUS_SCRIPT
 from .workspace_status import parse_workspace_status_output
+from .workspace_provisioner import GitLfsWorkspaceProvisioner
+from .workspace_provisioner import GitLfsWorkspaceProvisioningPlan
+from .workspace_provisioner import GitLfsWorkspaceProvisioningPlanResolverPort
 from .ref_policy import GitRefAclValidator
 from .ref_policy import GitRefUpdate
 from .ref_policy import HOST_PUBLICATION_REF_OWNER
@@ -227,6 +230,9 @@ __all__ = [
     "AgentGitWorkspaceVersionConflictError",
     "AgentGitWorkspaceStatusError",
     "AgentGitWorkspaceStatusMechanism",
+    "GitLfsWorkspaceProvisioner",
+    "GitLfsWorkspaceProvisioningPlan",
+    "GitLfsWorkspaceProvisioningPlanResolverPort",
     "AuthenticatedRepositoryRequest",
     "AgentGitWorkspaceProvisioningError",
     "AgentGitWorkspaceProvisioningMechanism",

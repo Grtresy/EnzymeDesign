@@ -30,9 +30,9 @@ def test_composite_startup_proves_both_exact_closures_without_writes() -> None:
     proof = verify_composite_store_schema_read_only(connection)
 
     assert proof.user_version == 4
-    assert proof.owner_schema.table_count == 150
+    assert proof.owner_schema.table_count == 159
     assert proof.store_schema.object_count == 23
-    assert proof.complete_object_count == 150 + 134 + 679 + 23
+    assert proof.complete_object_count == 159 + 134 + 706 + 23
     assert proof.mutation_applied is False
     assert proof.plugin_import_performed is False
     assert proof.writer_enabled is False

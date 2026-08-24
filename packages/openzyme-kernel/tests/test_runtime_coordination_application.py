@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC
 from datetime import datetime
 
@@ -11,6 +12,10 @@ from openzyme_contracts import KernelRecordSnapshot
 from openzyme_contracts import KernelStateMutation
 from openzyme_contracts import SessionRuntimeLeaseMode
 from openzyme_contracts import UnitOfWorkRequest
+from openzyme_contracts import WorkflowAuthorityBinding
+from openzyme_contracts import WorkflowAuthorityDerivationKind
+from openzyme_contracts import WorkflowAuthoritySignalSourceKind
+from openzyme_contracts import WorkflowAuthorityStatus
 from openzyme_contracts import canonical_sha256_digest
 from openzyme_extension_spi import KernelCommandContext
 from openzyme_kernel import KernelContractError
@@ -70,8 +75,15 @@ def _authority_payload(
 
 
 def _store() -> InMemoryControlStore:
+    workflow = _workflow_authority()
     return InMemoryControlStore(
         (
+            KernelRecordSnapshot.create(
+                entity_type="workflow_authority_binding",
+                entity_id=workflow.authority_id,
+                state_version=1,
+                payload=workflow.to_dict(),
+            ),
             KernelRecordSnapshot.create(
                 entity_type="session",
                 entity_id="session-1",
@@ -121,6 +133,36 @@ def _store() -> InMemoryControlStore:
     )
 
 
+def _workflow_authority() -> WorkflowAuthorityBinding:
+    registry_digest = _digest("workflow-registry")
+    selected_refs = ("workflow.manual-resume",)
+    return WorkflowAuthorityBinding(
+        authority_id="workflow-authority-1",
+        session_id="session-1",
+        project_id="project-1",
+        request_lineage_id="request-lineage-1",
+        source_message_id="message-1",
+        source_principal_id="user-1",
+        authorized_actor_id="member-1",
+        selected_workflow_refs=selected_refs,
+        selection_digest=canonical_sha256_digest(
+            {
+                "schema_version": "workflow_selection_binding@1",
+                "registry_snapshot_digest": registry_digest,
+                "selected_workflow_refs": list(selected_refs),
+            }
+        ),
+        registry_snapshot_digest=registry_digest,
+        derivation_kind=WorkflowAuthorityDerivationKind.ROOT_MESSAGE,
+        status=WorkflowAuthorityStatus.ACTIVE,
+        epoch=1,
+        state_version=1,
+        created_at="2026-08-19T00:00:00+00:00",
+        updated_at="2026-08-19T00:00:00+00:00",
+        task_id="task-1",
+    )
+
+
 def _service(
     store: InMemoryControlStore,
 ) -> tuple[RuntimeCoordinationKernelApplicationService, DeterministicClock]:
@@ -149,6 +191,7 @@ def _acquire(service: RuntimeCoordinationKernelApplicationService):  # noqa: ANN
 
 
 def _enqueue(service: RuntimeCoordinationKernelApplicationService):  # noqa: ANN202
+    workflow = _workflow_authority()
     return service.enqueue_signal(
         RuntimeSignalEnqueueCommand(
             context=_context("command-enqueue"),
@@ -158,7 +201,14 @@ def _enqueue(service: RuntimeCoordinationKernelApplicationService):  # noqa: ANN
             reason=AgentRuntimeSignalReason.MANUAL_RESUME,
             target_authority_lease_id="target-authority-1",
             workspace_generation=7,
+            workflow_authority_id=workflow.authority_id,
+            workflow_authority_epoch=workflow.epoch,
+            workflow_authority_digest=workflow.binding_digest,
+            workflow_authority_source_kind=(
+                WorkflowAuthoritySignalSourceKind.CONTINUATION
+            ),
             task_id="task-1",
+            source_ref="manual-resume-1",
         )
     )
 
@@ -204,6 +254,12 @@ def test_runtime_lease_signal_and_claim_are_atomic_canonical_facts() -> None:
     assert signal.payload["session_fencing_token"] == 1
     assert signal.payload["attempt_count"] == 1
     assert signal.payload["process_epoch"] == 2
+    link = store.read(
+        entity_type="runtime_signal_authority_link",
+        entity_id="signal-1",
+    )
+    assert link is not None
+    assert link.payload["authority_id"] == "workflow-authority-1"
     assert enqueue.mutation_applied is True
     assert claim.mutation_applied is True
     assert store.read(entity_type="task", entity_id="task-1") is None
@@ -211,6 +267,25 @@ def test_runtime_lease_signal_and_claim_are_atomic_canonical_facts() -> None:
     assert all(
         event.payload["task_transition_performed"] is False for event in store.events
     )
+
+
+def test_duplicate_signal_enqueue_returns_the_same_current_authority_link() -> None:
+    store = _store()
+    service, _ = _service(store)
+
+    first = _enqueue(service)
+    duplicate = _enqueue(service)
+
+    assert first.mutation_applied is True
+    assert duplicate.mutation_applied is False
+    assert duplicate.result["workflow_authority_id"] == "workflow-authority-1"
+    assert duplicate.result["workflow_authority_epoch"] == 1
+    links = tuple(
+        record
+        for record in store.records
+        if record.entity_type == "runtime_signal_authority_link"
+    )
+    assert len(links) == 1
 
 
 def test_expired_claim_can_be_reclaimed_only_under_same_live_runtime_lease() -> None:
@@ -277,6 +352,60 @@ def test_stale_process_epoch_rejects_claim_without_mutation() -> None:
     assert stale.value.code == "runtime_signal_process_epoch_stale"
     after = store.read(entity_type="agent_runtime_signal", entity_id="signal-1")
     assert after is not None and after.record_digest == before.record_digest
+
+
+def test_revoked_workflow_epoch_rejects_signal_claim_without_runtime_effect() -> None:
+    store = _store()
+    service, _ = _service(store)
+    _acquire(service)
+    _enqueue(service)
+    current = store.read(
+        entity_type="workflow_authority_binding",
+        entity_id="workflow-authority-1",
+    )
+    assert current is not None
+    binding = WorkflowAuthorityBinding.from_dict(current.payload)
+    revoked = replace(
+        binding,
+        status=WorkflowAuthorityStatus.REVOKED,
+        epoch=2,
+        state_version=2,
+        updated_at="2026-08-19T00:00:01+00:00",
+        revoked_at="2026-08-19T00:00:01+00:00",
+    )
+    context = _context("revoke-workflow")
+    unit = store.begin(
+        UnitOfWorkRequest(
+            unit_of_work_id="uow-revoke-workflow",
+            command_id=context.command_id,
+            session_id=context.session_id,
+            actor_id=context.actor_id,
+            authority_lease_id=context.authority_lease_id,
+            authority_generation=context.authority_generation,
+            authority_fence=context.authority_fence,
+            expected_session_version=context.expected_session_version,
+            idempotency_key=context.idempotency_key,
+            command_digest=_digest("revoke-workflow"),
+        )
+    )
+    unit.stage(
+        KernelStateMutation.create(
+            mutation_id="mutation-revoke-workflow",
+            kind=KernelMutationKind.REPLACE,
+            entity_type="workflow_authority_binding",
+            entity_id=binding.authority_id,
+            expected_state_version=current.state_version,
+            payload=revoked.to_dict(),
+        )
+    )
+    unit.commit()
+
+    with pytest.raises(KernelContractError) as stale:
+        _claim(service, store, expected_version=1)
+
+    assert stale.value.code == "workflow_authority_stale"
+    signal = store.read(entity_type="agent_runtime_signal", entity_id="signal-1")
+    assert signal is not None and signal.payload["status"] == "pending"
 
 
 def test_expired_runtime_lease_rejects_claim_and_reacquire_advances_fence() -> None:

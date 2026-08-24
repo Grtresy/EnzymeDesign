@@ -17,6 +17,7 @@ from scripts.test_gate.hypothesis_storage import (  # noqa: E402
 
 ENV_FILES = (".env", ".env.test")
 HYPOTHESIS_STORAGE_DIRECTORY = configure_hypothesis_storage(repo_root=REPO_ROOT)
+pytest_plugins = ("scripts.test_gate.no_live_effects",)
 
 
 def _parse_env_file(path: Path) -> dict[str, str]:

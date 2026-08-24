@@ -218,7 +218,14 @@ class SQLiteConnectionProvider:
                 },
             )
         try:
-            connection = sqlite3.connect(self.configuration.database_path)
+            # The admitted writer is shared by the Host request path and bounded
+            # Distribution workers.  SQLiteControlStore serializes every access;
+            # disabling the Python thread-affinity check permits that Store-owned
+            # hand-off without giving callers a raw-SQL concurrency contract.
+            connection = sqlite3.connect(
+                self.configuration.database_path,
+                check_same_thread=False,
+            )
             connection.execute(f"PRAGMA busy_timeout = {self.configuration.busy_timeout_ms}")
             connection.execute("PRAGMA foreign_keys = ON")
             # Revalidate on the exact writer handle before returning authority.

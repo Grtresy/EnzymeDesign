@@ -34,10 +34,10 @@ def test_owner_partitioned_migration_catalog_is_closed_and_reproducible() -> Non
     assert observation["mutation_applied"] is False
     assert observation["bundle_count"] == 25
     assert observation["object_counts"] == {
-        "tables": 150,
+        "tables": 159,
         "indexes": 134,
-        "triggers": 679,
-        "foreign_keys": 422,
+        "triggers": 706,
+        "foreign_keys": 462,
     }
 
 
@@ -63,4 +63,4 @@ def test_each_bundle_has_one_owner_and_exact_digest() -> None:
         assert not seen_objects.intersection(bundle["object_identities"])
         seen_objects.update(bundle["object_identities"])
 
-    assert len(seen_objects) == 150 + 134 + 679 + 2
+    assert len(seen_objects) == 159 + 134 + 706 + 2

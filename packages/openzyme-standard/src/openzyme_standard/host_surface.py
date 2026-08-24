@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from openzyme_contracts import ClockPort
@@ -15,6 +16,7 @@ from .application_runtime import StandardOperationalAdapterSelection
 from .application_runtime import StandardOperationalRuntimePorts
 from .application_runtime import build_standard_kernel_application_runtime
 from .host_gateway import StandardSessionBootstrapAuthorityPort
+from .host_gateway import StandardWorkspaceBootstrapDefaults
 
 
 def build_standard_file_workspace_v2_host_surface(
@@ -47,6 +49,10 @@ def build_standard_v2_host_app(
     clock: ClockPort,
     ids: IdGeneratorPort,
     bootstrap_authority: StandardSessionBootstrapAuthorityPort,
+    bootstrap_defaults_by_project: Mapping[
+        str,
+        StandardWorkspaceBootstrapDefaults,
+    ],
     security_policy: HostSecurityPolicy,
     operational_ports: StandardOperationalRuntimePorts | None = None,
     operational_selection: StandardOperationalAdapterSelection | None = None,
@@ -64,6 +70,7 @@ def build_standard_v2_host_app(
         clock=clock,
         ids=ids,
         bootstrap_authority=bootstrap_authority,
+        bootstrap_defaults_by_project=bootstrap_defaults_by_project,
         operational_ports=operational_ports,
         operational_selection=operational_selection,
     )

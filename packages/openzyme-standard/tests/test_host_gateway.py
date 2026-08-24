@@ -14,8 +14,11 @@ from openzyme_contracts import FILE_WORKSPACE_CORE_SECTION_FIELDS
 from openzyme_contracts import FileWorkspaceCoreProjectionV2
 from openzyme_contracts import FileWorkspacePublicV2
 from openzyme_contracts import ExternalEffectCertainty
+from openzyme_contracts import GitObjectFormat
 from openzyme_contracts import KernelRecordSnapshot
 from openzyme_contracts import LayeredReleaseIdentity
+from openzyme_contracts import ProjectRepositoryBinding
+from openzyme_contracts import RepositoryRefNamespacePolicy
 from openzyme_contracts import SessionBootstrapAuthorization
 from openzyme_contracts import SessionBootstrapAuthorityDecision
 from openzyme_contracts import SessionCapabilityBindingRevision
@@ -26,6 +29,8 @@ from openzyme_contracts import ToolResult
 from openzyme_contracts import WorkspaceGeneration
 from openzyme_contracts import WorkspaceGenerationStatus
 from openzyme_contracts import WorkspaceKind
+from openzyme_contracts import WorkspaceProvisioningIntent
+from openzyme_contracts import WorkspaceProvisioningStatus
 from openzyme_contracts import AgentRuntimeSignalReason
 from openzyme_contracts import AgentRuntimeSignalStatus
 from openzyme_contracts import SessionRuntimeLease
@@ -36,6 +41,8 @@ from openzyme_host_api import FileWorkspaceV2HostProjection
 from openzyme_host_api import HostV2CommandError
 from openzyme_host_api import HostV2MutationInvocation
 from openzyme_host_api import HostV2SessionBootstrapInvocation
+from openzyme_host_api import HostV2WorkspaceProvisioningReconciliationInvocation
+from openzyme_host_api import HostV2WorkspaceProvisioningSuccessorInvocation
 from openzyme_kernel import SessionBootstrapCommand
 from openzyme_kernel.testing import DeterministicClock
 from openzyme_kernel.testing import DeterministicIdGenerator
@@ -44,23 +51,24 @@ from openzyme_kernel import AgentAuthorityLeaseKernelApplicationService
 from openzyme_kernel import ApprovalKernelApplicationService
 from openzyme_kernel import CollaborationKernelApplicationService
 from openzyme_kernel import MessageIngressKernelApplicationService
-from openzyme_kernel import ControlStoreRuntimeOutcomeRepository
 from openzyme_kernel import ProtocolKernelApplicationService
-from openzyme_kernel import RuntimeCoordinationKernelApplicationService
 from openzyme_kernel import RuntimeTurnAdmission
 from openzyme_kernel import RuntimeTurnBudget
-from openzyme_kernel import RuntimeTurnCoordinator
+from openzyme_kernel import RuntimeCommandKernelApplicationService
 from openzyme_kernel import TaskKernelApplicationService
 from openzyme_standard import STANDARD_ROOT_AUTHORITY_OPERATIONS
 from openzyme_standard import StandardKernelCoordinationRouteApplication
 from openzyme_standard import StandardKernelOperationalRouteApplication
 from openzyme_standard import StandardLocalWorkspaceToolContextResolver
 from openzyme_standard import StandardBoundedRuntimeDrainApplication
+from openzyme_standard import StandardWorkspaceProvisioningWorker
 from openzyme_runtime_spi import RuntimeMessage
 from openzyme_runtime_spi import RuntimeMessageRole
 from openzyme_runtime_spi import RuntimeTurnDisposition
 from openzyme_runtime_spi import RuntimeTurnOutcome
 from openzyme_standard import StandardHostKernelCommandGateway
+from openzyme_standard import StandardWorkspaceBootstrapDefaults
+from openzyme_standard.workflow_registry import StandardExplicitEmptyWorkflowRegistry
 
 import pytest
 
@@ -102,6 +110,35 @@ def _epoch() -> DeploymentActivationEpoch:
     )
 
 
+def _repository_binding() -> ProjectRepositoryBinding:
+    return ProjectRepositoryBinding.create(
+        binding_id="repository-binding-1",
+        project_id="project-1",
+        binding_version=1,
+        repository_id="repository-1",
+        internal_git_service_id="git-service-1",
+        internal_git_endpoint="https://git.internal/repositories/repository-1.git",
+        lfs_service_id="lfs-service-1",
+        lfs_endpoint=(
+            "https://git.internal/repositories/repository-1.git/info/lfs"
+        ),
+        upstream_identity="upstream-1",
+        upstream_url="https://example.invalid/repository-1.git",
+        object_format=GitObjectFormat.SHA1,
+        default_base_ref="refs/heads/main",
+        default_base_commit="1" * 40,
+        ref_namespace_policy=RepositoryRefNamespacePolicy(
+            private_prefix="refs/openzyme/private",
+            publication_prefix="refs/openzyme/publications",
+            historical_prefix="refs/openzyme/historical",
+        ),
+        repository_policy_version="policy-v1",
+        repository_policy_digest=_digest("repository-policy"),
+        created_at="2026-08-21T10:00:00+00:00",
+        created_by="user:operator-1",
+    )
+
+
 @dataclass
 class _BootstrapService:
     commands: list[SessionBootstrapCommand]
@@ -135,6 +172,14 @@ class _Authority:
             ],
             extension_bundle_digest=facts["extension_bundle_digest"],
             capability_binding_digest=facts["capability_binding_digest"],
+            repository_pin_digest=facts["repository_pin_digest"],
+            workspace_generation=facts["workspace_generation"],
+            workspace_provisioning_intent_id=facts[
+                "workspace_provisioning_intent_id"
+            ],
+            workspace_provisioning_intent_digest=facts[
+                "workspace_provisioning_intent_digest"
+            ],
             generation=1,
             fence=1,
             issued_at=issued_at.isoformat(),
@@ -167,6 +212,15 @@ def test_standard_gateway_builds_exact_atomic_kernel_bootstrap_command() -> None
         clock=DeterministicClock(datetime(2026, 8, 21, 10, tzinfo=UTC)),
         ids=DeterministicIdGenerator(),
         route_applications={},
+        bootstrap_defaults_by_project={
+            "project-1": StandardWorkspaceBootstrapDefaults(
+                repository_binding=_repository_binding(),
+                provider_id="openzyme.workspace.git-lfs",
+                target_id="local-host",
+                adapter_binding_digest=_digest("workspace-provisioner"),
+            )
+        },
+        workspace_provisioning=object(),  # type: ignore[arg-type]
     )
 
     receipt = gateway.bootstrap(
@@ -193,6 +247,13 @@ def test_standard_gateway_builds_exact_atomic_kernel_bootstrap_command() -> None
         _epoch().release_identity.extension_bundle_digest
     )
     assert command.session_composition_pin.deployment_epoch_id == "epoch-1"
+    assert command.project_repository_binding == _repository_binding()
+    assert command.repository_pin.binding_canonical_digest == (
+        command.project_repository_binding.canonical_digest
+    )
+    assert command.workspace_generation.status is WorkspaceGenerationStatus.RESERVED
+    assert command.workspace_provisioning_intent.status.value == "pending"
+    assert command.root_authority_lease.state is AgentAuthorityLeaseState.PENDING
     assert command.root_authority_lease.agent_member_id == command.master_member_id
     operations = command.root_authority_lease.grants[0].operations
     assert operations == STANDARD_ROOT_AUTHORITY_OPERATIONS
@@ -293,6 +354,7 @@ def _coordination_fixture() -> tuple[
     core["agents"] = [{**member_payload, "state_version": 1}]
     core["authority_leases"] = [{**lease.to_dict(), "state_version": 1}]
     core["capability_binding"] = {"binding_digest": binding_digest}
+    core["failures"] = {"observations": []}
     core["tool_reflection"] = {
         "declared_tool_catalog_digest": _epoch().release_identity.declared_tool_catalog_digest,
         "capability_binding_digest": binding_digest,
@@ -350,14 +412,265 @@ def _coordination_fixture() -> tuple[
             ),
             message_ingress=MessageIngressKernelApplicationService(
                 store=store,
+                reader=store,
                 clock=clock,
                 ids=ids,
+                workflow_registry=StandardExplicitEmptyWorkflowRegistry(clock=clock),
             ),
             ids=ids,
         ),
         store,
         host_projection,
     )
+
+
+@dataclass
+class _ProvisioningKernelWorker:
+    calls: list[dict[str, object]]
+
+    def admit_reconciliation(self, **kwargs):  # noqa: ANN003, ANN201
+        self.calls.append({"operation": "admit_reconciliation", **kwargs})
+        context = kwargs["context"]
+        return KernelMutationReceipt.create(
+            command_id=context.command_id,
+            service_id="openzyme.kernel.workspace-provisioning",
+            operation="admit_reconciliation",
+            mutation_applied=True,
+            effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+            result={
+                "reconciliation_enqueued": True,
+                "external_effect_performed": False,
+                "runtime_executed": False,
+                "task_transition_performed": False,
+                "fallback_performed": False,
+            },
+        )
+
+    def replace_failed_generation(self, **kwargs):  # noqa: ANN003, ANN201
+        self.calls.append({"operation": "create_successor", **kwargs})
+        context = kwargs["context"]
+        return KernelMutationReceipt.create(
+            command_id=context.command_id,
+            service_id="openzyme.kernel.workspace-provisioning",
+            operation="replace_failed_generation",
+            mutation_applied=True,
+            effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+        )
+
+
+def _provisioning_intent() -> WorkspaceProvisioningIntent:
+    return WorkspaceProvisioningIntent(
+        intent_id="workspace-intent-1",
+        session_id="session-1",
+        agent_member_id="master-1",
+        workspace_id="workspace-1",
+        generation=1,
+        repository_pin_digest=_digest("repository-pin"),
+        provider_id="openzyme.workspace.git-lfs",
+        target_id="local-host",
+        adapter_binding_digest=_digest("workspace-provisioner"),
+        controlled_operation_id="workspace-operation-1",
+        status=WorkspaceProvisioningStatus.PENDING,
+        state_version=1,
+        claim_epoch=0,
+        created_at="2026-08-21T10:00:00+00:00",
+        updated_at="2026-08-21T10:00:00+00:00",
+    )
+
+
+def _with_provisioning_precondition(
+    precondition: FileWorkspaceV2HostProjection,
+    intent: WorkspaceProvisioningIntent,
+) -> FileWorkspaceV2HostProjection:
+    core = dict(precondition.projection.core.payload)
+    session = dict(core["session"])  # type: ignore[arg-type]
+    session["resident_readiness"] = {
+        "schema_version": "resident_teammate_readiness@1",
+        "readiness": "provisioning",
+        "workspace_id": intent.workspace_id,
+        "workspace_generation": intent.generation,
+        "provisioning_intent_id": intent.intent_id,
+        "provisioning_intent_digest": intent.intent_digest,
+        "failure_id": None,
+        "next_action": "wait_for_provisioning_worker",
+    }
+    core["session"] = session
+    workspace = dict(core["workspace"])  # type: ignore[arg-type]
+    workspace["provisioning"] = {
+        "schema_version": "workspace_provisioning_public@2",
+        "intent_id": intent.intent_id,
+        "intent_digest": intent.intent_digest,
+        "intent_state_version": intent.state_version,
+        "status": "pending",
+        "workspace_id": intent.workspace_id,
+        "workspace_generation": intent.generation,
+        "runtime_binding_id": None,
+        "failure_id": None,
+        "error_code": None,
+        "effect_certainty": None,
+        "mutation_applied": None,
+        "fallback_performed": False,
+        "retry_permitted": False,
+        "reconcile_required": False,
+        "diagnostic_id": None,
+        "next_action": "wait_for_provisioning_worker",
+        "reconciliation": None,
+    }
+    core["workspace"] = workspace
+    return replace(
+        precondition,
+        projection=FileWorkspacePublicV2(
+            release=precondition.projection.release,
+            core=FileWorkspaceCoreProjectionV2(core),
+            extensions=precondition.projection.extensions,
+        ),
+    )
+
+
+def test_standard_gateway_binds_explicit_provisioning_recovery_without_retry() -> None:
+    _, store, original_precondition = _coordination_fixture()
+    intent = _provisioning_intent()
+    store.seed(
+        KernelRecordSnapshot.create(
+            entity_type="workspace_provisioning_intent",
+            entity_id=intent.intent_id,
+            state_version=intent.state_version,
+            payload=intent.to_dict(),
+        )
+    )
+    raw_worker = _ProvisioningKernelWorker([])
+    driver = StandardWorkspaceProvisioningWorker(
+        worker=raw_worker,  # type: ignore[arg-type]
+        records=store,
+        clock=DeterministicClock(datetime(2026, 8, 21, 10, tzinfo=UTC)),
+        ids=DeterministicIdGenerator(),
+    )
+    gateway = StandardHostKernelCommandGateway(
+        deployment_epoch=_epoch(),
+        bootstrap_service=_BootstrapService([]),  # type: ignore[arg-type]
+        bootstrap_authority=_Authority([]),
+        clock=DeterministicClock(datetime(2026, 8, 21, 10, tzinfo=UTC)),
+        ids=DeterministicIdGenerator(),
+        route_applications={},
+        bootstrap_defaults_by_project={
+            "project-1": StandardWorkspaceBootstrapDefaults(
+                repository_binding=_repository_binding(),
+                provider_id="openzyme.workspace.git-lfs",
+                target_id="local-host",
+                adapter_binding_digest=_digest("workspace-provisioner"),
+            )
+        },
+        workspace_provisioning=driver,
+    )
+    precondition = _with_provisioning_precondition(
+        original_precondition,
+        intent,
+    )
+
+    reconciled = gateway.reconcile_workspace_provisioning(
+        HostV2WorkspaceProvisioningReconciliationInvocation(
+            session_id="session-1",
+            actor_id="user:operator-1",
+            idempotency_key="reconcile-workspace-1",
+            correlation_id="request-reconcile-workspace-1",
+            intent_id=intent.intent_id,
+            intent_digest=intent.intent_digest,
+            expected_intent_version=intent.state_version,
+            claim_seconds=120,
+            precondition=precondition,
+        )
+    )
+    successor = gateway.create_workspace_provisioning_successor(
+        HostV2WorkspaceProvisioningSuccessorInvocation(
+            session_id="session-1",
+            actor_id="user:operator-1",
+            idempotency_key="successor-workspace-1",
+            correlation_id="request-successor-workspace-1",
+            failed_intent_id=intent.intent_id,
+            failed_intent_digest=intent.intent_digest,
+            expected_failed_intent_version=intent.state_version,
+            resolved_reconciliation_id=None,
+            precondition=precondition,
+        )
+    )
+
+    assert reconciled.operation == "admit_reconciliation"
+    assert reconciled.effect_certainty is ExternalEffectCertainty.NO_EFFECT
+    assert reconciled.result["reconciliation_enqueued"] is True
+    assert reconciled.result["external_effect_performed"] is False
+    assert reconciled.result["runtime_executed"] is False
+    assert reconciled.result["task_transition_performed"] is False
+    assert reconciled.result["fallback_performed"] is False
+    assert successor.operation == "replace_failed_generation"
+    assert [call["operation"] for call in raw_worker.calls] == [
+        "admit_reconciliation",
+        "create_successor",
+    ]
+    reconcile_call, successor_call = raw_worker.calls
+    assert reconcile_call["claim_seconds"] == 120
+    assert "reconcile" not in reconcile_call
+    assert "reconcile" not in successor_call
+    for call, idempotency_key, correlation_id in (
+        (
+            reconcile_call,
+            "reconcile-workspace-1",
+            "request-reconcile-workspace-1",
+        ),
+        (
+            successor_call,
+            "successor-workspace-1",
+            "request-successor-workspace-1",
+        ),
+    ):
+        context = call["context"]
+        assert context.session_id == "session-1"  # type: ignore[union-attr]
+        assert context.worker_id == (  # type: ignore[union-attr]
+            "openzyme-standard-workspace-provisioning-worker"
+        )
+        assert context.requested_by_actor_id == (  # type: ignore[union-attr]
+            "user:operator-1"
+        )
+        assert context.idempotency_key == idempotency_key  # type: ignore[union-attr]
+        assert context.correlation_id == correlation_id  # type: ignore[union-attr]
+
+    with pytest.raises(HostV2CommandError) as stale:
+        gateway.reconcile_workspace_provisioning(
+            HostV2WorkspaceProvisioningReconciliationInvocation(
+                session_id="session-1",
+                actor_id="user:operator-1",
+                idempotency_key="reconcile-workspace-stale",
+                correlation_id="request-reconcile-workspace-stale",
+                intent_id=intent.intent_id,
+                intent_digest=_digest("stale-intent"),
+                expected_intent_version=intent.state_version,
+                claim_seconds=120,
+                precondition=precondition,
+            )
+        )
+    assert stale.value.code == "standard_workspace_provisioning_precondition_stale"
+    assert len(raw_worker.calls) == 2
+
+    store_drift = replace(intent, updated_at="2026-08-21T10:01:00+00:00")
+    drifted_precondition = _with_provisioning_precondition(
+        original_precondition,
+        store_drift,
+    )
+    with pytest.raises(HostV2CommandError) as canonical_stale:
+        gateway.reconcile_workspace_provisioning(
+            HostV2WorkspaceProvisioningReconciliationInvocation(
+                session_id="session-1",
+                actor_id="user:operator-1",
+                idempotency_key="reconcile-workspace-store-stale",
+                correlation_id="request-reconcile-workspace-store-stale",
+                intent_id=store_drift.intent_id,
+                intent_digest=store_drift.intent_digest,
+                expected_intent_version=store_drift.state_version,
+                claim_seconds=120,
+                precondition=drifted_precondition,
+            )
+        )
+    assert canonical_stale.value.code == "workspace_provisioning_intent_stale"
+    assert len(raw_worker.calls) == 2
 
 
 def test_standard_coordination_route_uses_projected_cas_and_root_agent() -> None:
@@ -402,10 +715,10 @@ def test_standard_message_route_preserves_user_source_and_only_enqueues_runtime(
             correlation_id="request-send-message-1",
             payload={
                 "message_id": "message-1",
-                "content": "Continue the bounded task",
+                "message": "Continue the bounded task",
                 "task_id": None,
                 "lane_id": None,
-                "skill_keys": ["workflow.code-review"],
+                "workflow_refs": [],
             },
             precondition=precondition,
         )
@@ -417,6 +730,111 @@ def test_standard_message_route_preserves_user_source_and_only_enqueues_runtime(
     assert message.payload["admitted_by_actor_id"] == "master-1"
     assert receipt.result["runtime_executed"] is False
     assert receipt.result["task_transition_performed"] is False
+
+
+def test_internal_content_compatibility_is_explicit_and_mutually_exclusive() -> None:
+    application, store, precondition = _coordination_fixture()
+    receipt = application.invoke(
+        HostV2MutationInvocation(
+            route_id="openzyme.kernel.message.send@2",
+            method="POST",
+            path="/v3/sessions/session-1/messages",
+            session_id="session-1",
+            actor_id="user:operator-1",
+            idempotency_key="send-compatibility-message-1",
+            correlation_id="request-send-compatibility-message-1",
+            payload={
+                "message_id": "message-compatibility-1",
+                "content": "Use the explicit internal compatibility field",
+                "task_id": None,
+                "lane_id": None,
+                "skill_keys": [],
+            },
+            precondition=precondition,
+        )
+    )
+
+    assert receipt.result["runtime_executed"] is False
+    assert store.read(
+        entity_type="conversation_message",
+        entity_id="message-compatibility-1",
+    ).payload["content"] == "Use the explicit internal compatibility field"  # type: ignore[union-attr]
+
+    conflicting, _, conflicting_precondition = _coordination_fixture()
+    with pytest.raises(HostV2CommandError) as caught:
+        conflicting.invoke(
+            HostV2MutationInvocation(
+                route_id="openzyme.kernel.message.send@2",
+                method="POST",
+                path="/v3/sessions/session-1/messages",
+                session_id="session-1",
+                actor_id="user:operator-1",
+                idempotency_key="send-conflicting-message-1",
+                correlation_id="request-send-conflicting-message-1",
+                payload={
+                    "message_id": "message-conflicting-1",
+                    "message": "canonical",
+                    "content": "compatibility",
+                    "task_id": None,
+                    "lane_id": None,
+                    "workflow_refs": [],
+                },
+                precondition=conflicting_precondition,
+            )
+        )
+
+    assert caught.value.code == "standard_kernel_route_payload_invalid"
+    assert caught.value.mutation_applied is False
+
+    null_mixed, _, null_mixed_precondition = _coordination_fixture()
+    with pytest.raises(HostV2CommandError) as null_mixed_caught:
+        null_mixed.invoke(
+            HostV2MutationInvocation(
+                route_id="openzyme.kernel.message.send@2",
+                method="POST",
+                path="/v3/sessions/session-1/messages",
+                session_id="session-1",
+                actor_id="user:operator-1",
+                idempotency_key="send-null-mixed-message-1",
+                correlation_id="request-send-null-mixed-message-1",
+                payload={
+                    "message_id": "message-null-mixed-1",
+                    "message": "canonical",
+                    "content": None,
+                    "task_id": None,
+                    "lane_id": None,
+                    "workflow_refs": [],
+                },
+                precondition=null_mixed_precondition,
+            )
+        )
+    assert null_mixed_caught.value.code == (
+        "standard_kernel_route_payload_invalid"
+    )
+
+    ambiguous, _, ambiguous_precondition = _coordination_fixture()
+    with pytest.raises(HostV2CommandError) as workflow_caught:
+        ambiguous.invoke(
+            HostV2MutationInvocation(
+                route_id="openzyme.kernel.message.send@2",
+                method="POST",
+                path="/v3/sessions/session-1/messages",
+                session_id="session-1",
+                actor_id="user:operator-1",
+                idempotency_key="send-ambiguous-workflow-message-1",
+                correlation_id="request-send-ambiguous-workflow-message-1",
+                payload={
+                    "message_id": "message-ambiguous-workflow-1",
+                    "message": "Both workflow request forms are forbidden",
+                    "task_id": None,
+                    "lane_id": None,
+                    "workflow_refs": [],
+                    "skill_keys": [],
+                },
+                precondition=ambiguous_precondition,
+            )
+        )
+    assert workflow_caught.value.code == "standard_kernel_route_payload_invalid"
 
 
 def test_standard_coordination_route_never_maps_shared_user_to_agent() -> None:
@@ -826,7 +1244,7 @@ class _AdmissionSource:
         del command_id
 
 
-def test_standard_runtime_drain_claims_runs_consumes_and_releases() -> None:
+def test_standard_runtime_drain_only_admits_one_durable_command() -> None:
     _, store, precondition = _coordination_fixture()
     lease = store.read(entity_type="agent_authority_lease", entity_id="root-lease-1")
     assert lease is not None
@@ -870,30 +1288,14 @@ def test_standard_runtime_drain_claims_runs_consumes_and_releases() -> None:
     )
     clock = DeterministicClock(datetime(2026, 8, 21, 10, tzinfo=UTC))
     ids = DeterministicIdGenerator()
-    adapter = _IdleAdapter()
-    outcomes = ControlStoreRuntimeOutcomeRepository(
+    commands = RuntimeCommandKernelApplicationService(
         store=store,
         reader=store,
         clock=clock,
         ids=ids,
     )
     application = StandardBoundedRuntimeDrainApplication(
-        coordination=RuntimeCoordinationKernelApplicationService(
-            store=store,
-            reader=store,
-            clock=clock,
-            ids=ids,
-        ),
-        turns=RuntimeTurnCoordinator(adapter=adapter, outcomes=outcomes),
-        outcomes=outcomes,
-        records=_QueryRecords(store),
-        admissions=_AdmissionSource(
-            store=store,
-            epoch=_epoch(),
-            authority_digest=str(lease.payload["lease_digest"]),
-        ),
-        capability_gateway=_NoToolsGateway(),
-        clock=clock,
+        commands=commands,
         ids=ids,
     )
 
@@ -911,17 +1313,48 @@ def test_standard_runtime_drain_claims_runs_consumes_and_releases() -> None:
         )
     )
 
-    assert result.result["processed_signals"] == 1
+    assert result.result["runtime_command_id"]
+    assert result.result["runtime_executed"] is False
     assert result.result["task_transition_performed"] is False
-    assert adapter.calls == 1
+    assert result.result["fallback_performed"] is False
+    command = store.read(
+        entity_type="runtime_command",
+        entity_id=result.result["runtime_command_id"],
+    )
+    assert command is not None
+    assert command.payload["status"] == "accepted"
+    assert command.payload["max_signals"] == 1
+    assert command.payload["max_steps_per_agent"] == 2
     signal = store.read(entity_type="agent_runtime_signal", entity_id="signal-1")
-    runtime_lease = store.read(
+    assert signal is not None and signal.payload["status"] == "pending"
+    assert store.read(
         entity_type="session_runtime_lease",
         entity_id="session-1",
-    )
-    assert signal is not None and signal.payload["status"] == "completed"
-    assert runtime_lease is not None and runtime_lease.payload["released_at"] is not None
-    assert store.read(
-        entity_type="runtime_outcome_consumption",
-        entity_id=result.result["turns"][0]["command_id"],
-    ) is not None
+    ) is None
+
+    with pytest.raises(HostV2CommandError) as caught:
+        application.invoke(
+            HostV2MutationInvocation(
+                route_id="openzyme.kernel.runtime.drain@2",
+                method="POST",
+                path="/v3/sessions/session-1/runtime/drain",
+                session_id="session-1",
+                actor_id="user:local-dev",
+                idempotency_key="runtime-drain-auto-enqueue",
+                correlation_id="request-runtime-drain-auto-enqueue",
+                payload={
+                    "max_signals": 1,
+                    "max_steps_per_agent": 2,
+                    "auto_enqueue_ready_tasks": True,
+                },
+                precondition=precondition,
+            )
+        )
+
+    assert caught.value.code == "runtime_drain_payload_invalid"
+    assert caught.value.status_code == 422
+    assert store.list_for_session(
+        entity_type="runtime_command",
+        session_id="session-1",
+        max_items=4,
+    ) == (command,)

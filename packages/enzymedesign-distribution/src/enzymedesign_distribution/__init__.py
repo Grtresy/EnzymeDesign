@@ -8,8 +8,10 @@ from .application_runtime import EnzymeDesignPodmanOperationalRuntime
 from .application_runtime import EnzymeDesignSlurmOperationalRuntime
 from .application_runtime import EnzymeDesignPostMountApplicationBinding
 from .application_runtime import EnzymeDesignTargetInventoryQueryPort
+from .application_runtime import EnzymeDesignWorkspaceOperationalRuntime
 from .application_runtime import build_enzymedesign_application_runtime
 from .application_runtime import build_enzymedesign_v2_host_app
+from .launcher import EnzymeDesignLauncherPreflightReceipt
 from .formal_compute import EnzymeDesignFormalComputeToolApplication
 from .formal_compute import CanonicalFormalComputeAdmissionVerifier
 from .formal_compute import CanonicalFormalComputeSourceBindingResolver
@@ -39,6 +41,26 @@ from .composition import verify_enzymedesign_deployment_startup_read_only
 from .runtime_mount import EnzymeDesignPluginRuntimeSurfaceSet
 from .runtime_mount import build_enzymedesign_runtime_bundles
 from .runtime_mount import mount_enzymedesign_extension_surfaces
+from .role_policies import ENZYMEDESIGN_RESIDENT_ROLES
+from .role_policies import enzymedesign_subject_policy_decisions
+from .role_policies import enzymedesign_subject_policy_decisions_by_role
+from .role_policies import enzymedesign_tool_exposure
+from .role_policies import enzymedesign_tool_exposure_policies
+from .workflow_registry import ENZYMEDESIGN_ADOPTED_WORKFLOW_REFS
+from .workflow_registry import ENZYMEDESIGN_COMPATIBILITY_SKILL_KEYS
+from .workflow_registry import ENZYMEDESIGN_WORKFLOW_REGISTRY_ID
+from .workflow_registry import ENZYMEDESIGN_WORKFLOW_REGISTRY_SNAPSHOT_DIGEST
+from .workflow_registry import EnzymeDesignExactWorkflowRegistry
+from .host_gateway import EnzymeDesignWorkspaceBootstrapDefaults
+from .runtime_command import EnzymeDesignRuntimeCommandWorker
+from .runtime_command import EnzymeDesignRuntimeDrainAdmissionApplication
+from .workspace_provisioning import EnzymeDesignWorkspaceProvisioningRunner
+from .workspace_provisioning import (
+    EnzymeDesignWorkspaceProvisioningLifecycleWorker,
+)
+from .workspace_provisioning import (
+    EnzymeDesignWorkspaceProvisioningWorkerAuthority,
+)
 from .qualification_runtime import ExternalQualificationProbePort
 from .qualification_runtime import ExternalQualificationReadinessCoordinator
 from .qualification_runtime import QualificationCredentialResolverPort
@@ -51,11 +73,19 @@ from .qualification_bridges import SelectedQualificationProbeBridge
 from .qualification_bridges import SelectedQualificationProbeRouter
 from .qualification_compute import FormalComputeScientificQualificationOperation
 from .qualification_compute import ScientificQualificationWorkloadCompiler
-from .qualification_scientific_workloads import FixedScientificQualificationInputRegistry
-from .qualification_scientific_workloads import PreprocessScientificQualificationCompiler
+from .qualification_scientific_workloads import (
+    FixedScientificQualificationInputRegistry,
+)
+from .qualification_scientific_workloads import (
+    PreprocessScientificQualificationCompiler,
+)
 from .qualification_scientific_workloads import SCIENTIFIC_QUALIFICATION_INPUTS
-from .qualification_scientific_workloads import SelectedDriverScientificQualificationCompiler
-from .qualification_scientific_workloads import build_selected_driver_scientific_compiler
+from .qualification_scientific_workloads import (
+    SelectedDriverScientificQualificationCompiler,
+)
+from .qualification_scientific_workloads import (
+    build_selected_driver_scientific_compiler,
+)
 from .qualification_live_bridges import SelectedAlphaFoldLiveQualificationBridgeFactory
 from .qualification_live_bridges import SelectedLiveQualificationBridgeFactory
 from .qualification_live_runtime import ExternalLiveQualificationCoordinator
@@ -149,19 +179,33 @@ __all__ = [
     "EnzymeDesignApplicationRuntime",
     "EnzymeDesignCapabilityRegistryResolver",
     "EnzymeDesignLocalWorkspaceRuntimeAdapters",
+    "EnzymeDesignLauncherPreflightReceipt",
     "EnzymeDesignOperationalAdapterSelection",
     "EnzymeDesignPodmanOperationalRuntime",
     "EnzymeDesignSlurmOperationalRuntime",
+    "EnzymeDesignWorkspaceOperationalRuntime",
+    "EnzymeDesignWorkspaceBootstrapDefaults",
+    "EnzymeDesignWorkspaceProvisioningLifecycleWorker",
+    "EnzymeDesignWorkspaceProvisioningRunner",
+    "EnzymeDesignWorkspaceProvisioningWorkerAuthority",
+    "EnzymeDesignRuntimeCommandWorker",
+    "EnzymeDesignRuntimeDrainAdmissionApplication",
     "EnzymeDesignPostMountApplicationBinding",
     "EnzymeDesignScientificContributions",
     "EnzymeDesignSessionCompositionReader",
     "EnzymeDesignPluginRuntimeSurfaceSet",
     "EnzymeDesignFormalComputeToolApplication",
     "EnzymeDesignExternalQualificationAdmission",
+    "EnzymeDesignExactWorkflowRegistry",
     "EnzymeDesignIdentityPreparationBatchExecution",
     "EnzymeDesignHpcIdentityPreparationExecutor",
     "ExternalQualificationProbePort",
     "ExternalQualificationReadinessCoordinator",
+    "ENZYMEDESIGN_ADOPTED_WORKFLOW_REFS",
+    "ENZYMEDESIGN_COMPATIBILITY_SKILL_KEYS",
+    "ENZYMEDESIGN_RESIDENT_ROLES",
+    "ENZYMEDESIGN_WORKFLOW_REGISTRY_ID",
+    "ENZYMEDESIGN_WORKFLOW_REGISTRY_SNAPSHOT_DIGEST",
     "CanonicalFormalComputeAdmissionVerifier",
     "CanonicalFormalComputeSourceBindingResolver",
     "BASE_PROFILE",
@@ -243,6 +287,10 @@ __all__ = [
     "verify_enzymedesign_deployment_startup_read_only",
     "external_qualification_catalog_digest",
     "external_qualification_live_input_digest",
+    "enzymedesign_subject_policy_decisions",
+    "enzymedesign_subject_policy_decisions_by_role",
+    "enzymedesign_tool_exposure",
+    "enzymedesign_tool_exposure_policies",
     "execute_enzymedesign_identity_preparation_batch",
     "discover_external_subject_identities",
     "project_external_identity_discovery_snapshot",

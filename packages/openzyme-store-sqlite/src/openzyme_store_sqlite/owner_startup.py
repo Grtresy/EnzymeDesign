@@ -71,7 +71,7 @@ OPENZYME_STANDARD_OWNER_SCHEMA_PROFILE = OwnerSchemaProfile(
         "openzyme.process.podman",
         "openzyme.workspace.git.lfs",
     ),
-    expected_foreign_key_count=300,
+    expected_foreign_key_count=340,
 )
 ENZYMEDESIGN_OWNER_SCHEMA_PROFILE = OwnerSchemaProfile(
     profile_id="enzymedesign_local_single_process_file_sqlite@1",
@@ -85,7 +85,7 @@ ENZYMEDESIGN_OWNER_SCHEMA_PROFILE = OwnerSchemaProfile(
         "openzyme.science",
         "openzyme.workspace.git.lfs",
     ),
-    expected_foreign_key_count=421,
+    expected_foreign_key_count=461,
 )
 
 

@@ -3846,3 +3846,156 @@ CREATE TRIGGER workspace_publication_supersedes_no_delete
 BEFORE DELETE ON workspace_publication_supersedes_links BEGIN
     SELECT RAISE(ABORT, 'publication supersedes links are append-only');
 END;
+
+CREATE TRIGGER mutation_guard_workspace_provisioning_intent_records_insert
+BEFORE INSERT ON workspace_provisioning_intent_records
+WHEN CASE WHEN EXISTS (
+    SELECT 1 FROM mutation_scope_records WHERE session_id = NEW.session_id
+) THEN openzyme_mutation_write_allowed(NEW.session_id, 'canonical_sqlite') <> 1 ELSE 0 END
+BEGIN SELECT RAISE(ABORT, 'mutation write authority rejected'); END;
+
+CREATE TRIGGER mutation_guard_workspace_provisioning_intent_records_update
+BEFORE UPDATE ON workspace_provisioning_intent_records
+WHEN (CASE WHEN EXISTS (
+    SELECT 1 FROM mutation_scope_records WHERE session_id = OLD.session_id
+) THEN openzyme_mutation_write_allowed(OLD.session_id, 'canonical_sqlite') <> 1 ELSE 0 END)
+ OR (CASE WHEN EXISTS (
+    SELECT 1 FROM mutation_scope_records WHERE session_id = NEW.session_id
+) THEN openzyme_mutation_write_allowed(NEW.session_id, 'canonical_sqlite') <> 1 ELSE 0 END)
+BEGIN SELECT RAISE(ABORT, 'mutation write authority rejected'); END;
+
+CREATE TRIGGER mutation_guard_workspace_provisioning_intent_records_delete
+BEFORE DELETE ON workspace_provisioning_intent_records
+BEGIN SELECT RAISE(ABORT, 'workspace provisioning intent history is durable'); END;
+
+CREATE TRIGGER mutation_guard_workspace_provisioning_receipt_records_insert
+BEFORE INSERT ON workspace_provisioning_receipt_records
+WHEN CASE WHEN EXISTS (
+    SELECT 1 FROM mutation_scope_records WHERE session_id = NEW.session_id
+) THEN openzyme_mutation_write_allowed(NEW.session_id, 'canonical_sqlite') <> 1 ELSE 0 END
+BEGIN SELECT RAISE(ABORT, 'mutation write authority rejected'); END;
+
+CREATE TRIGGER mutation_guard_workspace_provisioning_receipt_records_update
+BEFORE UPDATE ON workspace_provisioning_receipt_records
+BEGIN SELECT RAISE(ABORT, 'workspace provisioning receipts are immutable'); END;
+
+CREATE TRIGGER mutation_guard_workspace_provisioning_receipt_records_delete
+BEFORE DELETE ON workspace_provisioning_receipt_records
+BEGIN SELECT RAISE(ABORT, 'workspace provisioning receipts are durable'); END;
+
+CREATE TRIGGER mutation_guard_workspace_provisioning_reconciliation_records_insert
+BEFORE INSERT ON workspace_provisioning_reconciliation_records
+WHEN CASE WHEN EXISTS (
+    SELECT 1 FROM mutation_scope_records WHERE session_id = NEW.session_id
+) THEN openzyme_mutation_write_allowed(NEW.session_id, 'canonical_sqlite') <> 1 ELSE 0 END
+BEGIN SELECT RAISE(ABORT, 'mutation write authority rejected'); END;
+
+CREATE TRIGGER mutation_guard_workspace_provisioning_reconciliation_records_update
+BEFORE UPDATE ON workspace_provisioning_reconciliation_records
+WHEN (CASE WHEN EXISTS (
+    SELECT 1 FROM mutation_scope_records WHERE session_id = OLD.session_id
+) THEN openzyme_mutation_write_allowed(OLD.session_id, 'canonical_sqlite') <> 1 ELSE 0 END)
+ OR (CASE WHEN EXISTS (
+    SELECT 1 FROM mutation_scope_records WHERE session_id = NEW.session_id
+) THEN openzyme_mutation_write_allowed(NEW.session_id, 'canonical_sqlite') <> 1 ELSE 0 END)
+BEGIN SELECT RAISE(ABORT, 'mutation write authority rejected'); END;
+
+CREATE TRIGGER mutation_guard_workspace_provisioning_reconciliation_records_delete
+BEFORE DELETE ON workspace_provisioning_reconciliation_records
+BEGIN SELECT RAISE(ABORT, 'workspace provisioning reconciliation history is durable'); END;
+
+CREATE TRIGGER mutation_guard_workflow_authority_binding_records_insert
+BEFORE INSERT ON workflow_authority_binding_records
+WHEN CASE WHEN EXISTS (
+    SELECT 1 FROM mutation_scope_records WHERE session_id = NEW.session_id
+) THEN openzyme_mutation_write_allowed(NEW.session_id, 'canonical_sqlite') <> 1 ELSE 0 END
+BEGIN SELECT RAISE(ABORT, 'mutation write authority rejected'); END;
+
+CREATE TRIGGER mutation_guard_workflow_authority_binding_records_update
+BEFORE UPDATE ON workflow_authority_binding_records
+WHEN (CASE WHEN EXISTS (
+    SELECT 1 FROM mutation_scope_records WHERE session_id = OLD.session_id
+) THEN openzyme_mutation_write_allowed(OLD.session_id, 'canonical_sqlite') <> 1 ELSE 0 END)
+ OR (CASE WHEN EXISTS (
+    SELECT 1 FROM mutation_scope_records WHERE session_id = NEW.session_id
+) THEN openzyme_mutation_write_allowed(NEW.session_id, 'canonical_sqlite') <> 1 ELSE 0 END)
+BEGIN SELECT RAISE(ABORT, 'mutation write authority rejected'); END;
+
+CREATE TRIGGER mutation_guard_workflow_authority_binding_records_delete
+BEFORE DELETE ON workflow_authority_binding_records
+BEGIN SELECT RAISE(ABORT, 'workflow authority history is durable'); END;
+
+CREATE TRIGGER mutation_guard_runtime_signal_authority_link_records_insert
+BEFORE INSERT ON runtime_signal_authority_link_records
+WHEN CASE WHEN EXISTS (
+    SELECT 1 FROM mutation_scope_records WHERE session_id = NEW.session_id
+) THEN openzyme_mutation_write_allowed(NEW.session_id, 'canonical_sqlite') <> 1 ELSE 0 END
+BEGIN SELECT RAISE(ABORT, 'mutation write authority rejected'); END;
+
+CREATE TRIGGER mutation_guard_runtime_signal_authority_link_records_update
+BEFORE UPDATE ON runtime_signal_authority_link_records
+BEGIN SELECT RAISE(ABORT, 'runtime signal authority links are immutable'); END;
+
+CREATE TRIGGER mutation_guard_runtime_signal_authority_link_records_delete
+BEFORE DELETE ON runtime_signal_authority_link_records
+BEGIN SELECT RAISE(ABORT, 'runtime signal authority links are durable'); END;
+
+CREATE TRIGGER mutation_guard_runtime_turn_context_records_insert
+BEFORE INSERT ON runtime_turn_context_records
+WHEN CASE WHEN EXISTS (
+    SELECT 1 FROM mutation_scope_records WHERE session_id = NEW.session_id
+) THEN openzyme_mutation_write_allowed(NEW.session_id, 'canonical_sqlite') <> 1 ELSE 0 END
+BEGIN SELECT RAISE(ABORT, 'mutation write authority rejected'); END;
+
+CREATE TRIGGER mutation_guard_runtime_turn_context_records_update
+BEFORE UPDATE ON runtime_turn_context_records
+BEGIN SELECT RAISE(ABORT, 'runtime turn contexts are immutable'); END;
+
+CREATE TRIGGER mutation_guard_runtime_turn_context_records_delete
+BEFORE DELETE ON runtime_turn_context_records
+BEGIN SELECT RAISE(ABORT, 'runtime turn contexts are durable'); END;
+
+CREATE TRIGGER mutation_guard_tool_exposure_snapshot_records_insert
+BEFORE INSERT ON tool_exposure_snapshot_records
+WHEN CASE WHEN EXISTS (
+    SELECT 1 FROM mutation_scope_records WHERE session_id = NEW.session_id
+) THEN openzyme_mutation_write_allowed(NEW.session_id, 'canonical_sqlite') <> 1 ELSE 0 END
+BEGIN SELECT RAISE(ABORT, 'mutation write authority rejected'); END;
+
+CREATE TRIGGER mutation_guard_tool_exposure_snapshot_records_update
+BEFORE UPDATE ON tool_exposure_snapshot_records
+BEGIN SELECT RAISE(ABORT, 'tool exposure snapshots are immutable'); END;
+
+CREATE TRIGGER mutation_guard_tool_exposure_snapshot_records_delete
+BEFORE DELETE ON tool_exposure_snapshot_records
+BEGIN SELECT RAISE(ABORT, 'tool exposure snapshots are durable'); END;
+
+CREATE TRIGGER mutation_guard_command_tool_expansion_records_insert
+BEFORE INSERT ON command_tool_expansion_records
+WHEN CASE WHEN EXISTS (
+    SELECT 1 FROM mutation_scope_records WHERE session_id = NEW.session_id
+) THEN openzyme_mutation_write_allowed(NEW.session_id, 'canonical_sqlite') <> 1 ELSE 0 END
+BEGIN SELECT RAISE(ABORT, 'mutation write authority rejected'); END;
+
+CREATE TRIGGER mutation_guard_command_tool_expansion_records_update
+BEFORE UPDATE ON command_tool_expansion_records
+BEGIN SELECT RAISE(ABORT, 'command tool expansions are immutable'); END;
+
+CREATE TRIGGER mutation_guard_command_tool_expansion_records_delete
+BEFORE DELETE ON command_tool_expansion_records
+BEGIN SELECT RAISE(ABORT, 'command tool expansions are durable'); END;
+
+CREATE TRIGGER mutation_guard_runtime_turn_outcome_records_insert
+BEFORE INSERT ON runtime_turn_outcome_records
+WHEN CASE WHEN EXISTS (
+    SELECT 1 FROM mutation_scope_records WHERE session_id = NEW.session_id
+) THEN openzyme_mutation_write_allowed(NEW.session_id, 'canonical_sqlite') <> 1 ELSE 0 END
+BEGIN SELECT RAISE(ABORT, 'mutation write authority rejected'); END;
+
+CREATE TRIGGER mutation_guard_runtime_turn_outcome_records_update
+BEFORE UPDATE ON runtime_turn_outcome_records
+BEGIN SELECT RAISE(ABORT, 'runtime turn outcomes are immutable'); END;
+
+CREATE TRIGGER mutation_guard_runtime_turn_outcome_records_delete
+BEFORE DELETE ON runtime_turn_outcome_records
+BEGIN SELECT RAISE(ABORT, 'runtime turn outcomes are durable'); END;

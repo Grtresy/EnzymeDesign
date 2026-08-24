@@ -2,17 +2,29 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import replace
+from datetime import UTC
+from datetime import datetime
+import json
 
 import pytest
 
 from openzyme_contracts import AgentAuthorityLease
 from openzyme_contracts import AgentAuthorityLeaseState
 from openzyme_contracts import ExternalEffectCertainty
+from openzyme_contracts import FILE_WORKSPACE_FAILURE_FACT_PUBLIC_FIELDS
+from openzyme_contracts import FILE_WORKSPACE_FAILURE_IDENTITY_PUBLIC_FIELDS
 from openzyme_contracts import SessionCapabilityBindingRevision
 from openzyme_contracts import ToolInvocation
 from openzyme_contracts import ToolResult
+from openzyme_contracts import ToolExposure
+from openzyme_contracts import ToolExposureDecision
 from openzyme_contracts import ToolSpec
+from openzyme_contracts import WorkflowAuthorityBinding
+from openzyme_contracts import WorkflowAuthorityDerivationKind
+from openzyme_contracts import WorkflowAuthorityStatus
 from openzyme_contracts import canonical_sha256_digest
+from openzyme_extension_spi import CapabilityProvision
+from openzyme_extension_spi import CapabilityRequirement
 from openzyme_extension_spi import ComponentIdentity
 from openzyme_extension_spi import ComponentKind
 from openzyme_extension_spi import DistributionManifest
@@ -20,6 +32,7 @@ from openzyme_extension_spi import KernelSelection
 from openzyme_extension_spi import PluginManifest
 from openzyme_extension_spi import PluginRequirementMode
 from openzyme_extension_spi import PluginSelection
+from openzyme_extension_spi import RouteContribution
 from openzyme_extension_spi import ToolContribution
 from openzyme_kernel import CapabilityRegistry
 from openzyme_kernel import ExtensionBundleRegistry
@@ -32,6 +45,14 @@ from openzyme_kernel import build_declared_tool_catalog
 from openzyme_kernel import build_route_catalog
 from openzyme_kernel import resolve_tool_affordance_snapshot
 from openzyme_kernel import subject_policy_digest
+from openzyme_kernel.catalog import DECLARED_TOOL_CATALOG_SCHEMA_VERSION
+from openzyme_kernel.catalog import DeclaredToolCatalog
+from openzyme_kernel.catalog import DeclaredToolEntry
+from openzyme_kernel.testing import DeterministicClock
+from openzyme_kernel.tool_exposure import InMemoryCommandToolExpansionStore
+from openzyme_kernel.tool_exposure import KernelCapabilitiesInspectRuntime
+from openzyme_kernel.tool_exposure import ToolExposureRolePolicy
+from openzyme_kernel.tool_exposure import resolve_tool_exposure_snapshot
 from openzyme_runtime_spi import RuntimeToolRequest
 from openzyme_runtime_spi import RuntimeToolInvocationError
 
@@ -52,23 +73,52 @@ def _identity(component_id: str, kind: ComponentKind) -> ComponentIdentity:
     )
 
 
-def _scope() -> RuntimeToolScope:
+def _scope(*, routed: bool = False) -> RuntimeToolScope:
     spec = ToolSpec(
         tool_name="example.observe",
         description="Observe one example.",
         input_schema={"type": "object", "additionalProperties": False},
         output_schema={"type": "object"},
     )
+    route_requirement = CapabilityRequirement(
+        capability_id="example.route",
+        contract_spec="@1",
+    )
     plugin = PluginManifest(
         identity=_identity("example.plugin", ComponentKind.PLUGIN),
         required_kernel_contract="openzyme.kernel@1",
         required_extension_spi_contract="openzyme.extension-spi@1",
+        provides=(CapabilityProvision("example.route", "1"),) if routed else (),
         tools=(
             ToolContribution(
                 owner_plugin_id="example.plugin",
                 runtime_id="example.plugin.observe@1",
                 contract=spec,
+                requirements=(route_requirement,) if routed else (),
+                requires_explicit_route=routed,
             ),
+        ),
+        routes=(
+            (
+                RouteContribution(
+                    route_id="route.adjacent",
+                    owner_component_id="example.plugin",
+                    capability_ids=("example.route",),
+                    route_kind="example.runtime",
+                    route_contract_digest=_digest("route-adjacent"),
+                    driver_id="example.driver.adjacent",
+                ),
+                RouteContribution(
+                    route_id="route.primary",
+                    owner_component_id="example.plugin",
+                    capability_ids=("example.route",),
+                    route_kind="example.runtime",
+                    route_contract_digest=_digest("route-primary"),
+                    driver_id="example.driver.primary",
+                ),
+            )
+            if routed
+            else ()
         ),
     )
     distribution = DistributionManifest(
@@ -164,6 +214,126 @@ def _scope() -> RuntimeToolScope:
     )
 
 
+def _workflow() -> WorkflowAuthorityBinding:
+    registry_digest = _digest("workflow-registry")
+    selection_digest = canonical_sha256_digest(
+        {
+            "schema_version": "workflow_selection_binding@1",
+            "registry_snapshot_digest": registry_digest,
+            "selected_workflow_refs": ["workflow.observe@1"],
+        }
+    )
+    return WorkflowAuthorityBinding(
+        authority_id="workflow-authority-1",
+        session_id="session-1",
+        project_id="project-1",
+        request_lineage_id="lineage-1",
+        source_message_id="message-1",
+        source_principal_id="user-1",
+        authorized_actor_id="member-1",
+        selected_workflow_refs=("workflow.observe@1",),
+        selection_digest=selection_digest,
+        registry_snapshot_digest=registry_digest,
+        derivation_kind=WorkflowAuthorityDerivationKind.ROOT_MESSAGE,
+        status=WorkflowAuthorityStatus.ACTIVE,
+        epoch=2,
+        state_version=1,
+        created_at="2026-08-21T00:00:00+00:00",
+        updated_at="2026-08-21T00:00:00+00:00",
+        task_id="task-1",
+    )
+
+
+def _exposed_scope(*, routed: bool = False) -> RuntimeToolScope:
+    base = _scope(routed=routed)
+    capabilities = ToolSpec(
+        tool_name="capabilities.inspect",
+        description="Inspect bounded non-Hidden capabilities.",
+        input_schema={"type": "object", "additionalProperties": False},
+    )
+    hidden = ToolSpec(
+        tool_name="secret.hidden",
+        description="Must not be disclosed.",
+        input_schema={"type": "object", "additionalProperties": False},
+    )
+    entries = tuple(
+        sorted(
+            (
+                *base.catalog.entries,
+                DeclaredToolEntry(
+                    owner_component_id="openzyme.kernel",
+                    runtime_id="openzyme.kernel.runtime.capabilities.inspect",
+                    contract=capabilities,
+                ),
+                DeclaredToolEntry(
+                    owner_component_id="secret.plugin",
+                    runtime_id="secret.plugin.runtime",
+                    contract=hidden,
+                ),
+            ),
+            key=lambda entry: entry.contract.tool_name,
+        )
+    )
+    catalog = DeclaredToolCatalog(
+        entries=entries,
+        catalog_digest=canonical_sha256_digest(
+            {
+                "schema_version": DECLARED_TOOL_CATALOG_SCHEMA_VERSION,
+                "entries": [entry.to_dict() for entry in entries],
+            }
+        ),
+    )
+    context = replace(base.current_context, declared_catalog=catalog)
+    snapshot = resolve_tool_affordance_snapshot(
+        context,
+        snapshot_id="snapshot-exposed-1",
+        created_at="2026-08-21T00:00:01+00:00",
+    )
+    workflow = _workflow()
+    exposure = resolve_tool_exposure_snapshot(
+        snapshot_id="exposure-1",
+        session_id="session-1",
+        agent_member_id="member-1",
+        turn_id="turn-1",
+        catalog=catalog,
+        affordance_snapshot=snapshot,
+        workflow_binding=workflow,
+        policy=ToolExposureRolePolicy(
+            policy_id="exposure-policy-1",
+            distribution_id="distribution-1",
+            release_digest=_digest("release"),
+            subject_role="worker",
+            decisions=(
+                ToolExposureDecision(
+                    "capabilities.inspect",
+                    ToolExposure.DIRECT,
+                    "stable_baseline",
+                ),
+                ToolExposureDecision(
+                    "example.observe",
+                    ToolExposure.DEFERRED,
+                    "long_tail",
+                ),
+                ToolExposureDecision(
+                    "secret.hidden",
+                    ToolExposure.HIDDEN,
+                    "role_forbidden",
+                ),
+            ),
+        ),
+        adopted_release_digest=_digest("release"),
+        created_at="2026-08-21T00:00:01+00:00",
+    )
+    return RuntimeToolScope(
+        command_id="command-1",
+        catalog=catalog,
+        snapshot=snapshot,
+        current_context=context,
+        exposure_snapshot=exposure,
+        current_workflow_authority=workflow,
+    )
+
+
 @dataclass
 class _Scopes:
     scope: RuntimeToolScope
@@ -197,7 +367,9 @@ class _Runtime:
         )
 
 
-def _request(scope: RuntimeToolScope, *, digest: str | None = None) -> RuntimeToolRequest:
+def _request(
+    scope: RuntimeToolScope, *, digest: str | None = None
+) -> RuntimeToolRequest:
     snapshot_digest = digest or scope.snapshot.snapshot_digest
     return RuntimeToolRequest(
         request_id="request-1",
@@ -295,6 +467,44 @@ def test_gateway_preserves_unknown_effect_when_runtime_raises() -> None:
     assert result.payload["mutation_applied"] is None
     assert result.payload["reconcile_required"] is True
     assert result.payload["fallback_performed"] is False
+    assert result.payload["retry_performed"] is False
+    assert result.terminates_turn is True
+    assert result.failure_observation is not None
+    assert result.failure_observation["schema_version"] == "failure_observation@2"
+    assert result.failure_observation["component"] == "example.plugin"
+    assert result.failure_observation["phase"] == "tool_dispatch"
+    assert result.failure_observation["identities"] == {
+        "command_id": "command-1",
+        "component_id": "example.plugin",
+    }
+    assert result.failure_observation["source_ref"] == "call-1"
+    assert result.failure_observation["source_version"] == (
+        runtime.contract.contract_digest
+    )
+    assert set(result.failure_observation["facts"]) <= (
+        FILE_WORKSPACE_FAILURE_FACT_PUBLIC_FIELDS
+    )
+    assert None not in result.failure_observation["facts"].values()
+    assert set(result.failure_observation["identities"]) <= (
+        FILE_WORKSPACE_FAILURE_IDENTITY_PUBLIC_FIELDS
+    )
+    assert result.failure_observation["effect_certainty"] == "dispatch_in_doubt"
+    assert result.failure_observation["mutation_applied"] is None
+    assert result.failure_observation["fallback_performed"] is False
+    assert result.failure_observation["retry_eligibility"] == "reconcile_required"
+    assert result.failure_observation["next_action"] == (
+        "reconcile_exact_tool_dispatch"
+    )
+    assert result.private_diagnostic is not None
+    assert "private provider detail" in result.private_diagnostic.exception_message
+    assert (
+        result.private_diagnostic.failure_id
+        == (result.failure_observation["failure_id"])
+    )
+    public_wire = json.dumps(result.to_dict(), sort_keys=True)
+    assert "private provider detail" not in public_wire
+    assert "traceback" not in public_wire
+    assert result.private_diagnostic.record_digest not in public_wire
     assert runtime.calls == 1
 
 
@@ -357,3 +567,273 @@ def test_gateway_rejects_runtime_owner_or_runtime_id_drift() -> None:
     assert result.error_code == "tool_runtime_not_mounted"
     assert result.payload["effect_certainty"] == "no_effect"
     assert runtime.calls == 0
+
+
+def test_gateway_expands_only_exact_deferred_tool_for_current_command() -> None:
+    scope = _exposed_scope()
+    observe = scope.catalog.get("example.observe")
+    capabilities = scope.catalog.get("capabilities.inspect")
+    assert observe is not None
+    assert capabilities is not None
+    runtime = _Runtime(observe.contract)
+    expansions = InMemoryCommandToolExpansionStore()
+    gateway = MountedRuntimeCapabilityGateway(
+        scopes=_Scopes(scope),
+        runtimes=(
+            (
+                "capabilities.inspect",
+                KernelCapabilitiesInspectRuntime(capabilities.contract),
+            ),
+            ("example.observe", runtime),
+        ),
+        expansions=expansions,
+        clock=DeterministicClock(datetime(2026, 8, 21, 0, 0, 2, tzinfo=UTC)),
+    )
+
+    initial = gateway.list_tools(
+        command_id=scope.command_id,
+        affordance_snapshot_digest=scope.snapshot.snapshot_digest,
+    )
+    inspection = gateway.invoke(
+        command_id=scope.command_id,
+        request=RuntimeToolRequest(
+            request_id="inspection-request-1",
+            invocation=ToolInvocation(
+                call_id="inspection-call-1",
+                tool_name="capabilities.inspect",
+                arguments={
+                    "expand_tool_names": ["example.observe", "secret.hidden"],
+                    "max_items": 20,
+                },
+                session_id="session-1",
+                agent_member_id="member-1",
+                task_id="task-1",
+                affordance_snapshot_digest=scope.snapshot.snapshot_digest,
+            ),
+            affordance_snapshot_digest=scope.snapshot.snapshot_digest,
+        ),
+    )
+    expanded = gateway.list_tools(
+        command_id=scope.command_id,
+        affordance_snapshot_digest=scope.snapshot.snapshot_digest,
+    )
+    hidden = gateway.invoke(
+        command_id=scope.command_id,
+        request=RuntimeToolRequest(
+            request_id="hidden-request-1",
+            invocation=ToolInvocation(
+                call_id="hidden-call-1",
+                tool_name="secret.hidden",
+                arguments={},
+                session_id="session-1",
+                agent_member_id="member-1",
+                task_id="task-1",
+                affordance_snapshot_digest=scope.snapshot.snapshot_digest,
+            ),
+            affordance_snapshot_digest=scope.snapshot.snapshot_digest,
+        ),
+    )
+
+    assert tuple(spec.tool_name for spec in initial) == ("capabilities.inspect",)
+    assert inspection.ok is True
+    assert inspection.payload["inspection"]["undisclosed_or_unknown_count"] == 1
+    assert "secret.hidden" not in str(inspection.payload)
+    assert tuple(spec.tool_name for spec in expanded) == (
+        "capabilities.inspect",
+        "example.observe",
+    )
+    assert expansions.get("command-1").expanded_tool_names == ("example.observe",)
+    assert hidden.error_code == "tool_not_exposed"
+    assert hidden.tool_name == "unexposed.tool"
+    assert "secret.hidden" not in str(hidden.to_dict())
+
+
+def test_expanded_deferred_dispatch_rejects_exact_route_drift_without_adjacent_fallback() -> (
+    None
+):
+    scope = _exposed_scope(routed=True)
+    observe = scope.catalog.get("example.observe")
+    capabilities = scope.catalog.get("capabilities.inspect")
+    assert observe is not None
+    assert capabilities is not None
+    original = next(
+        (
+            affordance
+            for affordance in scope.snapshot.affordances
+            if affordance.tool_name == "example.observe"
+        ),
+        None,
+    )
+    assert original is not None
+    assert original.route_ids == ("route.adjacent", "route.primary")
+    runtime = _Runtime(observe.contract)
+    expansions = InMemoryCommandToolExpansionStore()
+    scopes = _Scopes(scope)
+    gateway = MountedRuntimeCapabilityGateway(
+        scopes=scopes,
+        runtimes=(
+            (
+                "capabilities.inspect",
+                KernelCapabilitiesInspectRuntime(capabilities.contract),
+            ),
+            ("example.observe", runtime),
+        ),
+        expansions=expansions,
+        clock=DeterministicClock(datetime(2026, 8, 21, 0, 0, 2, tzinfo=UTC)),
+    )
+    inspection = gateway.invoke(
+        command_id=scope.command_id,
+        request=RuntimeToolRequest(
+            request_id="inspection-route-request-1",
+            invocation=ToolInvocation(
+                call_id="inspection-route-call-1",
+                tool_name="capabilities.inspect",
+                arguments={"expand_tool_names": ["example.observe"]},
+                session_id="session-1",
+                agent_member_id="member-1",
+                task_id="task-1",
+                affordance_snapshot_digest=scope.snapshot.snapshot_digest,
+            ),
+            affordance_snapshot_digest=scope.snapshot.snapshot_digest,
+        ),
+    )
+    assert inspection.ok is True
+    assert expansions.get(scope.command_id) is not None
+
+    drifted_context = replace(
+        scope.current_context,
+        unavailable_route_ids=frozenset({"route.primary"}),
+    )
+    scopes.scope = replace(scope, current_context=drifted_context)
+    current_snapshot = resolve_tool_affordance_snapshot(
+        drifted_context,
+        snapshot_id="current-route-observation",
+        created_at="2026-08-21T00:00:03+00:00",
+    )
+    current = next(
+        (
+            affordance
+            for affordance in current_snapshot.affordances
+            if affordance.tool_name == "example.observe"
+        ),
+        None,
+    )
+    assert current is not None
+    assert current.route_ids == ("route.adjacent",)
+
+    result = gateway.invoke(
+        command_id=scope.command_id,
+        request=RuntimeToolRequest(
+            request_id="expanded-route-request-1",
+            invocation=ToolInvocation(
+                call_id="expanded-route-call-1",
+                tool_name="example.observe",
+                arguments={},
+                session_id="session-1",
+                agent_member_id="member-1",
+                task_id="task-1",
+                route_id="route.primary",
+                affordance_snapshot_digest=scope.snapshot.snapshot_digest,
+            ),
+            affordance_snapshot_digest=scope.snapshot.snapshot_digest,
+        ),
+    )
+
+    assert result.error_code == "tool_affordance_stale"
+    assert result.payload["effect_certainty"] == "no_effect"
+    assert result.payload["mutation_applied"] is False
+    assert result.payload["fallback_performed"] is False
+    assert result.payload["retry_performed"] is False
+    assert runtime.calls == 0
+
+
+def test_expanded_deferred_dispatch_rejects_exact_runtime_drift_without_fallback() -> (
+    None
+):
+    scope = _exposed_scope()
+    observe = scope.catalog.get("example.observe")
+    capabilities = scope.catalog.get("capabilities.inspect")
+    assert observe is not None
+    assert capabilities is not None
+    runtime = _Runtime(observe.contract)
+    expansions = InMemoryCommandToolExpansionStore()
+    gateway = MountedRuntimeCapabilityGateway(
+        scopes=_Scopes(scope),
+        runtimes=(
+            (
+                "capabilities.inspect",
+                KernelCapabilitiesInspectRuntime(capabilities.contract),
+            ),
+            ("example.observe", runtime),
+        ),
+        expansions=expansions,
+        clock=DeterministicClock(datetime(2026, 8, 21, 0, 0, 2, tzinfo=UTC)),
+    )
+    inspection = gateway.invoke(
+        command_id=scope.command_id,
+        request=RuntimeToolRequest(
+            request_id="inspection-runtime-request-1",
+            invocation=ToolInvocation(
+                call_id="inspection-runtime-call-1",
+                tool_name="capabilities.inspect",
+                arguments={"expand_tool_names": ["example.observe"]},
+                session_id="session-1",
+                agent_member_id="member-1",
+                task_id="task-1",
+                affordance_snapshot_digest=scope.snapshot.snapshot_digest,
+            ),
+            affordance_snapshot_digest=scope.snapshot.snapshot_digest,
+        ),
+    )
+    assert inspection.ok is True
+
+    drifted_runtime = _Runtime(
+        observe.contract,
+        owner_plugin_id="adjacent.plugin",
+        runtime_id="adjacent.plugin.observe@1",
+    )
+    gateway.runtimes = (
+        (
+            "capabilities.inspect",
+            KernelCapabilitiesInspectRuntime(capabilities.contract),
+        ),
+        ("example.observe", drifted_runtime),
+    )
+    result = gateway.invoke(command_id=scope.command_id, request=_request(scope))
+
+    assert result.error_code == "tool_runtime_not_mounted"
+    assert result.payload["effect_certainty"] == "no_effect"
+    assert result.payload["mutation_applied"] is False
+    assert result.payload["fallback_performed"] is False
+    assert result.payload["retry_performed"] is False
+    assert runtime.calls == 0
+    assert drifted_runtime.calls == 0
+
+
+def test_provider_step_revalidation_rejects_revoked_workflow_epoch() -> None:
+    scope = _exposed_scope()
+    current = scope.current_workflow_authority
+    assert current is not None
+    revoked = replace(
+        current,
+        status=WorkflowAuthorityStatus.REVOKED,
+        state_version=current.state_version + 1,
+        updated_at="2026-08-21T00:00:02+00:00",
+        revoked_at="2026-08-21T00:00:02+00:00",
+    )
+    scope = replace(scope, current_workflow_authority=revoked)
+    gateway = MountedRuntimeCapabilityGateway(scopes=_Scopes(scope), runtimes=())
+    exposure = scope.exposure_snapshot
+    assert exposure is not None
+
+    with pytest.raises(KernelContractError) as raised:
+        gateway.revalidate_provider_step(
+            command_id=scope.command_id,
+            workflow_authority_id=exposure.workflow_authority_id,
+            workflow_authority_epoch=exposure.workflow_authority_epoch,
+            workflow_authority_digest=exposure.workflow_authority_digest,
+            tool_exposure_snapshot_id=exposure.exposure_snapshot_id,
+            tool_exposure_snapshot_digest=exposure.exposure_snapshot_digest,
+        )
+
+    assert raised.value.code == "runtime_turn_fence_stale"

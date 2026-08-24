@@ -5,12 +5,12 @@
   "physical_store_owner": "openzyme.store.sqlite",
   "physical_table_rename_policy": "retain_names_in_this_change",
   "expected_object_counts": {
-    "tables": 150,
+    "tables": 159,
     "indexes": 134,
-    "triggers": 679,
-    "foreign_keys": 422
+    "triggers": 706,
+    "foreign_keys": 462
   },
-  "table_owner_digest": "sha256:7fb0d7f66afe1b0350d34d6ba494c2f2dd03b6efe70e6ca6ba71fccaf60c0638",
+  "table_owner_digest": "sha256:62609728c50b0d6fe7b07e274a27c65e7da076007141260dab3a10a9865d19dc",
   "semantic_owner_rules": [
     {
       "rule_id": "kernel-control-plane",
@@ -37,6 +37,7 @@
         "agent_runtime_signals",
         "approval_requests",
         "command_receipt_records",
+        "command_tool_expansion_records",
         "continuation_state_records",
         "durable_event_records",
         "engine_documents",
@@ -52,12 +53,20 @@
         "runtime_command_records",
         "runtime_continuation_intent_records",
         "runtime_outcome_consumption_records",
+        "runtime_signal_authority_link_records",
         "runtime_settlement_intent_records",
+        "runtime_turn_context_records",
         "runtime_turn_command_records",
+        "runtime_turn_outcome_records",
         "session_access_records",
         "session_runtime_leases",
         "sessions",
         "tasks",
+        "tool_exposure_snapshot_records",
+        "workflow_authority_binding_records",
+        "workspace_provisioning_intent_records",
+        "workspace_provisioning_reconciliation_records",
+        "workspace_provisioning_receipt_records",
         "workspace_runtime_binding_records"
       ]
     },

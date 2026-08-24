@@ -12,7 +12,7 @@ ambient capability；重复 tool name、缺失 required Plugin、Driver owner �
 runtime surface 前失败。
 
 当前 manifest 状态是 `active`，表示其 exact component graph 已通过结构化 activation：8 个 Adapter、14 个
-Plugin、8 个 Driver、32 个 Plugin declared tool 与 5 个 Kernel workspace base tool（总计 37 个），并且 Driver
+Plugin、8 个 Driver、32 个 Plugin declared tool 与 13 个 Kernel resident/workspace base tool（总计 45 个），并且 Driver
 只声明实际消费的 process/workspace/scheduler Adapter
 Port。`build_enzymedesign_fresh_install_seed()` 把这些 catalog 与 EnzymeDesign owner schema、migration sources、
 wheel set 和 layered release identity 绑定。该状态不等于生产 activation；Host 仍须验证并持久化 exact epoch，
@@ -25,7 +25,7 @@ mount gate；少一项、多一项、owner/driver/digest 漂移都会 fail close
 
 `build_enzymedesign_application_runtime()` 是产品 application composition root：它在 read-only proof 之后核对
 8 个 selected Adapter runtime binding 的 component/manifest/contract/build/slot/target identity；所有 effectful
-operational object 都从这些 binding 内的 exact runtime 派生，不再由调用者另传第二套实现。随后精确合并 5 个
+operational object 都从这些 binding 内的 exact runtime 派生，不再由调用者另传第二套实现。随后精确合并 13 个
 Kernel 与 32 个 Plugin tool runtime，再构造 SQLite
 writer、capability registry、bounded Agent runtime gateway、Kernel command routes、projection、worker 与 validator
 bindings。`build_enzymedesign_v2_host_app()` 把这个 runtime 注入通用 Host API；它不经过也不依赖
@@ -39,6 +39,39 @@ continuation service。Plugin 不获得 raw connection，也不直接写 Core ta
 且同一 request 的 external dispatch count 始终为 1。Compute 现在会在 route effect 前持久化
 `not_started -> reconcile_required` occurrence；即使 response loss 没有 provider handle，或 dispatch 抛出 typed
 uncertain error，跨 Host epoch 也只允许按 occurrence identity reconcile，不能重新 dispatch。
+
+## Resident teammate executable product loop
+
+EnzymeDesign Distribution 自己拥有 executable server launcher/`main()`；它从显式配置构造 file-backed Store、
+exact Git/LFS workspace provisioner、runtime Adapter、bounded provisioning/runtime workers 和
+`build_enzymedesign_v2_host_app()`，再交给选定 ASGI server。generic Host 与 Thin CLI 不选择组件，也不从环境
+扫描替代 Adapter。startup 缺少 repository pin、workspace root、runtime provider、manifest 或 role policy 时，
+在打开产品 surface 前结构化失败；shutdown 按 owner 顺序停止 admission、workers、runtime owner 和 Store，
+进程退出不成为 Task/attempt terminal。
+
+launcher 的 read-only `preflight` 必须观测而非宣称 file-backed identity：SQLite `PRAGMA database_list` 只能返回
+与 closed 配置相同的唯一绝对 `main` 文件，不能是 `:memory:`、另一文件或附加数据库。它还重验 official Store/runtime、
+active epoch/release、Extension bundle、declared tool catalog、全部 selected Adapter runtime、实际 workflow resolver、
+实际 runtime admission/全角色 policy 与 workspace binding，并把这些 digest 写入 receipt。任一配置、自报字段或实际执行
+对象漂移都在 Host admission 前关闭 launcher，保持 `no_effect` 且不采用 Standard/in-memory/live fallback。
+
+fresh Session bootstrap 原子创建 generation-1 reservation、pending root authority lease 与 durable provisioning
+intent，HTTP 立即返回 `provisioning`。bounded worker 使用 exact selected Adapter，Kernel settlement 才能把
+workspace、member 和 lease 同时推进为 ready/active；blocked 或 `dispatch_in_doubt` 不会自动重试、切换 provider
+或 seed 临时 workspace。消息 ready 后只执行 admission + enqueue，显式 `/runtime/drain` 才推进 bounded turn。
+
+Distribution 还拥有 adopted workflow registry 与完整 role-exposure policy。root `workflow_refs`（兼容输入
+`skill_keys`）解析为 exact `WorkflowAuthorityBinding@1`，delegation 只能派生显式子集；protocol、approval、
+continuation 通过 `RuntimeSignalAuthorityLink@1` 传播 causation。稳定 collaboration verbs 与各角色必需的
+EnzymeDesign tools 为 Direct，其余 eligible Plugin tools 为 Deferred；Hidden 不出现在 inspection。一次
+command-scoped expansion 只改变下一 provider step 的 schema，不扩大 authority、approval、qualification 或
+route。Kernel 的 `RuntimeTurnContext@1` 与 once-only outcome settlement保证 restart 后仍能读到同一 task board、
+workspace、inbox、workflow、assistant/tool/failure transcript。
+
+该产品闭环的 fresh non-live E2E 使用 deterministic fake LLM 与 recording/no-effect external Adapters，并设置
+network/provider/HPC/SSH/browser deny guards。它只证明 EnzymeDesign composition、role exposure、explicit drain、
+projection 与 restart recovery；不证明真实 Provider/target 已 qualified、deployment 已 cutover、发生 live effect
+或完成 AOX 科学报告。
 
 HMMER/Vina 的正式 application bridge 由一次性
 `EnzymeDesignFormalComputeApplicationBinding` 在 runtime writer 可达前绑定：Kernel gateway 先重验 affordance

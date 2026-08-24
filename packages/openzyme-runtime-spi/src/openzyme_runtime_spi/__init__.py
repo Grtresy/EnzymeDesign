@@ -13,6 +13,7 @@ from .runtime import RUNTIME_MESSAGE_SCHEMA_VERSION
 from .runtime import RUNTIME_TOOL_REQUEST_SCHEMA_VERSION
 from .runtime import RUNTIME_TURN_COMMAND_SCHEMA_VERSION
 from .runtime import RUNTIME_TURN_OUTCOME_SCHEMA_VERSION
+from .runtime import RUNTIME_TURN_OUTCOME_RECEIPT_SCHEMA_VERSION
 from .runtime import RUNTIME_USAGE_SCHEMA_VERSION
 from .runtime import RuntimeCapabilityGateway
 from .runtime import RuntimeMessage
@@ -22,6 +23,7 @@ from .runtime import RuntimeToolInvocationError
 from .runtime import RuntimeTurnCommand
 from .runtime import RuntimeTurnDisposition
 from .runtime import RuntimeTurnOutcome
+from .runtime import RuntimeTurnOutcomeReceipt
 from .runtime import RuntimeUsage
 
 COMPONENT_ID = "openzyme.runtime.spi"
@@ -45,6 +47,7 @@ __all__ = [
     "RUNTIME_TOOL_REQUEST_SCHEMA_VERSION",
     "RUNTIME_TURN_COMMAND_SCHEMA_VERSION",
     "RUNTIME_TURN_OUTCOME_SCHEMA_VERSION",
+    "RUNTIME_TURN_OUTCOME_RECEIPT_SCHEMA_VERSION",
     "RUNTIME_USAGE_SCHEMA_VERSION",
     "RuntimeCapabilityGateway",
     "RuntimeMessage",
@@ -54,5 +57,6 @@ __all__ = [
     "RuntimeTurnCommand",
     "RuntimeTurnDisposition",
     "RuntimeTurnOutcome",
+    "RuntimeTurnOutcomeReceipt",
     "RuntimeUsage",
 ]

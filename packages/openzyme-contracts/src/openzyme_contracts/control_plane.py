@@ -8,6 +8,8 @@ from enum import StrEnum
 from typing import Any
 from typing import ClassVar
 
+from .identity import require_digest
+from .identity import require_identifier
 from .reliability import CONTINUATION_STATE_SCHEMA_VERSION
 from .reliability import ContinuationDeliveryState
 from .reliability import ContinuationResumeStrategy
@@ -347,6 +349,35 @@ class ApprovalRequest:
     resolution_ref: str | None
     created_at: str
     resolved_at: str | None = None
+    workflow_authority_id: str | None = None
+    workflow_authority_epoch: int | None = None
+    workflow_authority_digest: str | None = None
+
+    def __post_init__(self) -> None:
+        workflow_identity = (
+            self.workflow_authority_id,
+            self.workflow_authority_epoch,
+            self.workflow_authority_digest,
+        )
+        if any(value is None for value in workflow_identity) and any(
+            value is not None for value in workflow_identity
+        ):
+            raise ValueError("approval workflow authority identity must be complete")
+        if self.workflow_authority_id is not None:
+            require_identifier(
+                self.workflow_authority_id,
+                field_name="workflow_authority_id",
+            )
+            if (
+                not isinstance(self.workflow_authority_epoch, int)
+                or isinstance(self.workflow_authority_epoch, bool)
+                or self.workflow_authority_epoch < 1
+            ):
+                raise ValueError("workflow_authority_epoch must be positive")
+            require_digest(
+                self.workflow_authority_digest or "",
+                field_name="workflow_authority_digest",
+            )
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)

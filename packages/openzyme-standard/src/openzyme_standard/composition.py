@@ -40,9 +40,28 @@ from openzyme_kernel import mount_runtime_tool_set
 from openzyme_kernel import build_kernel_workspace_tool_runtimes
 from openzyme_kernel import kernel_workspace_declared_tool_entries
 from openzyme_kernel import select_distribution_manifest_locators
-from openzyme_process_podman.manifest_locator import locate_component_manifest as podman_locator
-from openzyme_runtime_llm.manifest_locator import locate_component_manifest as llm_locator
-from openzyme_store_sqlite.manifest_locator import locate_component_manifest as sqlite_locator
+from openzyme_kernel.collaboration_tools import (
+    CollaborationToolApplications,
+)
+from openzyme_kernel.collaboration_tools import (
+    CollaborationToolContextResolver,
+)
+from openzyme_kernel.collaboration_tools import (
+    build_kernel_collaboration_tool_runtimes,
+)
+from openzyme_kernel.collaboration_tools import (
+    kernel_collaboration_declared_tool_entries,
+)
+from openzyme_kernel.tool_exposure import KernelCapabilitiesInspectRuntime
+from openzyme_process_podman.manifest_locator import (
+    locate_component_manifest as podman_locator,
+)
+from openzyme_runtime_llm.manifest_locator import (
+    locate_component_manifest as llm_locator,
+)
+from openzyme_store_sqlite.manifest_locator import (
+    locate_component_manifest as sqlite_locator,
+)
 from openzyme_store_sqlite import CompositeSQLiteStartupProof
 from openzyme_store_sqlite import FreshInstallCompositionSeed
 from openzyme_store_sqlite import MigrationSourceIdentity
@@ -58,6 +77,9 @@ from openzyme_store_sqlite import verify_session_composition_state_read_only
 from openzyme_workspace_git_lfs.manifest_locator import (
     locate_component_manifest as git_lfs_locator,
 )
+
+from .role_policies import standard_subject_policy_decisions_by_role
+from .role_policies import standard_tool_exposure_policies
 
 
 STANDARD_ADAPTER_SLOTS = (
@@ -75,6 +97,7 @@ STANDARD_KERNEL_ENTITY_TYPES = (
     "agent_member",
     "agent_runtime_signal",
     "approval_request",
+    "command_tool_expansion",
     "continuation",
     "controlled_operation",
     "conversation_message",
@@ -83,15 +106,20 @@ STANDARD_KERNEL_ENTITY_TYPES = (
     "kernel_command_receipt",
     "lane",
     "memory",
+    "private_diagnostic",
     "project_repository_binding",
     "project_repository_binding_head",
     "protocol_record",
     "published_revision",
     "revision_path_verification",
+    "runtime_command",
     "runtime_continuation_intent",
     "runtime_outcome_consumption",
     "runtime_settlement_intent",
+    "runtime_signal_authority_link",
     "runtime_turn_command",
+    "runtime_turn_context",
+    "runtime_turn_outcome",
     "session",
     "session_capability_binding_revision",
     "session_composition_pin",
@@ -99,8 +127,13 @@ STANDARD_KERNEL_ENTITY_TYPES = (
     "session_runtime_lease",
     "task",
     "task_evidence",
+    "tool_exposure_snapshot",
     "verified_workspace_checkpoint",
+    "workflow_authority_binding",
     "workspace_generation",
+    "workspace_provisioning_intent",
+    "workspace_provisioning_receipt",
+    "workspace_provisioning_reconciliation",
     "workspace_publication_intent",
     "workspace_runtime_binding",
 )
@@ -226,13 +259,14 @@ def build_standard_kernel_public_projection_provider(
     composition = activate_standard_composition()
     release = active_epoch.release_identity
     if (
-        release.extension_bundle_digest
-        != composition.plugins.extension_bundle_digest
+        release.extension_bundle_digest != composition.plugins.extension_bundle_digest
         or release.declared_tool_catalog_digest
         != composition.declared_tool_catalog.catalog_digest
         or release.route_catalog_digest != composition.route_catalog.catalog_digest
     ):
-        raise RuntimeError("Standard public projection catalogs drifted from activation")
+        raise RuntimeError(
+            "Standard public projection catalogs drifted from activation"
+        )
     coverage = inspect_standard_kernel_store_codec_coverage()
     if not coverage.ready:
         raise StandardKernelStoreReadinessError(
@@ -251,6 +285,15 @@ def build_standard_kernel_public_projection_provider(
             route_catalog=composition.route_catalog,
         ),
         extension_bundle_digest=release.extension_bundle_digest,
+        distribution_id=composition.distribution_id,
+        adopted_release_digest=release.release_digest,
+        subject_policy_decisions_by_role=(
+            standard_subject_policy_decisions_by_role(composition.declared_tool_catalog)
+        ),
+        tool_exposure_policies=standard_tool_exposure_policies(
+            composition.declared_tool_catalog,
+            release_digest=release.release_digest,
+        ),
         clock=clock,
     )
 
@@ -357,8 +400,10 @@ def mount_standard_kernel_workspace_tool_set(
     startup: StandardDeploymentStartup,
     coordinator: Any,
     context_resolver: Any,
+    collaboration_applications: CollaborationToolApplications,
+    collaboration_context_resolver: CollaborationToolContextResolver,
 ) -> MountedRuntimeToolSet:
-    """Mount the exact five Kernel workspace runtimes after Standard activation.
+    """Mount the complete Plugin-free Kernel collaboration/workspace baseline.
 
     Extension surfaces remain empty in Plugin-free Standard.  This separate
     mount proves that Kernel base tools are executable without misclassifying
@@ -366,12 +411,28 @@ def mount_standard_kernel_workspace_tool_set(
     """
 
     composition = activate_standard_composition()
+    collaboration = build_kernel_collaboration_tool_runtimes(
+        applications=collaboration_applications,
+        context_resolver=collaboration_context_resolver,
+    )
+    capabilities_contract = next(
+        entry.contract
+        for entry in composition.declared_tool_catalog.entries
+        if entry.contract.tool_name == "capabilities.inspect"
+    )
+    runtimes = (
+        *collaboration,
+        KernelCapabilitiesInspectRuntime(contract=capabilities_contract),
+        *build_kernel_workspace_tool_runtimes(
+            coordinator=coordinator,
+            context_resolver=context_resolver,
+        ),
+    )
     return mount_runtime_tool_set(
         gate=startup.gate,
         catalog=composition.declared_tool_catalog,
-        kernel_runtimes=build_kernel_workspace_tool_runtimes(
-            coordinator=coordinator,
-            context_resolver=context_resolver,
+        kernel_runtimes=tuple(
+            sorted(runtimes, key=lambda item: item.contract.tool_name)
         ),
         extension_surfaces=startup.mounted_surfaces,
     )
@@ -424,7 +485,15 @@ def activate_standard_composition() -> ActivatedDistributionComposition:
             manifest_digest=kernel.implementation_manifest_digest,
         ),
         located_manifests=manifests,
-        kernel_tools=kernel_workspace_declared_tool_entries(),
+        kernel_tools=tuple(
+            sorted(
+                (
+                    *kernel_collaboration_declared_tool_entries(),
+                    *kernel_workspace_declared_tool_entries(),
+                ),
+                key=lambda item: item.contract.tool_name,
+            )
+        ),
     )
 
 

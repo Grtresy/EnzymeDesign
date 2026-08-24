@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from openzyme_contracts import CONTROLLED_OPERATION_EXECUTION_SCHEMA_VERSION
@@ -18,6 +20,10 @@ from openzyme_contracts import ControlledOperationExecutionTerminalOutcome
 from openzyme_contracts import ControlledOperationOwnerMode
 from openzyme_contracts import ControlledOperationResultHandle
 from openzyme_contracts import ExternalEffectCertainty
+from openzyme_contracts import FailureActorKind
+from openzyme_contracts import FailureClass
+from openzyme_contracts import FailureRecoverability
+from openzyme_contracts import KernelRecordSnapshot
 from openzyme_contracts import MutationScope
 from openzyme_contracts import MutationScopeKind
 from openzyme_contracts import MutationScopeState
@@ -25,10 +31,14 @@ from openzyme_contracts import MutationWriter
 from openzyme_contracts import MutationWriterKind
 from openzyme_contracts import MutationWriterState
 from openzyme_contracts import QuiescenceReceipt
+from openzyme_contracts import StructuredFailureContext
 from openzyme_contracts import RetryEligibility
 from openzyme_contracts import RuntimeCommandRecord
 from openzyme_contracts import RuntimeCommandStatus
 from openzyme_contracts import RuntimeCommandType
+from openzyme_contracts import PrivateDiagnosticRecord
+from openzyme_contracts import observe_structured_failure
+from openzyme_contracts import validate_failure_diagnostic_pair
 
 
 def _execution() -> ControlledOperationExecution:
@@ -147,7 +157,9 @@ def test_legacy_continuation_defaults_do_not_fabricate_resumability() -> None:
     )
 
     payload = continuation.to_dict()
-    assert continuation.resume_strategy is ContinuationResumeStrategy.LEGACY_NON_RESUMABLE
+    assert (
+        continuation.resume_strategy is ContinuationResumeStrategy.LEGACY_NON_RESUMABLE
+    )
     assert continuation.delivery_state is ContinuationDeliveryState.LEGACY_UNAVAILABLE
     assert continuation.delivery_fencing_token == 0
     assert payload["schema_version"] == CONTINUATION_STATE_SCHEMA_VERSION
@@ -205,3 +217,55 @@ def test_mutation_scope_writer_and_receipt_are_versioned_data_contracts() -> Non
     assert receipt.to_dict()["seal_generation"] == 3
     assert MutationScopeState.QUIESCENT.is_terminal is False
     assert MutationScopeState.SEALED.is_terminal is True
+
+
+def test_private_diagnostic_parser_thaws_frozen_nested_json_and_public_pair_is_secret_safe() -> (
+    None
+):
+    records = observe_structured_failure(
+        RuntimeError("api_key=operator-only-secret"),
+        context=StructuredFailureContext(
+            failure_id="failure-frozen-1",
+            diagnostic_id="diagnostic-frozen-1",
+            session_id="session-1",
+            component="openzyme.runtime",
+            operation="invoke",
+            phase="provider_invoke",
+            source_kind="agent_runtime_adapter",
+            source_ref="command-1",
+            source_version="sha256:" + ("a" * 64),
+            created_at="2026-08-24T00:00:00+00:00",
+            correlation_id="correlation-1",
+        ),
+        failure_class=FailureClass.PROVIDER,
+        recoverability=FailureRecoverability.TERMINAL,
+        effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+        retry_eligibility=RetryEligibility.TERMINAL,
+        actor_kind=FailureActorKind.SYSTEM,
+        error_code="provider_failed",
+        safe_summary="The selected provider failed.",
+        safe_hint="Inspect the operator diagnostic.",
+        next_action="inspect_diagnostic",
+        mutation_applied=False,
+        private_context={
+            "provider": {"headers": [{"authorization": "api_key=operator-only-secret"}]}
+        },
+    )
+    snapshot = KernelRecordSnapshot.create(
+        entity_type="private_diagnostic",
+        entity_id=records.private.diagnostic_id,
+        state_version=1,
+        payload=records.private.to_dict(),
+    )
+
+    parsed = PrivateDiagnosticRecord.from_dict(snapshot.payload)
+
+    assert parsed == records.private
+    assert parsed.to_dict() == records.private.to_dict()
+    validate_failure_diagnostic_pair(records.public, parsed)
+    public_wire = json.dumps(records.public.to_dict(), sort_keys=True)
+    assert "operator-only-secret" not in public_wire
+    assert "private_diagnostic_digest" not in public_wire
+    assert records.public.to_internal_dict()["private_diagnostic_digest"] == (
+        parsed.record_digest
+    )

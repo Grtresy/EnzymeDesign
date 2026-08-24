@@ -2,8 +2,10 @@
 
 本文说明目标 `@2` composition 的启动、Session 固定和 Plugin 变更操作。当前
 `distributions/openzyme-standard` 与 `distributions/enzymedesign` 均为结构上可激活的 `active` manifest；
-application composition root 和 isolated fresh SQLite proof 已通过，EnzymeDesign 还有真实内部、明确 fake 外部
-Ports 的 non-live 产品级场景。manifest active 不会自行打开 writer、route、worker、runtime 或外部效果。
+application composition root 和 isolated fresh SQLite proof 已通过；resident-teammate product-loop change 进一步
+要求两种 Distribution 都由自己的 launcher 组合 file-backed Store、workspace/runtime Adapters、provisioning/
+runtime workers 与通用 Host。fresh non-live E2E 使用 deterministic fake/no-effect external Ports；manifest
+active 或测试通过都不会自行打开真实 Provider/HPC、执行 deployment cutover 或产生 live effect。
 
 状态词必须按下表使用：
 
@@ -130,16 +132,26 @@ identity drift 会回滚 Core mutation、extension state、event 和 outbox。LL
 只有 active epoch 才能创建 Session。创建事务必须一次提交：
 
 1. Kernel Session；
-2. `SessionCompositionPin`；
-3. revision 1 的 `SessionCapabilityBindingRevision`；
-4. 对应 durable event/outbox facts。
+2. master `AgentMember`、exact repository pin 和 generation-1 `WorkspaceGeneration` reservation；
+3. generation-1 pending root `AgentAuthorityLease` 与 `WorkspaceProvisioningIntent@1`；
+4. `SessionCompositionPin`；
+5. revision 1 的 `SessionCapabilityBindingRevision`；
+6. 对应 durable event/outbox facts。
 
 pin 固定 Kernel/schema、Adapter/Extension/Driver bundle、declared tool、capability/HTTP route、projection、
 migration/contribution catalogs、workspace backend、Host/client epoch 与 origin deployment identity。初始 binding
 固定 Extension bundle、capability route catalog 和 operator 已采用的 inventory generations；可以为空，但不能
 从环境自动补 target。
 
-如果三者不能同一 transaction 提交，Session 创建必须整体失败，不允许产生没有 pin 的 Session 或孤立 binding。
+如果上述 facts 不能同一 transaction 提交，Session 创建必须整体失败，不允许产生没有 pin、没有 provisioning
+occurrence 的 Session 或孤立 binding。创建响应只报告 `provisioning` 并返回，不等待 clone/volume/capsule；
+Distribution-owned bounded worker 只调用 manifest 选定的 `WorkspaceProvisionerPort`。成功后由 Kernel settlement
+原子推进 generation `READY`、runtime binding、lease `ACTIVE`、member readiness 和 intent `ready`；失败保留
+`blocked` 与 effect certainty。`dispatch_in_doubt` 只允许 reconcile 同一 occurrence，不重发或换 Adapter。
+
+旧 Session 缺少 reservation、intent、workflow authority 或 runtime transcript owner rows 时，新的 resident
+runtime 返回 `resident_teammate_state_incompatible`。normal startup、Host route、CLI 或 UI 都不能借 projection
+读取补造这些 records；需要明确 offline migration 或新建 Session。
 
 ## 请求与 restore 守卫
 
@@ -154,6 +166,11 @@ revision：
 - checkpoint/publication；
 - controlled operation admission/observe/reconcile/cancel；
 - restore/continuation resume。
+
+resident runtime 入口还读取 exact root/derived `WorkflowAuthorityBinding@1`、当前 signal link/epoch、workspace
+generation/readiness 与 tool exposure identity。`/runtime/drain` 只 claim 已有 link，不接受 workflow、expansion
+或 route 参数；provider 和每次 tool dispatch 前重新验证，revoked/stale authority 不通过旧 message、latest/all
+scan 或 prompt 恢复。
 
 任何缺失、digest invalid、wrong Session、Extension/route bundle drift、workspace/Host-client epoch drift都返回
 `session_composition_upgrade_required`，并保持 `no_effect`、零 mutation、零 fallback。安全 inspection 可以读取

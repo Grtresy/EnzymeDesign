@@ -21,6 +21,7 @@ from openzyme_standard import verify_standard_deployment_startup_read_only
 from openzyme_kernel import DeploymentSurface
 from openzyme_kernel import KernelContractError
 from openzyme_kernel import mount_runtime_tool_set
+from openzyme_kernel.collaboration_tools import CollaborationToolApplications
 from openzyme_kernel.testing import DeterministicClock
 from openzyme_kernel.testing import DeterministicIdGenerator
 from openzyme_store_sqlite import OPENZYME_STANDARD_OWNER_SCHEMA_PROFILE
@@ -73,14 +74,21 @@ def test_standard_builds_an_exact_plugin_free_active_composition() -> None:
     assert activated.plugins.activations == ()
     assert activated.drivers == ()
     assert tuple(
-        entry.contract.tool_name
-        for entry in activated.declared_tool_catalog.entries
+        entry.contract.tool_name for entry in activated.declared_tool_catalog.entries
     ) == (
+        "approval.request",
+        "capabilities.inspect",
+        "protocol.send",
+        "task.create",
+        "task.delegate",
+        "task.finish",
+        "task.update",
         "workspace.exec",
         "workspace.fs.list",
         "workspace.fs.mutate",
         "workspace.fs.read",
         "workspace.status",
+        "world.inspect",
     )
     assert all(
         entry.owner_component_id == "openzyme.kernel"
@@ -120,9 +128,12 @@ def test_standard_builds_and_verifies_a_deterministic_plugin_free_fresh_seed() -
     )
     assert proof.schema.composition is not None
     assert proof.schema.composition.verified_catalog_count == 7
-    assert connection.execute(
-        "SELECT COUNT(*) FROM openzyme_store_extension_state_records"
-    ).fetchone()[0] == 0
+    assert (
+        connection.execute(
+            "SELECT COUNT(*) FROM openzyme_store_extension_state_records"
+        ).fetchone()[0]
+        == 0
+    )
 
     before = connection.total_changes
     startup = verify_standard_deployment_startup_read_only(
@@ -180,18 +191,33 @@ def test_standard_mounts_all_kernel_base_runtimes_without_a_plugin_bundle() -> N
         startup=startup,
         coordinator=object(),
         context_resolver=object(),
+        collaboration_applications=CollaborationToolApplications(
+            world=object(),
+            collaboration=object(),
+            tasks=object(),
+            protocol=object(),
+            approvals=object(),
+        ),
+        collaboration_context_resolver=object(),
     )
 
     assert tuple(name for name, _ in mounted.tools) == (
+        "approval.request",
+        "capabilities.inspect",
+        "protocol.send",
+        "task.create",
+        "task.delegate",
+        "task.finish",
+        "task.update",
         "workspace.exec",
         "workspace.fs.list",
         "workspace.fs.mutate",
         "workspace.fs.read",
         "workspace.status",
+        "world.inspect",
     )
     assert all(
-        runtime.owner_component_id == "openzyme.kernel"
-        for _, runtime in mounted.tools
+        runtime.owner_component_id == "openzyme.kernel" for _, runtime in mounted.tools
     )
     assert startup.mounted_surfaces.tools == ()
     assert mounted.declared_tool_catalog_digest == (
@@ -202,14 +228,18 @@ def test_standard_mounts_all_kernel_base_runtimes_without_a_plugin_bundle() -> N
         mount_runtime_tool_set(
             gate=startup.gate,
             catalog=activate_standard_composition().declared_tool_catalog,
-            kernel_runtimes=tuple(runtime for _, runtime in mounted.tools[:-1]),
+            kernel_runtimes=tuple(
+                runtime for name, runtime in mounted.tools if name != "workspace.status"
+            ),
             extension_surfaces=startup.mounted_surfaces,
         )
     assert raised.value.code == "tool_runtime_catalog_mismatch"
     assert raised.value.details["missing_tool_names"] == ("workspace.status",)
 
 
-def test_standard_writer_opens_only_after_every_kernel_entity_has_a_real_codec() -> None:
+def test_standard_writer_opens_only_after_every_kernel_entity_has_a_real_codec() -> (
+    None
+):
     connection = sqlite3.connect(":memory:")
     connection.execute("PRAGMA foreign_keys = ON")
     install_owner_partitioned_schema_for_offline_migration(
@@ -242,40 +272,7 @@ def test_standard_writer_opens_only_after_every_kernel_entity_has_a_real_codec()
     coverage = inspect_standard_kernel_store_codec_coverage()
 
     assert coverage.required_entity_types == STANDARD_KERNEL_ENTITY_TYPES
-    assert coverage.available_entity_types == (
-        "agent_authority_lease",
-        "agent_member",
-        "agent_runtime_signal",
-        "approval_request",
-        "continuation",
-        "controlled_operation",
-        "conversation_message",
-        "failure_observation",
-        "inbox_message",
-        "kernel_command_receipt",
-        "lane",
-        "memory",
-        "project_repository_binding",
-        "project_repository_binding_head",
-        "protocol_record",
-        "published_revision",
-        "revision_path_verification",
-        "runtime_continuation_intent",
-        "runtime_outcome_consumption",
-        "runtime_settlement_intent",
-        "runtime_turn_command",
-        "session",
-        "session_capability_binding_revision",
-        "session_composition_pin",
-        "session_repository_binding_pin",
-        "session_runtime_lease",
-        "task",
-        "task_evidence",
-        "verified_workspace_checkpoint",
-        "workspace_generation",
-        "workspace_publication_intent",
-        "workspace_runtime_binding",
-    )
+    assert coverage.available_entity_types == STANDARD_KERNEL_ENTITY_TYPES
     assert coverage.ready is True
     assert coverage.missing_entity_types == ()
     assert coverage.coverage_digest.startswith("sha256:")

@@ -15,6 +15,7 @@ from openzyme_contracts import KernelRecordSnapshot
 from openzyme_contracts import SessionRuntimeLease
 from openzyme_contracts import SessionRuntimeLeaseMode
 from openzyme_extension_spi import KernelMutationReceipt
+from openzyme_extension_spi import KernelCommandContext
 from openzyme_host_api import HostV2CommandError
 from openzyme_host_api import HostV2MutationInvocation
 from openzyme_kernel import ControlStoreRuntimeOutcomeRepository
@@ -25,6 +26,7 @@ from openzyme_kernel import RuntimeTurnBudget
 from openzyme_kernel import RuntimeTurnCoordinator
 from openzyme_kernel import SessionRuntimeLeaseCommand
 from openzyme_kernel import RuntimeCoordinationKernelApplicationService
+from openzyme_kernel import RuntimeContinuationDeliveryWorker
 from openzyme_runtime_spi import RuntimeCapabilityGateway
 
 from .coordination_routes import build_enzymedesign_command_context
@@ -62,6 +64,7 @@ class EnzymeDesignBoundedRuntimeDrainApplication:
     """Execute an explicit bounded drain through Kernel lease/claim/turn owners."""
 
     coordination: RuntimeCoordinationKernelApplicationService
+    continuations: RuntimeContinuationDeliveryWorker
     turns: RuntimeTurnCoordinator
     outcomes: ControlStoreRuntimeOutcomeRepository
     records: KernelRecordQueryPort
@@ -99,8 +102,36 @@ class EnzymeDesignBoundedRuntimeDrainApplication:
                 "Runtime drain payload exceeds its closed bounds",
                 status_code=422,
             )
+        return self.execute(
+            context=build_enzymedesign_command_context(invocation, ids=self.ids),
+            max_signals=max_signals,
+            max_steps_per_agent=max_steps,
+        )
+
+    def execute(
+        self,
+        *,
+        context: KernelCommandContext,
+        max_signals: int,
+        max_steps_per_agent: int,
+    ) -> KernelMutationReceipt:
+        """Execute one already-admitted command outside the delivery request."""
+
+        if (
+            not isinstance(max_signals, int)
+            or isinstance(max_signals, bool)
+            or not 1 <= max_signals <= 64
+            or not isinstance(max_steps_per_agent, int)
+            or isinstance(max_steps_per_agent, bool)
+            or not 1 <= max_steps_per_agent <= 128
+        ):
+            raise _drain_error(
+                "runtime_drain_payload_invalid",
+                "Runtime drain payload exceeds its closed bounds",
+                status_code=422,
+            )
         pending = self.admissions.pending_signals(
-            session_id=invocation.session_id,
+            session_id=context.session_id,
             maximum=max_signals,
         )
         if len(pending) > max_signals:
@@ -108,26 +139,35 @@ class EnzymeDesignBoundedRuntimeDrainApplication:
                 "runtime_drain_source_unbounded",
                 "Runtime admission source exceeded the requested signal bound",
             )
+        continuation_receipts = list(
+            self.continuations.tick(
+                context=context,
+                maximum=max_signals,
+            )
+        )
         if not pending:
             return KernelMutationReceipt.create(
                 command_id=self.ids.new_id(namespace="runtime-drain"),
                 service_id="openzyme.enzymedesign.runtime-drain",
                 operation="runtime.drain",
-                mutation_applied=False,
+                mutation_applied=bool(continuation_receipts),
                 effect_certainty=ExternalEffectCertainty.NO_EFFECT,
                 result={
                     "processed_signals": 0,
+                    "turns": [],
+                    "continuations_queued": len(continuation_receipts),
+                    "runtime_executed": False,
                     "task_transition_performed": False,
                     "fallback_performed": False,
                 },
             )
 
-        base = build_enzymedesign_command_context(invocation, ids=self.ids)
+        base = context
         runtime_owner_id = self.ids.new_id(namespace="runtime-owner")
         acquire_context = replace(
             base,
             command_id=self.ids.new_id(namespace="command"),
-            idempotency_key=f"{invocation.idempotency_key}.lease.acquire",
+            idempotency_key=f"{context.idempotency_key}.lease.acquire",
         )
         self.coordination.mutate_session_lease(
             SessionRuntimeLeaseCommand(
@@ -138,7 +178,7 @@ class EnzymeDesignBoundedRuntimeDrainApplication:
                 lease_seconds=self.lease_seconds,
             )
         )
-        lease, lease_generation = self._runtime_lease(invocation.session_id)
+        lease, lease_generation = self._runtime_lease(context.session_id)
         processed: list[dict[str, object]] = []
         primary_error: BaseException | None = None
         try:
@@ -150,7 +190,7 @@ class EnzymeDesignBoundedRuntimeDrainApplication:
                     )
                 signal = _runtime_signal(snapshot.payload)
                 if (
-                    signal.session_id != invocation.session_id
+                    signal.session_id != context.session_id
                     or signal.status is not AgentRuntimeSignalStatus.PENDING
                 ):
                     raise _drain_error(
@@ -161,7 +201,7 @@ class EnzymeDesignBoundedRuntimeDrainApplication:
                     base,
                     command_id=self.ids.new_id(namespace="command"),
                     idempotency_key=(
-                        f"{invocation.idempotency_key}.signal.{signal.signal_id}.claim"
+                        f"{context.idempotency_key}.signal.{signal.signal_id}.claim"
                     ),
                 )
                 self.coordination.claim_signal(
@@ -185,16 +225,19 @@ class EnzymeDesignBoundedRuntimeDrainApplication:
                     command_id=self.ids.new_id(namespace="runtime-command"),
                     turn_id=self.ids.new_id(namespace="runtime-turn"),
                     budget=RuntimeTurnBudget(
-                        max_steps=max_steps,
+                        max_steps=max_steps_per_agent,
                         max_duration_seconds=self.max_duration_seconds,
                         max_input_units=self.max_input_units,
                         max_output_units=self.max_output_units,
                     ),
                     observed_at=self.clock.now_iso(),
                 )
-                command = self.turns.build_command(admission)
                 try:
-                    self.outcomes.register_command(command)
+                    command = self.turns.build_command(admission)
+                    self.outcomes.register_command(
+                        command,
+                        tool_exposure_snapshot=admission.tool_exposure_snapshot,
+                    )
                     outcome = self.turns.adapter.run_turn(
                         command,
                         self.capability_gateway,
@@ -205,7 +248,7 @@ class EnzymeDesignBoundedRuntimeDrainApplication:
                         consumed_at=self.clock.now_iso(),
                     )
                 finally:
-                    self.admissions.discard(command.command_id)
+                    self.admissions.discard(admission.command_id)
                 processed.append(
                     {
                         "sequence": index,
@@ -225,7 +268,7 @@ class EnzymeDesignBoundedRuntimeDrainApplication:
             release_context = replace(
                 base,
                 command_id=self.ids.new_id(namespace="command"),
-                idempotency_key=f"{invocation.idempotency_key}.lease.release",
+                idempotency_key=f"{context.idempotency_key}.lease.release",
             )
             try:
                 self.coordination.mutate_session_lease(
@@ -247,6 +290,14 @@ class EnzymeDesignBoundedRuntimeDrainApplication:
                     f"runtime lease release also failed: {type(release_error).__name__}"
                 )
 
+        remaining_continuations = max_signals - len(continuation_receipts)
+        if remaining_continuations:
+            continuation_receipts.extend(
+                self.continuations.tick(
+                    context=base,
+                    maximum=remaining_continuations,
+                )
+            )
         return KernelMutationReceipt.create(
             command_id=base.command_id,
             service_id="openzyme.enzymedesign.runtime-drain",
@@ -256,6 +307,8 @@ class EnzymeDesignBoundedRuntimeDrainApplication:
             result={
                 "processed_signals": len(processed),
                 "turns": processed,
+                "continuations_queued": len(continuation_receipts),
+                "runtime_executed": bool(processed),
                 "task_transition_performed": False,
                 "fallback_performed": False,
             },

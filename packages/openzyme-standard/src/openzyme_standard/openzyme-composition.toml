@@ -42,7 +42,7 @@ slot = "agent.turn"
 component_id = "openzyme.runtime.llm"
 distribution_name = "openzyme-runtime-llm"
 distribution_version = "0.1.0"
-manifest_digest = "sha256:6e16b2af91d4e18b25747fd7bab071bfa4261b26c520c04e58cf78fb0ea0713a"
+manifest_digest = "sha256:81002a92774355a83e26b1b141171ab881d42922e4b73a4ee53f7bb257fdd853"
 
 [[adapters]]
 slot = "process.isolation"

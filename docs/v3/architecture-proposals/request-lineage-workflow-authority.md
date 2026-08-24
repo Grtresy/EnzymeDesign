@@ -1,16 +1,16 @@
-# Deferred: request-lineage workflow authority
+# Adopted: request-lineage workflow authority
 
-Status: proposed, not implemented in the current AOX/HMM blank-world Goal.
+Status: adopted by OpenSpec change
+`complete-openzyme-resident-teammate-product-loop` on 2026-08-24. The stable product contract is
+[Resident Teammate 产品闭环](../resident-teammate-product-loop.md); this document retains the threat model、
+causation analysis and migration history behind that contract.
 
-Projection hardening implemented on 2026-07-26 closes only the model-facing
-compaction/empty-selection ambiguity: auto compaction is historical,
-authority-free and scope-correct; legacy generated `Active skills` sections
-are sanitized without rewriting stored rows; every current master/teammate
-prompt displays exact refs or `[]`. This does not add the durable multi-hop
-lineage binding, causal link, revoke/epoch schema or successor inheritance
-specified by this proposal, so the proposal remains deferred.
+The earlier 2026-07-26 projection hardening closed only the model-facing compaction/empty-selection ambiguity.
+The adopted change adds the previously deferred durable multi-hop binding, causal signal link, epoch/revocation,
+subset delegation and exact-registry resolution. New Sessions use that closed path directly; legacy rows are not
+silently upgraded by scanning conversation prose or latest/all selections.
 
-## Decision boundary for the current Goal
+## Historical decision boundary before adoption
 
 当前 Goal 只修复一个局部且已经被真实路径触发的 authority 丢失：
 `POST /v3/sessions/{session_id}/messages` 接收显式、完整、digest-pinned 的
@@ -40,9 +40,9 @@ master 在第一次 turn 内预先创建并委派全部任务会损害 agent 的
 
 跨 user message、task、delegation、protocol、approval 和后续 wake 持久化同一份受控
 authority，会改变 control-plane schema、causation、revocation、scheduler restore 和迁移
-语义，属于大架构调整。本提案只记录方案，不在当前 Goal 实现。
+语义，因此已由独立 OpenSpec change 作为纠正性闭合变更实施，而不是继续扩大旧 AOX/HMM Goal。
 
-## Current implementation evidence and gap
+## Adoption 前的 implementation evidence and gap
 
 当前边界已经具备可复用基础：
 
@@ -63,9 +63,9 @@ authority，会改变 control-plane schema、causation、revocation、scheduler 
    source。扫描 session 中“最近”或“任意”带 workflow 的 conversation document虽然能找回
    refs，却无法证明该 source 与当前 wake 属于同一 user request。
 
-因此局部修复后的真实语义是 **source-message turn-scoped authority**，不是
-**request-lineage authority**。前者适合封住当前 first-drain blocker；后者需要本提案的
-durable binding 与 causal link。
+因此 adoption 前局部修复的真实语义是 **source-message turn-scoped authority**，不是
+**request-lineage authority**。本次 change 以 durable binding 与 causal link 取代该局部恢复规则；这段清单
+保留用于证明为什么不能继续依赖 source-message fallback。
 
 ## Agent and harness impact
 
@@ -272,8 +272,9 @@ authority resolver禁止以下查询作为正常路径：
 
 ## Ownership and API boundary
 
-- Host message admission/service拥有 root binding创建；UI/CLI只提交公开 `skill_keys`，不提交
-  `authority_id`、epoch、parent或causation。
+- Host message admission/service拥有 root binding创建；UI/CLI提交 canonical `workflow_refs`；`skill_keys` 仅是
+  二选一的兼容输入并在 admission 时归一化，不进入 canonical authority row。客户端不提交 `authority_id`、
+  epoch、parent或causation。
 - `ProtocolService.delegate()` 或其单一上游 delegation service拥有 derived binding、delegation
   request、inbox、signal/link的原子写路径。
 - scheduler只claim work并调用 authority resolver；它不选择 workflow、不做 latest fallback、
@@ -282,7 +283,8 @@ authority resolver禁止以下查询作为正常路径：
   缓存可绕过registry的“已验证”布尔值。
 - session access/security service拥有 principal与session/project可见性校验；opaque id不可绕过404
   或operator/admin gate。
-- public `POST /messages` 可保持现有字段；`POST /runtime/drain` 永远不新增 authority选择字段。
+- public `POST /messages` 使用显式 `workflow_refs`（包括显式空数组），并可接受互斥的 compatibility
+  `skill_keys`；`POST /runtime/drain` 永远不新增 authority选择字段。
 - 如需显式 revoke，应提供单独、鉴权、幂等、versioned command，或复用明确的 request/task cancel
   transition；不能把 revoke藏在新消息文本中。
 - workspace/world facts可投影当前 turn/lineage的 safe binding status与digest，供agent理解真实约束；
@@ -304,7 +306,7 @@ authority resolver禁止以下查询作为正常路径：
 7. authority resolver与public diagnostic不得输出raw conversation、principal credential、Host path、
    registry filesystem locator或lease token。
 
-## Migration plan
+## Adopted migration/cutover plan
 
 1. **Inventory and semantics freeze**：枚举所有 master/teammate signal producer、conversation/delegation
    payload、protocol/approval/engine resume路径和外部 API caller；明确哪些 wake属于同 request lineage，
@@ -326,9 +328,9 @@ authority resolver禁止以下查询作为正常路径：
 9. **Legacy retirement**：确认无外部caller依赖session-sticky或隐式selection后，退役任何 latest/all scan、
    request-local context propagation和legacy signal fallback。历史signal不补造跨跳authority。
 
-迁移期同一 session不能让旧resolver与新resolver各自选择一份refs。effective config必须固定authority
-schema/version；shadow只比较，不参与决策。rollback可以停止发出新binding，但不能重新启用隐式
-union或把terminal binding复活。
+实际采用纠正性 closed cutover：新 Session 只写并读取新 schema；同一 Session 不能让旧 resolver 与新
+resolver 各自选择一份 refs。旧 Session 缺少完整 binding/link 时返回 versioned incompatibility，需要 offline
+migration 或新建 Session；不会把 shadow、conversation source fallback、隐式 union 或 terminal binding 复活。
 
 ## Compatibility policy
 
@@ -436,7 +438,7 @@ union或把terminal binding复活。
 
 ## Explicit non-goals
 
-- 不在当前 AOX/HMM blank-world Goal实现任何 schema、migration、signal field、resolver或revoke API。
+- 不把该 change 扩张成 AOX/HMM live campaign、Provider/HPC qualification、deployment cutover 或历史数据在线修复。
 - 不把workflow authority变成task graph、planner、scheduler或business completion owner。
 - 不让workflow selection由关键词、task kind、model `skill.load`、latest conversation或operator推断。
 - 不自动组合多个request lineage，也不把master完整binding隐式传播给所有teammate。

@@ -265,6 +265,9 @@ dependencies = [
 dev = [
     { name = "pytest" },
 ]
+server = [
+    { name = "uvicorn" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -299,8 +302,9 @@ requires-dist = [
     { name = "openzyme-workspace-git-lfs", editable = "packages/openzyme-workspace-git-lfs" },
     { name = "packaging", specifier = ">=26,<27" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.0" },
+    { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.30,<1.0" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev", "server"]
 
 [[package]]
 name = "enzymedesign-alphafold"
@@ -1559,6 +1563,9 @@ dependencies = [
 dev = [
     { name = "pytest" },
 ]
+server = [
+    { name = "uvicorn" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -1571,8 +1578,9 @@ requires-dist = [
     { name = "openzyme-store-sqlite", editable = "packages/openzyme-store-sqlite" },
     { name = "openzyme-workspace-git-lfs", editable = "packages/openzyme-workspace-git-lfs" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.0" },
+    { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.30,<1.0" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev", "server"]
 
 [[package]]
 name = "openzyme-store-sqlite"

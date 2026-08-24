@@ -1,32 +1,68 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import datetime
 import sqlite3
 
 from openzyme_contracts import AgentAuthorityLease
 from openzyme_contracts import AgentAuthorityLeaseState
 from openzyme_contracts import AuthorityGrant
+from openzyme_contracts import CommandToolExpansion
 from openzyme_contracts import DurableEventRecord
+from openzyme_contracts import ExternalEffectCertainty
+from openzyme_contracts import FailureActorKind
+from openzyme_contracts import FailureClass
+from openzyme_contracts import FailureRecoverability
 from openzyme_contracts import KernelMutationKind
 from openzyme_contracts import KernelRecordSnapshot
 from openzyme_contracts import KernelStateMutation
 from openzyme_contracts import OutboxRecord
+from openzyme_contracts import RuntimeContextSection
+from openzyme_contracts import RuntimeContextSectionKind
+from openzyme_contracts import RuntimeSignalAuthorityLink
+from openzyme_contracts import RuntimeTurnContext
+from openzyme_contracts import RetryEligibility
+from openzyme_contracts import StructuredFailureContext
+from openzyme_contracts import ToolExposure
+from openzyme_contracts import ToolExposureDecision
+from openzyme_contracts import ToolExposureSnapshot
 from openzyme_contracts import UnitOfWorkRequest
+from openzyme_contracts import WorkflowAuthorityBinding
+from openzyme_contracts import WorkflowAuthorityDerivationKind
+from openzyme_contracts import WorkflowAuthoritySignalSourceKind
+from openzyme_contracts import WorkflowAuthorityStatus
 from openzyme_contracts import WorkspaceGeneration
 from openzyme_contracts import WorkspaceGenerationStatus
 from openzyme_contracts import WorkspaceKind
 from openzyme_contracts import canonical_sha256_digest
+from openzyme_contracts import json_compatible
+from openzyme_contracts import observe_structured_failure
+from openzyme_extension_spi import KernelCommandContext
+from openzyme_kernel import RuntimeContinuationDeliveryCommand
+from openzyme_kernel import RuntimeContinuationDeliveryKernelApplicationService
+from openzyme_kernel.testing import DeterministicClock
+from openzyme_kernel.testing import DeterministicIdGenerator
 from openzyme_store_sqlite import AgentAuthorityLeaseSQLiteKernelEntityCodec
 from openzyme_store_sqlite import AgentMemberSQLiteKernelEntityCodec
 from openzyme_store_sqlite import AgentRuntimeSignalSQLiteKernelEntityCodec
 from openzyme_store_sqlite import ControlledOperationSQLiteKernelEntityCodec
+from openzyme_store_sqlite import CommandToolExpansionSQLiteKernelEntityCodec
 from openzyme_store_sqlite import RuntimeContinuationIntentSQLiteKernelEntityCodec
+from openzyme_store_sqlite import FailureObservationSQLiteKernelEntityCodec
+from openzyme_store_sqlite import PrivateDiagnosticSQLiteKernelEntityCodec
+from openzyme_store_sqlite import RuntimeCommandSQLiteKernelEntityCodec
+from openzyme_store_sqlite import RuntimeSignalAuthorityLinkSQLiteKernelEntityCodec
 from openzyme_store_sqlite import RuntimeOutcomeConsumptionSQLiteKernelEntityCodec
 from openzyme_store_sqlite import RuntimeSettlementIntentSQLiteKernelEntityCodec
 from openzyme_store_sqlite import RuntimeTurnCommandSQLiteKernelEntityCodec
+from openzyme_store_sqlite import RuntimeTurnContextSQLiteKernelEntityCodec
+from openzyme_store_sqlite import RuntimeTurnOutcomeSQLiteKernelEntityCodec
 from openzyme_store_sqlite import SessionRuntimeLeaseSQLiteKernelEntityCodec
 from openzyme_store_sqlite import SessionSQLiteKernelEntityCodec
 from openzyme_store_sqlite import SQLiteControlStore
 from openzyme_store_sqlite import WorkspaceGenerationSQLiteKernelEntityCodec
+from openzyme_store_sqlite import ToolExposureSnapshotSQLiteKernelEntityCodec
+from openzyme_store_sqlite import WorkflowAuthorityBindingSQLiteKernelEntityCodec
 from openzyme_store_sqlite import install_owner_partitioned_schema_for_offline_migration
 from openzyme_store_sqlite import install_store_schema_for_offline_migration
 
@@ -108,10 +144,19 @@ def _store() -> tuple[sqlite3.Connection, SQLiteControlStore, AgentAuthorityLeas
             AgentMemberSQLiteKernelEntityCodec(),
             AgentRuntimeSignalSQLiteKernelEntityCodec(),
             ControlledOperationSQLiteKernelEntityCodec(),
+            FailureObservationSQLiteKernelEntityCodec(),
+            PrivateDiagnosticSQLiteKernelEntityCodec(),
+            CommandToolExpansionSQLiteKernelEntityCodec(),
             RuntimeContinuationIntentSQLiteKernelEntityCodec(),
+            RuntimeCommandSQLiteKernelEntityCodec(),
+            RuntimeSignalAuthorityLinkSQLiteKernelEntityCodec(),
             RuntimeOutcomeConsumptionSQLiteKernelEntityCodec(),
             RuntimeSettlementIntentSQLiteKernelEntityCodec(),
             RuntimeTurnCommandSQLiteKernelEntityCodec(),
+            RuntimeTurnContextSQLiteKernelEntityCodec(),
+            RuntimeTurnOutcomeSQLiteKernelEntityCodec(),
+            ToolExposureSnapshotSQLiteKernelEntityCodec(),
+            WorkflowAuthorityBindingSQLiteKernelEntityCodec(),
             WorkspaceGenerationSQLiteKernelEntityCodec(),
             SessionRuntimeLeaseSQLiteKernelEntityCodec(),
             SessionSQLiteKernelEntityCodec(),
@@ -147,7 +192,7 @@ def _store() -> tuple[sqlite3.Connection, SQLiteControlStore, AgentAuthorityLeas
             "role": "master",
             "status": "active",
             "process_epoch": 1,
-            "active_authority_lease_id": None,
+            "active_authority_lease_id": "authority-1",
             "workspace_generation": 1,
             "owned_task_ids": [],
             "retirement_reason": None,
@@ -185,7 +230,7 @@ def _store() -> tuple[sqlite3.Connection, SQLiteControlStore, AgentAuthorityLeas
     grant = AuthorityGrant.create(
         grant_id="grant-1",
         scope_id="session-1",
-        operations=("runtime.signal.claim",),
+        operations=("continuation.deliver", "runtime.signal.claim"),
         generation=1,
         fence=1,
     )
@@ -249,6 +294,285 @@ def _pending_signal(authority: AgentAuthorityLease) -> dict[str, object]:
     }
 
 
+def test_runtime_command_codec_round_trips_and_enforces_cas_transition() -> None:
+    connection, store, _authority = _store()
+    accepted = {
+        "schema_version": "runtime_command@1",
+        "command_id": "runtime-command-1",
+        "session_id": "session-1",
+        "command_type": "runtime.drain",
+        "request_digest": _digest("runtime-request"),
+        "idempotency_key": "runtime-command-1",
+        "status": "accepted",
+        "max_signals": 2,
+        "max_steps_per_agent": 3,
+        "auto_enqueue_ready_tasks": False,
+        "state_version": 1,
+        "fencing_token": 0,
+        "accepted_at": NOW,
+        "claim_owner": None,
+        "lease_token": None,
+        "lease_expires_at": None,
+        "bounded_outcome_summary": None,
+        "failure_id": None,
+        "diagnostic_id": None,
+        "error_code": None,
+        "safe_error_summary": None,
+        "safe_retry_hint": None,
+        "started_at": None,
+        "completed_at": None,
+    }
+    _commit(
+        store,
+        command="runtime-command-create",
+        entity_type="runtime_command",
+        entity_id="runtime-command-1",
+        payload=accepted,
+    )
+    assert store.read(
+        entity_type="runtime_command", entity_id="runtime-command-1"
+    ) == KernelRecordSnapshot.create(
+        entity_type="runtime_command",
+        entity_id="runtime-command-1",
+        state_version=1,
+        payload=accepted,
+    )
+
+    claimed = {
+        **accepted,
+        "status": "claimed",
+        "state_version": 2,
+        "fencing_token": 1,
+        "claim_owner": "runtime-worker-1",
+        "lease_token": "runtime-command-lease-1",
+        "lease_expires_at": FUTURE,
+        "started_at": NOW,
+    }
+    _commit(
+        store,
+        command="runtime-command-claim",
+        entity_type="runtime_command",
+        entity_id="runtime-command-1",
+        payload=claimed,
+        kind=KernelMutationKind.REPLACE,
+        expected_state_version=1,
+    )
+    assert store.read(
+        entity_type="runtime_command", entity_id="runtime-command-1"
+    ) == KernelRecordSnapshot.create(
+        entity_type="runtime_command",
+        entity_id="runtime-command-1",
+        state_version=2,
+        payload=claimed,
+    )
+    assert connection.execute(
+        "SELECT status, state_version, fencing_token FROM runtime_command_records"
+    ).fetchone() == ("claimed", 2, 1)
+
+
+def test_failed_runtime_command_pair_is_atomic_and_survives_store_restart() -> None:
+    connection, store, _authority = _store()
+    accepted = {
+        "schema_version": "runtime_command@1",
+        "command_id": "runtime-command-failed-1",
+        "session_id": "session-1",
+        "command_type": "runtime.drain",
+        "request_digest": _digest("runtime-request-failed"),
+        "idempotency_key": "runtime-command-failed-1",
+        "status": "accepted",
+        "max_signals": 1,
+        "max_steps_per_agent": 2,
+        "auto_enqueue_ready_tasks": False,
+        "state_version": 1,
+        "fencing_token": 0,
+        "accepted_at": NOW,
+        "claim_owner": None,
+        "lease_token": None,
+        "lease_expires_at": None,
+        "bounded_outcome_summary": None,
+        "failure_id": None,
+        "diagnostic_id": None,
+        "error_code": None,
+        "safe_error_summary": None,
+        "safe_retry_hint": None,
+        "started_at": None,
+        "completed_at": None,
+    }
+    _commit(
+        store,
+        command="runtime-command-failed-create",
+        entity_type="runtime_command",
+        entity_id="runtime-command-failed-1",
+        payload=accepted,
+    )
+    claimed = {
+        **accepted,
+        "status": "claimed",
+        "state_version": 2,
+        "fencing_token": 1,
+        "claim_owner": "runtime-worker-1",
+        "lease_token": "runtime-command-lease-failed-1",
+        "lease_expires_at": FUTURE,
+        "started_at": NOW,
+    }
+    _commit(
+        store,
+        command="runtime-command-failed-claim",
+        entity_type="runtime_command",
+        entity_id="runtime-command-failed-1",
+        payload=claimed,
+        kind=KernelMutationKind.REPLACE,
+        expected_state_version=1,
+    )
+    records = observe_structured_failure(
+        RuntimeError("operator-only traceback detail"),
+        context=StructuredFailureContext(
+            failure_id="failure-runtime-command-failed-1",
+            diagnostic_id="diagnostic-runtime-command-failed-1",
+            session_id="session-1",
+            component="openzyme.standard.runtime_worker",
+            operation="runtime_command_execute",
+            phase="runtime_context_projection",
+            source_kind="runtime_command",
+            source_ref="runtime-command-failed-1",
+            source_version=canonical_sha256_digest(claimed),
+            correlation_id="runtime-command-failed-1",
+            created_at=NOW,
+        ),
+        failure_class=FailureClass.HARNESS,
+        recoverability=FailureRecoverability.TERMINAL,
+        effect_certainty=ExternalEffectCertainty.NO_EFFECT,
+        retry_eligibility=RetryEligibility.TERMINAL,
+        actor_kind=FailureActorKind.SYSTEM,
+        error_code="runtime_context_projection_failed",
+        safe_summary="Runtime context projection failed before provider invocation",
+        safe_hint="Inspect the exact diagnostic; no provider or fallback ran",
+        next_action="inspect_runtime_command_diagnostic",
+        mutation_applied=False,
+        identities={
+            "command_id": "runtime-command-failed-1",
+            "session_id": "session-1",
+        },
+    )
+    failed = {
+        **claimed,
+        "status": "failed",
+        "state_version": 3,
+        "bounded_outcome_summary": {
+            "processed_signals": 0,
+            "turns": [],
+            "runtime_executed": False,
+            "task_transition_performed": False,
+            "fallback_performed": False,
+        },
+        "failure_id": records.public.failure_id,
+        "diagnostic_id": records.private.diagnostic_id,
+        "error_code": records.public.error_code,
+        "safe_error_summary": records.public.safe_summary,
+        "safe_retry_hint": records.public.safe_hint,
+        "completed_at": NOW,
+    }
+    unit = store.begin(
+        UnitOfWorkRequest(
+            unit_of_work_id="uow-runtime-command-failed-settle",
+            command_id="command-runtime-command-failed-settle",
+            session_id="session-1",
+            actor_id="agent-member-1",
+            authority_lease_id="authority-1",
+            authority_generation=1,
+            authority_fence=1,
+            expected_session_version=1,
+            idempotency_key="runtime-command-failed-settle",
+            command_digest=_digest("runtime-command-failed-settle"),
+        )
+    )
+    unit.stage(
+        KernelStateMutation.create(
+            mutation_id="mutation-runtime-command-public-failure",
+            kind=KernelMutationKind.CREATE,
+            entity_type="failure_observation",
+            entity_id=records.public.failure_id,
+            expected_state_version=None,
+            payload=records.public.to_internal_dict(),
+        )
+    )
+    unit.stage(
+        KernelStateMutation.create(
+            mutation_id="mutation-runtime-command-private-diagnostic",
+            kind=KernelMutationKind.CREATE,
+            entity_type="private_diagnostic",
+            entity_id=records.private.diagnostic_id,
+            expected_state_version=None,
+            payload=records.private.to_dict(),
+        )
+    )
+    unit.stage(
+        KernelStateMutation.create(
+            mutation_id="mutation-runtime-command-failed-settle",
+            kind=KernelMutationKind.REPLACE,
+            entity_type="runtime_command",
+            entity_id="runtime-command-failed-1",
+            expected_state_version=2,
+            payload=failed,
+        )
+    )
+    event = DurableEventRecord.create(
+        event_id="event-runtime-command-failed-settle",
+        session_id="session-1",
+        event_type="runtime.command.failed",
+        source_entity_type="runtime_command",
+        source_entity_id="runtime-command-failed-1",
+        source_state_version=3,
+        command_id="command-runtime-command-failed-settle",
+        payload={
+            "failure_id": records.public.failure_id,
+            "diagnostic_id": records.private.diagnostic_id,
+        },
+    )
+    unit.append_event(event)
+    outbox_payload = {"event_id": event.event_id}
+    unit.append_outbox(
+        OutboxRecord(
+            outbox_id="outbox-runtime-command-failed-settle",
+            session_id="session-1",
+            topic="openzyme.kernel.runtime-command-events",
+            occurrence_id=event.event_id,
+            payload=outbox_payload,
+            payload_digest=canonical_sha256_digest(outbox_payload),
+            created_at=NOW,
+        )
+    )
+    unit.commit()
+
+    restarted = SQLiteControlStore(
+        connection,
+        codecs=(
+            FailureObservationSQLiteKernelEntityCodec(),
+            PrivateDiagnosticSQLiteKernelEntityCodec(),
+            RuntimeCommandSQLiteKernelEntityCodec(),
+        ),
+    )
+    command = restarted.read(
+        entity_type="runtime_command",
+        entity_id="runtime-command-failed-1",
+    )
+    public_failure = restarted.read(
+        entity_type="failure_observation",
+        entity_id=records.public.failure_id,
+    )
+    private_diagnostic = restarted.read(
+        entity_type="private_diagnostic",
+        entity_id=records.private.diagnostic_id,
+    )
+    assert command is not None and json_compatible(command.payload) == failed
+    assert public_failure is not None
+    assert public_failure.payload["private_diagnostic_digest"] == (
+        records.private.record_digest
+    )
+    assert private_diagnostic is not None
+    assert json_compatible(private_diagnostic.payload) == records.private.to_dict()
+
+
 def _digest(value: str) -> str:
     return canonical_sha256_digest({"value": value})
 
@@ -282,9 +606,7 @@ def _claim_runtime_signal(
             "expires_at": FUTURE,
             "released_at": None,
             "last_error": None,
-            "acquire_command_digest": canonical_sha256_digest(
-                {"command": "acquire"}
-            ),
+            "acquire_command_digest": canonical_sha256_digest({"command": "acquire"}),
         },
     )
     claimed = {
@@ -339,11 +661,120 @@ def test_runtime_signal_codec_binds_target_authority_and_runtime_fence() -> None
     )
 
 
-def test_bounded_runtime_records_use_target_tables_and_atomic_intent_refs() -> None:
+def test_bounded_runtime_records_use_target_tables_and_atomic_intent_refs(
+    tmp_path,
+) -> None:  # noqa: ANN001
     connection, store, authority = _store()
-    _claim_runtime_signal(store, authority)
+    claimed_signal = _claim_runtime_signal(store, authority)
+    registry_digest = _digest("workflow-registry")
+    selection_digest = canonical_sha256_digest(
+        {
+            "schema_version": "workflow_selection_binding@1",
+            "registry_snapshot_digest": registry_digest,
+            "selected_workflow_refs": ["workflow.default@1"],
+        }
+    )
+    workflow_authority = WorkflowAuthorityBinding(
+        authority_id="workflow-authority-1",
+        session_id="session-1",
+        project_id="project-1",
+        request_lineage_id="lineage-1",
+        source_message_id="message-1",
+        source_principal_id="user-1",
+        authorized_actor_id="agent-member-1",
+        selected_workflow_refs=("workflow.default@1",),
+        selection_digest=selection_digest,
+        registry_snapshot_digest=registry_digest,
+        derivation_kind=WorkflowAuthorityDerivationKind.ROOT_MESSAGE,
+        status=WorkflowAuthorityStatus.ACTIVE,
+        epoch=1,
+        state_version=1,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    _commit(
+        store,
+        command="workflow-authority-create",
+        entity_type="workflow_authority_binding",
+        entity_id=workflow_authority.authority_id,
+        payload=workflow_authority.to_dict(),
+    )
+    signal_link = RuntimeSignalAuthorityLink(
+        signal_id="signal-1",
+        session_id="session-1",
+        authority_id=workflow_authority.authority_id,
+        authority_epoch=workflow_authority.epoch,
+        authority_binding_digest=workflow_authority.binding_digest,
+        causation_ref="message-1",
+        source_kind=WorkflowAuthoritySignalSourceKind.ROOT_MESSAGE,
+        created_at=NOW,
+    )
+    _commit(
+        store,
+        command="signal-authority-link-create",
+        entity_type="runtime_signal_authority_link",
+        entity_id="signal-1",
+        payload=signal_link.to_dict(),
+    )
+    context = RuntimeTurnContext(
+        context_id="context-1",
+        session_id="session-1",
+        agent_id="agent-1",
+        agent_member_id="agent-member-1",
+        turn_id="turn-1",
+        signal_id="signal-1",
+        request_lineage_id="lineage-1",
+        sections=tuple(
+            RuntimeContextSection(kind=kind, items=())
+            for kind in RuntimeContextSectionKind
+        ),
+        max_bytes=32_768,
+        created_at=NOW,
+    )
+    _commit(
+        store,
+        command="runtime-context-create",
+        entity_type="runtime_turn_context",
+        entity_id=context.context_id,
+        payload=context.to_dict(),
+    )
+    exposure = ToolExposureSnapshot(
+        exposure_snapshot_id="exposure-1",
+        session_id="session-1",
+        agent_member_id="agent-member-1",
+        turn_id="turn-1",
+        subject_policy_digest=_digest("subject-policy"),
+        declared_tool_catalog_digest=_digest("tools"),
+        capability_binding_digest=_digest("binding"),
+        affordance_snapshot_id="snapshot-1",
+        affordance_snapshot_digest=_digest("snapshot"),
+        workflow_authority_id=workflow_authority.authority_id,
+        workflow_authority_epoch=workflow_authority.epoch,
+        workflow_authority_digest=workflow_authority.binding_digest,
+        catalog_tool_names=("plugin.deferred", "workspace.status"),
+        decisions=(
+            ToolExposureDecision(
+                tool_name="plugin.deferred",
+                exposure=ToolExposure.DEFERRED,
+                reason_code="inspect_on_demand",
+            ),
+            ToolExposureDecision(
+                tool_name="workspace.status",
+                exposure=ToolExposure.DIRECT,
+                reason_code="role_essential",
+            ),
+        ),
+        created_at=NOW,
+    )
+    _commit(
+        store,
+        command="tool-exposure-create",
+        entity_type="tool_exposure_snapshot",
+        entity_id=exposure.exposure_snapshot_id,
+        payload=exposure.to_dict(),
+    )
     command: dict[str, object] = {
-        "schema_version": "runtime_turn_command@1",
+        "schema_version": "runtime_turn_command@2",
         "command_id": "turn-command-1",
         "turn_id": "turn-1",
         "session_id": "session-1",
@@ -367,6 +798,13 @@ def test_bounded_runtime_records_use_target_tables_and_atomic_intent_refs() -> N
         "capability_binding_digest": _digest("binding"),
         "affordance_snapshot_id": "snapshot-1",
         "affordance_snapshot_digest": _digest("snapshot"),
+        "workflow_authority_id": workflow_authority.authority_id,
+        "workflow_authority_epoch": workflow_authority.epoch,
+        "workflow_authority_digest": workflow_authority.binding_digest,
+        "signal_authority_link_digest": signal_link.link_digest,
+        "tool_exposure_snapshot_id": exposure.exposure_snapshot_id,
+        "tool_exposure_snapshot_digest": exposure.exposure_snapshot_digest,
+        "context": context.to_dict(),
         "runtime_adapter_id": "runtime-fake",
         "runtime_adapter_contract_digest": _digest("runtime-adapter"),
         "max_steps": 4,
@@ -395,6 +833,84 @@ def test_bounded_runtime_records_use_target_tables_and_atomic_intent_refs() -> N
         entity_id="turn-command-1",
         payload=command,
     )
+    expansion = CommandToolExpansion(
+        expansion_id="tool-expansion-1",
+        command_id="turn-command-1",
+        session_id="session-1",
+        exposure_snapshot_id=exposure.exposure_snapshot_id,
+        exposure_snapshot_digest=exposure.exposure_snapshot_digest,
+        workflow_authority_id=workflow_authority.authority_id,
+        workflow_authority_epoch=workflow_authority.epoch,
+        workflow_authority_digest=workflow_authority.binding_digest,
+        expansion_revision=1,
+        expanded_tool_names=("plugin.deferred",),
+        created_at=NOW,
+    )
+    _commit(
+        store,
+        command="tool-expansion-create",
+        entity_type="command_tool_expansion",
+        entity_id=expansion.expansion_id,
+        payload=expansion.to_dict(),
+    )
+    assert store.list_command_tool_expansions(
+        session_id="session-1",
+        command_id="turn-command-1",
+        max_items=4,
+    ) == (
+        store.read(
+            entity_type="command_tool_expansion",
+            entity_id=expansion.expansion_id,
+        ),
+    )
+    assert (
+        store.list_command_tool_expansions(
+            session_id="session-1",
+            command_id="turn-command-absent",
+            max_items=4,
+        )
+        == ()
+    )
+
+    outcome: dict[str, object] = {
+        "schema_version": "runtime_turn_outcome@1",
+        "outcome_id": "outcome-1",
+        "command_id": "turn-command-1",
+        "command_digest": command["command_digest"],
+        "turn_id": "turn-1",
+        "session_id": "session-1",
+        "agent_id": "agent-1",
+        "agent_member_id": "agent-member-1",
+        "signal_id": "signal-1",
+        "signal_attempt": 1,
+        "runtime_lease_generation": 1,
+        "runtime_fence": 1,
+        "process_epoch": 1,
+        "workflow_authority_id": workflow_authority.authority_id,
+        "workflow_authority_epoch": workflow_authority.epoch,
+        "workflow_authority_digest": workflow_authority.binding_digest,
+        "tool_exposure_snapshot_id": exposure.exposure_snapshot_id,
+        "tool_exposure_snapshot_digest": exposure.exposure_snapshot_digest,
+        "disposition": "waiting_continuation",
+        "summary": "Continue the exact bounded turn.",
+        "messages": [],
+        "tool_requests": [],
+        "usage": None,
+        "continuation_id": "runtime-continuation-1",
+        "waiting_approval_id": None,
+        "failure": None,
+        "task_id": None,
+        "lane_id": None,
+        "correlation_id": None,
+    }
+    outcome["outcome_digest"] = canonical_sha256_digest(outcome)
+    outcome_receipt: dict[str, object] = {
+        "schema_version": "runtime_turn_outcome_receipt@1",
+        "receipt_id": "outcome-receipt-1",
+        "outcome": outcome,
+        "accepted_at": "2026-08-21T00:01:00+00:00",
+    }
+    outcome_receipt["receipt_digest"] = canonical_sha256_digest(outcome_receipt)
 
     continuation: dict[str, object] = {
         "schema_version": "runtime_continuation_intent@1",
@@ -405,7 +921,12 @@ def test_bounded_runtime_records_use_target_tables_and_atomic_intent_refs() -> N
         "source_command_id": "turn-command-1",
         "source_command_digest": command["command_digest"],
         "source_outcome_id": "outcome-1",
-        "source_outcome_digest": _digest("outcome"),
+        "source_outcome_digest": outcome["outcome_digest"],
+        "source_signal_id": "signal-1",
+        "source_signal_authority_link_digest": signal_link.link_digest,
+        "source_workflow_authority_id": workflow_authority.authority_id,
+        "source_workflow_authority_epoch": workflow_authority.epoch,
+        "source_workflow_authority_binding_digest": (workflow_authority.binding_digest),
         "process_epoch": 1,
         "release_digest": _digest("release"),
         "extension_bundle_digest": _digest("extensions"),
@@ -415,6 +936,15 @@ def test_bounded_runtime_records_use_target_tables_and_atomic_intent_refs() -> N
         "capability_binding_digest": _digest("binding"),
         "affordance_snapshot_id": "snapshot-1",
         "affordance_snapshot_digest": _digest("snapshot"),
+        "delivery_status": "pending",
+        "delivery_attempt": 0,
+        "delivery_signal_id": None,
+        "delivery_signal_authority_link_digest": None,
+        "delivery_identity_digest": None,
+        "created_at": "2026-08-21T00:02:00+00:00",
+        "delivered_at": None,
+        "recipient_runtime_executed": False,
+        "fallback_performed": False,
     }
     settlement: dict[str, object] = {
         "schema_version": "runtime_settlement_intent@1",
@@ -427,19 +957,20 @@ def test_bounded_runtime_records_use_target_tables_and_atomic_intent_refs() -> N
         "source_command_id": "turn-command-1",
         "source_command_digest": command["command_digest"],
         "source_outcome_id": "outcome-1",
-        "source_outcome_digest": _digest("outcome"),
+        "source_outcome_digest": outcome["outcome_digest"],
         "disposition": "waiting_continuation",
         "waiting_approval_id": None,
         "failure_id": None,
         "task_transition_performed": False,
     }
     consumption: dict[str, object] = {
-        "schema_version": "runtime_outcome_consumption@1",
+        "schema_version": "runtime_outcome_consumption@2",
         "consumption_id": "consumption-1",
         "command_id": "turn-command-1",
         "command_digest": command["command_digest"],
         "outcome_id": "outcome-1",
-        "outcome_digest": _digest("outcome"),
+        "outcome_digest": outcome["outcome_digest"],
+        "outcome_receipt": outcome_receipt,
         "session_id": "session-1",
         "agent_id": "agent-1",
         "agent_member_id": "agent-member-1",
@@ -464,10 +995,28 @@ def test_bounded_runtime_records_use_target_tables_and_atomic_intent_refs() -> N
             command_digest=_digest("outcome-consume"),
         )
     )
+    terminal_signal = {
+        **claimed_signal,
+        "status": "completed",
+        "claim_expires_at": None,
+        "completed_at": "2026-08-21T00:02:00+00:00",
+        "error_message": None,
+    }
+    unit.stage(
+        KernelStateMutation.create(
+            mutation_id="mutation-source-signal-completed",
+            kind=KernelMutationKind.REPLACE,
+            entity_type="agent_runtime_signal",
+            entity_id="signal-1",
+            expected_state_version=2,
+            payload=terminal_signal,
+        )
+    )
     for entity_type, entity_id, payload in (
-        ("runtime_outcome_consumption", "turn-command-1", consumption),
+        ("runtime_turn_outcome", "outcome-receipt-1", outcome_receipt),
         ("runtime_continuation_intent", "runtime-continuation-1", continuation),
         ("runtime_settlement_intent", "runtime-settlement-1", settlement),
+        ("runtime_outcome_consumption", "turn-command-1", consumption),
     ):
         unit.stage(
             KernelStateMutation.create(
@@ -520,9 +1069,24 @@ def test_bounded_runtime_records_use_target_tables_and_atomic_intent_refs() -> N
         state_version=1,
         payload=consumption,
     )
-    assert connection.execute(
-        "SELECT command_type FROM runtime_command_records"
-    ).fetchall() == []
+    assert store.list_for_session(
+        entity_type="runtime_turn_outcome",
+        session_id="session-1",
+        max_items=4,
+    ) == (
+        KernelRecordSnapshot.create(
+            entity_type="runtime_turn_outcome",
+            entity_id="outcome-receipt-1",
+            state_version=1,
+            payload=outcome_receipt,
+        ),
+    )
+    assert (
+        connection.execute(
+            "SELECT command_type FROM runtime_command_records"
+        ).fetchall()
+        == []
+    )
     assert connection.execute(
         """
         SELECT continuation_intent_id, settlement_intent_id
@@ -530,6 +1094,92 @@ def test_bounded_runtime_records_use_target_tables_and_atomic_intent_refs() -> N
         WHERE command_id = 'turn-command-1'
         """
     ).fetchone() == ("runtime-continuation-1", "runtime-settlement-1")
+
+    restart_path = tmp_path / "runtime-continuation-restart.sqlite3"
+    restarted_connection = sqlite3.connect(restart_path)
+    connection.backup(restarted_connection)
+    restarted_connection.execute("PRAGMA foreign_keys = ON")
+    codecs = tuple(store.codecs.values())
+    restarted = SQLiteControlStore(restarted_connection, codecs=codecs)
+    clock = DeterministicClock(datetime.fromisoformat("2026-08-21T00:03:00+00:00"))
+    delivery_context = KernelCommandContext(
+        command_id="restart-continuation-delivery-1",
+        session_id="session-1",
+        actor_id="agent-member-1",
+        owner_plugin_id="openzyme.kernel",
+        authority_lease_id="authority-1",
+        authority_generation=1,
+        authority_fence=1,
+        expected_session_version=1,
+        extension_bundle_digest=_digest("extensions"),
+        capability_binding_digest=_digest("binding"),
+        idempotency_key="restart-continuation-delivery-1",
+        correlation_id="runtime-continuation-1",
+        workspace_generation=1,
+    )
+    delivery = RuntimeContinuationDeliveryKernelApplicationService(
+        store=restarted,
+        clock=clock,
+        ids=DeterministicIdGenerator(),
+    )
+    delivered = delivery.deliver(
+        RuntimeContinuationDeliveryCommand(
+            context=delivery_context,
+            continuation_id="runtime-continuation-1",
+            expected_intent_version=1,
+            delivery_signal_id="restart-delivery-signal-1",
+        )
+    )
+
+    assert delivered.mutation_applied is True
+    assert delivered.result["recipient_runtime_executed"] is False
+    delivered_record = restarted.read(
+        entity_type="runtime_continuation_intent",
+        entity_id="runtime-continuation-1",
+    )
+    delivered_link = restarted.read(
+        entity_type="runtime_signal_authority_link",
+        entity_id="restart-delivery-signal-1",
+    )
+    assert delivered_record is not None and delivered_record.state_version == 2
+    assert delivered_record.payload["delivery_status"] == "delivered"
+    assert delivered_link is not None
+    assert delivered_link.payload["source_kind"] == "continuation_delivery"
+    assert delivered_link.payload["causation_ref"] == "runtime-continuation-1"
+
+    restarted_connection.close()
+    reopened_connection = sqlite3.connect(restart_path)
+    reopened_connection.execute("PRAGMA foreign_keys = ON")
+    reopened = SQLiteControlStore(reopened_connection, codecs=codecs)
+    duplicate = RuntimeContinuationDeliveryKernelApplicationService(
+        store=reopened,
+        clock=clock,
+        ids=DeterministicIdGenerator(),
+    ).deliver(
+        RuntimeContinuationDeliveryCommand(
+            context=replace(
+                delivery_context,
+                command_id="restart-continuation-delivery-duplicate",
+                idempotency_key="restart-continuation-delivery-duplicate",
+            ),
+            continuation_id="runtime-continuation-1",
+            expected_intent_version=1,
+            delivery_signal_id="restart-delivery-signal-1",
+        )
+    )
+    assert duplicate.mutation_applied is False
+    assert duplicate.result["duplicate"] is True
+    assert (
+        len(
+            reopened.list_for_session(
+                entity_type="agent_runtime_signal",
+                session_id="session-1",
+                max_items=8,
+            )
+        )
+        == 2
+    )
+    reopened_connection.close()
 
 
 def test_controlled_operation_codec_preserves_effect_certainty_facts() -> None:

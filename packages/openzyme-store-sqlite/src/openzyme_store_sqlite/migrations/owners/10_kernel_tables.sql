@@ -476,6 +476,9 @@ CREATE TABLE approval_requests (
         CHECK (record_kind IN ('legacy_approval_request', 'kernel_approval_request')),
     requester_actor_id TEXT,
     intent_digest TEXT,
+    workflow_authority_id TEXT,
+    workflow_authority_epoch INTEGER CHECK (workflow_authority_epoch >= 1),
+    workflow_authority_digest TEXT,
     scope_id TEXT,
     reason TEXT,
     expires_at TEXT,
@@ -486,6 +489,9 @@ CREATE TABLE approval_requests (
         OR (
             requester_actor_id IS NOT NULL
             AND intent_digest IS NOT NULL
+            AND workflow_authority_id IS NOT NULL
+            AND workflow_authority_epoch IS NOT NULL
+            AND workflow_authority_digest IS NOT NULL
             AND scope_id IS NOT NULL
             AND expires_at IS NOT NULL
             AND operation_dispatched IS NOT NULL
@@ -939,7 +945,7 @@ CREATE TABLE failure_observation_records (
     component TEXT NOT NULL,
     operation TEXT NOT NULL,
     identities_json TEXT NOT NULL,
-    mutation_applied INTEGER NOT NULL CHECK (mutation_applied IN (0, 1)),
+    mutation_applied INTEGER CHECK (mutation_applied IS NULL OR mutation_applied IN (0, 1)),
     fallback_performed INTEGER NOT NULL CHECK (fallback_performed IN (0, 1)),
     cause_chain_json TEXT NOT NULL,
     diagnostic_id TEXT NOT NULL UNIQUE,
@@ -1401,6 +1407,10 @@ CREATE TABLE runtime_command_records (
     bounded_outcome_summary_json TEXT CHECK (
         bounded_outcome_summary_json IS NULL OR json_valid(bounded_outcome_summary_json)
     ),
+    failure_id TEXT
+        REFERENCES failure_observation_records(failure_id) ON DELETE RESTRICT,
+    diagnostic_id TEXT
+        REFERENCES private_diagnostic_records(diagnostic_id) ON DELETE RESTRICT,
     error_code TEXT,
     safe_error_summary TEXT,
     safe_retry_hint TEXT,
@@ -1415,11 +1425,168 @@ CREATE TABLE runtime_command_records (
             AND lease_token IS NOT NULL
             AND lease_expires_at IS NOT NULL
         )
+    ),
+    CHECK (
+        (status = 'failed' AND failure_id IS NOT NULL AND diagnostic_id IS NOT NULL)
+        OR (status <> 'failed' AND failure_id IS NULL AND diagnostic_id IS NULL)
     )
 );
 
 -- Target bounded-turn coordination records.  These are deliberately separate
 -- from runtime_command_records, whose retained contract is runtime.drain@1.
+CREATE TABLE workspace_provisioning_intent_records (
+    intent_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE RESTRICT,
+    agent_member_id TEXT NOT NULL
+        REFERENCES agent_members(member_id) ON DELETE RESTRICT,
+    workspace_id TEXT NOT NULL,
+    generation INTEGER NOT NULL CHECK (generation >= 1),
+    status TEXT NOT NULL CHECK (
+        status IN ('pending', 'claimed', 'ready', 'blocked', 'cancelled')
+    ),
+    state_version INTEGER NOT NULL CHECK (state_version >= 1),
+    claim_epoch INTEGER NOT NULL CHECK (claim_epoch >= 0),
+    payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+    intent_digest TEXT NOT NULL UNIQUE,
+    schema_version TEXT NOT NULL DEFAULT 'workspace_provisioning_intent@1'
+        CHECK (schema_version = 'workspace_provisioning_intent@1'),
+    FOREIGN KEY (workspace_id, generation)
+        REFERENCES workspace_generation_records(workspace_id, generation)
+        ON DELETE RESTRICT,
+    UNIQUE (session_id, agent_member_id, generation)
+);
+
+CREATE TABLE workspace_provisioning_receipt_records (
+    receipt_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE RESTRICT,
+    intent_id TEXT NOT NULL
+        REFERENCES workspace_provisioning_intent_records(intent_id) ON DELETE RESTRICT,
+    agent_member_id TEXT NOT NULL
+        REFERENCES agent_members(member_id) ON DELETE RESTRICT,
+    workspace_id TEXT NOT NULL,
+    generation INTEGER NOT NULL CHECK (generation >= 1),
+    controlled_operation_id TEXT NOT NULL
+        REFERENCES controlled_operation_records(operation_id) ON DELETE RESTRICT,
+    request_id TEXT NOT NULL,
+    claim_epoch INTEGER NOT NULL CHECK (claim_epoch >= 1),
+    disposition TEXT NOT NULL CHECK (disposition IN ('ready', 'blocked')),
+    payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+    receipt_digest TEXT NOT NULL UNIQUE,
+    schema_version TEXT NOT NULL DEFAULT 'workspace_provisioning_receipt@1'
+        CHECK (schema_version = 'workspace_provisioning_receipt@1'),
+    FOREIGN KEY (workspace_id, generation)
+        REFERENCES workspace_generation_records(workspace_id, generation)
+        ON DELETE RESTRICT
+);
+
+CREATE TABLE workspace_provisioning_reconciliation_records (
+    reconciliation_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE RESTRICT,
+    intent_id TEXT NOT NULL
+        REFERENCES workspace_provisioning_intent_records(intent_id) ON DELETE RESTRICT,
+    source_receipt_id TEXT NOT NULL
+        REFERENCES workspace_provisioning_receipt_records(receipt_id) ON DELETE RESTRICT,
+    attempt INTEGER NOT NULL CHECK (attempt >= 1),
+    parent_reconciliation_id TEXT
+        REFERENCES workspace_provisioning_reconciliation_records(reconciliation_id)
+        ON DELETE RESTRICT,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'claimed', 'ready', 'blocked')),
+    state_version INTEGER NOT NULL CHECK (state_version >= 1),
+    claim_epoch INTEGER NOT NULL CHECK (claim_epoch >= 0),
+    identity_digest TEXT NOT NULL UNIQUE,
+    payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+    reconciliation_digest TEXT NOT NULL UNIQUE,
+    schema_version TEXT NOT NULL DEFAULT 'workspace_provisioning_reconciliation@1'
+        CHECK (schema_version = 'workspace_provisioning_reconciliation@1'),
+    UNIQUE (intent_id, attempt)
+);
+
+CREATE TABLE workflow_authority_binding_records (
+    authority_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE RESTRICT,
+    request_lineage_id TEXT NOT NULL,
+    parent_authority_id TEXT
+        REFERENCES workflow_authority_binding_records(authority_id) ON DELETE RESTRICT,
+    status TEXT NOT NULL CHECK (
+        status IN ('active', 'revoked', 'expired', 'consumed')
+    ),
+    epoch INTEGER NOT NULL CHECK (epoch >= 1),
+    state_version INTEGER NOT NULL CHECK (state_version >= 1),
+    payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+    binding_digest TEXT NOT NULL UNIQUE,
+    schema_version TEXT NOT NULL DEFAULT 'workflow_authority_binding@1'
+        CHECK (schema_version = 'workflow_authority_binding@1')
+);
+
+CREATE TABLE runtime_signal_authority_link_records (
+    signal_id TEXT PRIMARY KEY
+        REFERENCES agent_runtime_signals(signal_id) ON DELETE RESTRICT,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE RESTRICT,
+    authority_id TEXT NOT NULL
+        REFERENCES workflow_authority_binding_records(authority_id) ON DELETE RESTRICT,
+    authority_epoch INTEGER NOT NULL CHECK (authority_epoch >= 1),
+    payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+    link_digest TEXT NOT NULL UNIQUE,
+    schema_version TEXT NOT NULL DEFAULT 'runtime_signal_authority_link@1'
+        CHECK (schema_version = 'runtime_signal_authority_link@1')
+);
+
+CREATE TABLE runtime_turn_context_records (
+    context_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE RESTRICT,
+    turn_id TEXT NOT NULL UNIQUE,
+    signal_id TEXT NOT NULL
+        REFERENCES agent_runtime_signals(signal_id) ON DELETE RESTRICT,
+    payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+    context_digest TEXT NOT NULL UNIQUE,
+    schema_version TEXT NOT NULL DEFAULT 'runtime_turn_context@1'
+        CHECK (schema_version = 'runtime_turn_context@1')
+);
+
+CREATE TABLE tool_exposure_snapshot_records (
+    exposure_snapshot_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE RESTRICT,
+    turn_id TEXT NOT NULL UNIQUE,
+    workflow_authority_id TEXT NOT NULL
+        REFERENCES workflow_authority_binding_records(authority_id) ON DELETE RESTRICT,
+    workflow_authority_epoch INTEGER NOT NULL CHECK (workflow_authority_epoch >= 1),
+    payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+    exposure_snapshot_digest TEXT NOT NULL UNIQUE,
+    schema_version TEXT NOT NULL DEFAULT 'tool_exposure_snapshot@1'
+        CHECK (schema_version = 'tool_exposure_snapshot@1')
+);
+
+CREATE TABLE command_tool_expansion_records (
+    expansion_id TEXT PRIMARY KEY,
+    command_id TEXT NOT NULL
+        REFERENCES runtime_turn_command_records(command_id) ON DELETE RESTRICT,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE RESTRICT,
+    exposure_snapshot_id TEXT NOT NULL
+        REFERENCES tool_exposure_snapshot_records(exposure_snapshot_id)
+        ON DELETE RESTRICT,
+    expansion_revision INTEGER NOT NULL CHECK (expansion_revision >= 1),
+    payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+    expansion_digest TEXT NOT NULL UNIQUE,
+    schema_version TEXT NOT NULL DEFAULT 'command_tool_expansion@1'
+        CHECK (schema_version = 'command_tool_expansion@1'),
+    UNIQUE (command_id, expansion_revision)
+);
+
+CREATE TABLE runtime_turn_outcome_records (
+    receipt_id TEXT PRIMARY KEY,
+    outcome_id TEXT NOT NULL UNIQUE,
+    command_id TEXT NOT NULL UNIQUE
+        REFERENCES runtime_turn_command_records(command_id) ON DELETE RESTRICT,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE RESTRICT,
+    failure_id TEXT
+        REFERENCES failure_observation_records(failure_id) ON DELETE RESTRICT,
+    payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+    outcome_digest TEXT NOT NULL UNIQUE,
+    receipt_digest TEXT NOT NULL UNIQUE,
+    schema_version TEXT NOT NULL DEFAULT 'runtime_turn_outcome_receipt@1'
+        CHECK (schema_version = 'runtime_turn_outcome_receipt@1')
+);
+
 CREATE TABLE runtime_turn_command_records (
     command_id TEXT PRIMARY KEY,
     turn_id TEXT NOT NULL UNIQUE,
@@ -1447,6 +1614,20 @@ CREATE TABLE runtime_turn_command_records (
     capability_binding_digest TEXT NOT NULL,
     affordance_snapshot_id TEXT NOT NULL,
     affordance_snapshot_digest TEXT NOT NULL,
+    workflow_authority_id TEXT NOT NULL
+        REFERENCES workflow_authority_binding_records(authority_id) ON DELETE RESTRICT,
+    workflow_authority_epoch INTEGER NOT NULL CHECK (workflow_authority_epoch >= 1),
+    workflow_authority_digest TEXT NOT NULL,
+    signal_authority_link_digest TEXT NOT NULL,
+    tool_exposure_snapshot_id TEXT NOT NULL
+        REFERENCES tool_exposure_snapshot_records(exposure_snapshot_id)
+        ON DELETE RESTRICT,
+    tool_exposure_snapshot_digest TEXT NOT NULL,
+    context_id TEXT GENERATED ALWAYS AS (
+        json_extract(context_json, '$.context_id')
+    ) STORED
+        REFERENCES runtime_turn_context_records(context_id) ON DELETE RESTRICT,
+    context_json TEXT NOT NULL CHECK (json_valid(context_json)),
     runtime_adapter_id TEXT NOT NULL,
     runtime_adapter_contract_digest TEXT NOT NULL,
     max_steps INTEGER NOT NULL CHECK (max_steps >= 1),
@@ -1458,8 +1639,8 @@ CREATE TABLE runtime_turn_command_records (
     lane_id TEXT REFERENCES lanes(lane_id) ON DELETE RESTRICT,
     continuation_id TEXT,
     command_digest TEXT NOT NULL UNIQUE,
-    schema_version TEXT NOT NULL DEFAULT 'runtime_turn_command@1'
-        CHECK (schema_version = 'runtime_turn_command@1'),
+    schema_version TEXT NOT NULL DEFAULT 'runtime_turn_command@2'
+        CHECK (schema_version = 'runtime_turn_command@2'),
     UNIQUE (signal_id, signal_attempt)
 );
 
@@ -1474,6 +1655,15 @@ CREATE TABLE runtime_continuation_intent_records (
     source_command_digest TEXT NOT NULL,
     source_outcome_id TEXT NOT NULL UNIQUE,
     source_outcome_digest TEXT NOT NULL,
+    source_signal_id TEXT NOT NULL
+        REFERENCES agent_runtime_signals(signal_id) ON DELETE RESTRICT,
+    source_signal_authority_link_digest TEXT NOT NULL,
+    source_workflow_authority_id TEXT NOT NULL
+        REFERENCES workflow_authority_binding_records(authority_id)
+        ON DELETE RESTRICT,
+    source_workflow_authority_epoch INTEGER NOT NULL
+        CHECK (source_workflow_authority_epoch >= 1),
+    source_workflow_authority_binding_digest TEXT NOT NULL,
     process_epoch INTEGER NOT NULL CHECK (process_epoch >= 1),
     release_digest TEXT NOT NULL,
     extension_bundle_digest TEXT NOT NULL,
@@ -1484,8 +1674,41 @@ CREATE TABLE runtime_continuation_intent_records (
     capability_binding_digest TEXT NOT NULL,
     affordance_snapshot_id TEXT NOT NULL,
     affordance_snapshot_digest TEXT NOT NULL,
+    delivery_status TEXT NOT NULL CHECK (delivery_status IN ('pending', 'delivered')),
+    delivery_attempt INTEGER NOT NULL CHECK (delivery_attempt IN (0, 1)),
+    delivery_signal_id TEXT UNIQUE
+        REFERENCES agent_runtime_signals(signal_id) ON DELETE RESTRICT,
+    delivery_signal_authority_link_digest TEXT,
+    delivery_identity_digest TEXT UNIQUE,
+    created_at TEXT NOT NULL,
+    delivered_at TEXT,
+    recipient_runtime_executed INTEGER NOT NULL DEFAULT 0
+        CHECK (recipient_runtime_executed = 0),
+    fallback_performed INTEGER NOT NULL DEFAULT 0
+        CHECK (fallback_performed = 0),
     schema_version TEXT NOT NULL DEFAULT 'runtime_continuation_intent@1'
-        CHECK (schema_version = 'runtime_continuation_intent@1')
+        CHECK (schema_version = 'runtime_continuation_intent@1'),
+    FOREIGN KEY (source_signal_id)
+        REFERENCES runtime_signal_authority_link_records(signal_id)
+        ON DELETE RESTRICT,
+    FOREIGN KEY (delivery_signal_id)
+        REFERENCES runtime_signal_authority_link_records(signal_id)
+        ON DELETE RESTRICT,
+    CHECK (
+        (delivery_status = 'pending'
+         AND delivery_attempt = 0
+         AND delivery_signal_id IS NULL
+         AND delivery_signal_authority_link_digest IS NULL
+         AND delivery_identity_digest IS NULL
+         AND delivered_at IS NULL)
+        OR
+        (delivery_status = 'delivered'
+         AND delivery_attempt = 1
+         AND delivery_signal_id IS NOT NULL
+         AND delivery_signal_authority_link_digest IS NOT NULL
+         AND delivery_identity_digest IS NOT NULL
+         AND delivered_at IS NOT NULL)
+    )
 );
 
 CREATE TABLE runtime_settlement_intent_records (
@@ -1523,6 +1746,9 @@ CREATE TABLE runtime_outcome_consumption_records (
     command_digest TEXT NOT NULL,
     outcome_id TEXT NOT NULL UNIQUE,
     outcome_digest TEXT NOT NULL,
+    outcome_receipt_id TEXT NOT NULL UNIQUE
+        REFERENCES runtime_turn_outcome_records(receipt_id) ON DELETE RESTRICT,
+    outcome_receipt_json TEXT NOT NULL CHECK (json_valid(outcome_receipt_json)),
     session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     agent_id TEXT NOT NULL,
     agent_member_id TEXT NOT NULL
@@ -1542,8 +1768,8 @@ CREATE TABLE runtime_outcome_consumption_records (
     settlement_intent_json TEXT NOT NULL CHECK (json_valid(settlement_intent_json)),
     consumed_at TEXT NOT NULL,
     consumption_digest TEXT NOT NULL UNIQUE,
-    schema_version TEXT NOT NULL DEFAULT 'runtime_outcome_consumption@1'
-        CHECK (schema_version = 'runtime_outcome_consumption@1'),
+    schema_version TEXT NOT NULL DEFAULT 'runtime_outcome_consumption@2'
+        CHECK (schema_version = 'runtime_outcome_consumption@2'),
     CHECK (
         (continuation_intent_id IS NULL AND continuation_intent_json IS NULL)
         OR (continuation_intent_id IS NOT NULL AND continuation_intent_json IS NOT NULL)
@@ -1551,7 +1777,7 @@ CREATE TABLE runtime_outcome_consumption_records (
 );
 
 CREATE TABLE workspace_generation_records (
-    workspace_id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
     workspace_kind TEXT NOT NULL CHECK (
         workspace_kind IN ('agent_local', 'executor_remote')
     ),
@@ -1574,7 +1800,7 @@ CREATE TABLE workspace_generation_records (
     retired_at TEXT,
     schema_version TEXT NOT NULL DEFAULT 'workspace_generation@1'
         CHECK (schema_version = 'workspace_generation@1'),
-    UNIQUE (workspace_id, generation),
+    PRIMARY KEY (workspace_id, generation),
     UNIQUE (session_id, owner_member_id, generation)
 );
 

@@ -54,6 +54,10 @@ from .failures import FailureObservation
 from .failures import FailureRecoverability
 from .failures import LegacyFailureObservationV1
 from .failures import PrivateDiagnosticRecord
+from .failures import StructuredFailureContext
+from .failures import StructuredFailureRecords
+from .failures import observe_structured_failure
+from .failures import validate_failure_diagnostic_pair
 from .diagnostics import safe_public_machine_identifier
 from .diagnostics import sanitize_public_diagnostic_payload
 from .diagnostics import sanitize_public_diagnostic_text
@@ -150,6 +154,7 @@ from .infrastructure import KernelMutationKind
 from .infrastructure import KernelRecordReaderPort
 from .infrastructure import KernelRecordQueryPort
 from .infrastructure import KernelRecordSnapshot
+from .infrastructure import KernelSessionDiscoveryPort
 from .infrastructure import KernelStateMutation
 from .infrastructure import KernelUnitOfWork
 from .infrastructure import OutboxDeliveryPort
@@ -171,9 +176,41 @@ from .public_workspace import FILE_WORKSPACE_CORE_FORBIDDEN_FIELD_FRAGMENTS
 from .public_workspace import FILE_WORKSPACE_CORE_FORBIDDEN_FIELD_TOKENS
 from .public_workspace import FILE_WORKSPACE_CORE_SECTION_FIELDS
 from .public_workspace import FILE_WORKSPACE_CORE_SECTION_KINDS
+from .public_workspace import FILE_WORKSPACE_COMMAND_EXPANSION_PUBLIC_FIELDS
+from .public_workspace import FILE_WORKSPACE_FAILURE_FACT_PUBLIC_FIELDS
+from .public_workspace import FILE_WORKSPACE_FAILURE_IDENTITY_PUBLIC_FIELDS
+from .public_workspace import FILE_WORKSPACE_FAILURE_OBSERVATION_PUBLIC_FIELDS
+from .public_workspace import FILE_WORKSPACE_ORDERED_TRANSCRIPT_FIELDS
+from .public_workspace import FILE_WORKSPACE_PROVISIONING_PUBLIC_FIELDS
+from .public_workspace import FILE_WORKSPACE_PROVISIONING_RECONCILIATION_PUBLIC_FIELDS
 from .public_workspace import FILE_WORKSPACE_PUBLIC_V2_CONTRACT_DIGEST
 from .public_workspace import FILE_WORKSPACE_PUBLIC_V2_MEDIA_TYPE
 from .public_workspace import FILE_WORKSPACE_PUBLIC_V2_SCHEMA_VERSION
+from .public_workspace import FILE_WORKSPACE_RESIDENT_READINESS_FIELDS
+from .public_workspace import FILE_WORKSPACE_RUNTIME_COMMAND_PUBLIC_FIELDS
+from .public_workspace import (
+    FILE_WORKSPACE_RUNTIME_COMMAND_OUTCOME_SUMMARY_PUBLIC_FIELDS,
+)
+from .public_workspace import FILE_WORKSPACE_RUNTIME_OUTCOME_CONSUMPTION_PUBLIC_FIELDS
+from .public_workspace import FILE_WORKSPACE_RUNTIME_OUTCOME_FIELDS
+from .public_workspace import FILE_WORKSPACE_RUNTIME_OUTCOME_RECEIPT_FIELDS
+from .public_workspace import FILE_WORKSPACE_RUNTIME_TURN_COMMAND_FIELDS
+from .public_workspace import FILE_WORKSPACE_TOOL_EXPOSURE_PUBLIC_FIELDS
+from .public_workspace import FILE_WORKSPACE_TOOL_REFLECTION_CURRENT_FIELDS
+from .public_workspace import FILE_WORKSPACE_TRANSCRIPT_MESSAGE_FIELDS
+from .public_workspace import FILE_WORKSPACE_WORKFLOW_AUTHORITY_PROJECTION_FIELDS
+from .public_workspace import COMMAND_TOOL_EXPANSION_PUBLIC_SCHEMA_VERSION
+from .public_workspace import ORDERED_TRANSCRIPT_SCHEMA_VERSION
+from .public_workspace import RUNTIME_COMMAND_OUTCOME_SUMMARY_PUBLIC_SCHEMA_VERSION
+from .public_workspace import RUNTIME_OUTCOME_CONSUMPTION_PUBLIC_SCHEMA_VERSION
+from .public_workspace import RESIDENT_TEAMMATE_READINESS_SCHEMA_VERSION
+from .public_workspace import RESIDENT_TRANSCRIPT_MESSAGE_SCHEMA_VERSION
+from .public_workspace import TOOL_EXPOSURE_PUBLIC_SCHEMA_VERSION
+from .public_workspace import WORKFLOW_AUTHORITY_PROJECTION_SCHEMA_VERSION
+from .public_workspace import WORKSPACE_PROVISIONING_PUBLIC_SCHEMA_VERSION
+from .public_workspace import (
+    WORKSPACE_PROVISIONING_RECONCILIATION_PUBLIC_SCHEMA_VERSION,
+)
 from .public_workspace import FileWorkspaceCoreProjectionV2
 from .public_workspace import FileWorkspaceExtensionSectionV2
 from .public_workspace import FileWorkspacePublicV2
@@ -258,6 +295,59 @@ from .reliability import RuntimeCommandStatus
 from .reliability import RuntimeCommandType
 from .tools import TOOL_SPEC_SCHEMA_VERSION
 from .tools import ToolSpec
+from .runtime_context import RUNTIME_CONTEXT_SECTION_SCHEMA_VERSION
+from .runtime_context import RUNTIME_TURN_CONTEXT_SCHEMA_VERSION
+from .runtime_context import RuntimeContextSection
+from .runtime_context import RuntimeContextSectionKind
+from .runtime_context import RuntimeTurnContext
+from .tool_exposure import COMMAND_TOOL_EXPANSION_SCHEMA_VERSION
+from .tool_exposure import TOOL_EXPOSURE_DECISION_SCHEMA_VERSION
+from .tool_exposure import TOOL_EXPOSURE_SNAPSHOT_SCHEMA_VERSION
+from .tool_exposure import CommandToolExpansion
+from .tool_exposure import ToolExposure
+from .tool_exposure import ToolExposureDecision
+from .tool_exposure import ToolExposureSnapshot
+from .tool_exposure import validate_command_tool_expansion
+from .workflow_authority import RESOLVED_WORKFLOW_SELECTION_SCHEMA_VERSION
+from .workflow_authority import RUNTIME_SIGNAL_AUTHORITY_LINK_SCHEMA_VERSION
+from .workflow_authority import WORKFLOW_AUTHORITY_BINDING_SCHEMA_VERSION
+from .workflow_authority import WORKFLOW_AUTHORITY_SUBSET_REQUEST_SCHEMA_VERSION
+from .workflow_authority import WORKFLOW_AUTHORITY_TRANSITION_REQUEST_SCHEMA_VERSION
+from .workflow_authority import WORKFLOW_SELECTION_REQUEST_SCHEMA_VERSION
+from .workflow_authority import ResolvedWorkflowSelection
+from .workflow_authority import RuntimeSignalAuthorityLink
+from .workflow_authority import WorkflowAuthorityBinding
+from .workflow_authority import WorkflowAuthorityContractError
+from .workflow_authority import WorkflowAuthorityDerivationKind
+from .workflow_authority import WorkflowAuthoritySignalSourceKind
+from .workflow_authority import WorkflowAuthorityStatus
+from .workflow_authority import WorkflowAuthoritySubsetRequest
+from .workflow_authority import WorkflowAuthorityTransitionRequest
+from .workflow_authority import WorkflowSelectionRequest
+from .workflow_authority import require_workflow_authority_subset
+from .workspace_provisioning import WORKSPACE_PROVISIONING_CLAIM_SCHEMA_VERSION
+from .workspace_provisioning import WORKSPACE_PROVISIONING_INTENT_SCHEMA_VERSION
+from .workspace_provisioning import WORKSPACE_PROVISIONING_RECEIPT_SCHEMA_VERSION
+from .workspace_provisioning import (
+    WORKSPACE_PROVISIONING_RECONCILIATION_ADMISSION_RESULT_FIELDS,
+)
+from .workspace_provisioning import WORKSPACE_PROVISIONING_RECONCILIATION_SCHEMA_VERSION
+from .workspace_provisioning import (
+    WORKSPACE_PROVISIONING_RECONCILIATION_REQUEST_SCHEMA_VERSION,
+)
+from .workspace_provisioning import WORKSPACE_PROVISIONING_REQUEST_SCHEMA_VERSION
+from .workspace_provisioning import (
+    WORKSPACE_PROVISIONING_SUCCESSOR_ADMISSION_RESULT_FIELDS,
+)
+from .workspace_provisioning import WorkspaceProvisioningClaim
+from .workspace_provisioning import WorkspaceProvisioningIntent
+from .workspace_provisioning import WorkspaceProvisioningReceipt
+from .workspace_provisioning import WorkspaceProvisioningReceiptDisposition
+from .workspace_provisioning import WorkspaceProvisioningReconciliation
+from .workspace_provisioning import WorkspaceProvisioningReconciliationRequest
+from .workspace_provisioning import WorkspaceProvisioningReconciliationStatus
+from .workspace_provisioning import WorkspaceProvisioningRequest
+from .workspace_provisioning import WorkspaceProvisioningStatus
 from .tool_runtime import TOOL_INVOCATION_SCHEMA_VERSION
 from .tool_runtime import TOOL_RESULT_SCHEMA_VERSION
 from .tool_runtime import ToolInvocation
@@ -338,6 +428,23 @@ from .workspace_runtime import require_workspace_relative_path
 
 
 __all__ = [
+    "COMMAND_TOOL_EXPANSION_SCHEMA_VERSION",
+    "RUNTIME_CONTEXT_SECTION_SCHEMA_VERSION",
+    "RUNTIME_SIGNAL_AUTHORITY_LINK_SCHEMA_VERSION",
+    "RUNTIME_TURN_CONTEXT_SCHEMA_VERSION",
+    "RESOLVED_WORKFLOW_SELECTION_SCHEMA_VERSION",
+    "TOOL_EXPOSURE_DECISION_SCHEMA_VERSION",
+    "TOOL_EXPOSURE_SNAPSHOT_SCHEMA_VERSION",
+    "WORKFLOW_AUTHORITY_BINDING_SCHEMA_VERSION",
+    "WORKFLOW_AUTHORITY_SUBSET_REQUEST_SCHEMA_VERSION",
+    "WORKFLOW_AUTHORITY_TRANSITION_REQUEST_SCHEMA_VERSION",
+    "WORKFLOW_SELECTION_REQUEST_SCHEMA_VERSION",
+    "WORKSPACE_PROVISIONING_CLAIM_SCHEMA_VERSION",
+    "WORKSPACE_PROVISIONING_INTENT_SCHEMA_VERSION",
+    "WORKSPACE_PROVISIONING_RECEIPT_SCHEMA_VERSION",
+    "WORKSPACE_PROVISIONING_RECONCILIATION_SCHEMA_VERSION",
+    "WORKSPACE_PROVISIONING_RECONCILIATION_REQUEST_SCHEMA_VERSION",
+    "WORKSPACE_PROVISIONING_REQUEST_SCHEMA_VERSION",
     "AGENT_TURN_BUDGET_EXHAUSTED_ERROR_CODE",
     "AGENT_AUTHORITY_LEASE_SCHEMA_VERSION",
     "AGENT_WORKSPACE_STATE_OBSERVATION_SCHEMA_VERSION",
@@ -498,14 +605,41 @@ __all__ = [
     "FILE_WORKSPACE_CORE_FORBIDDEN_FIELD_TOKENS",
     "FILE_WORKSPACE_CORE_SECTION_FIELDS",
     "FILE_WORKSPACE_CORE_SECTION_KINDS",
+    "FILE_WORKSPACE_FAILURE_FACT_PUBLIC_FIELDS",
+    "FILE_WORKSPACE_FAILURE_IDENTITY_PUBLIC_FIELDS",
+    "FILE_WORKSPACE_FAILURE_OBSERVATION_PUBLIC_FIELDS",
+    "FILE_WORKSPACE_RUNTIME_OUTCOME_CONSUMPTION_PUBLIC_FIELDS",
+    "FILE_WORKSPACE_COMMAND_EXPANSION_PUBLIC_FIELDS",
+    "FILE_WORKSPACE_ORDERED_TRANSCRIPT_FIELDS",
+    "FILE_WORKSPACE_PROVISIONING_PUBLIC_FIELDS",
+    "FILE_WORKSPACE_PROVISIONING_RECONCILIATION_PUBLIC_FIELDS",
     "FILE_WORKSPACE_PUBLIC_V2_CONTRACT_DIGEST",
     "FILE_WORKSPACE_PUBLIC_V2_MEDIA_TYPE",
     "FILE_WORKSPACE_PUBLIC_V2_SCHEMA_VERSION",
     "FILE_WORKSPACE_PUBLIC_V2_SCHEMA_RESOURCE",
+    "FILE_WORKSPACE_RESIDENT_READINESS_FIELDS",
+    "FILE_WORKSPACE_RUNTIME_COMMAND_PUBLIC_FIELDS",
+    "FILE_WORKSPACE_RUNTIME_COMMAND_OUTCOME_SUMMARY_PUBLIC_FIELDS",
+    "FILE_WORKSPACE_RUNTIME_OUTCOME_FIELDS",
+    "FILE_WORKSPACE_RUNTIME_OUTCOME_RECEIPT_FIELDS",
+    "FILE_WORKSPACE_RUNTIME_TURN_COMMAND_FIELDS",
+    "FILE_WORKSPACE_TOOL_EXPOSURE_PUBLIC_FIELDS",
+    "FILE_WORKSPACE_TOOL_REFLECTION_CURRENT_FIELDS",
+    "FILE_WORKSPACE_TRANSCRIPT_MESSAGE_FIELDS",
+    "FILE_WORKSPACE_WORKFLOW_AUTHORITY_PROJECTION_FIELDS",
     "FileWorkspaceCoreProjectionV2",
     "FileWorkspaceExtensionSectionV2",
     "FileWorkspacePublicV2",
     "FileWorkspaceToolReflection",
+    "COMMAND_TOOL_EXPANSION_PUBLIC_SCHEMA_VERSION",
+    "ORDERED_TRANSCRIPT_SCHEMA_VERSION",
+    "RUNTIME_COMMAND_OUTCOME_SUMMARY_PUBLIC_SCHEMA_VERSION",
+    "RESIDENT_TEAMMATE_READINESS_SCHEMA_VERSION",
+    "RESIDENT_TRANSCRIPT_MESSAGE_SCHEMA_VERSION",
+    "TOOL_EXPOSURE_PUBLIC_SCHEMA_VERSION",
+    "WORKFLOW_AUTHORITY_PROJECTION_SCHEMA_VERSION",
+    "WORKSPACE_PROVISIONING_PUBLIC_SCHEMA_VERSION",
+    "WORKSPACE_PROVISIONING_RECONCILIATION_PUBLIC_SCHEMA_VERSION",
     "load_file_workspace_public_v2_json_schema",
     "LayeredReleaseIdentity",
     "InboxMessage",
@@ -516,6 +650,7 @@ __all__ = [
     "KernelRecordReaderPort",
     "KernelRecordQueryPort",
     "KernelRecordSnapshot",
+    "KernelSessionDiscoveryPort",
     "KernelStateMutation",
     "KernelUnitOfWork",
     "Lane",
@@ -544,6 +679,8 @@ __all__ = [
     "MutationWriterKind",
     "MutationWriterState",
     "PrivateDiagnosticRecord",
+    "StructuredFailureContext",
+    "StructuredFailureRecords",
     "safe_public_machine_identifier",
     "sanitize_public_diagnostic_payload",
     "sanitize_public_diagnostic_text",
@@ -586,6 +723,7 @@ __all__ = [
     "RuntimeCommandRecord",
     "RuntimeCommandStatus",
     "RuntimeCommandType",
+    "RUNTIME_OUTCOME_CONSUMPTION_PUBLIC_SCHEMA_VERSION",
     "SessionCapabilityBindingRevision",
     "SESSION_BOOTSTRAP_AUTHORIZATION_OPERATION",
     "SESSION_BOOTSTRAP_AUTHORIZATION_SCHEMA_VERSION",
@@ -648,15 +786,47 @@ __all__ = [
     "AgentWorkspaceVolumeFact",
     "AgentWorkspaceVolumeIdentityError",
     "WorkspaceTransferRequest",
+    "CommandToolExpansion",
+    "ResolvedWorkflowSelection",
+    "RuntimeContextSection",
+    "RuntimeContextSectionKind",
+    "RuntimeSignalAuthorityLink",
+    "RuntimeTurnContext",
+    "ToolExposure",
+    "ToolExposureDecision",
+    "ToolExposureSnapshot",
+    "WorkflowAuthorityBinding",
+    "WorkflowAuthorityContractError",
+    "WorkflowAuthorityDerivationKind",
+    "WorkflowAuthoritySignalSourceKind",
+    "WorkflowAuthorityStatus",
+    "WorkflowAuthoritySubsetRequest",
+    "WorkflowAuthorityTransitionRequest",
+    "WorkflowSelectionRequest",
+    "WorkspaceProvisioningClaim",
+    "WorkspaceProvisioningIntent",
+    "WorkspaceProvisioningReceipt",
+    "WorkspaceProvisioningReceiptDisposition",
+    "WorkspaceProvisioningReconciliation",
+    "WorkspaceProvisioningReconciliationRequest",
+    "WorkspaceProvisioningReconciliationStatus",
+    "WorkspaceProvisioningRequest",
+    "WorkspaceProvisioningStatus",
+    "WORKSPACE_PROVISIONING_RECONCILIATION_ADMISSION_RESULT_FIELDS",
+    "WORKSPACE_PROVISIONING_SUCCESSOR_ADMISSION_RESULT_FIELDS",
     "canonical_json_bytes",
     "canonical_handoff_digest",
     "canonical_publication_digest",
     "canonical_sha256_digest",
     "json_compatible",
     "likely_causes_for_error_code",
+    "observe_structured_failure",
     "parse_failure_observation",
+    "validate_failure_diagnostic_pair",
     "require_digest",
     "require_identifier",
+    "require_workflow_authority_subset",
+    "validate_command_tool_expansion",
     "require_workspace_relative_path",
     "VerifiedWorkspaceCheckpoint",
 ]

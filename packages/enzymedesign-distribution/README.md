@@ -5,7 +5,7 @@ OpenZyme Kernel、基础设施 Adapters、通用 Plugins、EnzymeDesign Product 
 Drivers；它不依赖 `openzyme-standard` 作为语义层。
 
 当前 manifest 已是结构上可激活的 `active` composition。纯 factory 已闭合 8 个 Adapter、14 个 Plugin、
-8 个 subordinate Driver、32 个 Plugin 声明工具和 5 个 Kernel workspace 基础工具（合计 37 个）；
+8 个 subordinate Driver、32 个 Plugin 声明工具和 13 个 Kernel resident/workspace 基础工具（合计 45 个）；
 `build_enzymedesign_fresh_install_seed()` 还能将这些 catalog 与
 EnzymeDesign owner schema 和 deterministic bootstrap receipt 绑定。该状态不授权 live Provider/HPC，也不
 替代 Host startup、installed-wheel proof 或真实 offline cutover；production surface 仍必须先通过 exact
@@ -22,12 +22,49 @@ fresh factory 通过 Kernel 三 proof coordinator 产生 epoch；
 `verify_enzymedesign_deployment_startup_read_only()` 仍只负责在不 mount Plugin runtime 的前提下闭合 Store
 deployment proof、installed wheel set、Session composition pin、capability-binding revision 和 target
 inventory reference，并且只重新授权数据库中的原 exact epoch。`build_enzymedesign_application_runtime()` 随后
-核对全部 8 个 selected Adapter runtime identity，mount 上述 exact Plugin surface，闭合 5 个 Kernel tools 与
-32 个 Plugin tools 的 37-tool runtime catalog，再构造 SQLite writer、capability registry、bounded runtime
+核对全部 8 个 selected Adapter runtime identity，mount 上述 exact Plugin surface，闭合 13 个 Kernel tools 与
+32 个 Plugin tools 的 45-tool runtime catalog，再构造 SQLite writer、capability registry、bounded runtime
 gateway、Kernel coordination/operational routes、finish validator registry 和公共投影。任一 proof、Adapter 或
 surface 漂移都会在 writer 对外可达前失败。`build_enzymedesign_v2_host_app()` 只把该完整 product runtime 注入
 通用 `openzyme-host-api`；EnzymeDesign 没有依赖 `openzyme-standard`。non-live 测试还通过真实 Kernel gateway
 完成了 Session bootstrap，证明该入口不再只是 catalog proof。
+
+resident teammate 产品入口现在固定为异步两阶段：Session bootstrap 在一个 Kernel Unit of Work 内原子接纳 exact
+`ProjectRepositoryBinding`、repository pin、`WorkspaceGeneration` reservation、pending root authority 和 durable
+provisioning intent，公开 readiness 为 `provisioning`；独立 bounded provisioning worker 只调用所选 workspace
+Adapter，terminal `ready` 后才激活 runtime binding/authority。`POST .../messages` 只持久化 canonical `message`、
+exact `workflow_refs`、request lineage、`WorkflowAuthorityBinding`、`RuntimeSignalAuthorityLink` 和 wakeup signal；
+`POST .../runtime/drain` 只接纳 durable command，独立 worker claim/fence/execute/settle，不在 HTTP 内同步运行
+Agent。显式空 workflow 选择保持为空；registry 不接受 `latest`、`all`、prose 或隐式 union。
+
+`dispatch_in_doubt` 不会自动 retry、重新 provision 或切换 Adapter。Host 的显式
+`POST .../workspace/provisioning/reconcile` 只按 exact intent digest/version/Session 接纳 durable pending
+reconciliation，HTTP 内不观察 Adapter；独立 bounded lifecycle worker 后续优先认领 pending/expired-claimed occurrence，
+并使用 admission 持久化的 claim duration 执行同一原请求的 observation。terminal occurrence 不自动派生下一 attempt。只有
+operator 再显式调用 `POST .../workspace/provisioning/successor`，并提交 exact failed intent 与已解析的 reconciliation
+identity（如需要），Kernel 才原子建立下一 generation 的 pending reservation/intent/lease。两个入口都绑定原 HTTP
+actor、idempotency key 与 correlation id；successor admission 本身不调用 Adapter。
+
+四个 adopted resident roles（`master | researcher | executor | reporter`）对完整 45-tool catalog 都有闭合 subject
+policy 和 `Direct | Deferred | Hidden` exposure policy。Provider 初始只看到可调用的 Direct；
+`capabilities.inspect` 只能把当前 command 的 Deferred 显式扩展为可调用，不扩大 workflow/authority/route；Hidden
+既不进入 Provider，也不进入 inspection 或公共投影。每个 turn 同时绑定 workflow authority、signal causal link、
+tool exposure snapshot 和结构化 world context；provider step 与每次 dispatch 都重验当前 fence。
+
+可执行入口为 `enzymedesign-host --config /absolute/launcher.json
+<preflight|serve|provision|provision-tick|drain|drain-tick>`；closed JSON 精确固定 file-backed database、factory
+locator/id/digest、component configuration、server 与 provisioning/runtime worker bounds，factory 必须显式返回配置一致的
+`EnzymeDesignHostLauncher`，没有 ambient/default fallback。launcher 在 HTTP admission 前启动 bounded background
+lifecycle，停止时先关闭 admission，再 join workers、retire 显式 owners，最后关闭 Store。fresh file-backed non-live 回归覆盖
+bootstrap → provisioning → ready → message enqueue → explicit drain → assistant/tool transcript → SQLite reload，并
+断言 Direct 可调用、Deferred 可反射且 command-scoped expansion 后可调用而 route/authority 不变、Hidden 零披露、
+network/subprocess/browser/live provider/HPC 路径零触达，以及 restart 后没有重复 external dispatch。
+
+`preflight` 不是配置回显，也不硬编码 `file_backed=true`。它通过 SQLite `PRAGMA database_list` 只读观测实际 Store，
+要求唯一 `main` 数据库是与配置完全相同的绝对文件路径且没有附加数据库；随后重验 official Store/runtime 类型、active
+epoch/release、Extension bundle、declared tool catalog、完整 8-Adapter runtime set、实际 workflow resolver、实际 runtime
+admission/全角色 policy 与 workspace binding。输出 receipt 绑定上述 digest；任何 declared/actual identity 漂移都会先关闭
+launcher，再以 `no_effect`、`mutation_applied=false`、`fallback_performed=false` 失败，不能改用 in-memory 或 Standard。
 
 同一 composition root 还构造 Store-backed Session pin/capability-binding reader、
 `ExtensionStateKernelApplicationService`、SQLite extension transaction coordinator/query、

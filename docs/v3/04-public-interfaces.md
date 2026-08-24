@@ -24,8 +24,10 @@ Host、CLI、UI、SDK、event/restore schema 和 tool catalog 作为一个 diges
 通用 Host contract 与 Standard 当前已接入的主要接口：
 
 - `POST /v3/sessions`：pre-Session bootstrap 只绑定 exact release/public-contract identity，由 Distribution
-  gateway 经短时 operator authorization 原子创建 Session、master、root AgentAuthorityLease、revision-1
-  capability binding 与 composition pin；尚不存在 projection/binding/affordance 时禁止补造对应 headers；
+  gateway 经短时 operator authorization 原子创建 Session、master、root `AgentAuthorityLease`、revision-1
+  capability binding、composition pin、exact repository pin、`WorkspaceGeneration` reservation、pending
+  exact-generation lease 与 durable provisioning intent；HTTP 返回公开 readiness，不等待 Git/LFS、volume
+  或 capsule 外部工作；
 - `POST /v3/sessions/{id}/messages`：写消息和 wakeup signal，不同步 drain；
 - `POST /v3/sessions/{id}/tasks`、`.../finish`、lane/agent/protocol/approval/authority routes：
   通过 Standard Kernel application gateway 执行 exact CAS command；
@@ -114,8 +116,9 @@ Standard 的候选生产路径不再使用测试 fake：`SQLiteControlStore.list
 Session 索引做 `LIMIT + 1` 查询，每个 identity 仍通过 owner-table codec 重建并验证；
 `KernelPublicWorkspaceProjectionService` 从这些 canonical records 解析唯一 subject/root Agent、active
 `AgentAuthorityLease`、latest `SessionCapabilityBindingRevision` 和 local workspace readiness，再使用 Distribution
-提供的 exact capability registry 计算 affordance。尚未 provision workspace 时 snapshot generation 为 `0`、
-workspace-required tool 为 blocked；这不创建 `WorkspaceGeneration`。snapshot ID/timestamp 从当前事实稳定派生，
+提供的 exact capability registry 计算 affordance。尚未 provision workspace 时，projection 使用 bootstrap
+已经保留的 exact generation 并报告 `provisioning`；workspace-required tool 为 blocked，不得用 generation `0`
+或临时空 workspace 代替 reservation。snapshot ID/timestamp 从当前事实稳定派生，
 不会仅因重复 GET 改变 mutation header。Standard 最后以 `build_standard_file_workspace_v2_host_surface()` 将
 provider、active release 和 empty Plugin mount 注入通用 Host。`build_standard_kernel_application_runtime()` 已把
 真实 Session bootstrap、Task/Lane/Agent、Protocol、Approval、AgentAuthorityLease 与 message ingress application
@@ -147,7 +150,8 @@ deployment epoch cutover 仍待收口。
 
 - Core 中的 Session/Task/Lane/Agent/Protocol/Conversation/Approval/AgentAuthorityLease；
 - Core 中的 capability binding、runtime、workspace generation/checkpoint/revision verification、publication、
-  ControlledOperation/continuation/task evidence/command receipt 与 failure observation；
+  provisioning intent/readiness、workflow authority/link、Direct/Deferred/Hidden exposure、ordered runtime
+  transcript/outcome、ControlledOperation/continuation/task evidence/command receipt 与 failure observation；
 - exact Plugin section 中的 Research、Reporting、Science、Compute/HPC 状态。
 
 每个来自 canonical record 的 Core object/array item 都显式包含其 `state_version`，供后续 CAS command 构造；
@@ -178,9 +182,13 @@ publication、operation 与 restore 都必须在业务 callback 前失败。公�
 fallback，不返回 manifest Host path、secret locator value 或 traceback；private diagnostic 通过同一
 `diagnostic_id` 关联。
 
-模型只获得 `AVAILABLE`/`AVAILABLE_WITH_APPROVAL` 工具；`capabilities.inspect` 可返回非隐藏 blocked reason；
-`HIDDEN` 完全不可见。dispatch 携带 snapshot、lease、binding、workspace generation 和 explicit route，任何
-漂移在 effect 前返回 `tool_affordance_stale`，不自动替换 route。
+`ToolAffordanceSnapshot` 回答“当前是否可执行”，`ToolExposureSnapshot@1` 另行回答“本个 provider step
+是否直接显示”。稳定协作动词和 role-essential capability 可以是 `DIRECT`；授权存在但不宜常驻 function list
+的 long-tail capability 是 `DEFERRED`；策略要求不可披露的能力是 `HIDDEN`。`capabilities.inspect` 只能列出
+非隐藏 blocker 与 Deferred 摘要；command-scoped expansion 必须显式选择 exact tool 并产生有界 claim，且不会
+扩大 workflow、authority、approval、workspace 或 route。`HIDDEN` 在 inspection、错误提示和 provider schema
+中都不可见。dispatch 携带 exposure/expansion、snapshot、lease、binding、workflow epoch、workspace generation
+和 explicit route，任何漂移在 effect 前返回 typed stale error，不自动替换 route。
 
 route-bound affordance 的安全投影可包含 opaque route ID、provider/driver ID、target ID、inventory
 generation 及各层 digest，但不包含 SSH endpoint、login、remote root、binary locator、credential 或
@@ -199,8 +207,9 @@ state 与 blocker 解释原因，只有 `AVAILABLE`/`AVAILABLE_WITH_APPROVAL` �
 closed object，不包含 `workspace_id`、credential、target 或 remote locator；Host 从 current Session/member/
 AgentAuthorityLease/workspace generation 与 pinned local route 解析唯一 binding。mutation/exec 由 exact tool
 call 派生 idempotency/operation identity并进入 `WorkspaceOperationCoordinator`，result 明示没有 checkpoint、
-publication、workspace cleanup 或 Task transition。Standard 尚未把所有五个 runtime application 接入
-Host route，因此未接入的工具在当前 affordance 中必须 blocked，不能调用旧 registry。
+publication、workspace cleanup 或 Task transition。Standard 已把五个 contract 接到 exact runtime mount；
+每次调用仍按当前 workspace binding、authority、affordance 与 route 重验。任何未满足依赖或没有当前 exact
+route 的工具必须保持 blocked，不能调用旧 registry，也不能改用相邻工具或本地 fallback。
 
 其中 `workspace.fs.mutate`、`workspace.exec` 与 transfer 先形成 durable ControlledOperation admission，再调用
 exact Adapter；响应丢失时，调用方只能以同一 request/operation/intent/authority/route 发起显式
@@ -275,11 +284,72 @@ drift 都在 mutation 前 fail closed。
 generation 来自旧 `workspace_generation`、fence 来自旧 `state_version`，旧行无 expiry 时必须保留
 `expires_at=null`。CLI、SDK、UI 和 Plugin 不得观察物理表名、旧 profile tuple 或旧 DTO alias。
 
+## Resident teammate projection 与 commands
+
+`file_workspace_public@2` 保持既有 root 和 Core section 集合；本 change 只在这些 owner 已闭合的 section
+内部加入版本化事实，不增加第二个 dashboard envelope：
+
+- `core.session` / `core.workspace` 显示 exact reservation、generation、状态 `provisioning | ready | blocked`，
+  并以 `workspace_provisioning_public@2` 公开 intent identity/digest/state-version、安全 blocker及nullable
+  `workspace_provisioning_reconciliation_public@1`；reconciliation READY 只改变effective readiness，原blocked
+  intent/failure仍原样可见；
+- `core.conversation` / `core.runtime` 显示 root workflow binding、signal authority link、epoch/revocation、
+  runtime command、ordered assistant/tool/failure transcript 与 settlement；
+- `core.tasks` / `core.agents` / `core.protocol` 显示 assignment、delegation、inbox、causation 和 wakeup，
+  但 protocol delivery 或 runtime settlement都不推导 Task 终态；
+- `core.tool_reflection` 显示 Direct tools、非隐藏 Deferred 摘要、expansion claim 与 blocker；Hidden 不出现。
+
+内部可恢复合同与公开 DTO 不共用字节：Store 继续保存完整 `runtime_turn_command@2`、
+`runtime_turn_outcome@1` 与 receipt，公开投影则只接受 `runtime_command_public@1`、
+`runtime_turn_command_public@1`、`runtime_turn_outcome_public@1`、
+`runtime_turn_outcome_receipt_public@1`、`runtime_command_outcome_summary_public@1` 和
+`runtime_outcome_consumption_public@1`。公开 command 不含 command/signal/session lease token；turn command 只含
+`context_digest`、`message_count` 与 safe fences；outcome 只含消息/工具请求 count、工具请求 aggregate digest、safe
+failure 与 source digest；command outcome summary 只保留 turn aggregate digest/count 与 runtime/Task/fallback facts；
+outcome consumption 只保留 consumption/command/outcome/receipt 的 safe identity/digest 以及 continuation/settlement
+reference。任何公开 DTO 都不得包含 raw context/messages、tool name/arguments、嵌套 internal outcome receipt 或完整
+私有 failure。tool transcript 只保留 allowlisted settlement facts；无法解析为当前 closed ToolResult 的历史 tool
+content 退化为固定安全摘要，而不是原文回退。
+
+公开 command 的产品顺序是：创建 Session 后轮询同一 projection 的 readiness；`POST .../messages` 原子写
+root workflow binding、conversation/inbox/signal 与 signal authority link，但只报告 queued；用户或 operator
+再显式调用 `POST .../runtime/drain` 推进有界 turn。approval resolution 只写决定并排队 causally-linked wakeup，
+不在同一 HTTP 请求同步执行 recipient。所有 command 都复用 inspection 返回的 exact release、projection、
+binding 与 affordance identity；drain 请求没有 workflow、tool expansion 或 route 选择字段。
+
+旧 Session 若缺少 reservation、provisioning intent、workflow authority 或新 transcript owner record，不在线
+补造语义，返回 typed incompatibility 并要求 offline migration 或新建 Session。inner fact 的新增不能把
+`@1` response、旧 conversation prose 或临时 UI state 翻译成 canonical `@2` truth。
+
+provisioning recovery 另有两个 operator-only direct routes：
+
+- `POST /v3/sessions/{session_id}/workspace/provisioning/reconcile`：以 exact intent digest/state-version 和bounded
+  claim接纳同一原请求的durable observation-only reconciliation；
+- `POST /v3/sessions/{session_id}/workspace/provisioning/successor`：只在known/diagnosed failure之后，以exact
+  failed intent和resolved reconciliation identity创建下一monotonic generation与新intent。
+
+两者均返回HTTP `202`，都在Host执行release/project/projection/precondition检查，并直接进入Distribution的专用
+gateway；不得借generic mutation route、runtime drain、Task或另一个Adapter间接实现。CLI从current projection
+取得并交叉验证intent version/digest，提交后重新inspect canonical projection，不把本地HTTP body当ready真值。
+两个 `202` result 都是 exact closed admission-only facts：显式证明adapter、external effect、runtime、Task和fallback
+均未发生；reconciliation result只公开occurrence/source lineage与enqueue事实，不公开`claim_*`、terminal receipt、
+failure/diagnostic或任意private/tool payload。Host在返回前、CLI在二次inspect前均fail closed校验这些事实。
+
 ## CLI 与 UI
 
-CLI 是薄 HTTP client，不读取 SQLite 或 repository root。UI reducer 只接受 versioned file workspace
-sections；未知 key 不恢复旧 state。UI 不显示 private locator 或 raw external handle。CLI/UI error
-rendering 使用 Host safe error，不展开 secret 或内部路径。
+CLI 是薄 HTTP client，不读取 SQLite 或 repository root。它通过 HTTP 完成 Session bootstrap/readiness、
+conversation message、task board、agents/delegations/inbox、approvals、failures、显式 drain 和 command polling，
+并明确区分 `queued`、`provisioning`、`ready`、`blocked`、`running` 与 settled outcome。CLI 不在 message 后
+隐式 drain，也不从自然语言 assistant response、tool success 或 runtime idle 推断 task completed。
+
+UI reducer 只接受 versioned file workspace sections；未知 key 不恢复旧 state。controller 以 projection
+identity 和 command receipt reconcile readiness、ordered transcript、collaboration、approval、runtime command、
+workspace、经验证的投影变化观测与 failure facts，而不是在浏览器维护第二份 session/task/runtime 真状态。
+当前 transport 是对 exact Host workspace projection 的有界轮询：客户端只在 canonical projection digest
+变化时派生 UI-local change observation；它不是 Host outbox/canonical event stream，也不能补造 Kernel event。
+UI 不显示 private
+locator、raw external handle 或 Hidden capability。CLI/UI error rendering 使用 Host safe error，不展开 secret
+或内部路径，也不根据文案自行推断 retry、reconcile 或 fallback。
 
 Web UI 的 `file_workspace_v2_state`、`core_shell` 与
 `extension_renderer_loader` seam。`file_workspace_v2_state` 对 root/release/core/extension section 使用
@@ -303,10 +373,12 @@ ToolAffordanceSnapshot identity。恢复时 release/bundle/catalog/owner/epoch �
 
 ## Error semantics
 
-当前公开错误对象是 `failure_observation@2`，至少包含：稳定 `error_code`、component、operation、
-phase、typed identities、effect certainty、retry/reconcile policy、`mutation_applied`、
-`fallback_performed`、安全 cause chain、`diagnostic_id` 和 next action。API、tool result、event、workspace
-与 world projection 使用同一字段语义；UI/CLI 不自行推断 retryability。
+当前非空公开错误对象只接受 exact closed `failure_observation@2`，至少包含：稳定 `error_code`、component、
+operation、phase、allowlisted typed identities/facts、effect certainty、retry/reconcile policy、
+`mutation_applied`、`fallback_performed`、安全 cause chain、`diagnostic_id` 和 next action。旧 schema、未知字段、
+私有 diagnostic 或无法安全解析的值一律 fail closed；公开值不得包含 traceback、stdout/stderr、private context、
+tool request 或 secret locator。API、tool result、event、workspace 与 world projection 使用同一字段语义；UI/CLI
+不自行推断 retryability，也不把私有值降级为字符串后继续展示。
 
 其 canonical DTO、`ExternalEffectCertainty` 和 `RetryEligibility` 位于
 `openzyme-contracts`。旧 `openzyme_domain` package、alias 与单向重导出已经删除；历史部署只能由

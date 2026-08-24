@@ -6,7 +6,9 @@
 归档 OpenSpec 只具有离线迁移或历史解释力。
 
 `separate-openzyme-kernel-from-capability-extensions` 已把 mixed-package authority 迁为显式 Kernel、Adapter、
-Plugin、Driver 与 Distribution，并删除旧 Core/Domain/Runtime/Execution packages。目标定义见
+Plugin、Driver 与 Distribution，并删除旧 Core/Domain/Runtime/Execution packages；
+`complete-openzyme-resident-teammate-product-loop` 已在此基础上闭合 fresh Session、异步 workspace、
+request-lineage workflow authority、structured runtime context、tool exposure 和 outcome transcript。目标定义见
 [ADR-0001](adr/0001-what-is-openzyme.md)，实际 component/import/table owner 基线见 [architecture/](architecture/)。
 两个 Distribution manifest 的 `active` 只表示 exact component graph 可构建；Session 运行 authority 仍需
 schema/wheel/composition proof、deployment epoch、Session pin 和对应 operational selection。真实历史部署的
@@ -21,38 +23,50 @@ schema/wheel/composition proof、deployment epoch、Session pin 和对应 operat
 5. [04-public-interfaces.md](04-public-interfaces.md)：Host、CLI、UI 和 media contract。
 6. [05-agent-runtime.md](05-agent-runtime.md)：resident teammate、signal、lease 与 protocol。
 7. [06-top-level-llm-loop.md](06-top-level-llm-loop.md)：顶层有界 agent loop。
-8. [07-runtime-hpc-reliability.md](07-runtime-hpc-reliability.md)：revision-bound HPC 与恢复。
-9. [08-failure-recovery-and-scientific-attempts.md](08-failure-recovery-and-scientific-attempts.md)：
+8. [resident-teammate-product-loop.md](resident-teammate-product-loop.md)：fresh Session 到 durable assistant
+   transcript 的产品心智模型、owner、identity、lifecycle、compatibility 与 forbidden fallback。
+9. [07-runtime-hpc-reliability.md](07-runtime-hpc-reliability.md)：revision-bound HPC 与恢复。
+10. [08-failure-recovery-and-scientific-attempts.md](08-failure-recovery-and-scientific-attempts.md)：
    effect certainty、failure 和 scientific closure。
-10. [file-workspace-migration.md](file-workspace-migration.md)：breaking cutover、离线迁移与删除。
-11. [compatibility-sunset.md](compatibility-sunset.md)：已移除 surface 的防回归门禁。
-12. [execution-pipeline-docs/README.md](execution-pipeline-docs/README.md)：executor 可检索文档。
-13. [adr/0001-what-is-openzyme.md](adr/0001-what-is-openzyme.md)：双轴架构、组件通信与 HMMER/HPC 组合。
-14. [architecture/source-bound-baseline.json](architecture/source-bound-baseline.json)：当前组件与反向依赖基线。
-15. [architecture/catalog-owner-inventory.json](architecture/catalog-owner-inventory.json)：tool、route、event、
+11. [file-workspace-migration.md](file-workspace-migration.md)：breaking cutover、离线迁移与删除。
+12. [compatibility-sunset.md](compatibility-sunset.md)：已移除 surface 的防回归门禁。
+13. [execution-pipeline-docs/README.md](execution-pipeline-docs/README.md)：executor 可检索文档。
+14. [adr/0001-what-is-openzyme.md](adr/0001-what-is-openzyme.md)：双轴架构、组件通信与 HMMER/HPC 组合。
+15. [architecture/source-bound-baseline.json](architecture/source-bound-baseline.json)：当前组件与反向依赖基线。
+16. [architecture/catalog-owner-inventory.json](architecture/catalog-owner-inventory.json)：tool、route、event、
     worker、migration、资格场景等可执行 surface 的唯一 owner 与重复 authority 基线。
-16. [architecture/pre-split-deployment-state-inventory.json](architecture/pre-split-deployment-state-inventory.json)：
+17. [architecture/pre-split-deployment-state-inventory.json](architecture/pre-split-deployment-state-inventory.json)：
     拆分前 SQLite 的只读、去敏聚合快照；只作迁移规划证据，不是 cutover authority。
-17. [plugin-authoring-guide.md](plugin-authoring-guide.md)：Plugin application services、state、Driver 与通信规范。
-18. [extension-composition-manifest-reference.md](extension-composition-manifest-reference.md)：closed
+18. [plugin-authoring-guide.md](plugin-authoring-guide.md)：Plugin application services、state、Driver 与通信规范。
+19. [extension-composition-manifest-reference.md](extension-composition-manifest-reference.md)：closed
     Distribution/Adapter/Plugin/Driver schema、catalog 与 runtime mount reference。
-19. [deployment-composition-operator-guide.md](deployment-composition-operator-guide.md)：read-only activation、
+20. [deployment-composition-operator-guide.md](deployment-composition-operator-guide.md)：read-only activation、
     Session composition pin、入口守卫与 offline Plugin change 操作手册。
-20. [research-extension.md](research-extension.md)：Research Plugin、Provider Adapter、worker、来源回执与
+21. [research-extension.md](research-extension.md)：Research Plugin、Provider Adapter、worker、来源回执与
     `PublishedRevision + RevisionPathRef` 交接边界。
-21. [reporting-extension.md](reporting-extension.md)：Reporting state、file-native report、renderer、projection
+22. [reporting-extension.md](reporting-extension.md)：Reporting state、file-native report、renderer、projection
     与只读 Task finish validator 边界。
-22. [science-extension.md](science-extension.md)：Science lifecycle、workflow registry、namespaced state、finish
+23. [science-extension.md](science-extension.md)：Science lifecycle、workflow registry、namespaced state、finish
     separation 与只读 Task finish validator 边界。
-23. [enzymedesign-distribution.md](enzymedesign-distribution.md)：EnzymeDesign exact composition、产品能力、
+24. [enzymedesign-distribution.md](enzymedesign-distribution.md)：EnzymeDesign exact composition、产品能力、
     AOX 注入、HMMER/HPC 路由与 non-live 验收边界。
-24. [external-qualification-readiness.md](external-qualification-readiness.md)：外部资格六维单元、profile、
+25. [external-qualification-readiness.md](external-qualification-readiness.md)：外部资格六维单元、profile、
     credential locator、recording backend、real-subject identity gap、两批 dry plan、receipt/admission 与
     required non-live/manual gate。
 
 实现 V3 时的固定规则：
 
 - 用户消息入口不隐式 drain；runtime drain 是显式 durable command。
+- fresh Session bootstrap 只原子保留 repository/workspace/provisioning identity；workspace worker异步推进
+  `provisioning | ready | blocked`，HTTP 不等待外部机制，blocked 不自动 retry/换 Adapter。
+- 每条 root message 都有显式 request-lineage workflow binding（空选择也有），每个 wake signal 都有 exact
+  authority link；delegation 只派生子集，provider/tool/delegation 前重验 status/epoch/digest。
+- runtime context 是 canonical facts 的 bounded projection；prompt、memory、task/protocol prose 不授予 authority
+  或替代 Task/workspace/approval/failure truth。
+- model tools 分为 `Direct | Deferred | Hidden`；Deferred 只经 `capabilities.inspect` 在一个 command 内显式
+  扩展，exposure 不扩大 authority、不解除 blocker、不换 route。
+- Adapter outcome 的 assistant/tool message、full receipt 与 failure 必须经 Kernel fenced settlement 持久化；
+  provider response、stdout 和 UI local state 不能替代 canonical transcript。
 - `protocol.send` 只投递并排队 wakeup；`task.finish` 是显式业务终态。
 - session lease、process epoch、execution fence、delivery fence、workspace generation 和
   mutation writer 是不同 authority。

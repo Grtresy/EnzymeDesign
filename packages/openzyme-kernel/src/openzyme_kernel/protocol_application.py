@@ -13,7 +13,11 @@ from openzyme_contracts import KernelRecordSnapshot
 from openzyme_contracts import KernelStateMutation
 from openzyme_contracts import OutboxRecord
 from openzyme_contracts import UnitOfWorkRequest
+from openzyme_contracts import WorkflowAuthorityDerivationKind
+from openzyme_contracts import WorkflowAuthoritySignalSourceKind
 from openzyme_contracts import canonical_sha256_digest
+from openzyme_contracts import require_digest
+from openzyme_contracts import require_identifier
 from openzyme_contracts.identity import JsonValue
 from openzyme_contracts.identity import json_compatible
 from openzyme_extension_spi import KernelEntityRef
@@ -24,14 +28,33 @@ from openzyme_extension_spi import ProtocolCommandKind
 from .authority_application import evaluate_authority_payload
 from .errors import KernelContractError
 from .runtime_coordination_application import build_runtime_signal_payload
+from .workflow_authority_application import DerivedWorkflowAuthorityRequest
+from .workflow_authority_application import WorkflowAuthorityUnitOfWorkOwner
 
 
 _PROTOCOL_FIELDS = {
     ProtocolCommandKind.DELEGATE: frozenset(
-        {"task_id", "recipient_actor_id", "instruction", "parent_agent_id"}
+        {
+            "task_id",
+            "recipient_actor_id",
+            "instruction",
+            "parent_agent_id",
+            "workflow_authority_id",
+            "workflow_authority_epoch",
+            "workflow_authority_digest",
+            "workflow_refs",
+        }
     ),
     ProtocolCommandKind.SEND: frozenset(
-        {"recipient_actor_id", "message_type", "content", "task_id"}
+        {
+            "recipient_actor_id",
+            "message_type",
+            "content",
+            "task_id",
+            "workflow_authority_id",
+            "workflow_authority_epoch",
+            "workflow_authority_digest",
+        }
     ),
     ProtocolCommandKind.HANDOFF: frozenset(
         {
@@ -39,6 +62,9 @@ _PROTOCOL_FIELDS = {
             "task_id",
             "revision_path_ref",
             "message",
+            "workflow_authority_id",
+            "workflow_authority_epoch",
+            "workflow_authority_digest",
         }
     ),
 }
@@ -53,17 +79,55 @@ class ProtocolKernelApplicationService:
         self._store = store
         self._clock = clock
         self._ids = ids
+        self._workflow_authority = WorkflowAuthorityUnitOfWorkOwner(
+            clock=clock,
+            ids=ids,
+        )
+
+    def delegate(self, command: ProtocolApplicationCommand) -> KernelMutationReceipt:
+        if command.operation is not ProtocolCommandKind.DELEGATE:
+            raise KernelContractError(
+                "protocol_operation_mismatch",
+                "Protocol delegate entrypoint requires a delegate command",
+            )
+        return self.execute(command)
+
+    def send(self, command: ProtocolApplicationCommand) -> KernelMutationReceipt:
+        if command.operation is not ProtocolCommandKind.SEND:
+            raise KernelContractError(
+                "protocol_operation_mismatch",
+                "Protocol send entrypoint requires a send command",
+            )
+        return self.execute(command)
 
     def execute(self, command: ProtocolApplicationCommand) -> KernelMutationReceipt:
         expected = _PROTOCOL_FIELDS[command.operation]
         unknown = set(command.payload).difference(expected)
         required = {
-            ProtocolCommandKind.DELEGATE: {"task_id", "recipient_actor_id", "instruction"},
-            ProtocolCommandKind.SEND: {"recipient_actor_id", "message_type", "content"},
+            ProtocolCommandKind.DELEGATE: {
+                "task_id",
+                "recipient_actor_id",
+                "instruction",
+                "workflow_authority_id",
+                "workflow_authority_epoch",
+                "workflow_authority_digest",
+                "workflow_refs",
+            },
+            ProtocolCommandKind.SEND: {
+                "recipient_actor_id",
+                "message_type",
+                "content",
+                "workflow_authority_id",
+                "workflow_authority_epoch",
+                "workflow_authority_digest",
+            },
             ProtocolCommandKind.HANDOFF: {
                 "recipient_actor_id",
                 "task_id",
                 "revision_path_ref",
+                "workflow_authority_id",
+                "workflow_authority_epoch",
+                "workflow_authority_digest",
             },
         }[command.operation]
         missing = required.difference(command.payload)
@@ -73,6 +137,9 @@ class ProtocolKernelApplicationService:
                 "Protocol command payload differs from its closed operation contract",
                 details={"unknown": sorted(unknown), "missing": sorted(missing)},
             )
+        authority_id, authority_epoch, authority_digest = self._authority_identity(
+            command.payload
+        )
 
         request = UnitOfWorkRequest(
             unit_of_work_id=self._ids.new_id(namespace="uow"),
@@ -245,6 +312,57 @@ class ProtocolKernelApplicationService:
                 created_at=now,
                 enqueue_command_digest=signal_command_digest,
             )
+            parent_binding = self._workflow_authority.require_current(
+                unit,
+                authority_id=authority_id,
+                expected_epoch=authority_epoch,
+                expected_binding_digest=authority_digest,
+                expected_actor_id=command.context.actor_id,
+            )
+            if parent_binding.session_id != command.context.session_id:
+                raise KernelContractError(
+                    "workflow_authority_session_mismatch",
+                    "Protocol workflow authority belongs to another Session",
+                )
+            selected_workflow_refs = (
+                self._workflow_refs(command.payload.get("workflow_refs"))
+                if command.operation is ProtocolCommandKind.DELEGATE
+                else parent_binding.selected_workflow_refs
+            )
+            workflow_binding, signal_link = self._workflow_authority.derive(
+                unit,
+                DerivedWorkflowAuthorityRequest(
+                    session_id=command.context.session_id,
+                    parent_authority_id=authority_id,
+                    parent_epoch=authority_epoch,
+                    parent_binding_digest=authority_digest,
+                    source_actor_id=command.context.actor_id,
+                    authorized_actor_id=recipient_id,
+                    selected_workflow_refs=selected_workflow_refs,
+                    task_id=(
+                        str(command.payload["task_id"])
+                        if command.payload.get("task_id") is not None
+                        else None
+                    ),
+                    lane_id=(
+                        str(recipient.payload["lane_id"])
+                        if recipient.payload.get("lane_id") is not None
+                        else None
+                    ),
+                    derivation_kind=(
+                        WorkflowAuthorityDerivationKind.DELEGATION
+                        if command.operation is ProtocolCommandKind.DELEGATE
+                        else WorkflowAuthorityDerivationKind.PROTOCOL_DELIVERY
+                    ),
+                    signal_source_kind=(
+                        WorkflowAuthoritySignalSourceKind.DELEGATION
+                        if command.operation is ProtocolCommandKind.DELEGATE
+                        else WorkflowAuthoritySignalSourceKind.PROTOCOL_MESSAGE
+                    ),
+                    causation_ref=command.protocol_ref,
+                    signal_id=signal_id,
+                ),
+            )
             signal_mutation = KernelStateMutation.create(
                 mutation_id=self._ids.new_id(namespace="mutation"),
                 kind=KernelMutationKind.CREATE,
@@ -263,13 +381,14 @@ class ProtocolKernelApplicationService:
                 expected_state_version=session.state_version,
                 payload=session_payload,
             )
-            for mutation in (
-                protocol_mutation,
-                inbox_mutation,
-                signal_mutation,
-                session_mutation,
-            ):
+            for mutation in (protocol_mutation, inbox_mutation):
                 unit.stage(mutation)
+            self._workflow_authority.stage_runtime_signal_with_link(
+                unit,
+                signal_mutation=signal_mutation,
+                link=signal_link,
+            )
+            unit.stage(session_mutation)
 
             event_type = {
                 ProtocolCommandKind.DELEGATE: "protocol.delegate",
@@ -289,6 +408,10 @@ class ProtocolKernelApplicationService:
                     "recipient_actor_id": recipient_id,
                     "inbox_message_id": inbox_id,
                     "runtime_signal_id": signal_id,
+                    "workflow_authority_id": workflow_binding.authority_id,
+                    "workflow_authority_epoch": workflow_binding.epoch,
+                    "workflow_authority_digest": workflow_binding.binding_digest,
+                    "runtime_signal_authority_link_digest": signal_link.link_digest,
                     "recipient_runtime_executed": False,
                     "task_transition_performed": False,
                 },
@@ -299,6 +422,7 @@ class ProtocolKernelApplicationService:
                 "event_digest": event.event_digest,
                 "recipient_actor_id": recipient_id,
                 "runtime_signal_id": signal_id,
+                "workflow_authority_id": workflow_binding.authority_id,
             }
             unit.append_outbox(
                 OutboxRecord(
@@ -322,6 +446,18 @@ class ProtocolKernelApplicationService:
             state_version=1,
             payload=protocol_payload,
         )
+        workflow_snapshot = KernelRecordSnapshot.create(
+            entity_type="workflow_authority_binding",
+            entity_id=workflow_binding.authority_id,
+            state_version=1,
+            payload=workflow_binding.to_dict(),
+        )
+        link_snapshot = KernelRecordSnapshot.create(
+            entity_type="runtime_signal_authority_link",
+            entity_id=signal_link.signal_id,
+            state_version=1,
+            payload=signal_link.to_dict(),
+        )
         return KernelMutationReceipt.create(
             command_id=command.context.command_id,
             service_id=self.service_id,
@@ -335,16 +471,78 @@ class ProtocolKernelApplicationService:
                     state_version=1,
                     entity_digest=protocol_snapshot.record_digest,
                 ),
+                KernelEntityRef(
+                    entity_kind=workflow_snapshot.entity_type,
+                    entity_id=workflow_snapshot.entity_id,
+                    state_version=workflow_snapshot.state_version,
+                    entity_digest=workflow_snapshot.record_digest,
+                ),
+                KernelEntityRef(
+                    entity_kind=link_snapshot.entity_type,
+                    entity_id=link_snapshot.entity_id,
+                    state_version=link_snapshot.state_version,
+                    entity_digest=link_snapshot.record_digest,
+                ),
             ),
             event_refs=(event.event_id,),
             result={
                 "protocol_ref": command.protocol_ref,
                 "inbox_message_id": inbox_id,
                 "runtime_signal_id": signal_id,
+                "workflow_authority_id": workflow_binding.authority_id,
+                "workflow_authority_epoch": workflow_binding.epoch,
+                "workflow_authority_digest": workflow_binding.binding_digest,
+                "runtime_signal_authority_link_digest": signal_link.link_digest,
                 "recipient_runtime_executed": False,
                 "task_transition_performed": False,
             },
         )
+
+    @staticmethod
+    def _authority_identity(payload: Mapping[str, JsonValue]) -> tuple[str, int, str]:
+        authority_id = payload.get("workflow_authority_id")
+        authority_epoch = payload.get("workflow_authority_epoch")
+        authority_digest = payload.get("workflow_authority_digest")
+        try:
+            if not isinstance(authority_id, str):
+                raise ValueError("workflow authority ID must be a string")
+            require_identifier(authority_id, field_name="workflow_authority_id")
+            if (
+                not isinstance(authority_epoch, int)
+                or isinstance(authority_epoch, bool)
+                or authority_epoch < 1
+            ):
+                raise ValueError("workflow authority epoch must be positive")
+            if not isinstance(authority_digest, str):
+                raise ValueError("workflow authority digest must be a string")
+            require_digest(
+                authority_digest,
+                field_name="workflow_authority_digest",
+            )
+        except ValueError as exc:
+            raise KernelContractError(
+                "workflow_authority_identity_invalid",
+                "Protocol command lacks an exact workflow authority identity",
+            ) from exc
+        return authority_id, authority_epoch, authority_digest
+
+    @staticmethod
+    def _workflow_refs(value: JsonValue | None) -> tuple[str, ...]:
+        if not isinstance(value, (list, tuple)):
+            raise KernelContractError(
+                "workflow_authority_subset_invalid",
+                "Delegation workflow_refs must be an explicit ordered array",
+            )
+        refs = tuple(value)
+        if (
+            any(not isinstance(item, str) or not item for item in refs)
+            or refs != tuple(sorted(set(refs)))
+        ):
+            raise KernelContractError(
+                "workflow_authority_subset_invalid",
+                "Delegation workflow_refs must be sorted, unique strings",
+            )
+        return refs
 
     def _authorize(self, command: ProtocolApplicationCommand, unit) -> None:  # noqa: ANN001
         lease = unit.read(

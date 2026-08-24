@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from threading import Event
+from threading import Thread
 
 import pytest
 
@@ -59,8 +61,8 @@ class _Codec:
             )
 
 
-def _connection() -> sqlite3.Connection:
-    connection = sqlite3.connect(":memory:")
+def _connection(*, cross_thread: bool = False) -> sqlite3.Connection:
+    connection = sqlite3.connect(":memory:", check_same_thread=not cross_thread)
     connection.executescript(
         """
         CREATE TABLE test_owner_records (
@@ -189,3 +191,30 @@ def test_control_store_rejects_unmapped_entity_without_fallback_table() -> None:
     with pytest.raises(SQLiteControlStoreError) as unmapped:
         store.read(entity_type="scientific_attempt", entity_id="attempt-1")
     assert unmapped.value.code == "sqlite_kernel_entity_unmapped"
+
+
+def test_control_store_serializes_cross_thread_reader_behind_unit_of_work() -> None:
+    store = _store(_connection(cross_thread=True))
+    unit = store.begin(_request())
+    started = Event()
+    completed = Event()
+    results: list[KernelRecordSnapshot | BaseException | None] = []
+
+    def read_task() -> None:
+        started.set()
+        try:
+            results.append(store.read(entity_type="task", entity_id="task-1"))
+        except BaseException as exc:  # pragma: no cover - diagnostic capture
+            results.append(exc)
+        finally:
+            completed.set()
+
+    thread = Thread(target=read_task)
+    thread.start()
+    assert started.wait(timeout=1)
+    assert completed.wait(timeout=0.05) is False
+    unit.rollback()
+    assert completed.wait(timeout=1)
+    thread.join(timeout=1)
+    assert len(results) == 1
+    assert isinstance(results[0], KernelRecordSnapshot)

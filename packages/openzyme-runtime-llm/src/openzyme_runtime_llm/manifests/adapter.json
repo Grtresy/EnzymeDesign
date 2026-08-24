@@ -5,13 +5,13 @@
     "component_id": "openzyme.runtime.llm",
     "component_kind": "adapter",
     "component_version": "0.1.0",
-    "contract_digest": "sha256:b271a9a123e8cf2aaf72a442fc0d2dced541594b68573064647a5bb651cd0f61",
+    "contract_digest": "sha256:a3e2958e8af5778b6bb6fbf394ea995b0ae71820183db22f7030e1747e17568e",
     "distribution_name": "openzyme-runtime-llm",
     "distribution_version": "0.1.0"
   },
   "port_contracts": [
     {
-      "contract_digest": "sha256:b271a9a123e8cf2aaf72a442fc0d2dced541594b68573064647a5bb651cd0f61",
+      "contract_digest": "sha256:a3e2958e8af5778b6bb6fbf394ea995b0ae71820183db22f7030e1747e17568e",
       "contribution_id": "openzyme.agent-runtime-adapter@1"
     }
   ],
