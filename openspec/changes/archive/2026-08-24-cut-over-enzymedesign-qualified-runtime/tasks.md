@@ -54,4 +54,4 @@
 - [x] 9.1 Build and independently verify the exact deployment dry plan from current source and unexpired Batch 1 evidence
 - [x] 9.2 Mechanically create the distinct one-shot authority for `operator.enzymedesign-owner` and execute quiescence, backup, adoption, activation and startup proof
 - [x] 9.3 Execute the separately authorized post-cutover Batch 1 live smoke, record first-live boundary and verify monitoring/cleanup
-- [ ] 9.4 Verify, sync and archive this change, run `./scripts/check-mainline.sh` exactly once at final Goal completion and create local seal commits without push
+- [x] 9.4 Verify, sync and archive this change, run `./scripts/check-mainline.sh` exactly once at final Goal completion and create local seal commits without push

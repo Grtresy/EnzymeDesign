@@ -49,3 +49,30 @@
 缺失。它在 first-live 前按 exact activation digest 回滚，rollback receipt 为
 `sha256:d9b530c8cbbed6725e264a10c702e2e0491260a275eb2b335f1bc9d94c5c6add`，全部 generation evidence 与 backups
 随后封存；没有 live effect、fallback 或证据覆盖。
+
+## Final validation and local seal
+
+按 operator 决策，`./scripts/check-mainline.sh` 在 Goal 收口时只执行一次，没有为制造第二张 receipt 而重跑。该唯一一次
+authoritative receipt 为 `sha256:6c159e6a218794a6fd37ece5e693d4fd8e7e553cf3ec35c150ffa9bdbe2238af`，
+evidence root 为 `/tmp/openzyme-mainline-authoritative.H56EUg/evidence`，terminal status 为 `fail`。134-unit test gate
+和 45-unit non-live readiness 已通过；premerge architecture qualification 当时仅有
+`operator-retirement.component-wheel-closure` 与
+`authority-composition.source-document-owner-closure` 失败。报告同时如实记录 source tree 非 clean：本 change 尚未归档提交，
+并存在 operator 自有、未纳入本 change 的 `.env.test.example` 删除。
+
+根因是默认 LLM/Tavily Provider 依赖未列入 profile 外部分发白名单，以及对应 source-bound component/document digest
+尚未随闭包更新。修复提交 `9276294` 加入 `langchain`、`langchain-openai`、`tavily-python`，更新精确 profile 断言和
+可重算 source/document baseline；未放宽 component、import、owner、catalog 或 no-live 规则。修复后验证结果：
+
+- `scripts/check-openzyme-architecture.py`：通过，37 components、116 import edges，component inventory digest
+  `sha256:409140db5015b7560d42057f08c1f9901cb3e4c5464ea6fe41c7b6ab50717ede`；
+- architecture manifest/inventory focused tests：12 passed；
+- wheel qualification profile tests：3 passed；
+- 原始两个 architecture qualification scenario：2 passed；其中 wheel scenario 在非沙箱环境只读使用既有 uv cache，
+  无网络、live Provider、HPC 或产品状态 mutation；
+- 本 change 与同步后的六项规格均已 strict validation；全仓 `openspec validate --all --strict` 的唯一剩余失败是本 change
+  之外、既存的 `mcp-enzyme-design-knowledge` 缺少 Purpose/Requirements。
+
+本 change 已同步 main specs 并归档为 `2026-08-24-cut-over-enzymedesign-qualified-runtime`。所有提交仅位于本地
+`dev`，未 push；`.env.test.example` 的 operator 改动未暂存、未恢复、未提交。唯一 mainline receipt 保持原始 fail
+裁决，不将后续 focused verification 冒充为第二次 mainline green receipt。
